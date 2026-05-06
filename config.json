@@ -1,0 +1,62 @@
+{
+  "companyName": "PENDIENTE - Nombre de la Clínica",
+  "botName": "PENDIENTE - Nombre del Bot",
+  "direccion": "PENDIENTE - Dirección de la clínica",
+  "content": {
+    "systemPrompt": ""
+  },
+  "servicios": [
+    { "nombre": "Consulta inicial", "duracion": 30, "precio": 0 },
+    { "nombre": "Botox", "duracion": 45, "precio": 0 },
+    { "nombre": "Relleno de labios", "duracion": 60, "precio": 0 },
+    { "nombre": "Limpieza facial", "duracion": 60, "precio": 0 },
+    { "nombre": "Mesoterapia", "duracion": 60, "precio": 0 }
+  ],
+  "horario": {
+    "lunes": { "apertura": "10:00", "cierre": "20:00" },
+    "martes": { "apertura": "10:00", "cierre": "20:00" },
+    "miercoles": { "apertura": "10:00", "cierre": "20:00" },
+    "jueves": { "apertura": "10:00", "cierre": "20:00" },
+    "viernes": { "apertura": "10:00", "cierre": "20:00" },
+    "sabado": { "apertura": "10:00", "cierre": "14:00" },
+    "domingo": null
+  },
+  "ai": {
+    "model": "gpt-4o-mini",
+    "temperature": 0.7,
+    "max_tokens": 220,
+    "responseMaxLength": 240
+  },
+  "conversation": {
+    "sessionTimeoutMs": 3600000,
+    "abandonThresholdMs": 1800000,
+    "duplicateMessageWindowMs": 1500,
+    "maxMessagesPerSession": 30,
+    "minutosResena": 30,
+    "followUps": [
+      { "delayMs": 1200000, "message": "Hola 😊 ¿Pudiste pensar en qué día te vendría mejor para tu cita?" },
+      { "delayMs": 86400000, "message": "¡Hola de nuevo! Tenemos huecos disponibles esta semana si quieres reservar tu cita 😊" }
+    ],
+    "technicalErrorMessage": "Lo siento, ha ocurrido un error técnico. Por favor, inténtalo de nuevo.",
+    "deactivatedMessage": "Has desactivado el asistente automático.",
+    "reactivatedMessage": "Asistente activado de nuevo.",
+    "limitMessage": "Hemos llegado al límite de mensajes. Un agente te contactará pronto."
+  },
+  "storage": {
+    "airtable": {
+      "enabled": true,
+      "leadsTable": "💅 Leads",
+      "configTable": "⚙️ Configuración",
+      "origen": "Instagram Ads"
+    }
+  },
+  "review": {
+    "minutosEspera": 30,
+    "googleReviewLink": "PENDIENTE - Link de Google Reviews",
+    "mensaje": "Hola {nombre} 😊 Esperamos que tu experiencia haya sido genial. Si tienes un momento, nos ayudaría muchísimo que dejaras tu opinión aquí: {link} ¡Gracias!"
+  },
+  "reminder": {
+    "minutosAntes": 60,
+    "mensaje": "Hola {nombre} 😊 Te recordamos que mañana tienes tu cita en {clinica} a las {hora}. ¡Te esperamos! Si necesitas cambiarla, escríbenos."
+  }
+}

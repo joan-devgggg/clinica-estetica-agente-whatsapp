@@ -1,0 +1,32 @@
+# Credenciales y variables de entorno
+.env
+.env.*
+!.env.example
+
+# WhatsApp session data
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Bases de datos locales (datos de clientes)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/session
+
+# Dependencias
+node_modules/
+
+# Herramientas de agentes (no son parte del proyecto)
+.agents/
+.devin/
+.superpowers/
+.windsurf/
+.claude/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Sistema operativo
+.DS_Store
+Thumbs.db

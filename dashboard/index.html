@@ -1,0 +1,1230 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clínica — CRM</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+/* ── tokens ── */
+:root {
+  --bg:      #0f0f1a;
+  --surface: #1a1a2e;
+  --surface2:#12121f;
+  --border:  #1e2030;
+  --muted:   #64748b;
+  --text:    #e2e8f0;
+  --accent:  #a78bfa;
+  --grad:    linear-gradient(135deg,#7c3aed,#db2777);
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;overflow:hidden;}
+body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,sans-serif;}
+
+/* ── layout shell ── */
+#app{display:flex;flex-direction:column;height:100%;}
+#main-area{display:flex;flex:1;overflow:hidden;}
+
+/* ── sidebar (desktop) ── */
+#sidebar{
+  width:200px;flex-shrink:0;background:var(--surface2);
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;padding:16px 10px;gap:4px;
+}
+.sidebar-link{
+  display:flex;align-items:center;gap:8px;padding:9px 10px;
+  border-radius:8px;cursor:pointer;font-size:13px;color:var(--muted);
+  font-weight:600;transition:all .15s;
+}
+.sidebar-link:hover{background:var(--surface);color:var(--text);}
+.sidebar-link.active{background:#1e1535;color:var(--accent);}
+.sidebar-link .icon{font-size:16px;width:20px;text-align:center;}
+.sidebar-bot-status{
+  margin-top:auto;background:var(--surface);border-radius:10px;
+  padding:12px;border:1px solid var(--border);
+}
+
+/* ── top bar (mobile) ── */
+#topbar{
+  background:var(--grad);padding:0 16px;height:52px;
+  display:none;align-items:center;justify-content:space-between;flex-shrink:0;
+}
+#topbar .brand{font-size:16px;font-weight:800;color:#fff;}
+
+/* ── bottom nav (mobile) ── */
+#bottom-nav{
+  background:var(--surface2);border-top:1px solid var(--border);
+  display:none;flex-shrink:0;
+}
+.bnav-item{
+  flex:1;padding:8px 4px 10px;display:flex;flex-direction:column;
+  align-items:center;gap:3px;cursor:pointer;
+}
+.bnav-item .b-icon{font-size:20px;}
+.bnav-item .b-lbl{font-size:9px;font-weight:700;color:var(--muted);}
+.bnav-item.active .b-lbl{color:var(--accent);}
+.bnav-bar{width:20px;height:2px;border-radius:9999px;margin-bottom:2px;}
+.bnav-item.active .bnav-bar{background:var(--accent);}
+
+/* ── content area ── */
+#content{flex:1;overflow:hidden;display:flex;}
+.view{display:none;flex:1;flex-direction:column;overflow:hidden;}
+.view.active{display:flex;}
+
+/* ── desktop header strip ── */
+.desk-header{
+  background:var(--grad);padding:20px 24px 16px;flex-shrink:0;
+}
+.desk-header .greeting{font-size:11px;color:rgba(255,255,255,.65);margin-bottom:2px;}
+.desk-header .page-title{font-size:22px;font-weight:800;color:#fff;margin-bottom:0;}
+
+/* ── scrollable body ── */
+.view-body{flex:1;overflow-y:auto;padding:16px;}
+.view-body::-webkit-scrollbar{width:4px;}
+.view-body::-webkit-scrollbar-thumb{background:#2d2d3d;border-radius:4px;}
+
+/* ── stat cards ── */
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;}
+.stat-card{background:var(--surface);border-radius:10px;padding:14px;border:1px solid var(--border);}
+.stat-card .n{font-size:26px;font-weight:800;line-height:1;}
+.stat-card .l{font-size:11px;color:var(--muted);margin-top:3px;}
+
+/* ── table ── */
+.tbl{background:var(--surface);border-radius:10px;border:1px solid var(--border);overflow:hidden;}
+.tbl-hdr{
+  display:grid;grid-template-columns:2fr 2fr 1.5fr 1fr 36px;
+  padding:8px 14px;font-size:10px;font-weight:700;
+  color:var(--muted);letter-spacing:.06em;
+  background:var(--surface2);border-bottom:1px solid var(--border);
+}
+.tbl-row{
+  display:grid;grid-template-columns:2fr 2fr 1.5fr 1fr 36px;
+  padding:10px 14px;border-bottom:1px solid var(--border);
+  font-size:12px;cursor:pointer;transition:background .12s;align-items:center;
+}
+.tbl-row:last-child{border-bottom:none;}
+.tbl-row:hover{background:#1e1e38;}
+.tbl-row.selected{background:#1e1535;}
+
+/* ── detail panel (desktop) ── */
+#detail-panel{
+  width:280px;flex-shrink:0;background:var(--surface2);
+  border-left:1px solid var(--border);padding:16px;overflow-y:auto;
+  display:none;
+}
+#detail-panel::-webkit-scrollbar{display:none;}
+#detail-panel.open{display:block;}
+
+/* ── badge ── */
+.badge{
+  display:inline-block;padding:3px 8px;border-radius:9999px;
+  font-size:10px;font-weight:700;white-space:nowrap;
+}
+/* ── form elements ── */
+.field-lbl{font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.04em;margin-bottom:3px;}
+.field-input{
+  width:100%;background:var(--bg);border:1px solid var(--border);
+  border-radius:7px;padding:7px 9px;font-size:12px;color:var(--text);
+  outline:none;transition:border .15s;
+}
+.field-input:focus{border-color:var(--accent);}
+select.field-input{cursor:pointer;}
+textarea.field-input{resize:vertical;min-height:64px;}
+.btn{
+  width:100%;padding:9px;border:none;border-radius:8px;
+  font-size:12px;font-weight:700;cursor:pointer;transition:opacity .15s;
+}
+.btn:hover{opacity:.88;}
+.btn-primary{background:var(--grad);color:#fff;}
+.btn-danger{background:transparent;border:1px solid #2d1010;color:#ef4444;}
+
+/* ── mobile cards ── */
+.lead-card{
+  background:var(--surface);border-radius:12px;padding:12px;
+  display:flex;align-items:center;gap:10px;cursor:pointer;
+  border:1px solid var(--border);transition:background .12s;margin-bottom:8px;
+}
+.lead-card:hover{background:#1e1e38;}
+.avatar{
+  width:38px;height:38px;border-radius:50%;background:#1e1535;
+  display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;
+}
+.section-lbl{font-size:10px;font-weight:700;color:#475569;letter-spacing:.06em;margin:8px 0 6px;}
+
+/* ── mobile header stats row ── */
+.mobile-hdr{background:var(--grad);padding:16px 14px 14px;flex-shrink:0;}
+.mobile-hdr .greeting{font-size:10px;color:rgba(255,255,255,.65);}
+.mobile-hdr .page-title{font-size:20px;font-weight:800;color:#fff;margin-bottom:10px;}
+.mstats{display:flex;gap:6px;}
+.mstat{flex:1;background:rgba(255,255,255,.15);border-radius:8px;padding:6px;text-align:center;}
+.mstat .n{font-size:20px;font-weight:800;color:#fff;}
+.mstat .l{font-size:8px;color:rgba(255,255,255,.65);}
+
+/* ── FAB ── */
+.fab{
+  position:fixed;bottom:70px;right:16px;width:46px;height:46px;
+  background:var(--grad);border-radius:50%;display:none;
+  align-items:center;justify-content:center;font-size:22px;color:#fff;
+  box-shadow:0 4px 16px rgba(124,58,237,.55);cursor:pointer;
+  z-index:50;border:none;
+}
+
+/* ── Calendar ── */
+.cal-week{
+  display:flex;gap:4px;padding:10px 14px;background:var(--surface2);
+  border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.cal-day{
+  flex:1;text-align:center;padding:6px 2px;border-radius:8px;
+  cursor:pointer;transition:background .12s;
+}
+.cal-day:hover{background:var(--surface);}
+.cal-day.today{background:rgba(124,58,237,.22);}
+.cal-day.selected{background:#1e1535;}
+.cal-day .d-name{font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;}
+.cal-day .d-num{font-size:17px;font-weight:800;color:#94a3b8;}
+.cal-day.today .d-num{color:var(--accent);}
+.cal-day.selected .d-num{color:#fff;}
+.cal-dot{width:4px;height:4px;border-radius:50%;margin:2px auto 0;}
+
+.appt-row{
+  background:var(--surface);border-radius:10px;padding:10px 12px;
+  display:flex;align-items:center;gap:10px;
+  border-left:3px solid;border:1px solid var(--border);
+  border-left-width:3px;margin-bottom:6px;cursor:pointer;transition:background .12s;
+}
+.appt-row:hover{background:#1e1e38;}
+.appt-time{font-size:12px;font-weight:800;color:#94a3b8;width:38px;flex-shrink:0;}
+
+/* ── Config ── */
+.cfg-block{background:var(--surface);border-radius:10px;border:1px solid var(--border);overflow:hidden;margin-bottom:12px;}
+.cfg-block-hdr{padding:9px 14px;font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.06em;background:var(--surface2);border-bottom:1px solid var(--border);}
+.cfg-row{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border);}
+.cfg-row:last-child{border-bottom:none;}
+.cfg-key{font-size:12px;font-weight:500;}
+.cfg-val{font-size:11px;color:var(--muted);}
+.toggle-wrap{display:flex;align-items:center;gap:8px;}
+.toggle{
+  width:34px;height:19px;border-radius:9999px;
+  background:#2d2d3d;position:relative;cursor:pointer;
+  transition:background .2s;border:none;flex-shrink:0;
+}
+.toggle.on{background:#7c3aed;}
+.toggle::after{
+  content:'';position:absolute;top:2px;left:2px;
+  width:15px;height:15px;border-radius:50%;background:#fff;
+  transition:transform .2s;
+}
+.toggle.on::after{transform:translateX(15px);}
+.add-row{padding:8px 14px;}
+.add-dashed{
+  width:100%;border:1px dashed #7c3aed;background:#1e1535;
+  border-radius:7px;padding:7px;font-size:11px;color:var(--accent);
+  font-weight:700;cursor:pointer;transition:opacity .15s;
+}
+.add-dashed:hover{opacity:.8;}
+.treat-row{
+  display:flex;align-items:center;gap:8px;padding:8px 14px;
+  border-bottom:1px solid var(--border);
+}
+.treat-row:last-of-type{border-bottom:none;}
+.horario-grid{display:flex;gap:4px;padding:10px 14px;}
+.day-col{
+  flex:1;background:#1e1535;border-radius:6px;padding:5px;
+  text-align:center;cursor:pointer;transition:background .12s;
+}
+.day-col.closed{background:var(--bg);opacity:.4;}
+.day-col .dn{font-size:9px;font-weight:700;color:var(--accent);}
+.day-col.closed .dn{color:var(--muted);}
+.day-col .dh{font-size:8px;color:#94a3b8;margin-top:2px;}
+
+/* ── Modal ── */
+.modal-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.65);
+  display:flex;align-items:center;justify-content:center;
+  z-index:100;padding:16px;
+}
+.modal{
+  background:var(--surface);border-radius:14px;
+  width:100%;max-width:440px;overflow:hidden;
+  box-shadow:0 24px 60px rgba(0,0,0,.6);
+}
+.modal-hdr{background:var(--grad);padding:14px 16px;font-size:15px;font-weight:800;color:#fff;}
+.modal-body{padding:16px;display:flex;flex-direction:column;gap:10px;}
+.modal-footer{padding:0 16px 16px;display:flex;gap:8px;}
+
+/* ── toast ── */
+#toast{
+  position:fixed;bottom:80px;left:50%;transform:translateX(-50%);
+  background:#7c3aed;color:#fff;padding:9px 18px;border-radius:9999px;
+  font-size:12px;font-weight:700;pointer-events:none;
+  opacity:0;transition:opacity .25s;z-index:200;white-space:nowrap;
+}
+#toast.show{opacity:1;}
+
+/* ── responsive breakpoint ── */
+@media(max-width:768px){
+  #sidebar{display:none;}
+  #topbar{display:flex;}
+  #bottom-nav{display:flex;}
+  .fab{display:flex;}
+  .stats-grid{grid-template-columns:repeat(2,1fr);}
+  .tbl-hdr,.tbl-row{grid-template-columns:2fr 1.5fr 1fr 36px;}
+  .tbl-hdr .col-date,.tbl-row .col-date{display:none;}
+  #detail-panel{display:none!important;}
+  .desk-header{display:none;}
+  .mobile-hdr{display:block;}
+  .view-body{padding:12px;}
+}
+@media(min-width:769px){
+  .mobile-hdr{display:none;}
+  .fab{display:none!important;}
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- top bar móvil -->
+  <div id="topbar">
+    <span class="brand">💅 <span id="topbar-clinic-name">Clínica</span></span>
+    <button onclick="openModal('nueva-cita')" style="background:rgba(255,255,255,.2);border:none;border-radius:8px;padding:6px 12px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;">＋ Cita</button>
+  </div>
+
+  <div id="main-area">
+    <!-- sidebar desktop -->
+    <div id="sidebar">
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;margin-bottom:10px;">
+        <div style="width:24px;height:24px;background:var(--grad);border-radius:6px;flex-shrink:0;"></div>
+        <span id="sidebar-clinic-name" style="font-size:13px;font-weight:800;color:var(--text);">Clínica</span>
+      </div>
+      <div class="sidebar-link active" onclick="showView('leads')" id="sl-leads">
+        <span class="icon">📋</span> Leads
+      </div>
+      <div class="sidebar-link" onclick="showView('citas')" id="sl-citas">
+        <span class="icon">📅</span> Citas
+      </div>
+      <div class="sidebar-link" onclick="showView('config')" id="sl-config">
+        <span class="icon">⚙️</span> Config
+      </div>
+      <div class="sidebar-bot-status" style="margin-top:auto;">
+        <div style="font-size:9px;color:#475569;font-weight:700;margin-bottom:8px;">RESUMEN HOY</div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+          <div><div id="sb-citas-hoy" style="font-size:20px;font-weight:800;color:var(--accent);">—</div><div style="font-size:10px;color:var(--muted);">Citas hoy</div></div>
+          <div style="text-align:right;"><div id="sb-pendientes" style="font-size:20px;font-weight:800;color:#f59e0b;">—</div><div style="font-size:10px;color:var(--muted);">Pendientes</div></div>
+        </div>
+        <div style="background:#1e1535;border-radius:6px;padding:7px 9px;display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <div style="font-size:10px;color:var(--accent);font-weight:700;">Bot WhatsApp</div>
+            <div id="bot-status-text" style="font-size:11px;color:#34d399;">● Activo</div>
+          </div>
+          <button class="toggle on" id="bot-toggle" onclick="toggleBot(this)"></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- content -->
+    <div id="content">
+
+      <!-- ══════════ LEADS ══════════ -->
+      <div class="view active" id="view-leads">
+        <!-- desktop header -->
+        <div class="desk-header">
+          <div class="greeting" id="leads-greeting">Buenos días</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <div class="page-title">Leads</div>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input id="search-input" type="text" placeholder="Buscar..." onkeyup="debounceSearch()" style="background:rgba(255,255,255,.15);border:none;border-radius:8px;padding:7px 12px;color:#fff;font-size:12px;outline:none;width:180px;" />
+              <select id="estado-filter" onchange="loadLeads()" style="background:rgba(255,255,255,.15);border:none;border-radius:8px;padding:7px 10px;color:#fff;font-size:12px;outline:none;cursor:pointer;">
+                <option value="">Todos</option>
+                <option value="pendiente">Pendientes</option>
+                <option value="en_conversacion">En chat</option>
+                <option value="confirmado">Confirmados</option>
+                <option value="completado">Completados</option>
+                <option value="cancelado">Cancelados</option>
+              </select>
+              <button onclick="openModal('nueva-cita')" style="background:rgba(255,255,255,.2);border:none;border-radius:8px;padding:7px 14px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;">＋ Nuevo lead</button>
+            </div>
+          </div>
+        </div>
+        <!-- mobile header -->
+        <div class="mobile-hdr">
+          <div class="greeting">Buenos días 👋</div>
+          <div class="page-title">Mi Clínica</div>
+          <div class="mstats">
+            <div class="mstat"><div id="ms-total" class="n">—</div><div class="l">Leads</div></div>
+            <div class="mstat"><div id="ms-conf" class="n" style="color:#34d399;">—</div><div class="l">Confirmadas</div></div>
+            <div class="mstat"><div id="ms-pend" class="n" style="color:#f59e0b;">—</div><div class="l">Pendientes</div></div>
+          </div>
+        </div>
+
+        <div style="display:flex;flex:1;overflow:hidden;">
+          <div class="view-body" style="flex:1;">
+            <!-- desktop stats -->
+            <div class="stats-grid" id="stats-grid" style="display:none;">
+              <div class="stat-card"><div class="n" id="st-total">—</div><div class="l">Total leads</div></div>
+              <div class="stat-card"><div class="n" id="st-conf" style="color:#34d399;">—</div><div class="l">Confirmadas</div></div>
+              <div class="stat-card"><div class="n" id="st-chat" style="color:#a78bfa;">—</div><div class="l">En proceso</div></div>
+              <div class="stat-card"><div class="n" id="st-comp" style="color:#475569;">—</div><div class="l">Completadas</div></div>
+            </div>
+            <!-- desktop table -->
+            <div class="tbl" id="leads-table" style="display:none;">
+              <div class="tbl-hdr">
+                <div>NOMBRE</div><div>TRATAMIENTO</div>
+                <div class="col-date">CITA</div><div>ESTADO</div><div></div>
+              </div>
+              <div id="leads-tbody"></div>
+            </div>
+            <!-- mobile cards -->
+            <div id="leads-cards"></div>
+            <div id="leads-empty" style="display:none;text-align:center;padding:40px 0;color:var(--muted);font-size:13px;">Sin leads todavía</div>
+          </div>
+          <!-- detail panel desktop -->
+          <div id="detail-panel">
+            <div id="detail-content" style="font-size:12px;color:var(--muted);text-align:center;padding-top:60px;">
+              Selecciona un lead para ver el detalle
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════ CITAS ══════════ -->
+      <div class="view" id="view-citas">
+        <div class="desk-header">
+          <div class="greeting">Agenda</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <div class="page-title" id="cal-month-title">Mayo 2026</div>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <button onclick="weekOffset--;buildCalendar()" style="background:rgba(255,255,255,.15);border:none;border-radius:8px;padding:6px 11px;color:#fff;font-size:14px;cursor:pointer;">‹</button>
+              <button onclick="weekOffset=0;buildCalendar()" style="background:rgba(255,255,255,.15);border:none;border-radius:8px;padding:6px 11px;color:#fff;font-size:11px;font-weight:700;cursor:pointer;">Hoy</button>
+              <button onclick="weekOffset++;buildCalendar()" style="background:rgba(255,255,255,.15);border:none;border-radius:8px;padding:6px 11px;color:#fff;font-size:14px;cursor:pointer;">›</button>
+              <button onclick="openModal('nueva-cita')" style="background:rgba(255,255,255,.2);border:none;border-radius:8px;padding:7px 14px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;">＋ Nueva cita</button>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:12px;">
+            <div class="mstat" style="flex:none;padding:7px 14px;"><div id="cal-week-total" class="n">—</div><div class="l">Esta semana</div></div>
+            <div class="mstat" style="flex:none;padding:7px 14px;"><div id="cal-today-total" class="n">—</div><div class="l">Hoy</div></div>
+            <div class="mstat" style="flex:none;padding:7px 14px;"><div id="cal-tomorrow-total" class="n">—</div><div class="l">Mañana</div></div>
+          </div>
+        </div>
+        <div class="mobile-hdr">
+          <div class="greeting">Agenda</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <div class="page-title" style="margin-bottom:0;" id="cal-month-title-m">Mayo 2026</div>
+            <div style="display:flex;gap:4px;">
+              <button onclick="weekOffset--;buildCalendar()" style="background:rgba(255,255,255,.15);border:none;border-radius:6px;padding:5px 8px;color:#fff;font-size:13px;cursor:pointer;">‹</button>
+              <button onclick="weekOffset=0;buildCalendar()" style="background:rgba(255,255,255,.15);border:none;border-radius:6px;padding:5px 8px;color:#fff;font-size:10px;font-weight:700;cursor:pointer;">Hoy</button>
+              <button onclick="weekOffset++;buildCalendar()" style="background:rgba(255,255,255,.15);border:none;border-radius:6px;padding:5px 8px;color:#fff;font-size:13px;cursor:pointer;">›</button>
+            </div>
+          </div>
+          <div class="mstats">
+            <div class="mstat"><div id="cal-week-total-m" class="n">—</div><div class="l">Semana</div></div>
+            <div class="mstat"><div id="cal-today-total-m" class="n">—</div><div class="l">Hoy</div></div>
+            <div class="mstat"><div id="cal-tomorrow-total-m" class="n">—</div><div class="l">Mañana</div></div>
+          </div>
+        </div>
+        <div class="cal-week" id="cal-week-strip"></div>
+        <div class="view-body" id="cal-body"></div>
+      </div>
+
+      <!-- ══════════ CONFIG ══════════ -->
+      <div class="view" id="view-config">
+        <div class="desk-header">
+          <div class="greeting">Panel de control</div>
+          <div class="page-title">Configuración</div>
+        </div>
+        <div class="mobile-hdr">
+          <div class="greeting">Panel de control</div>
+          <div class="page-title">Configuración</div>
+        </div>
+        <div class="view-body" id="config-body"></div>
+      </div>
+
+    </div><!-- /content -->
+  </div><!-- /main-area -->
+
+  <!-- bottom nav móvil -->
+  <div id="bottom-nav">
+    <div class="bnav-item active" onclick="showView('leads')" id="bn-leads">
+      <div class="bnav-bar"></div><div class="b-icon">📋</div><div class="b-lbl">Leads</div>
+    </div>
+    <div class="bnav-item" onclick="showView('citas')" id="bn-citas">
+      <div class="bnav-bar"></div><div class="b-icon">📅</div><div class="b-lbl">Citas</div>
+    </div>
+    <div class="bnav-item" onclick="showView('config')" id="bn-config">
+      <div class="bnav-bar"></div><div class="b-icon">⚙️</div><div class="b-lbl">Config</div>
+    </div>
+  </div>
+</div>
+
+<!-- FAB móvil -->
+<button class="fab" onclick="openModal('nueva-cita')">＋</button>
+
+<!-- Modal container -->
+<div id="modal-container"></div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+'use strict';
+// ─── Estado global ─────────────────────────────────────────────────────────────
+let currentView = 'leads';
+let currentLeadId = null;
+let weekOffset = 0;
+let selectedCalDay = null;
+let allCitas = [];
+let configData = {};
+let searchTimeout = null;
+
+const TREAT_COLORS = {
+  'botox':'#a78bfa','toxina':'#a78bfa',
+  'relleno':'#f59e0b','labios':'#f59e0b',
+  'láser':'#34d399','laser':'#34d399','peeling':'#34d399',
+  'facial':'#38bdf8','hidrat':'#38bdf8','limpieza':'#38bdf8',
+  'meso':'#db2777',
+};
+function treatColor(t) {
+  if (!t) return '#64748b';
+  const tl = t.toLowerCase();
+  for (const [k,v] of Object.entries(TREAT_COLORS)) if (tl.includes(k)) return v;
+  return '#db2777';
+}
+
+const ESTADO_STYLE = {
+  pendiente:      {bg:'#2d1f00',color:'#f59e0b',label:'⏳ Pendiente'},
+  en_conversacion:{bg:'#1e1535',color:'#a78bfa',label:'💬 En chat'},
+  confirmado:     {bg:'#1e3a2f',color:'#34d399',label:'✓ Confirmada'},
+  completado:     {bg:'#1e2030',color:'#475569',label:'✓ Completada'},
+  cancelado:      {bg:'#2d1010',color:'#ef4444',label:'✕ Cancelada'},
+};
+function estadoBadge(estado) {
+  const s = ESTADO_STYLE[estado] || ESTADO_STYLE.pendiente;
+  return `<span class="badge" style="background:${s.bg};color:${s.color};">${s.label}</span>`;
+}
+
+// ─── Toast ─────────────────────────────────────────────────────────────────────
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+// ─── Fetch helpers ─────────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  const opts = { method, headers: {'Content-Type':'application/json'} };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+const GET  = p => api('GET', p);
+const POST = (p,b) => api('POST', p, b);
+const PUT  = (p,b) => api('PUT', p, b);
+const DEL  = p => api('DELETE', p);
+
+// ─── Navegación ────────────────────────────────────────────────────────────────
+function showView(name) {
+  currentView = name;
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById('view-'+name).classList.add('active');
+  ['leads','citas','config'].forEach(n => {
+    document.getElementById('sl-'+n)?.classList.toggle('active', n===name);
+    const bn = document.getElementById('bn-'+n);
+    if (bn) {
+      bn.classList.toggle('active', n===name);
+      bn.querySelector('.bnav-bar').style.background = n===name ? 'var(--accent)' : 'transparent';
+    }
+  });
+  if (name==='leads') loadLeads();
+  if (name==='citas') { buildCalendar(); loadCitas(); }
+  if (name==='config') renderConfig();
+}
+
+// ─── Leads ─────────────────────────────────────────────────────────────────────
+function debounceSearch() {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(loadLeads, 300);
+}
+
+async function loadLeads() {
+  const search = document.getElementById('search-input')?.value || '';
+  const estado = document.getElementById('estado-filter')?.value || '';
+  let url = '/api/leads?limit=100';
+  if (search) url += '&search='+encodeURIComponent(search);
+  if (estado) url += '&estado='+encodeURIComponent(estado);
+
+  let leads = [];
+  try { leads = await GET(url); } catch(e) { console.error(e); }
+
+  // Stats
+  try {
+    const s = await GET('/api/stats');
+    document.getElementById('st-total').textContent  = s.total;
+    document.getElementById('st-conf').textContent   = s.confirmados;
+    document.getElementById('st-chat').textContent   = s.enChat;
+    document.getElementById('st-comp').textContent   = s.completados;
+    document.getElementById('ms-total').textContent  = s.total;
+    document.getElementById('ms-conf').textContent   = s.confirmados;
+    document.getElementById('ms-pend').textContent   = s.enChat;
+    document.getElementById('sb-citas-hoy').textContent   = s.citasHoy;
+    document.getElementById('sb-pendientes').textContent  = s.enChat;
+    document.getElementById('cal-today-total').textContent   = s.citasHoy;
+    document.getElementById('cal-today-total-m').textContent = s.citasHoy;
+    document.getElementById('cal-tomorrow-total').textContent   = s.citasManana;
+    document.getElementById('cal-tomorrow-total-m').textContent = s.citasManana;
+  } catch(e) {}
+
+  // Responsive: mostrar tabla o tarjetas
+  const isDesktop = window.innerWidth > 768;
+  document.getElementById('stats-grid').style.display  = isDesktop ? 'grid' : 'none';
+  document.getElementById('leads-table').style.display = isDesktop ? 'block' : 'none';
+  document.getElementById('leads-cards').style.display = isDesktop ? 'none' : 'block';
+
+  const empty = document.getElementById('leads-empty');
+  empty.style.display = leads.length ? 'none' : 'block';
+
+  if (isDesktop) renderLeadsTable(leads);
+  else renderLeadsCards(leads);
+}
+
+function renderLeadsTable(leads) {
+  const tbody = document.getElementById('leads-tbody');
+  tbody.innerHTML = leads.map(l => `
+    <div class="tbl-row ${currentLeadId===l.id?'selected':''}" onclick="selectLead(${l.id})">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <div class="avatar" style="width:30px;height:30px;font-size:13px;">👤</div>
+        <div>
+          <div style="font-size:12px;font-weight:700;">${esc(l.nombre||'Sin nombre')}</div>
+          <div style="font-size:10px;color:var(--muted);">${esc(l.telefono||'')}</div>
+        </div>
+      </div>
+      <div style="font-size:12px;">${esc(l.tratamiento||'—')}</div>
+      <div class="col-date" style="font-size:11px;color:var(--muted);">${formatFecha(l.fecha_cita,l.hora_cita)}</div>
+      <div>${estadoBadge(l.estado_cita)}</div>
+      <div style="color:var(--accent);font-size:16px;text-align:center;">›</div>
+    </div>
+  `).join('');
+}
+
+function renderLeadsCards(leads) {
+  const hoy = toDateStr(new Date());
+  const manana = toDateStr(new Date(Date.now()+86400000));
+  const groups = { hoy:[], semana:[], anteriores:[] };
+  for (const l of leads) {
+    if (l.fecha_cita === hoy) groups.hoy.push(l);
+    else if (l.fecha_cita > hoy) groups.semana.push(l);
+    else groups.anteriores.push(l);
+  }
+  let html = '';
+  if (groups.hoy.length) {
+    html += '<div class="section-lbl">HOY</div>';
+    html += groups.hoy.map(leadCard).join('');
+  }
+  if (groups.semana.length) {
+    html += '<div class="section-lbl">PRÓXIMAS</div>';
+    html += groups.semana.map(leadCard).join('');
+  }
+  if (groups.anteriores.length) {
+    html += '<div class="section-lbl">ANTERIORES</div>';
+    html += groups.anteriores.map(leadCard).join('');
+  }
+  if (!html) html = '';
+  document.getElementById('leads-cards').innerHTML = html;
+}
+
+function leadCard(l) {
+  return `
+    <div class="lead-card" onclick="selectLead(${l.id})">
+      <div class="avatar">👤</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;font-weight:700;">${esc(l.nombre||'Sin nombre')}</div>
+        <div style="font-size:11px;color:var(--muted);">${esc(l.tratamiento||'—')} · ${formatFecha(l.fecha_cita,l.hora_cita)}</div>
+      </div>
+      ${estadoBadge(l.estado_cita)}
+    </div>`;
+}
+
+async function selectLead(id) {
+  currentLeadId = id;
+  // resaltar fila
+  document.querySelectorAll('.tbl-row').forEach(r => r.classList.toggle('selected', r.onclick?.toString().includes(`(${id})`)));
+  let lead;
+  try { lead = await GET('/api/leads/'+id); } catch(e) { return; }
+  const isDesktop = window.innerWidth > 768;
+  if (isDesktop) {
+    const panel = document.getElementById('detail-panel');
+    panel.classList.add('open');
+    document.getElementById('detail-content').innerHTML = detailHTML(lead);
+  } else {
+    openModal('lead-detail', lead);
+  }
+}
+
+function detailHTML(l) {
+  return `
+    <div style="background:var(--grad);border-radius:10px;padding:12px;margin-bottom:14px;">
+      <div style="font-size:15px;font-weight:800;color:#fff;">${esc(l.nombre||'Sin nombre')}</div>
+      <div style="font-size:11px;color:rgba(255,255,255,.7);margin-top:2px;">${esc(l.telefono||'')}</div>
+      <div style="margin-top:8px;">${estadoBadge(l.estado_cita)}</div>
+    </div>
+    <form onsubmit="saveLead(event,${l.id})" style="display:flex;flex-direction:column;gap:9px;">
+      <div>
+        <div class="field-lbl">NOMBRE</div>
+        <input class="field-input" name="nombre" value="${esc(l.nombre||'')}" placeholder="Nombre">
+      </div>
+      <div>
+        <div class="field-lbl">TRATAMIENTO</div>
+        <input class="field-input" name="tratamiento" value="${esc(l.tratamiento||'')}" placeholder="Tratamiento">
+      </div>
+      <div>
+        <div class="field-lbl">ESTADO</div>
+        <select class="field-input" name="estado_cita">
+          ${['pendiente','en_conversacion','confirmado','completado','cancelado'].map(e =>
+            `<option value="${e}" ${l.estado_cita===e?'selected':''}>${ESTADO_STYLE[e]?.label||e}</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div>
+          <div class="field-lbl">FECHA CITA</div>
+          <input class="field-input" name="fecha_cita" type="date" value="${l.fecha_cita||''}">
+        </div>
+        <div>
+          <div class="field-lbl">HORA</div>
+          <input class="field-input" name="hora_cita" type="time" value="${l.hora_cita||''}">
+        </div>
+      </div>
+      <div>
+        <div class="field-lbl">NOTAS INTERNAS</div>
+        <textarea class="field-input" name="notas" placeholder="Notas...">${esc(l.notas||'')}</textarea>
+      </div>
+      <button type="submit" class="btn btn-primary">Guardar cambios</button>
+      <button type="button" class="btn btn-danger" onclick="deleteLead(${l.id})">🗑 Eliminar lead</button>
+    </form>
+  `;
+}
+
+async function saveLead(e, id) {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const body = Object.fromEntries(f.entries());
+  try {
+    const updated = await PUT('/api/leads/'+id, body);
+    toast('✓ Guardado');
+    loadLeads();
+    if (window.innerWidth > 768) {
+      document.getElementById('detail-content').innerHTML = detailHTML(updated);
+    }
+  } catch(err) { toast('Error al guardar'); }
+}
+
+async function deleteLead(id) {
+  if (!confirm('¿Eliminar este lead? No se puede deshacer.')) return;
+  try {
+    await DEL('/api/leads/'+id);
+    toast('Lead eliminado');
+    currentLeadId = null;
+    document.getElementById('detail-panel').classList.remove('open');
+    document.getElementById('detail-content').innerHTML = 'Selecciona un lead para ver el detalle';
+    closeModal();
+    loadLeads();
+  } catch(e) { toast('Error al eliminar'); }
+}
+
+// ─── Calendario ────────────────────────────────────────────────────────────────
+const DAY_NAMES = ['DOM','LUN','MAR','MIÉ','JUE','VIE','SÁB'];
+const MONTH_NAMES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+function getWeekStart(offset) {
+  const now = new Date();
+  const day = now.getDay();
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - (day===0?6:day-1) + offset*7);
+  monday.setHours(0,0,0,0);
+  return monday;
+}
+
+function toDateStr(d) {
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+
+function buildCalendar() {
+  const monday = getWeekStart(weekOffset);
+  const sunday = new Date(monday); sunday.setDate(monday.getDate()+6);
+  const todayStr = toDateStr(new Date());
+  const title = `${MONTH_NAMES[monday.getMonth()]} ${monday.getFullYear()}`;
+  document.getElementById('cal-month-title').textContent = title;
+  document.getElementById('cal-month-title-m').textContent = title;
+
+  const strip = document.getElementById('cal-week-strip');
+  strip.innerHTML = '';
+  for (let i=0;i<7;i++) {
+    const d = new Date(monday); d.setDate(monday.getDate()+i);
+    const ds = toDateStr(d);
+    const isToday = ds === todayStr;
+    const isSel   = ds === selectedCalDay;
+    const div = document.createElement('div');
+    div.className = 'cal-day'+(isToday?' today':'')+(isSel?' selected':'');
+    div.innerHTML = `<div class="d-name">${DAY_NAMES[d.getDay()]}</div><div class="d-num">${d.getDate()}</div><div class="cal-dot" style="background:transparent;" id="dot-${ds}"></div>`;
+    div.onclick = () => { selectedCalDay=ds; buildCalendar(); renderDayAppts(ds); };
+    strip.appendChild(div);
+  }
+
+  loadCitas(toDateStr(monday), toDateStr(sunday));
+}
+
+async function loadCitas(desde, hasta) {
+  if (!desde) {
+    const monday = getWeekStart(weekOffset);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate()+6);
+    desde = toDateStr(monday); hasta = toDateStr(sunday);
+  }
+  try {
+    allCitas = await GET(`/api/citas?desde=${desde}&hasta=${hasta}`);
+    // week total
+    const wt = allCitas.length;
+    document.getElementById('cal-week-total').textContent   = wt;
+    document.getElementById('cal-week-total-m').textContent = wt;
+    // dots
+    const byDay = {};
+    for (const c of allCitas) byDay[c.fecha_cita] = (byDay[c.fecha_cita]||0)+1;
+    for (const [ds,cnt] of Object.entries(byDay)) {
+      const dot = document.getElementById('dot-'+ds);
+      if (dot) { dot.style.background = '#a78bfa'; }
+    }
+    // render selected or today
+    const sel = selectedCalDay || toDateStr(new Date());
+    renderDayAppts(sel);
+  } catch(e) { console.error(e); }
+}
+
+function renderDayAppts(dateStr) {
+  selectedCalDay = dateStr;
+  const day = new Date(dateStr+'T12:00:00');
+  const label = `${DAY_NAMES[day.getDay()]} ${day.getDate()} ${MONTH_NAMES[day.getMonth()]}`;
+  const appts = allCitas.filter(c => c.fecha_cita === dateStr)
+    .sort((a,b) => (a.hora_cita||'').localeCompare(b.hora_cita||''));
+
+  let html = `<div class="section-lbl" style="margin-bottom:10px;">${label.toUpperCase()}${appts.length===0?' — Sin citas':''}</div>`;
+  if (appts.length === 0) {
+    html += `<div style="text-align:center;padding:30px 0;color:var(--muted);font-size:13px;">Día libre 🎉</div>`;
+  } else {
+    html += appts.map(c => {
+      const color = treatColor(c.tratamiento);
+      return `
+        <div class="appt-row" style="border-left-color:${color};" onclick="selectLead(${c.id})">
+          <div class="appt-time">${c.hora_cita||'—'}</div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:13px;font-weight:700;">${esc(c.nombre||'Sin nombre')}</div>
+            <div style="font-size:11px;color:var(--muted);">${esc(c.tratamiento||'—')}</div>
+          </div>
+          ${estadoBadge(c.estado_cita)}
+        </div>`;
+    }).join('');
+  }
+  document.getElementById('cal-body').innerHTML = html;
+}
+
+// ─── Config ─────────────────────────────────────────────────────────────────────
+async function loadConfig() {
+  try { configData = await GET('/api/config'); } catch(e) {}
+}
+
+function renderConfig() {
+  loadConfig().then(() => {
+    const clinica = configData.clinica_info || {};
+    const extras  = configData.info_adicional || [];
+    const treats  = configData.servicios || [];
+    const horario = configData.horario || {};
+    const minRes  = configData.minutos_resena ?? 30;
+    const hRec    = configData.horas_recordatorio ?? 24;
+    const botOn   = configData.bot_activo !== false;
+
+    const dias = ['lunes','martes','miercoles','jueves','viernes','sabado','domingo'];
+    const dNames = ['L','M','X','J','V','S','D'];
+
+    document.getElementById('config-body').innerHTML = `
+      <!-- Clínica -->
+      <div class="cfg-block">
+        <div class="cfg-block-hdr">🏥 INFORMACIÓN DE LA CLÍNICA</div>
+        <div style="padding:14px;display:flex;flex-direction:column;gap:10px;">
+          <div><div class="field-lbl">NOMBRE</div><input class="field-input" id="cfg-nombre" value="${esc(clinica.nombre||'')}" placeholder="Nombre de la clínica"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <div><div class="field-lbl">TELÉFONO</div><input class="field-input" id="cfg-telefono" value="${esc(clinica.telefono||'')}" placeholder="+34 900 000 000"></div>
+            <div><div class="field-lbl">EMAIL</div><input class="field-input" id="cfg-email" value="${esc(clinica.email||'')}" placeholder="info@clinica.com"></div>
+          </div>
+          <div><div class="field-lbl">DIRECCIÓN</div><input class="field-input" id="cfg-direccion" value="${esc(clinica.direccion||'')}" placeholder="Calle, ciudad"></div>
+          <div><div class="field-lbl">DESCRIPCIÓN (el bot la usa para presentarse)</div><textarea class="field-input" id="cfg-descripcion" placeholder="Somos una clínica...">${esc(clinica.descripcion||'')}</textarea></div>
+          <div><div class="field-lbl">LINK GOOGLE REVIEWS</div><input class="field-input" id="cfg-review-link" value="${esc(clinica.google_review_link||'')}" placeholder="g.page/r/..."></div>
+          <button class="btn btn-primary" onclick="saveClinica()">Guardar información</button>
+        </div>
+      </div>
+
+      <!-- Info adicional -->
+      <div class="cfg-block">
+        <div class="cfg-block-hdr">📌 INFORMACIÓN ADICIONAL</div>
+        <div id="extras-list">
+          ${extras.map((ex,i) => extraRow(ex,i)).join('')}
+        </div>
+        <div class="add-row"><button class="add-dashed" onclick="addExtra()">+ Añadir información</button></div>
+      </div>
+
+      <!-- Tratamientos -->
+      <div class="cfg-block">
+        <div class="cfg-block-hdr">✨ TRATAMIENTOS</div>
+        <div id="treats-list">
+          ${treats.map((t,i) => treatRow(t,i)).join('')}
+        </div>
+        <div class="add-row"><button class="add-dashed" onclick="addTreat()">+ Añadir tratamiento</button></div>
+      </div>
+
+      <!-- Horario -->
+      <div class="cfg-block">
+        <div class="cfg-block-hdr">🕐 HORARIO POR DÍA</div>
+        <div class="horario-grid">
+          ${dias.map((d,i) => {
+            const h = horario[d];
+            const open = !!h;
+            return `<div class="day-col ${open?'':'closed'}" id="dcol-${d}" onclick="toggleDay('${d}')">
+              <div class="dn">${dNames[i]}</div>
+              <div class="dh" id="dh-${d}">${open?(h.apertura||'10:00')+'–'+(h.cierre||'20:00'):'—'}</div>
+            </div>`;
+          }).join('')}
+        </div>
+        <div style="padding:0 14px 12px;display:flex;gap:8px;align-items:center;">
+          <span style="font-size:11px;color:var(--muted);">Clic en día abierto → editar horas · Clic en día cerrado → abrirlo</span>
+        </div>
+      </div>
+
+      <!-- Automatizaciones -->
+      <div class="cfg-block">
+        <div class="cfg-block-hdr">🤖 AUTOMATIZACIONES</div>
+        <div class="cfg-row">
+          <div><div class="cfg-key">Reseña tras cita</div><div class="cfg-val">Minutos de espera después de la cita</div></div>
+          <input class="field-input" id="cfg-resena" type="number" min="5" max="1440" value="${minRes}" style="width:80px;text-align:center;">
+        </div>
+        <div class="cfg-row">
+          <div><div class="cfg-key">Recordatorio de cita</div><div class="cfg-val">Horas antes de avisar al cliente</div></div>
+          <input class="field-input" id="cfg-recordatorio" type="number" min="1" max="72" value="${hRec}" style="width:80px;text-align:center;">
+        </div>
+        <div class="add-row" style="padding-top:4px;">
+          <button class="btn btn-primary" onclick="saveAutomation()">Guardar tiempos</button>
+        </div>
+      </div>
+
+      <!-- Bot -->
+      <div class="cfg-block" style="margin-bottom:24px;">
+        <div class="cfg-block-hdr">🤖 BOT WHATSAPP</div>
+        <div class="cfg-row" style="border:none;">
+          <div><div class="cfg-key">Bot activo</div><div class="cfg-val">Pausar o reactivar el agente</div></div>
+          <div class="toggle-wrap">
+            <span id="bot-cfg-label" style="font-size:11px;color:${botOn?'#34d399':'#ef4444'};">${botOn?'Activo':'Pausado'}</span>
+            <button class="toggle ${botOn?'on':''}" id="bot-cfg-toggle" onclick="toggleBotConfig(this)"></button>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+}
+
+function extraRow(ex, i) {
+  return `
+    <div class="treat-row" id="extra-row-${i}" style="flex-direction:column;gap:6px;align-items:stretch;">
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input class="field-input" placeholder="Título (ej: Aparcamiento)" value="${esc(ex.titulo||'')}" oninput="extraChanged(${i},'titulo',this.value)" style="font-weight:700;">
+        <button onclick="removeExtra(${i})" style="background:transparent;border:none;color:#ef4444;cursor:pointer;font-size:16px;flex-shrink:0;">✕</button>
+      </div>
+      <textarea class="field-input" placeholder="Información que el bot usará..." oninput="extraChanged(${i},'texto',this.value)">${esc(ex.texto||'')}</textarea>
+    </div>`;
+}
+
+function treatRow(t, i) {
+  return `
+    <div class="treat-row" id="treat-row-${i}">
+      <div style="flex:2;min-width:0;font-size:12px;font-weight:700;">${esc(t.nombre||'')}</div>
+      <div style="font-size:11px;color:var(--muted);margin-right:8px;">${t.duracion_min||0} min · ${t.precio||0}€</div>
+      <button onclick="editTreat(${i})" style="background:transparent;border:none;color:var(--accent);cursor:pointer;font-size:15px;">✎</button>
+      <button onclick="removeTreat(${i})" style="background:transparent;border:none;color:#ef4444;cursor:pointer;font-size:15px;margin-left:4px;">✕</button>
+    </div>`;
+}
+
+// Config actions
+async function saveClinica() {
+  const info = {
+    nombre: document.getElementById('cfg-nombre').value,
+    telefono: document.getElementById('cfg-telefono').value,
+    email: document.getElementById('cfg-email').value,
+    direccion: document.getElementById('cfg-direccion').value,
+    descripcion: document.getElementById('cfg-descripcion').value,
+    google_review_link: document.getElementById('cfg-review-link').value,
+  };
+  try { await PUT('/api/config/clinica_info', {valor:info}); toast('✓ Info guardada'); } catch(e) { toast('Error'); }
+}
+
+async function saveAutomation() {
+  try {
+    await PUT('/api/config/minutos_resena', {valor: Number(document.getElementById('cfg-resena').value)});
+    await PUT('/api/config/horas_recordatorio', {valor: Number(document.getElementById('cfg-recordatorio').value)});
+    toast('✓ Tiempos guardados');
+  } catch(e) { toast('Error'); }
+}
+
+function extraChanged(i, key, val) {
+  if (!configData.info_adicional) configData.info_adicional=[];
+  if (!configData.info_adicional[i]) configData.info_adicional[i]={};
+  configData.info_adicional[i][key] = val;
+  saveExtras();
+}
+async function saveExtras() {
+  try { await PUT('/api/config/info_adicional', {valor: configData.info_adicional||[]}); } catch(e){}
+}
+function addExtra() {
+  if (!configData.info_adicional) configData.info_adicional=[];
+  configData.info_adicional.push({titulo:'',texto:''});
+  const list = document.getElementById('extras-list');
+  const i = configData.info_adicional.length-1;
+  const div = document.createElement('div');
+  div.innerHTML = extraRow({titulo:'',texto:''},i);
+  list.appendChild(div.firstElementChild);
+  saveExtras();
+}
+function removeExtra(i) {
+  if (!configData.info_adicional) return;
+  configData.info_adicional.splice(i,1);
+  renderConfig();
+  saveExtras();
+}
+
+function editTreat(i) {
+  const t = (configData.servicios||[])[i]||{};
+  openModal('edit-treat',{index:i,...t});
+}
+function addTreat() { openModal('edit-treat',{index:-1,nombre:'',duracion_min:45,precio:0}); }
+function removeTreat(i) {
+  if (!confirm('¿Eliminar tratamiento?')) return;
+  (configData.servicios||[]).splice(i,1);
+  saveTreats();
+  renderConfig();
+}
+async function saveTreats() {
+  try { await PUT('/api/config/servicios', {valor: configData.servicios||[]}); toast('✓ Tratamientos guardados'); } catch(e){ toast('Error'); }
+}
+
+async function submitHorario(e, dia) {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  if (!configData.horario) configData.horario = {};
+  configData.horario[dia] = { apertura: f.get('apertura'), cierre: f.get('cierre') };
+  await saveHorario();
+  toast('✓ Horario guardado');
+  closeModal();
+  renderConfig();
+}
+
+function closeDay(dia) {
+  if (!configData.horario) return;
+  delete configData.horario[dia];
+  saveHorario();
+  closeModal();
+  renderConfig();
+}
+
+function toggleDay(d) {
+  if (!configData.horario) configData.horario={};
+  if (configData.horario[d]) {
+    // Día abierto → abrir modal para editar o cerrar
+    openModal('edit-horario', { dia: d, ...configData.horario[d] });
+  } else {
+    // Día cerrado → abrir con horas por defecto
+    configData.horario[d] = { apertura: '10:00', cierre: '20:00' };
+    saveHorario();
+    renderConfig();
+  }
+}
+async function saveHorario() {
+  try { await PUT('/api/config/horario', {valor: configData.horario||{}}); } catch(e){}
+}
+
+async function toggleBot(btn) {
+  btn.classList.toggle('on');
+  const on = btn.classList.contains('on');
+  document.getElementById('bot-status-text').textContent = on ? '● Activo' : '● Pausado';
+  document.getElementById('bot-status-text').style.color = on ? '#34d399' : '#ef4444';
+  try { await PUT('/api/config/bot_activo',{valor:on}); } catch(e){}
+}
+async function toggleBotConfig(btn) {
+  btn.classList.toggle('on');
+  const on = btn.classList.contains('on');
+  const lbl = document.getElementById('bot-cfg-label');
+  if (lbl) { lbl.textContent = on?'Activo':'Pausado'; lbl.style.color = on?'#34d399':'#ef4444'; }
+  // sync sidebar toggle
+  const sb = document.getElementById('bot-toggle');
+  if (sb) { on ? sb.classList.add('on') : sb.classList.remove('on'); }
+  document.getElementById('bot-status-text').textContent = on ? '● Activo' : '● Pausado';
+  document.getElementById('bot-status-text').style.color = on ? '#34d399' : '#ef4444';
+  try { await PUT('/api/config/bot_activo',{valor:on}); } catch(e){}
+}
+
+// ─── Modales ───────────────────────────────────────────────────────────────────
+function openModal(type, data={}) {
+  let html = '';
+  if (type === 'nueva-cita') {
+    html = `
+      <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+        <div class="modal">
+          <div class="modal-hdr">＋ Nueva cita manual</div>
+          <form onsubmit="submitNuevaCita(event)">
+            <div class="modal-body">
+              <div><div class="field-lbl">NOMBRE</div><input class="field-input" name="nombre" placeholder="Nombre del cliente" required></div>
+              <div><div class="field-lbl">TELÉFONO</div><input class="field-input" name="telefono" placeholder="+34 600 000 000"></div>
+              <div><div class="field-lbl">TRATAMIENTO</div><input class="field-input" name="tratamiento" placeholder="Botox, Relleno..."></div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                <div><div class="field-lbl">FECHA</div><input class="field-input" name="fecha_cita" type="date" value="${toDateStr(new Date())}"></div>
+                <div><div class="field-lbl">HORA</div><input class="field-input" name="hora_cita" type="time" value="10:00"></div>
+              </div>
+              <div><div class="field-lbl">NOTAS</div><textarea class="field-input" name="notas" placeholder="Notas internas..."></textarea></div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn" style="background:var(--surface2);color:var(--muted);" onclick="closeModal()">Cancelar</button>
+              <button type="submit" class="btn btn-primary">Crear cita</button>
+            </div>
+          </form>
+        </div>
+      </div>`;
+  } else if (type === 'lead-detail') {
+    html = `
+      <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+        <div class="modal" style="max-height:90vh;overflow-y:auto;">
+          <div class="modal-hdr">Detalle del lead</div>
+          <div class="modal-body">${detailHTML(data)}</div>
+        </div>
+      </div>`;
+  } else if (type === 'edit-treat') {
+    html = `
+      <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+        <div class="modal">
+          <div class="modal-hdr">${data.index<0?'Nuevo tratamiento':'Editar tratamiento'}</div>
+          <form onsubmit="submitTreat(event,${data.index})">
+            <div class="modal-body">
+              <div><div class="field-lbl">NOMBRE</div><input class="field-input" name="nombre" value="${esc(data.nombre||'')}" placeholder="Botox" required></div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                <div><div class="field-lbl">DURACIÓN (min)</div><input class="field-input" name="duracion_min" type="number" value="${data.duracion_min||45}" min="5"></div>
+                <div><div class="field-lbl">PRECIO (€)</div><input class="field-input" name="precio" type="number" value="${data.precio||0}" min="0"></div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn" style="background:var(--surface2);color:var(--muted);" onclick="closeModal()">Cancelar</button>
+              <button type="submit" class="btn btn-primary">Guardar</button>
+            </div>
+          </form>
+        </div>
+      </div>`;
+  } else if (type === 'edit-horario') {
+    const diaNames = {lunes:'Lunes',martes:'Martes',miercoles:'Miércoles',jueves:'Jueves',viernes:'Viernes',sabado:'Sábado',domingo:'Domingo'};
+    html = `
+      <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+        <div class="modal">
+          <div class="modal-hdr">🕐 Horario — ${diaNames[data.dia]||data.dia}</div>
+          <form onsubmit="submitHorario(event,'${data.dia}')">
+            <div class="modal-body">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                <div><div class="field-lbl">APERTURA</div><input class="field-input" name="apertura" type="time" value="${data.apertura||'10:00'}" required></div>
+                <div><div class="field-lbl">CIERRE</div><input class="field-input" name="cierre" type="time" value="${data.cierre||'20:00'}" required></div>
+              </div>
+            </div>
+            <div class="modal-footer" style="flex-direction:column;gap:6px;">
+              <button type="submit" class="btn btn-primary">Guardar horas</button>
+              <button type="button" class="btn btn-danger" onclick="closeDay('${data.dia}')">Cerrar este día</button>
+            </div>
+          </form>
+        </div>
+      </div>`;
+  }
+  document.getElementById('modal-container').innerHTML = html;
+}
+
+function closeModal() { document.getElementById('modal-container').innerHTML = ''; }
+
+async function submitNuevaCita(e) {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const body = Object.fromEntries(f.entries());
+  body.origen = 'manual';
+  body.estado_cita = 'confirmado';
+  try {
+    await POST('/api/leads', body);
+    toast('✓ Cita creada');
+    closeModal();
+    loadLeads();
+    if (currentView==='citas') { buildCalendar(); loadCitas(); }
+  } catch(er) { toast('Error al crear'); }
+}
+
+async function submitTreat(e, idx) {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const t = { nombre: f.get('nombre'), duracion_min: Number(f.get('duracion_min')), precio: Number(f.get('precio')) };
+  if (!configData.servicios) configData.servicios=[];
+  if (idx<0) configData.servicios.push(t);
+  else configData.servicios[idx]=t;
+  await saveTreats();
+  closeModal();
+  renderConfig();
+}
+
+// ─── Utilidades ────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function formatFecha(fecha, hora) {
+  if (!fecha) return '—';
+  const hoy = toDateStr(new Date());
+  const man = toDateStr(new Date(Date.now()+86400000));
+  let d = fecha===hoy?'Hoy':fecha===man?'Mañana':fecha;
+  return hora ? `${d} ${hora}` : d;
+}
+
+// ─── Greeting dinámico ─────────────────────────────────────────────────────────
+function setGreeting() {
+  const h = new Date().getHours();
+  const g = h<13?'Buenos días 🌞':h<20?'Buenas tardes 🌅':'Buenas noches 🌙';
+  const el = document.getElementById('leads-greeting');
+  if (el) el.textContent = g;
+}
+
+// ─── Responsive re-render ──────────────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  if (currentView==='leads') loadLeads();
+});
+
+// ─── Clinic name ───────────────────────────────────────────────────────────────
+async function loadClinicName() {
+  try {
+    const cfg = await GET('/api/config');
+    const name = cfg?.clinica_info?.nombre;
+    if (name) {
+      document.getElementById('topbar-clinic-name').textContent = name;
+      document.getElementById('sidebar-clinic-name').textContent = name;
+    }
+    // Sincronizar estado real del bot
+    const botOn = cfg?.bot_activo !== false;
+    const sidebarToggle = document.getElementById('bot-toggle');
+    const statusText = document.getElementById('bot-status-text');
+    if (sidebarToggle) {
+      botOn ? sidebarToggle.classList.add('on') : sidebarToggle.classList.remove('on');
+    }
+    if (statusText) {
+      statusText.textContent = botOn ? '● Activo' : '● Pausado';
+      statusText.style.color = botOn ? '#34d399' : '#ef4444';
+    }
+  } catch(e){}
+}
+
+// ─── Init ──────────────────────────────────────────────────────────────────────
+setGreeting();
+loadClinicName();
+showView('leads');
+</script>
+</body>
+</html>

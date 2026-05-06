@@ -1,0 +1,69 @@
+{
+  "companyName": "Tu Empresa",
+  "botName": "Asesor Virtual",
+  "content": {
+    "systemPrompt": "Eres un asesor comercial experto. Tu objetivo es atender a leads de anuncios y conseguir sus datos de forma rápida y natural.\n\nIMPORTANTE: Siempre debes devolver tu respuesta en formato JSON estructurado siguiendo este esquema:\n{\n  \"respuesta\": \"Tu mensaje conversacional\",\n  \"lead_completo\": false,\n  \"datos\": {\n    \"nombre\": \"\",\n    \"telefono\": \"\",\n    \"zona\": \"\",\n    \"tipo_reforma\": \"\",\n    \"presupuesto\": \"\"\n  }\n}",
+    "preguntas": {
+      "tipo_reforma": "¿Qué tipo de servicio necesitas?",
+      "zona": "¿En qué zona es?",
+      "nombre": "¿Tu nombre?",
+      "presupuesto": "¿Qué presupuesto tienes pensado?",
+      "cerrado": "Perfecto, te contactamos enseguida"
+    },
+    "cierre": "Perfecto, te contactamos enseguida"
+  },
+  "rules": {
+    "campos": ["tipo_reforma", "zona", "nombre", "presupuesto"],
+    "validacion": {
+      "tipo_reforma": "(servicio|reforma|baño|cocina)",
+      "zona": "(zona|ciudad|pueblo|barrio|localidad)",
+      "nombre": "(nombre|llamas|te llamas)",
+      "presupuesto": "(presupuesto|coste|precio|dinero|inviertes)",
+      "cerrado": "(perfecto|genial|estupendo|te escribimos|vemos|contactaremos)"
+    },
+    "ciudades": []
+  },
+  "ai": {
+    "model": "gpt-4o-mini",
+    "temperature": 0.4,
+    "max_output_tokens": 400,
+    "responseMaxLength": 300,
+    "messageMaxLength": 500
+  },
+  "conversation": {
+    "sessionTimeoutMs": 3600000,
+    "duplicateMessageWindowMs": 500,
+    "maxMessagesPerSession": 20,
+    "followUps": [],
+    "leadSavedMessage": "Perfecto, ya tenemos tus datos.",
+    "technicalErrorMessage": "Lo siento, ha ocurrido un error técnico.",
+    "deactivatedMessage": "Asistente desactivado.",
+    "reactivatedMessage": "Asistente activado.",
+    "limitMessage": "Hemos llegado al límite de mensajes."
+  },
+  "detector": {
+    "tipo_reforma": {
+      "baño": ["bañ", "aseo"],
+      "cocina": ["cocina"],
+      "reforma integral": ["integral", "completa", "todo el piso", "reforma entera"]
+    },
+    "zona": {
+      "prefixes": ["soy de", "vivo en", "estoy en", "en", "de", "zona"],
+      "minimumWordsForFallback": 3,
+      "minimumLength": 3,
+      "unknownValue": "desconocido"
+    },
+    "presupuesto": {
+      "digitPattern": "\\d+",
+      "kMultiplier": "000"
+    }
+  },
+  "storage": {
+    "airtable": {
+      "enabled": true,
+      "tableName": "Leads",
+      "origin": "instagram_ads",
+      "empresa": "default"
+    }
+  }
+}

@@ -1,0 +1,254 @@
+{
+  "leadsDetected": 70,
+  "leadsSaved": 18,
+  "fallbacksUsed": 3,
+  "fieldMisses": {},
+  "conversationStarted": 38,
+  "userReplied": 241,
+  "botQuestion": 130,
+  "conversationDropped": 1,
+  "leadCompleted": 12,
+  "objecionesDetectadas": 0,
+  "step_tipo_reforma": 1,
+  "step_zona": 7,
+  "step_presupuesto": 16,
+  "step_nombre": 17,
+  "step_telefono": 0,
+  "dataCaptured_nombre": 17,
+  "dataCaptured_telefono": 0,
+  "dataCaptured_tipo_reforma": 1,
+  "dataCaptured_zona": 7,
+  "dataCaptured_presupuesto": 16,
+  "variants": {
+    "A": {
+      "leads": 10,
+      "messages": 51,
+      "conversions": 3
+    },
+    "B": {
+      "leads": 17,
+      "messages": 84,
+      "conversions": 9
+    }
+  },
+  "conversionTimes": [
+    47516,
+    94471,
+    141975,
+    154505,
+    157038,
+    88342,
+    63145,
+    42304,
+    162464,
+    37419,
+    67203,
+    166692
+  ],
+  "keyMessages": [
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T00:09:24.197Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T00:16:40.853Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T00:19:48.631Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T00:33:27.844Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T00:40:22.317Z"
+    },
+    {
+      "type": "first_message",
+      "message": "ff",
+      "timestamp": "2026-04-24T00:46:57.834Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T00:50:51.010Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T01:04:37.337Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T01:11:00.052Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T01:17:50.267Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T01:21:55.221Z"
+    },
+    {
+      "type": "first_message",
+      "message": "d",
+      "timestamp": "2026-04-24T01:31:14.725Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T01:52:35.986Z"
+    },
+    {
+      "type": "lead_saved",
+      "message": "{\"telefono\":\"34600123456\",\"zona\":\"hola\",\"tipo_reforma\":\"cocina\",\"interes\":\"cocina\",\"nombre\":\"joannnneeet\",\"resumen\":\"Reforma: cocina\"}",
+      "timestamp": "2026-04-24T01:53:23.502Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T02:02:18.429Z"
+    },
+    {
+      "type": "lead_saved",
+      "message": "{\"telefono\":\"34600123456\",\"zona\":\"hola\",\"interes\":\"baño\",\"presupuesto\":\"5000\",\"nombre\":\"Joaaaerty\",\"resumen\":\"Reforma: baño. Presupuesto: 5000€\"}",
+      "timestamp": "2026-04-24T02:03:52.901Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hiokjh",
+      "timestamp": "2026-04-24T02:07:43.866Z"
+    },
+    {
+      "type": "lead_saved",
+      "message": "{\"telefono\":\"34600123456\",\"nombre\":\"joaaan88888\",\"zona\":\"hiokjh\",\"interes\":\"cocina\",\"presupuesto\":\"5000\",\"resumen\":\"Reforma: cocina. Presupuesto: 5000€\"}",
+      "timestamp": "2026-04-24T02:10:05.841Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T02:18:40.108Z"
+    },
+    {
+      "type": "lead_saved",
+      "message": "{\"telefono\":\"34600123456\",\"zona\":\"hola\",\"interes\":\"baño\",\"presupuesto\":\"60000000\",\"notas\":\"elegante, rompedor\",\"nombre\":\"Joaan\",\"resumen\":\"elegante, rompedor\"}",
+      "timestamp": "2026-04-24T02:21:14.613Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T15:17:55.254Z"
+    },
+    {
+      "type": "conversation_dropped",
+      "message": "Last message: Perfecto, con un presupuesto de unos 5000€ podemos explorar buenas opciones para la cocina y el baño. 😊 ¿Tienes alguna idea de cómo te gustaría que fueran las reformas? (estilo, algo que quieras sí o sí, etc.)",
+      "timestamp": "2026-04-24T15:48:45.994Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hoiola",
+      "timestamp": "2026-04-24T16:13:09.057Z"
+    },
+    {
+      "type": "lead_saved",
+      "message": "{\"telefono\":\"34600123456\",\"nombre\":\"Ojiarfghjiouyg\",\"zona\":\"hoiola\",\"presupuesto\":\"8000\",\"notas\":\"negra\",\"resumen\":\"negra\"}",
+      "timestamp": "2026-04-24T16:15:46.095Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T16:21:58.317Z"
+    },
+    {
+      "type": "lead_saved",
+      "message": "{\"telefono\":\"34600123456\",\"zona\":\"hola\",\"interes\":\"baño\",\"presupuesto\":\"5000\",\"nombre\":\"joan\",\"resumen\":\"\"}",
+      "timestamp": "2026-04-24T16:23:26.659Z"
+    },
+    {
+      "type": "first_message",
+      "message": "yooo",
+      "timestamp": "2026-04-24T23:39:12.465Z"
+    },
+    {
+      "type": "lead_saved",
+      "message": "{\"telefono\":\"34600123456\",\"nombre\":\"yooo\",\"zona\":\"yooo\",\"interes\":\"baño\",\"presupuesto\":\"5000\",\"resumen\":\"\"}",
+      "timestamp": "2026-04-24T23:40:15.610Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-24T23:58:45.280Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hoal",
+      "timestamp": "2026-04-25T00:22:32.828Z"
+    },
+    {
+      "type": "lead_saved",
+      "message": "{\"telefono\":\"34600123456\",\"nombre\":\"hoal\",\"zona\":\"hoal\",\"tipo_reforma\":\"reforma integral\",\"interes\":\"reforma integral\",\"presupuesto\":\"4000\",\"resumen\":\"Reforma: reforma integral | Presupuesto: 4000€ | Zona: hoal\"}",
+      "timestamp": "2026-04-25T00:23:15.133Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hilaaa",
+      "timestamp": "2026-04-25T00:25:32.401Z"
+    },
+    {
+      "type": "lead_saved",
+      "message": "{\"telefono\":\"34600123456\",\"nombre\":\"hilaaa\",\"zona\":\"hilaaa\",\"tipo_reforma\":\"reforma integral\",\"interes\":\"reforma integral\",\"presupuesto\":\"8000\",\"resumen\":\"Reforma: reforma integral | Presupuesto: 8000€ | Zona: hilaaa\"}",
+      "timestamp": "2026-04-25T00:28:14.864Z"
+    },
+    {
+      "type": "first_message",
+      "message": "holadefr",
+      "timestamp": "2026-04-25T01:27:51.848Z"
+    },
+    {
+      "type": "lead_saved",
+      "message": "{\"telefono\":\"34600123456\",\"nombre\":\"holadefr\",\"zona\":\"holadefr\",\"tipo_reforma\":\"cocina\",\"interes\":\"cocina\",\"presupuesto\":\"4000\",\"resumen\":\"Reforma: cocina | Presupuesto: 4000€ | Zona: holadefr\"}",
+      "timestamp": "2026-04-25T01:28:29.267Z"
+    },
+    {
+      "type": "first_message",
+      "message": "ji",
+      "timestamp": "2026-04-25T23:08:13.274Z"
+    },
+    {
+      "type": "first_message",
+      "message": "hola",
+      "timestamp": "2026-04-25T23:34:41.737Z"
+    },
+    {
+      "type": "lead_saved",
+      "message": "{\"telefono\":\"34600123456\",\"tipo_reforma\":\"otros\",\"interes\":\"baño\",\"presupuesto\":\"4000\",\"nombre\":\"joan\",\"zona\":\"joan\",\"resumen\":\"Reforma: baño | Presupuesto: 4000€ | Zona: joan\"}",
+      "timestamp": "2026-04-25T23:35:48.941Z"
+    },
+    {
+      "type": "first_message",
+      "message": "j",
+      "timestamp": "2026-04-25T23:50:24.211Z"
+    },
+    {
+      "type": "lead_saved",
+      "message": "{\"telefono\":\"34600123456\",\"zona\":\"bano\",\"interes\":\"baño\",\"presupuesto\":\"5\",\"notas\":\"negro\",\"nombre\":\"pedrro\",\"resumen\":\"Reforma: baño | Presupuesto: 5€ | Zona: bano\"}",
+      "timestamp": "2026-04-25T23:53:10.903Z"
+    }
+  ],
+  "conversionRate": "31.58",
+  "dropOffRate": "2.63",
+  "averageTimeToConvert": 101923,
+  "totalConversations": 38
+}
