@@ -1,6 +1,8 @@
+require('dotenv').config();
 const readline = require('readline');
 const { handleIncomingMessage } = require('./bot');
 const { deleteClient } = require('./services/memory');
+const { getAllOrgs } = require('./services/org-registry');
 
 // Mock client que simula las funciones de WhatsApp
 const mockClient = {
@@ -9,35 +11,74 @@ const mockClient = {
     },
     getChatById: async (phone) => {
         return {
-            sendStateTyping: async () => {
-                // Simula el estado "typing" sin hacer nada
-            }
+            sendStateTyping: async () => {}
         };
     }
 };
 
-// Contador para generar IDs únicos de mensajes
 let messageCounter = 0;
-
-// Número de teléfono simulado para pruebas
 const TEST_PHONE = '34600123456@c.us';
 
-// Interfaz readline para la consola
 const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
 });
 
-console.log('='.repeat(60));
-console.log('🤖 ENTORNO DE PRUEBAS LOCAL - CHATBOT WHATSAPP');
-console.log('='.repeat(60));
-console.log('\nEscribe tus mensajes para interactuar con el bot.');
-console.log('Comandos especiales:');
-console.log('  "reset" → borra la sesión del teléfono de prueba (nuevo lead)');
-console.log('  "exit"  → salir\n');
-console.log('='.repeat(60) + '\n');
+let selectedOrgId = null;
 
-// Función para procesar el input del usuario
+function showOrgMenu() {
+    const orgs = getAllOrgs();
+    console.log('\nSelecciona la organización para simular:\n');
+    orgs.forEach((o, i) => {
+        console.log(`  ${i + 1}. ${o.slug} (${o.type}) — ${o.waPhone}`);
+    });
+    console.log();
+}
+
+async function selectOrg() {
+    const orgs = getAllOrgs();
+    const cliArg = process.argv[2]?.toLowerCase();
+
+    if (cliArg) {
+        const match = orgs.find(o => o.sessionId === cliArg || o.slug.includes(cliArg) || o.type === cliArg);
+        if (match) {
+            selectedOrgId = match.orgId;
+            console.log(`\n✅ ORG: ${match.slug} (${match.type}) — ${match.orgId}\n`);
+            return;
+        }
+        console.log(`\n⚠️  No se encontró org "${cliArg}". Usa: sanremo, sante, restaurant, salon\n`);
+    }
+
+    showOrgMenu();
+    return new Promise((resolve) => {
+        rl.question('Elige (1/2): ', (answer) => {
+            const idx = parseInt(answer, 10) - 1;
+            if (idx >= 0 && idx < orgs.length) {
+                selectedOrgId = orgs[idx].orgId;
+                console.log(`\n✅ ORG: ${orgs[idx].slug} (${orgs[idx].type}) — ${selectedOrgId}\n`);
+            } else {
+                selectedOrgId = orgs[0].orgId;
+                console.log(`\n✅ ORG (default): ${orgs[0].slug} — ${selectedOrgId}\n`);
+            }
+            resolve();
+        });
+    });
+}
+
+function showBanner() {
+    const org = getAllOrgs().find(o => o.orgId === selectedOrgId);
+    console.log('='.repeat(60));
+    console.log('🤖 ENTORNO DE PRUEBAS LOCAL - CHATBOT WHATSAPP');
+    console.log(`📍 ${org?.slug || '?'} (${org?.type || '?'})`);
+    console.log('='.repeat(60));
+    console.log('\nEscribe tus mensajes para interactuar con el bot.');
+    console.log('Comandos especiales:');
+    console.log('  "reset"  → borra la sesión (nuevo lead)');
+    console.log('  "switch" → cambiar de organización');
+    console.log('  "exit"   → salir\n');
+    console.log('='.repeat(60) + '\n');
+}
+
 async function processInput() {
     rl.question('Tú: ', async (input) => {
         if (input.toLowerCase() === 'exit') {
@@ -47,8 +88,16 @@ async function processInput() {
         }
 
         if (input.toLowerCase() === 'reset') {
-            deleteClient(TEST_PHONE);
+            deleteClient(selectedOrgId, TEST_PHONE);
             console.log('\n🔄 Sesión borrada. El próximo mensaje empieza como nuevo lead.\n');
+            processInput();
+            return;
+        }
+
+        if (input.toLowerCase() === 'switch') {
+            deleteClient(selectedOrgId, TEST_PHONE);
+            await selectOrg();
+            showBanner();
             processInput();
             return;
         }
@@ -58,7 +107,6 @@ async function processInput() {
             return;
         }
 
-        // Crear objeto message simulado con la estructura necesaria
         const message = {
             from: TEST_PHONE,
             body: input,
@@ -72,24 +120,23 @@ async function processInput() {
             hasMedia: false,
             getChat: async () => {
                 return {
-                    sendStateTyping: async () => {
-                        // Simula el estado "typing"
-                    }
+                    sendStateTyping: async () => {}
                 };
             }
         };
 
         console.log('\n⏳ Procesando mensaje...\n');
 
-        // Llamar a la función handleIncomingMessage con el mock client
-        await handleIncomingMessage(mockClient, message);
+        await handleIncomingMessage(mockClient, message, selectedOrgId);
 
-        // Esperar un momento antes de pedir el siguiente input
         setTimeout(() => {
             processInput();
         }, 500);
     });
 }
 
-// Iniciar el loop de input
-processInput();
+(async () => {
+    await selectOrg();
+    showBanner();
+    processInput();
+})();

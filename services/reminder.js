@@ -1,23 +1,14 @@
 /**
- * Reminder Worker — Envía WhatsApp de recordatorio antes de la cita
- * Corre cada 5 minutos. Busca citas confirmadas cuyo recordatorio no se ha enviado
- * y que estén dentro del margen configurado (minutosAntes).
+ * Reminder Worker — Multi-org
+ * Cada 5 minutos: para cada org, envía recordatorios 24h antes de la cita
+ * y auto-completa citas cuya hora de fin ya pasó.
  */
 
-const config = require('../config.json');
-const { getLeadsPendientesRecordatorio, marcarRecordatorioSent, getConfigValue } = require('./db');
+const { getAppointmentsPendientesRecordatorio, marcarRecordatorioSent, getConfigValue, getAgentConfig, autoCompleteAppointments } = require('./db');
+const logger = require('../lib/logger');
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
-let waClient = null;
-
-function buildReminderMessage(nombre, hora) {
-    const template = config.reminder?.mensaje ||
-        'Hola {nombre} 😊 Te recordamos que tienes tu cita en {clinica} a las {hora}. ¡Te esperamos!';
-    return template
-        .replace('{nombre}', nombre || '')
-        .replace('{clinica}', config.companyName || 'la clínica')
-        .replace('{hora}', hora || '');
-}
+let waClients = null; // Map<orgId, { client, orgId, ... }>
 
 function minutosHastaCita(fechaStr, horaStr) {
     if (!fechaStr) return Infinity;
@@ -29,58 +20,64 @@ function minutosHastaCita(fechaStr, horaStr) {
     }
 }
 
-async function sendReminderMessage(telefono, mensaje) {
-    if (!waClient) {
-        console.warn('⚠️ Reminder worker: cliente WhatsApp no disponible');
+async function sendReminderMessage(orgId, telefono, mensaje) {
+    const entry = waClients?.get(orgId);
+    if (!entry?.client) {
+        logger.warn('reminder_wa_no_disponible', { orgId });
         return false;
     }
     try {
         const chatId = telefono.includes('@c.us') ? telefono : `${telefono}@c.us`;
-        await waClient.sendMessage(chatId, mensaje);
+        await entry.client.sendMessage(chatId, mensaje);
         return true;
     } catch (e) {
-        console.error('Reminder worker error enviando WA:', e.message);
+        logger.error('reminder_error_envio', { orgId, telefono, error: e.message });
         return false;
     }
 }
 
 async function checkAndSendReminders() {
-    const horasDb = getConfigValue('horas_recordatorio');
-    const minutosAntes = horasDb !== null ? horasDb * 60 : (config.reminder?.minutosAntes ?? 60);
+    if (!waClients) return;
 
-    let pendientes;
-    try {
-        pendientes = await getLeadsPendientesRecordatorio();
-    } catch (e) {
-        console.error('Reminder worker error consultando Airtable:', e.message);
-        return;
-    }
+    for (const [orgId] of waClients) {
+        try {
+            // Auto-completar citas pasadas
+            await autoCompleteAppointments(orgId);
 
-    for (const record of pendientes) {
-        const Nombre     = record.nombre;
-        const Telefono   = record.telefono;
-        const Fecha_cita = record.fecha_cita;
-        const Hora_cita  = record.hora_cita;
-        if (!Telefono || !Fecha_cita) continue;
+            // Recordatorios
+            const minutosDb = await getConfigValue(orgId, 'minutos_recordatorio');
+            const minutosAntes = minutosDb !== null ? Number(minutosDb) : 1440;
 
-        const minutosRestantes = minutosHastaCita(Fecha_cita, Hora_cita);
+            const agentCfg = await getAgentConfig(orgId);
+            const info = agentCfg?.business_info || {};
+            const companyName = info.companyName || 'nuestro centro';
+            const botName = info.botName || '';
 
-        // Solo enviar si la cita está en el futuro y dentro del margen configurado
-        if (minutosRestantes < 0 || minutosRestantes > minutosAntes) continue;
+            const pendientes = await getAppointmentsPendientesRecordatorio(orgId);
 
-        const mensaje = buildReminderMessage(Nombre, Hora_cita);
-        const sent = await sendReminderMessage(Telefono, mensaje);
+            for (const record of pendientes) {
+                if (!record.telefono || !record.fecha_cita) continue;
 
-        if (sent) {
-            await marcarRecordatorioSent(record.id);
-            console.log(`🔔 Recordatorio enviado a ${Nombre} (${Telefono}) — cita en ${Math.round(minutosRestantes)} min`);
+                const minutosRestantes = minutosHastaCita(record.fecha_cita, record.hora_cita);
+                if (minutosRestantes < 0 || minutosRestantes > minutosAntes) continue;
+
+                const mensaje = `Hola ${record.nombre || ''} 😊 Te recordamos tu cita en ${companyName} a las ${record.hora_cita || ''}. ¡Te esperamos!`;
+                const sent = await sendReminderMessage(orgId, record.telefono, mensaje);
+
+                if (sent) {
+                    await marcarRecordatorioSent(orgId, record.id);
+                    logger.info('recordatorio_enviado', { orgId, nombre: record.nombre, telefono: record.telefono, minutos_restantes: Math.round(minutosRestantes) });
+                }
+            }
+        } catch (e) {
+            logger.error('reminder_error_org', { orgId, error: e.message });
         }
     }
 }
 
-function startReminderWorker(client) {
-    waClient = client;
-    console.log('🔔 Reminder worker iniciado — comprobando cada 5 minutos');
+function startReminderWorker(clients) {
+    waClients = clients;
+    logger.info('reminder_worker_iniciado');
     setInterval(checkAndSendReminders, CHECK_INTERVAL_MS);
     setTimeout(checkAndSendReminders, 60 * 1000);
 }

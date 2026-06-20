@@ -1,83 +1,108 @@
+process.env.TZ = 'Europe/Madrid';
+console.log(`[TZ] timezone=${process.env.TZ} now=${new Date().toString()}`);
 /**
- * server.js — Punto de entrada único
- * Arranca: WhatsApp client, webhook Meta, review worker, bot Telegram
+ * server.js — Punto de entrada único (multi-tenant)
+ * Arranca: WhatsApp clients (uno por org), webhook/API, workers, bot Telegram
  */
 require('dotenv').config();
 
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
-const { handleIncomingMessage, initiateLeadConversation, isBotGlobalActivo, setBotGlobalActivo } = require('./bot');
-const { startWebhookServer } = require('./webhook');
-const { startReviewWorker } = require('./services/review');
+const { handleIncomingMessage, isBotGlobalActivo, setBotGlobalActivo, setConversationBotMode, setWAClient: setBotWAClient } = require('./bot');
+const { startWebhookServer, setWAClient } = require('./webhook');
 const { startReminderWorker } = require('./services/reminder');
+const { startReviewWorker } = require('./services/review');
 const { startTelegramBot } = require('./services/telegram');
+const { getAllOrgs } = require('./services/org-registry');
+const logger = require('./lib/logger');
 
 const required = ['OPENAI_API_KEY'];
 for (const key of required) {
     if (!process.env[key]) {
-        console.error(`❌ Variable de entorno requerida no configurada: ${key}`);
+        logger.error('env_faltante', { variable: key });
         process.exit(1);
     }
 }
-if (!process.env.AIRTABLE_API_KEY) {
-    console.log('ℹ️  Airtable no configurado — usando SQLite local (dashboard en /dashboard)');
+
+// ─── Clientes WhatsApp (uno por organización) ────────────────────────────────
+
+const waClients = new Map(); // orgId → { client, orgId, sessionId }
+const orgs = getAllOrgs();
+
+for (const org of orgs) {
+    const client = new Client({
+        authStrategy: new LocalAuth({ clientId: org.sessionId }),
+        puppeteer: { args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] }
+    });
+
+    client.on('qr', (qr) => {
+        logger.info('qr_generado', { org: org.slug });
+        console.log(`\n📱 QR para ${org.slug}:`);
+        qrcode.generate(qr, { small: true });
+    });
+
+    client.on('ready', () => {
+        logger.info('whatsapp_conectado', { org: org.slug });
+        console.log(`✅ WhatsApp conectado: ${org.slug}`);
+    });
+
+    client.on('disconnected', (reason) => {
+        logger.warn('whatsapp_desconectado', { org: org.slug, reason });
+    });
+
+    client.on('message', async (message) => {
+        if (message.fromMe) return;
+        if (!isBotGlobalActivo()) return;
+        await handleIncomingMessage(client, message, org.orgId);
+    });
+
+    waClients.set(org.orgId, { client, ...org });
 }
 
-// ─── Cliente WhatsApp ─────────────────────────────────────────────────────────
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: { args: ['--no-sandbox', '--disable-setuid-sandbox'] }
-});
+// ─── Webhook / API REST ──────────────────────────────────────────────────────
+setWAClient(waClients, setConversationBotMode);
+setBotWAClient(waClients);
+startWebhookServer(process.env.PORT || 3000);
 
-client.on('qr', (qr) => {
-    console.log('\n📱 Escanea este QR con WhatsApp:');
-    qrcode.generate(qr, { small: true });
-});
-
-client.on('ready', () => {
-    console.log('✅ Bot WhatsApp conectado');
-    startReviewWorker(client);
-    startReminderWorker(client);
-});
-
-client.on('disconnected', (reason) => {
-    console.warn('⚠️ WhatsApp desconectado:', reason);
-});
-
-client.on('message', async (message) => {
-    if (message.fromMe) return;
-    if (!isBotGlobalActivo()) return;
-    await handleIncomingMessage(client, message);
-});
-
-// ─── Webhook Meta (Instagram Lead Ads) ───────────────────────────────────────
-const webhookEmitter = startWebhookServer(process.env.PORT || 3000);
-
-webhookEmitter.on('lead:new', async (leadData) => {
-    console.log('🎯 Lead nuevo recibido:', leadData.telefono);
-    await initiateLeadConversation(client, leadData);
-});
-
-// ─── Bot de Telegram (panel de administración) ────────────────────────────────
+// ─── Bot de Telegram (panel de administración multi-org) ─────────────────────
 startTelegramBot({
     getBotActivo: isBotGlobalActivo,
-    setBotActivo: setBotGlobalActivo
+    setBotActivo: setBotGlobalActivo,
+    waClients,
 });
 
-// ─── Arrancar WhatsApp ────────────────────────────────────────────────────────
-client.initialize();
+// ─── Arrancar todos los clientes WA ──────────────────────────────────────────
+for (const { client, slug } of waClients.values()) {
+    console.log(`🔄 Iniciando WhatsApp para ${slug}...`);
+    client.initialize();
+}
 
-// ─── Graceful shutdown ────────────────────────────────────────────────────────
+// ─── Workers (arrancan cuando el primer client esté ready) ───────────────────
+let workersStarted = false;
+function tryStartWorkers() {
+    if (workersStarted) return;
+    workersStarted = true;
+    startReminderWorker(waClients);
+    startReviewWorker(waClients);
+}
+
+for (const { client } of waClients.values()) {
+    client.on('ready', tryStartWorkers);
+}
+
+// ─── Graceful shutdown ───────────────────────────────────────────────────────
 process.on('SIGINT', async () => {
-    console.log('\n🛑 Cerrando bot...');
-    await client.destroy();
+    logger.info('bot_cerrando');
+    for (const { client } of waClients.values()) {
+        await client.destroy().catch(() => {});
+    }
     process.exit(0);
 });
 
 process.on('uncaughtException', (err) => {
-    console.error('❌ Uncaught exception:', err.message);
+    logger.error('excepcion_no_capturada', { error: err.message, stack: err.stack });
 });
 
 process.on('unhandledRejection', (reason) => {
-    console.error('❌ Unhandled rejection:', reason);
+    logger.error('rechazo_no_manejado', { reason: String(reason) });
 });

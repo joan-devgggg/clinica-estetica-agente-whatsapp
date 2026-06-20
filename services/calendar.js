@@ -1,11 +1,12 @@
 /**
- * Calendar Adapter — Interfaz genérica de calendario
+ * Calendar Adapter — Interfaz genérica de mesas/turnos disponibles
  * Actualmente usa datos mock para desarrollo.
- * Cuando la clínica decida el sistema (Calendly, Acuity, Google Calendar, etc.)
+ * Cuando Alberto decida el sistema de reservas (Covermanager, TheFork, etc.)
  * se implementan los métodos reales sin tocar el resto del código.
  */
 
 const config = require('../config.json');
+const logger = require('../lib/logger');
 
 // Mock: slots disponibles para los próximos 7 días
 function generateMockSlots() {
@@ -30,7 +31,7 @@ function generateMockSlots() {
                 fecha: date.toISOString().split('T')[0],
                 hora: `${String(h).padStart(2, '0')}:00`,
                 diaNombre,
-                periodo: h < 14 ? 'mañana' : 'tarde',
+                periodo: h < 17 ? 'comida' : 'cena',
                 disponible: true
             });
         }
@@ -80,12 +81,12 @@ async function getAvailableSlots(preferencia = {}, duracionMinutos = 60) {
 /**
  * Reserva un slot para un cliente
  * @param {object} slot - slot a reservar
- * @param {object} clientData - { nombre, telefono, tratamiento }
+ * @param {object} clientData - { nombre, telefono, personas }
  * @returns {object} { success, appointmentId, slot }
  */
 async function bookAppointment(slot, clientData) {
     // TODO: reemplazar por llamada a API real
-    console.log(`📅 [MOCK] Cita reservada: ${slot.fecha} ${slot.hora} para ${clientData.nombre}`);
+    logger.info('mock_cita_reservada', { fecha: slot.fecha, hora: slot.hora, nombre: clientData.nombre });
     return {
         success: true,
         appointmentId: `apt_${slot.id}_${Date.now()}`,
@@ -99,7 +100,7 @@ async function bookAppointment(slot, clientData) {
  */
 async function cancelAppointment(appointmentId) {
     // TODO: reemplazar por llamada a API real
-    console.log(`❌ [MOCK] Cita cancelada: ${appointmentId}`);
+    logger.info('mock_cita_cancelada', { appointmentId });
     return { success: true };
 }
 
@@ -110,14 +111,14 @@ async function cancelAppointment(appointmentId) {
  */
 async function rescheduleAppointment(appointmentId, newSlot) {
     // TODO: reemplazar por llamada a API real
-    console.log(`🔄 [MOCK] Cita reagendada: ${appointmentId} → ${newSlot.fecha} ${newSlot.hora}`);
+    logger.info('mock_cita_reagendada', { appointmentId, fecha: newSlot.fecha, hora: newSlot.hora });
     return { success: true, appointmentId, slot: newSlot };
 }
 
 /**
- * Obtiene citas completadas desde una fecha dada (para el worker de reseñas)
+ * Obtiene reservas completadas desde una fecha dada
  * @param {Date} since
- * @returns {Array} citas completadas
+ * @returns {Array} reservas completadas
  */
 async function getCompletedAppointments(since) {
     // TODO: reemplazar por llamada a API real

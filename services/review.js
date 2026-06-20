@@ -1,90 +1,89 @@
 /**
- * Review Worker — Envía WhatsApp de reseña Google tras la cita
- * Corre cada 5 minutos. Busca citas completadas sin reseña enviada.
+ * Review Worker — Multi-org
+ * Cada 5 minutos: para cada org, envía mensaje de reseña Google
+ * N horas después de que la cita se marque como completada.
  */
 
-const config = require('../config.json');
-const { getLeadsPendientesResena, marcarResenaSent, getConfigValue } = require('./db');
+const { getCompletedAppointmentsForReview, getConfigValue, getAgentConfig, updateAppointment } = require('./db');
+const logger = require('../lib/logger');
 
-const CHECK_INTERVAL_MS = 5 * 60 * 1000; // cada 5 minutos
-let waClient = null;
+const CHECK_INTERVAL_MS = 5 * 60 * 1000;
+let waClients = null;
 
-function buildReviewMessage(nombre) {
-    const template = config.review?.mensaje ||
-        'Hola {nombre} 😊 Esperamos que tu experiencia haya sido genial. Si tienes un momento, nos ayudaría muchísimo que dejaras tu opinión aquí: {link} ¡Gracias!';
-    const link = process.env.GOOGLE_REVIEW_LINK || config.review?.googleReviewLink || 'https://g.page/r/';
-    return template
-        .replace('{nombre}', nombre || '')
-        .replace('{link}', link);
+const REVIEW_TEMPLATES = {
+    es: (nombre, salon, link) =>
+        `Hola ${nombre || ''} 😊 Esperamos que hayas disfrutado tu visita a ${salon}. Nos encantaría conocer tu opinión:\n${link}`,
+    en: (nombre, salon, link) =>
+        `Hi ${nombre || ''} 😊 We hope you enjoyed your visit to ${salon}. We'd love to hear your feedback:\n${link}`,
+    ru: (nombre, salon, link) =>
+        `Привет ${nombre || ''} 😊 Надеемся, вам понравился визит в ${salon}. Будем рады вашему отзыву:\n${link}`,
+    uk: (nombre, salon, link) =>
+        `Привіт ${nombre || ''} 😊 Сподіваємось, вам сподобався візит до ${salon}. Будемо раді вашому відгуку:\n${link}`,
+};
+
+function buildReviewMessage(nombre, salon, link, language) {
+    const template = REVIEW_TEMPLATES[language] || REVIEW_TEMPLATES.es;
+    return template(nombre, salon, link);
 }
 
-function calcularMinutosDesde(fechaStr, horaStr) {
-    if (!fechaStr) return Infinity;
-    try {
-        const fechaHora = new Date(`${fechaStr}T${horaStr || '00:00'}:00`);
-        return (Date.now() - fechaHora.getTime()) / 60000;
-    } catch {
-        return Infinity;
-    }
-}
-
-async function sendReviewMessage(telefono, mensaje) {
-    if (!waClient) {
-        console.warn('⚠️ Review worker: cliente WhatsApp no disponible');
+async function sendReviewMessage(orgId, telefono, mensaje) {
+    const entry = waClients?.get(orgId);
+    if (!entry?.client) {
+        logger.warn('review_wa_no_disponible', { orgId });
         return false;
     }
     try {
         const chatId = telefono.includes('@c.us') ? telefono : `${telefono}@c.us`;
-        await waClient.sendMessage(chatId, mensaje);
+        await entry.client.sendMessage(chatId, mensaje);
         return true;
     } catch (e) {
-        console.error('Review worker error enviando WA:', e.message);
+        logger.error('review_error_envio', { orgId, telefono, error: e.message });
         return false;
     }
 }
 
 async function checkAndSendReviews() {
-    const minutosDb = getConfigValue('minutos_resena');
-    const minutosEspera = minutosDb !== null ? minutosDb : (config.conversation?.minutosResena || config.review?.minutosEspera || 30);
+    if (!waClients) return;
 
-    let pendientes;
-    try {
-        pendientes = await getLeadsPendientesResena();
-    } catch (e) {
-        console.error('Review worker error consultando Airtable:', e.message);
-        return;
-    }
+    for (const [orgId] of waClients) {
+        try {
+            const horasResenaDb = await getConfigValue(orgId, 'horas_resena');
+            const horasResena = horasResenaDb !== null ? Number(horasResenaDb) : null;
+            if (horasResena === null) continue;
 
-    for (const record of pendientes) {
-        const Nombre    = record.nombre;
-        const Telefono  = record.telefono;
-        const Fecha_cita = record.fecha_cita;
-        const Hora_cita  = record.hora_cita;
-        if (!Telefono) continue;
+            const agentCfg = await getAgentConfig(orgId);
+            const info = agentCfg?.business_info || {};
+            const googleLink = info.googleReviewLink;
+            if (!googleLink) continue;
 
-        const minutosTranscurridos = calcularMinutosDesde(Fecha_cita, Hora_cita);
-        if (minutosTranscurridos < minutosEspera) continue;
+            const companyName = info.companyName || 'nuestro centro';
+            const pendientes = await getCompletedAppointmentsForReview(orgId, horasResena);
 
-        const mensaje = buildReviewMessage(Nombre);
-        const sent = await sendReviewMessage(Telefono, mensaje);
+            for (const apt of pendientes) {
+                const phone = apt.contacts?.wa_phone || apt.phone;
+                const nombre = apt.contacts?.full_name || apt.full_name;
+                const language = apt.contacts?.language || 'es';
+                if (!phone) continue;
 
-        if (sent) {
-            await marcarResenaSent(record.id);
-            console.log(`✅ Reseña enviada a ${Nombre} (${Telefono})`);
+                const mensaje = buildReviewMessage(nombre, companyName, googleLink, language);
+                const sent = await sendReviewMessage(orgId, phone, mensaje);
+
+                if (sent) {
+                    await updateAppointment(orgId, apt.id, { resenaEnviada: true });
+                    logger.info('resena_enviada', { orgId, nombre, telefono: phone });
+                }
+            }
+        } catch (e) {
+            logger.error('review_error_org', { orgId, error: e.message });
         }
     }
 }
 
-/**
- * Inicializa el worker con el cliente de WhatsApp
- * @param {object} client - instancia de whatsapp-web.js Client
- */
-function startReviewWorker(client) {
-    waClient = client;
-    console.log('🔔 Review worker iniciado — comprobando cada 5 minutos');
+function startReviewWorker(clients) {
+    waClients = clients;
+    logger.info('review_worker_iniciado');
     setInterval(checkAndSendReviews, CHECK_INTERVAL_MS);
-    // Primera comprobación al arrancar (con delay de 1 min para que WA esté listo)
-    setTimeout(checkAndSendReviews, 60 * 1000);
+    setTimeout(checkAndSendReviews, 2 * 60 * 1000);
 }
 
 module.exports = { startReviewWorker };

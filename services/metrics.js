@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const logger = require('../lib/logger');
 
 const METRICS_PATH = path.join(__dirname, '..', 'metrics.json');
 const FLUSH_INTERVAL_MS = 30 * 1000; // Escribir a disco cada 30 segundos
@@ -48,7 +49,7 @@ function loadMetrics() {
     metricsCache = { ...metricsCache, ...data };
   } catch {
     // Archivo no existe o corrupto — empezar desde cero
-    console.log('metrics.json no encontrado o corrupto — iniciando métricas en cero');
+    logger.warn('metrics_init', { motivo: 'metrics.json no encontrado o corrupto — iniciando métricas en cero' });
   }
 }
 
@@ -62,7 +63,7 @@ async function flushToDisk() {
     await fs.promises.writeFile(METRICS_PATH, JSON.stringify(metricsToSave, null, 2));
     isDirty = false;
   } catch (error) {
-    console.error('Error escribiendo metrics.json:', error.message);
+    logger.error('metrics_write_error', { error: error.message });
   }
 }
 

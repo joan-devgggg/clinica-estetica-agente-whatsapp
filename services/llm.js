@@ -1,7 +1,7 @@
 const openai = require('./providers/openai');
 
-async function getChatbotResponse(history, partialData, intent, citaConfirmada = false, summary = null) {
-    return openai.getChatbotResponse(history, partialData, intent, citaConfirmada, summary);
+async function getChatbotResponse(orgId, history, partialData, intent, reservaConfirmada = false, summary = null) {
+    return openai.getChatbotResponse(orgId, history, partialData, intent, reservaConfirmada, summary);
 }
 
 module.exports = { getChatbotResponse };

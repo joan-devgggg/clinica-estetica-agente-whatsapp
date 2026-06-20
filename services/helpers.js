@@ -1,5 +1,3 @@
-const config = require('../config.json');
-
 function normalizeText(value) {
     return String(value || '')
         .normalize('NFD')
@@ -11,46 +9,41 @@ function normalizeText(value) {
 
 // ─── Detección de intención ───────────────────────────────────────────────────
 
+function isBizumDone(text) {
+    const t = normalizeText(text);
+    const frases = [
+        'hecho', 'ya esta', 'ya está', 'listo', 'ya lo he hecho', 'ya lo hice',
+        'enviado', 'ya lo envie', 'ya lo envié', 'ya envie', 'ya envié',
+        'pagado', 'ya pague', 'ya pagué', 'transferido', 'realizado', 'hecho ya'
+    ];
+    return frases.some(f => t === normalizeText(f) || t.includes(normalizeText(f)));
+}
+
 function detectIntent(text) {
     const t = normalizeText(text);
 
     if (t.includes('cancelar') || t.includes('anular') || t.includes('quiero cancelar')) return 'cancelar';
-    if (t.includes('cambiar') || t.includes('mover') || t.includes('reagendar') || t.includes('cambio de cita')) return 'cambiar';
-    if (t.includes('precio') || t.includes('cuanto') || t.includes('cuesta') || t.includes('coste')) return 'precio';
-    if (t.includes('quiero') || t.includes('necesito') || t.includes('me interesa') || t.includes('cita')) return 'cita';
-    if (t.includes('info') || t.includes('como funciona') || t.includes('en que consiste') || t.includes('que es')) return 'info';
-    if (t.includes('caro') || t.includes('mucho dinero') || t.includes('me lo pienso') || t.includes('no estoy seguro')) return 'objecion';
-    if (t.includes('mañana') || t.includes('tarde') || t.includes('esta semana') || t.includes('la semana')) return 'preferencia_horaria';
+    if (t.includes('cambiar') || t.includes('mover') || t.includes('reagendar') || t.includes('cambio de reserva')) return 'cambiar';
+    if (isBizumDone(text)) return 'bizum_hecho';
+    if (t.includes('horario') || t.includes('a que hora abr') || t.includes('a que hora cierr') || t.includes('cuando abr') || t.includes('cuando cerr')) return 'horarios';
+    if (t.includes('carta') || t.includes('menu') || t.includes('menú') || t.includes('platos') || t.includes('especialidad')) return 'carta';
+    if (t.includes('parking') || t.includes('aparcar') || t.includes('aparcamiento') || t.includes('garaje')) return 'parking';
+    if (t.includes('alerg') || t.includes('intoleran') || t.includes('celiac') || t.includes('gluten') || t.includes('vegano') || t.includes('vegetarian')) return 'alergias';
+    if (t.includes('mesa') || t.includes('reserva') || t.includes('reservar') || t.includes('quiero')) return 'reserva';
+    if (t.includes('comida') || t.includes('cena') || t.includes('comer') || t.includes('cenar') || t.includes('esta semana') || t.includes('la semana')) return 'preferencia_horaria';
 
     return 'general';
 }
 
-function detectPostLeadIntent(text) {
-    if (!text) return 'small_talk';
-    const t = normalizeText(text);
-
-    const serviceKeywords = [
-        'tratamiento', 'cita', 'precio', 'coste', 'botox', 'relleno', 'laser',
-        'tiempo', 'tarda', 'cuando', 'plazo', 'resultado', 'efecto', 'recuperacion',
-        'urgente', 'prisa', 'cancelar', 'cambiar', 'reagendar'
-    ];
-    if (serviceKeywords.some(k => t.includes(k))) return 'servicio';
-
-    const smallTalk = ['hola', 'buenas', 'ok', 'vale', 'perfecto', 'genial', 'bien', 'gracias',
-        'adios', 'hasta luego', 'si', 'no', 'claro', 'entendido', 'de acuerdo'];
-    if (smallTalk.some(k => t.includes(k))) return 'small_talk';
-
-    return 'small_talk';
-}
-
-// ─── Extracción de preferencia horaria ───────────────────────────────────────
+// ─── Extracción de preferencia horaria (turno de comida/cena) ────────────────
 
 function extractPreferenciaHoraria(text) {
     const t = normalizeText(text);
     const pref = {};
 
-    if (t.includes('mañana') || t.includes('manana') || t.includes('por la mañana')) pref.periodo = 'mañana';
-    if (t.includes('tarde') || t.includes('por la tarde')) pref.periodo = 'tarde';
+    if (t.includes('comer') || t.includes('comida') || t.includes('almuerzo') || t.includes('mediodia') || t.includes('mediodía')) pref.periodo = 'comida';
+    if (t.includes('cenar') || t.includes('cena') || t.includes('noche')) pref.periodo = 'cena';
+
     if (t.includes('esta semana') || t.includes('hoy') || t.includes('esta misma semana')) pref.semana = 'esta';
     if (t.includes('semana que viene') || t.includes('la semana siguiente') || t.includes('proxima semana') ||
         t.includes('semana proxima') || t.includes('siguiente semana') || t.includes('la proxima') ||
@@ -60,28 +53,28 @@ function extractPreferenciaHoraria(text) {
     return Object.keys(pref).length > 0 ? pref : null;
 }
 
-// ─── Extracción de tratamiento ────────────────────────────────────────────────
+// ─── Extracción de número de personas ────────────────────────────────────────
 
-function extractTratamiento(text) {
+const NUMEROS_TEXTO = {
+    uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6,
+    siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12
+};
+
+function extractPersonas(text) {
     const t = normalizeText(text);
-    const servicios = config.servicios || [];
 
-    for (const servicio of servicios) {
-        const nombre = normalizeText(servicio.nombre);
-        if (t.includes(nombre)) return servicio.nombre;
+    let m = t.match(/(?:para|somos|seremos)\s+(\d{1,2})\b/);
+    if (!m) m = t.match(/(\d{1,2})\s*(?:personas?|comensales?|adultos?|pax)/);
+    if (m) {
+        const n = parseInt(m[1], 10);
+        if (n >= 1 && n <= 30) return n;
     }
 
-    // Patrones comunes de clínica estética
-    if (t.includes('botox') || t.includes('toxico')) return 'Botox';
-    if (t.includes('relleno') && t.includes('labio')) return 'Relleno de labios';
-    if (t.includes('relleno')) return 'Relleno';
-    if (t.includes('limpieza') && t.includes('facial')) return 'Limpieza facial';
-    if (t.includes('mesoter')) return 'Mesoterapia';
-    if (t.includes('laser') || t.includes('láser')) return 'Láser';
-    if (t.includes('hidratacion') || t.includes('hidratación')) return 'Hidratación facial';
-    if (t.includes('peeling')) return 'Peeling';
-    if (t.includes('manchas')) return 'Tratamiento manchas';
-    if (t.includes('acne') || t.includes('acné')) return 'Tratamiento acné';
+    for (const [palabra, numero] of Object.entries(NUMEROS_TEXTO)) {
+        if (new RegExp(`\\b${palabra}\\b`).test(t) && (t.includes('persona') || t.includes('somos') || t.includes('mesa'))) {
+            return numero;
+        }
+    }
 
     return null;
 }
@@ -115,10 +108,10 @@ function isValidName(name) {
     const lower = cleaned.toLowerCase();
 
     const invalidWords = ['hola', 'buenas', 'ok', 'vale', 'gracias', 'adios', 'si', 'sí', 'no',
-        'bien', 'genial', 'perfecto', 'entendido', 'tratamiento', 'cita', 'botox', 'laser',
+        'bien', 'genial', 'perfecto', 'entendido', 'reserva', 'mesa', 'personas', 'comida', 'cena',
         'recomiendame', 'ayudame', 'dime', 'explicame', 'cuentame', 'informame',
         'quiero', 'necesito', 'tengo', 'puedo', 'podria', 'gustaria',
-        'manana', 'mañana', 'tarde', 'semana'];
+        'manana', 'mañana', 'tarde', 'noche', 'semana'];
     if (invalidWords.includes(lower)) return false;
     if (cleaned.length < 2 || cleaned.length > 40) return false;
     if (!/^[a-zA-ZáéíóúñüÁÉÍÓÚÑÜ\s]+$/.test(cleaned)) return false;
@@ -139,7 +132,7 @@ function isValidName(name) {
 
 function getMissingFields(partialData) {
     const missing = [];
-    const required = ['nombre', 'tratamiento'];
+    const required = ['nombre', 'personas'];
     for (const campo of required) {
         const val = partialData?.[campo];
         if (!val || val === '' || (typeof val === 'string' && val.toLowerCase() === 'desconocido')) {
@@ -159,12 +152,10 @@ function extractQuickData(text, partialData = {}) {
         if (tel) result.telefono = tel;
     }
 
-    // Siempre sobreescribir tratamiento si encontramos uno válido en el catálogo
-    const trat = extractTratamiento(text);
-    if (trat) result.tratamiento = trat;
+    const personas = extractPersonas(text);
+    if (personas) result.personas = personas;
 
     // Siempre intentar extraer preferencia horaria (permite actualizarla al reagendar)
-    // Mergeamos con la existente para no perder info (ej: semana ya definida + ahora añade periodo)
     const pref = extractPreferenciaHoraria(text);
     if (pref) result.preferencia_horaria = { ...(result.preferencia_horaria || {}), ...pref };
 
@@ -190,16 +181,120 @@ function extractQuickData(text, partialData = {}) {
     return result;
 }
 
+// ─── Salon-specific: service extraction ─────────────────────────────────────
+
+function extractServiceFromText(text, servicesCatalog) {
+    if (!text || !servicesCatalog?.length) return null;
+    const t = normalizeText(text);
+
+    let bestMatch = null;
+    let bestLen = 0;
+
+    for (const svc of servicesCatalog) {
+        const svcName = normalizeText(svc.nombre);
+        const svcCat = normalizeText(svc.categoria);
+
+        if (t.includes(svcName) && svcName.length > bestLen) {
+            bestMatch = svc;
+            bestLen = svcName.length;
+        }
+        if (t.includes(svcCat) && svcCat.length > bestLen) {
+            bestMatch = svc;
+            bestLen = svcCat.length;
+        }
+    }
+
+    // Fuzzy: common keywords
+    if (!bestMatch) {
+        const keywordMap = [
+            { keywords: ['corte', 'cortar', 'corto', 'corta', 'haircut', 'cut'], categoria: 'Cortes' },
+            { keywords: ['color', 'tinte', 'teñir', 'raiz', 'raíz', 'dye'], categoria: 'Color Premium' },
+            { keywords: ['mecha', 'mechas', 'highlights', 'balayage'], categoria: 'Mechas Airtouch' },
+            { keywords: ['manicura', 'manicure', 'uñas', 'nails', 'pedicura', 'pedicure'], categoria: 'Manicura/Pedicura' },
+            { keywords: ['masaje', 'massage', 'spa', 'relajante', 'relax'], categoria: 'Masajes y SPA' },
+            { keywords: ['alisado', 'alisar', 'straighten', 'keratin'], categoria: 'Alisado vegano' },
+            { keywords: ['peinar', 'peinado', 'secar', 'blow', 'brushing'], categoria: 'Lavar y peinar' },
+            { keywords: ['tricolog', 'diagnostico', 'capilar', 'perdida', 'caida', 'hair loss'], categoria: 'Diagnóstico Capilar' },
+            { keywords: ['dermapen'], categoria: 'Dermapen Hair Loss' },
+            { keywords: ['k18', 'reconstruc', 'repair', 'pro-miracle', 'pro miracle'], categoria: 'Reconstrucción' },
+            { keywords: ['exfolia', 'peeling', 'pilling', 'cuero cabelludo', 'scalp'], categoria: 'Exfoliación cabeza' },
+            { keywords: ['brillo', 'glow', 'shine'], categoria: 'Brillo Glow' },
+            { keywords: ['matiz', 'toner', 'violeta'], categoria: 'Matiz mujer' },
+            { keywords: ['tratamiento', 'orising', 'hidrata'], categoria: 'Tratamiento Orgánico' },
+        ];
+
+        for (const { keywords, categoria } of keywordMap) {
+            if (keywords.some(kw => t.includes(normalizeText(kw)))) {
+                bestMatch = servicesCatalog.find(s => normalizeText(s.categoria) === normalizeText(categoria));
+                if (bestMatch) break;
+            }
+        }
+    }
+
+    return bestMatch;
+}
+
+function extractStylistFromText(text, teamList) {
+    if (!text || !teamList?.length) return null;
+    const t = normalizeText(text);
+
+    for (const member of teamList) {
+        if (t.includes(normalizeText(member.nombre || member.name))) {
+            return member;
+        }
+    }
+    return null;
+}
+
+function getMissingFieldsSante(partialData) {
+    const missing = [];
+    if (!partialData?.nombre || partialData.nombre === 'desconocido') missing.push('nombre');
+    return missing;
+}
+
+function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], teamList = []) {
+    const result = { ...partialData };
+
+    // Name extraction (reuse existing logic)
+    if (!result.nombre || result.nombre === 'desconocido') {
+        const lower = normalizeText(text);
+        const namePatterns = ['soy ', 'me llamo ', 'mi nombre es ', 'my name is ', 'i am ', 'i\'m '];
+        for (const pattern of namePatterns) {
+            const idx = lower.indexOf(pattern);
+            if (idx !== -1) {
+                const afterPattern = text.substring(idx + pattern.length).trim();
+                const words = afterPattern.split(/\s+/).slice(0, 2).join(' ');
+                if (isValidName(words)) { result.nombre = words; break; }
+            }
+        }
+        if (!result.nombre && text.trim().split(/\s+/).length === 1) {
+            const word = text.trim();
+            if (isValidName(word) && word.length >= 3) result.nombre = word;
+        }
+    }
+
+    // Time preference
+    const pref = extractPreferenciaHoraria(text);
+    if (pref) result.preferencia_horaria = { ...(result.preferencia_horaria || {}), ...pref };
+
+    return result;
+}
+
 module.exports = {
     normalizeText,
     detectIntent,
-    detectPostLeadIntent,
+    isBizumDone,
     getMissingFields,
     extractQuickData,
     extractTelefono,
-    extractTratamiento,
+    extractPersonas,
     extractPreferenciaHoraria,
     isAffirmative,
     isNegative,
-    isValidName
+    isValidName,
+    // Salon-specific
+    extractServiceFromText,
+    extractStylistFromText,
+    getMissingFieldsSante,
+    extractQuickDataSante,
 };

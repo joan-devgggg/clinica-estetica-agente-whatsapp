@@ -2,197 +2,443 @@ const axios = require('axios');
 require('dotenv').config();
 const config = require('../../config.json');
 const db = require('../db');
+const { getOrgType } = require('../org-registry');
+const logger = require('../../lib/logger');
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const aiConfig = config.ai || {};
 
-function buildSystemPrompt(partialData, intent, citaConfirmada = false) {
+// ─── San Remo prompt (restaurante) ──────────────────────────────────────────
+
+function buildSanRemoPrompt(partialData, intent, reservaConfirmada, summary, agentCfg) {
+    const info = agentCfg?.business_info || {};
     const missingFields = partialData.__missingFields || [];
-    const missingStr = missingFields.length > 0 ? missingFields.join(', ') : 'ninguno';
     const slotsDisponibles = partialData.__availableSlots || [];
     const slotsStr = slotsDisponibles.length > 0
         ? slotsDisponibles.map((s, i) => `  ${i + 1}. ${s.texto}`).join('\n')
-        : 'No hay huecos cargados todavía — la preferencia horaria aún no está definida. DEBES preguntar cuándo le viene mejor (mañana/tarde, esta semana/siguiente) antes de proponer cualquier hueco. NUNCA inventes fechas ni horas.';
+        : 'No hay mesas cargadas todavía — la preferencia horaria aún no está definida. DEBES preguntar cuándo le viene mejor (comida/cena, esta semana/siguiente) antes de proponer cualquier mesa. NUNCA inventes fechas ni horas.';
 
-    // Leer config desde SQLite (dashboard) con fallback a config.json
-    const clinicaInfo = db.getConfigValue('clinica_info') || {};
-    const serviciosDb = db.getConfigValue('servicios');
-    const servicios = (serviciosDb || config.servicios || []).map(s => `  - ${s.nombre}${s.precio ? ` (${s.precio}€)` : ''}`).join('\n');
-    const nombreClinica = clinicaInfo.nombre || config.companyName || 'nuestra clínica';
-    const nombreBot = config.botName || 'el asistente';
-    const direccion = clinicaInfo.direccion || config.direccion || '';
+    const nombreRestaurante = info.companyName || config.companyName || 'el restaurante';
+    const nombreBot = info.botName || config.botName || 'el asistente';
+    const owner = info.owner || config.owner || 'el encargado';
+    const direccion = info.direccion || config.direccion || '';
+    const telefono = config.telefonoRestaurante || '';
+    const handoffMessage = agentCfg?.handoff_message || 'Un momento, le paso tu mensaje al equipo.';
 
-    let modoPostCita = '';
-    if (citaConfirmada) {
-        const pendNB = partialData.__pendingNewBooking;
-        const pendNBMissing = partialData.__pendingNewBookingMissing || [];
+    const faqs = info.faqs || config.faqs || {};
+    const faqsStr = `- Horarios: ${faqs.horarios || 'sin información'}
+- Carta: ${faqs.carta || 'sin información'}
+- Parking: ${faqs.parking || 'sin información'}
+- Alérgenos: ${faqs.alergias || 'sin información'}`;
 
-        let nuevaCitaSection = '';
-        if (pendNB !== null) {
-            let siguientePaso;
-            if (pendNBMissing.includes('nombre')) {
-                siguientePaso = `Pregunta SOLO el nombre de la persona para quien es la cita. Una sola pregunta, nada más. Si el cliente no quiere darlo, responde: "Sin el nombre no puedo agendar la cita, lo necesito para reservar el hueco 😊"`;
-            } else if (pendNBMissing.includes('tratamiento')) {
-                siguientePaso = `Pregunta SOLO qué tratamiento quiere esa persona. Solo ofrece opciones de la lista TRATAMIENTOS DISPONIBLES. Si piden algo que no está → diles que no lo ofrecemos y pregunta si quieren otro de la lista. NUNCA sugieras un tratamiento diferente sin que el cliente lo confirme explícitamente.`;
-            } else if (pendNBMissing.includes('fecha_cita') || pendNBMissing.includes('hora_cita')) {
-                siguientePaso = `Pregunta SOLO qué día y hora prefiere. Puedes proponer una hora cercana a la cita actual como referencia.`;
-            } else {
-                siguientePaso = `Tienes los 4 datos (nombre=${pendNB.nombre}, tratamiento=${pendNB.tratamiento}, fecha=${pendNB.fecha_cita}, hora=${pendNB.hora_cita}). Confirma la cita con el cliente y marca cita_confirmada: true. Pon todos los datos de esta nueva cita en el campo "datos" del JSON.`;
-            }
-            nuevaCitaSection = `
-NUEVA CITA EN PROGRESO (para ${pendNB.esMismaPersona ? 'el mismo cliente' : 'otra persona'}):
-* Estado actual: nombre=${pendNB.nombre || 'PENDIENTE'}, tratamiento=${pendNB.tratamiento || 'PENDIENTE'}, fecha=${pendNB.fecha_cita || 'PENDIENTE'}, hora=${pendNB.hora_cita || 'PENDIENTE'}
-* SIGUIENTE PASO OBLIGATORIO: ${siguientePaso}
-* Pon los datos de ESTA nueva cita en el campo "datos" del JSON (no los del cliente original)
-* NUNCA marques cita_confirmada: true hasta tener los 4 datos completos`;
-        }
+    const bizum = info.bizum || config.bizum || {};
 
-        modoPostCita = `
-CITA YA CONFIRMADA — MODO POST-CITA:
-* La cita original ya está reservada. NO vuelvas a pedir datos al cliente sobre esa cita.
+    let modoBizum = '';
+    if (partialData.__bizumAsked && !partialData.__bizumPendiente) {
+        modoBizum = `
+MODO ESPERANDO BIZUM:
+* Ya le has pedido al cliente una señal de ${bizum.importe}€ por Bizum al número ${bizum.numero} para confirmar la mesa.
+* NO vuelvas a pedir los datos de la reserva.
+* Si el cliente pregunta otra cosa (FAQ, horarios, carta...), respóndela con normalidad.
+* Si el cliente dice que ya ha hecho el Bizum, el sistema se encargará de confirmarlo — tú simplemente puedes agradecerle brevemente.
+* reserva_confirmada debe seguir en false hasta que el sistema lo gestione.`;
+    } else if (partialData.__bizumPendiente) {
+        modoBizum = `
+MODO RESERVA PENDIENTE DE VERIFICAR:
+* La reserva está hecha y la señal por Bizum está pendiente de que ${owner} la verifique.
+* NO pidas datos de nuevo. Responde dudas con normalidad y tranquiliza al cliente: en cuanto se verifique se le confirma por aquí.
+* Si quiere cancelar → accion: "cancelar". Si quiere cambiar la reserva → accion: "cambiar".`;
+    } else if (reservaConfirmada) {
+        modoBizum = `
+MODO RESERVA CONFIRMADA:
+* La reserva ya está confirmada. NO vuelvas a pedir datos al cliente.
 * Responde dudas de forma natural y amable.
-* Si quiere cancelar → devuelve accion: "cancelar". Si quiere cambiarla → devuelve accion: "cambiar".
-${nuevaCitaSection || '* Si el cliente quiere agendar para otra persona o para sí mismo, responde amablemente y el sistema lo gestionará.'}
-* Sé breve y cercana.`;
+* Si quiere cancelar → accion: "cancelar". Si quiere cambiarla → accion: "cambiar".`;
     }
 
     const modoReagendamiento = partialData.__reagendando ? `
 MODO REAGENDAMIENTO ACTIVO:
-* El cliente quiere cambiar su cita anterior. Ya estamos buscando un nuevo hueco.
+* El cliente quiere cambiar su reserva anterior. Ya estamos buscando un nuevo hueco.
 * NUNCA devuelvas accion: "cambiar" — ya estamos en ese flujo.
-* Si no hay huecos disponibles, pregunta su nueva preferencia horaria (mañana/tarde, esta semana/la siguiente).
-* Si hay huecos disponibles, propón el primero como si fuera la primera vez que se agenda.` : '';
+* Si no hay mesas disponibles, pregunta su nueva preferencia (comida/cena, esta semana/la siguiente).
+* Si hay mesas disponibles, propón la primera como si fuera la primera vez que se reserva.` : '';
 
     let modoClienteRecurrente = '';
     if (partialData.__clienteRecurrente) {
         const ultimaVisita = partialData.__ultimaVisita
-            ? `Su última cita fue el ${partialData.__ultimaVisita}.`
-            : 'Ya ha visitado la clínica antes.';
-        const ultimoTrat = partialData.ultimoTratamiento
-            ? ` La última vez se hizo ${partialData.ultimoTratamiento}.`
-            : '';
+            ? `Su última visita fue el ${partialData.__ultimaVisita}.`
+            : 'Ya ha venido al restaurante antes.';
         modoClienteRecurrente = `
 CLIENTE QUE VUELVE:
-${ultimaVisita}${ultimoTrat}
-Salúdale con calidez como a alguien que ya conoces: algo como "¡Hola de nuevo!" o "¡Qué alegría verte por aquí otra vez!". No hace falta presentarte. Tono cercano y de confianza.`;
+${ultimaVisita}
+Salúdale con calidez como a alguien que ya conoces: algo como "¡Qué alegría tenerte de nuevo por aquí!". No hace falta presentarte. Tono cercano y de confianza.`;
     }
 
     const pendientes = missingFields.filter(f => f !== 'telefono');
 
     const proximoPaso = (() => {
-        if (partialData.__clienteRecurrente && !citaConfirmada) return 'Saluda con calidez y pregunta de forma abierta en qué puedes ayudarle (ej: "¿En qué te puedo ayudar?" o "¿Qué te trae por aquí?"). No presupongas que quiere agendar una cita.';
-        if (pendientes.includes('tratamiento')) return 'Pregunta qué tratamiento le interesa, de forma natural.';
-        if (pendientes.includes('nombre')) return 'Pregunta cómo se llama.';
-        if (!partialData.preferencia_horaria) return 'Pregunta SOLO cuándo le viene mejor. Quieres saber DOS cosas: (1) si prefiere turno de mañana o turno de tarde, y (2) si esta semana o la siguiente. Hazlo en una sola pregunta natural, algo como "¿Qué te viene mejor, por las mañanas o por las tardes? ¿Esta semana o la siguiente?" NUNCA digas "para mañana" ni ningún día concreto. NUNCA preguntes "¿a qué hora?" ni propongas ningún hueco todavía.';
-        if (slotsDisponibles.length > 0) return `Propón el primer hueco disponible: "${slotsDisponibles[0]?.texto}". Pregunta si le va bien.`;
+        if (partialData.__bizumAsked || reservaConfirmada) return 'Sigue las instrucciones del modo activo indicado más abajo.';
+        if (partialData.__clienteRecurrente) return 'Saluda con calidez y pregunta de forma abierta en qué puedes ayudarle.';
+        if (pendientes.includes('nombre')) return 'Pregunta cómo se llama (o a nombre de quién hacemos la reserva).';
+        if (pendientes.includes('personas')) return 'Pregunta para cuántas personas sería la mesa.';
+        if (!partialData.preferencia_horaria) return 'Pregunta SOLO cuándo le viene mejor. Quieres saber DOS cosas: (1) si prefiere comida o cena, y (2) si esta semana o la siguiente. Hazlo en una sola pregunta natural. NUNCA propongas ninguna mesa todavía.';
+        if (slotsDisponibles.length > 0) return `Propón la primera mesa disponible: "${slotsDisponibles[0]?.texto}". Pregunta si le va bien.`;
         return 'Espera confirmación o nueva preferencia.';
     })();
 
-    return `Eres ${nombreBot}, la asistente de ${nombreClinica}. Hablas por WhatsApp con clientes que vienen de Instagram.
-Tu misión: agendar una cita de forma natural, como lo haría una recepcionista amable por mensaje.
+    const contextoActual = `Intención detectada: ${intent}\nDatos del cliente: ${JSON.stringify(partialData, null, 2)}`;
+    const resumenAnterior = summary ? `RESUMEN DE CONVERSACIONES ANTERIORES CON ESTE CLIENTE:\n${summary}\n\nUsa este contexto para personalizar tu respuesta, pero no lo menciones explícitamente al cliente.` : '';
+    const customPrefix = agentCfg?.system_prompt ? `${agentCfg.system_prompt}\n\n` : '';
 
-${direccion ? `CLÍNICA: ${direccion}` : ''}
+    return `${customPrefix}# ── IDENTIDAD ──────────────────────────────────────────────────────────────
 
-TRATAMIENTOS DISPONIBLES:
-${servicios || '  (en configuración)'}
+Eres ${nombreBot}, la asistente virtual de ${nombreRestaurante}, un restaurante de alta cocina (referencia Michelin) en Palencia.
+Atiendes por WhatsApp las reservas de mesa y dudas de los clientes.
+No eres un bot. Eres una asistente con un trato exquisito: elegante, cercana y profesional.
+
+# ── EL RESTAURANTE ─────────────────────────────────────────────────────────
+
+${direccion}${telefono ? `\nTeléfono: ${telefono}` : ''}
+
+# ── PREGUNTAS FRECUENTES ───────────────────────────────────────────────────
+
+${faqsStr}
+
+Usa esta información para responder dudas. Si te preguntan algo que no está aquí, dilo con naturalidad y ofrece escalar con accion: "escalar_humano".
+
+# ── DISPONIBILIDAD DE MESAS ────────────────────────────────────────────────
+
+MESAS DISPONIBLES:
+${slotsStr}
+
+NUNCA inventes fechas, horas ni datos. Solo usa las mesas de esta lista.
+
+# ── DATO QUE NECESITAS AHORA ───────────────────────────────────────────────
+
+SIGUIENTE PASO: ${proximoPaso}
+
+ORDEN DEL FLUJO:
+1. Si falta el nombre → pregunta a nombre de quién hacemos la reserva.
+2. Si falta el número de personas → pregunta para cuántos sería la mesa.
+3. Si falta la preferencia horaria → pregunta cuándo le viene mejor.
+4. Solo cuando tengas nombre + personas + preferencia → propón máximo 2 mesas.
+5. Si el cliente menciona una ocasión especial guárdala en datos.ocasion.
+6. Si el cliente menciona alergias guárdalas en datos.allergies, preferencias en datos.preferences.
+7. Cuando el cliente acepte una mesa → marca reserva_confirmada: true.
+
+# ── MODOS ESPECIALES ──────────────────────────────────────────────────────
+${modoBizum}
+${modoReagendamiento}
+${modoClienteRecurrente}
+
+# ── CONTEXTO ACTUAL ────────────────────────────────────────────────────────
+
+${contextoActual}
+
+${resumenAnterior}
+
+# ── PERSONALIDAD Y TONO ────────────────────────────────────────────────────
+
+- Habla de forma natural y elegante. Frases cortas. Nada de párrafos largos.
+- 0 o 1 emoji por mensaje. Sin repetir el mismo emoji en la misma conversación.
+- Nunca digas "Entendido", "Procesando" ni nada robótico.
+- Máximo 3 líneas por mensaje. Una sola pregunta por mensaje.
+
+# ── REGLAS DURAS ───────────────────────────────────────────────────────────
+
+1. Una pregunta por mensaje. Nunca dos seguidas.
+2. Nunca inventes mesas, fechas, horas ni datos del cliente.
+3. Nunca repitas literalmente lo que acaba de decir el cliente.
+4. Si el cliente llega solo con "hola", pregunta qué necesita.
+
+# ── FORMATO DE SALIDA ──────────────────────────────────────────────────────
+
+Responde SIEMPRE con este JSON y nada más:
+
+{
+  "respuesta": "mensaje para el cliente",
+  "reserva_confirmada": false,
+  "slot_rechazado": false,
+  "accion": null,
+  "datos": {
+    "nombre": null, "telefono": null, "personas": null,
+    "fecha_cita": null, "hora_cita": null, "ocasion": null,
+    "allergies": null, "preferences": null, "notas": null
+  }
+}
+
+Valores posibles de accion: "cancelar" | "cambiar" | "escalar_humano" | null${partialData.__reagendando ? '\nEn modo reagendamiento, accion es siempre null.' : ''}
+Usa "escalar_humano" si el cliente pide hablar con una persona o la situación supera lo que puedes gestionar.`;
+}
+
+// ─── Sante prompt (salón de belleza) ────────────────────────────────────────
+
+function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg) {
+    const info = agentCfg?.business_info || {};
+    const services = agentCfg?.services || [];
+    const handoffMessage = agentCfg?.handoff_message || 'Un momento, te paso con alguien del equipo.';
+
+    const salonName = info.companyName || 'Sante Healthy Hair Salon';
+    const botName = info.botName || 'Asistente de Santé';
+    const direccion = info.direccion || '';
+    const cancelacion = info.cancelacion || 'Avisar con 48 horas de antelación';
+
+    // Services catalog
+    const categorias = [...new Set(services.map(s => s.categoria))];
+    const catalogoStr = categorias.map(cat => {
+        const items = services.filter(s => s.categoria === cat);
+        return `${cat}:\n` + items.map(s => `  • ${s.nombre} — ${s.precio}€ (${s.duracion} min)`).join('\n');
+    }).join('\n\n');
+
+    // Team
+    const equipo = info.equipo || [];
+    const equipoStr = equipo.map(e =>
+        `• ${e.nombre} — ${e.rol}${e.disponibilidad ? ` (${e.disponibilidad})` : ''}`
+    ).join('\n');
+
+    // Upselling rules
+    const upselling = info.upselling || [];
+    const upsellingStr = upselling.map(u =>
+        `• Si pide "${u.servicio}" → sugiere: ${u.sugerencias.join(', ')}`
+    ).join('\n');
+
+    // Available slots (injected from calendar-sante)
+    const slotsDisponibles = partialData.__availableSlots || [];
+    const slotsStr = slotsDisponibles.length > 0
+        ? slotsDisponibles.map((s, i) => `  ${i + 1}. ${s.texto}`).join('\n')
+        : 'Todavía no hay huecos cargados — necesito saber qué servicio quiere la clienta antes de buscar disponibilidad.';
+
+    // Selected service info
+    const selectedService = partialData.__selectedService;
+    const selectedStylist = partialData.__selectedStylist;
+    const clientLanguage = partialData.__clientLanguage || null;
+    const langConstraint = clientLanguage
+        ? `Idioma de la clienta (ya detectado): "${clientLanguage}". DEBES responder en "${clientLanguage}".`
+        : 'Aún no se conoce el idioma. Detecta el idioma de su PRIMER mensaje y responde en ese mismo idioma.';
+
+    // Modes
+    let modoCita = '';
+    if (citaConfirmada) {
+        modoCita = `
+MODO CITA CONFIRMADA:
+* La cita ya está confirmada. NO vuelvas a pedir datos.
+* Responde dudas con naturalidad.
+* Si quiere cancelar → accion: "cancelar". Si quiere cambiar → accion: "cambiar".`;
+    }
+
+    const modoReagendamiento = partialData.__reagendando ? `
+MODO REAGENDAMIENTO:
+* La clienta quiere cambiar su cita. Buscando nuevos huecos.
+* NUNCA devuelvas accion: "cambiar" — ya estamos en ese flujo.` : '';
+
+    let modoClienteRecurrente = '';
+    if (partialData.__clienteRecurrente) {
+        const stylistHabitual = partialData.__preferredStylistName;
+        const ultimoServicio = partialData.__ultimoServicio;
+        const ultimaEstilista = partialData.__ultimaEstilista;
+        let historialStr = partialData.__ultimaVisita
+            ? `Su última visita fue el ${partialData.__ultimaVisita}.`
+            : 'Ya ha venido al salón antes.';
+        if (ultimoServicio) {
+            historialStr += ` Su último servicio fue ${ultimoServicio}`;
+            if (ultimaEstilista) historialStr += ` con ${ultimaEstilista}`;
+            historialStr += '.';
+        }
+        modoClienteRecurrente = `
+CLIENTA RECURRENTE:
+${historialStr}
+${stylistHabitual ? `Su estilista habitual es ${stylistHabitual}. Sugiere primero esa estilista.` : ''}
+Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a su último servicio de forma natural.`;
+    }
+
+    // Next step logic
+    const proximoPaso = (() => {
+        if (citaConfirmada) return 'Sigue las instrucciones del modo cita confirmada.';
+        if (partialData.__clienteRecurrente && !selectedService) return 'Saluda con calidez y pregunta en qué puedes ayudarla.';
+        if (!partialData.nombre && !partialData.__clienteRecurrente) return 'Saluda y pregunta cómo se llama.';
+        if (!selectedService) return 'Pregunta qué servicio necesita. Si no tiene claro, ofrécele las categorías principales.';
+        if (partialData.__upsellingSuggested === false) return `UPSELLING: antes de buscar disponibilidad, sugiere los servicios complementarios de forma natural y sutil. No los impongas.`;
+        if (!selectedStylist && !partialData.__stylistAutoAssigned) return '¿Tiene preferencia por alguna estilista en concreto? Si no, le asignamos la mejor disponible.';
+        if (slotsDisponibles.length > 0) return `Propón los huecos disponibles. Pregunta cuál le va bien.`;
+        return 'Espera confirmación o nueva preferencia.';
+    })();
+
+    const contextoActual = `Intención detectada: ${intent}\nDatos recogidos: ${JSON.stringify(partialData, null, 2)}`;
+    const resumenAnterior = summary ? `RESUMEN DE CONVERSACIONES ANTERIORES:\n${summary}` : '';
+
+    return `# ── IDENTIDAD ──────────────────────────────────────────────────────────────
+
+Eres ${botName}, la asistente virtual de ${salonName}, un salón de belleza y bienestar en Alicante.
+Atiendes por WhatsApp a las clientas para agendar citas, resolver dudas y sugerir servicios.
+Tono: cercano, cálido y profesional. Como una amiga que trabaja en el salón.
+
+# ── IDIOMA (OBLIGATORIO) ──────────────────────────────────────────────────
+
+REGLA CRÍTICA: El campo "respuesta" DEBE estar en el idioma de la clienta, NO en español (a menos que hable español).
+Aunque estas instrucciones están en español, tu respuesta SIEMPRE va en el idioma detectado.
+
+${langConstraint}
+
+Idiomas soportados: español ("es"), inglés ("en"), ruso ("ru"), ucraniano ("uk").
+Incluye "idioma_detectado" con el código correspondiente.
+
+Ejemplos:
+
+Cliente: "Hi, I'd like to book an appointment"
+→ "respuesta": "Hi! Welcome to Santé 😊 What's your name?", "idioma_detectado": "en"
+
+Cliente: "Привет, хочу записаться"
+→ "respuesta": "Привет! Добро пожаловать в Santé 😊 Как тебя зовут?", "idioma_detectado": "ru"
+
+Cliente: "Привіт, хочу записатися"
+→ "respuesta": "Привіт! Ласкаво просимо до Santé 😊 Як тебе звати?", "idioma_detectado": "uk"
+
+Cliente: "Hola, quiero pedir cita"
+→ "respuesta": "¡Hola! Bienvenida a Santé 😊 ¿Cómo te llamas?", "idioma_detectado": "es"
+
+# ── EL SALÓN ───────────────────────────────────────────────────────────────
+
+${direccion}
+Política de cancelación: ${cancelacion}
+
+# ── EQUIPO ─────────────────────────────────────────────────────────────────
+
+${equipoStr}
+
+# ── CATÁLOGO DE SERVICIOS ──────────────────────────────────────────────────
+
+${catalogoStr}
+
+# ── REGLAS DE UPSELLING ────────────────────────────────────────────────────
+
+Después de que la clienta elija su servicio principal, sugiere de forma natural UN servicio complementario según estas reglas:
+${upsellingStr}
+
+No insistas si dice que no. Sé sutil: "Mientras el color actúa, ¿te gustaría aprovechar para una manicura?"
+
+# ── DISPONIBILIDAD ─────────────────────────────────────────────────────────
 
 HUECOS DISPONIBLES:
 ${slotsStr}
 
-PRÓXIMO PASO EN ESTA CONVERSACIÓN (SIGUE ESTE ORDEN, NO TE LO SALTES):
-${proximoPaso}
-${modoClienteRecurrente}${modoReagendamiento}
-REGLA CRÍTICA — ORDEN DEL FLUJO (SIGUE ESTE ORDEN ESTRICTAMENTE):
-1. Si falta el tratamiento → SOLO pregunta el tratamiento. NUNCA menciones fecha, hora ni disponibilidad.
-2. Si falta el nombre → SOLO pregunta cómo se llama. Nada más.
-3. Si falta la preferencia horaria → SOLO pregunta cuándo le viene mejor: turno de mañana o turno de tarde, y si esta semana o la siguiente. NUNCA digas "para mañana" ni ningún día concreto. NUNCA preguntes "¿a qué hora?" ni propongas ningún hueco. NUNCA uses la lista de HUECOS DISPONIBLES hasta tener esta preferencia.
-4. Solo cuando tengas tratamiento + nombre + preferencia → propón el primer hueco de HUECOS DISPONIBLES.
-* NUNCA inventes fechas, horas ni huecos. Si HUECOS DISPONIBLES dice que no hay huecos cargados, es porque falta la preferencia horaria → pregúntala.
-* NUNCA saltes ningún paso del orden anterior.
+NUNCA inventes fechas, horas ni disponibilidad. Solo usa los huecos de esta lista.
 
-CÓMO HABLAR:
-* Mensajes cortos, máximo 3 líneas. Una sola pregunta por mensaje.
-* Tono cercano y cálido, como una persona real. Nada de frases corporativas.
-* El teléfono del cliente ya está guardado — NUNCA lo menciones ni lo pidas.
-* No expliques qué datos tienes o qué te falta. Solo pregunta de forma natural.
-* No uses listas con bullets para hacer preguntas. Escribe como en una conversación.
-* Si preguntan precio → dalo si lo tienes; si no, di que el equipo lo confirmará en consulta.
-* Si preguntan cómo funciona → explica en 1-2 frases y redirige a concretar la cita.
-* Emojis: 0 o 1 por mensaje. Solo cuando añaden calidez real, no por costumbre. Varía: mira el historial y no repitas el mismo emoji que usaste en el mensaje anterior.
-* NUNCA inventes datos del cliente.
-${modoPostCita}
+# ── DATO QUE NECESITAS AHORA ───────────────────────────────────────────────
 
-CONTEXTO ACTUAL:
-* Intención detectada: ${intent}
-* Datos del cliente: ${JSON.stringify(partialData, null, 2)}
+SIGUIENTE PASO: ${proximoPaso}
 
-REGLA ESTRICTA DE TRATAMIENTOS:
-* En "datos.tratamiento" pon SOLO lo que el cliente pidió explícitamente Y que esté en TRATAMIENTOS DISPONIBLES.
-* Si el cliente pide algo que NO está en la lista → díselo y pregunta si quiere algún otro de la lista. NUNCA pongas un tratamiento diferente al que pidió. NUNCA reserves con un tratamiento que el cliente no haya confirmado.
-* Si el cliente dice algo ambiguo ("labios", "cara") → pregunta a cuál se refiere antes de agendar.
+FLUJO DE LA CITA:
+1. Saludo → pregunta nombre si es nueva (si es recurrente, salúdala por nombre).
+2. Pregunta qué servicio necesita. Si dice algo genérico ("cortarme el pelo"), mapéalo al servicio más probable del catálogo.
+3. Confirma servicio + precio + duración.
+4. UPSELLING: sugiere UN servicio complementario según las reglas.
+5. ¿Tiene preferencia de estilista? Si es recurrente, sugiere su estilista habitual. Si no pide ninguna, dile que le asignamos la mejor disponible.
+6. Propón los huecos disponibles (máximo 3). Pregunta cuál le va bien.
+7. Cuando acepte un hueco → marca cita_confirmada: true.
 
-VALIDACIÓN OBLIGATORIA — NUNCA LA SALTES:
-Antes de devolver "cita_confirmada": true necesitas confirmar exactamente estos 4 datos: nombre, tratamiento, fecha_cita y hora_cita.
-Si falta alguno → pregúntalo antes de confirmar. NUNCA marques cita_confirmada: true con datos incompletos.
-Si el cliente no quiere dar su nombre → responde: "Sin el nombre no puedo reservar la cita, lo necesito para guardar el hueco 😊"
-Si el cliente no quiere indicar el tratamiento → responde: "Necesito saber qué tratamiento quieres para poder buscarte un hueco 😊"
+# ── MODOS ESPECIALES ──────────────────────────────────────────────────────
+${modoCita}
+${modoReagendamiento}
+${modoClienteRecurrente}
 
-FORMATO DE SALIDA (JSON estricto):
+# ── CONTEXTO ACTUAL ────────────────────────────────────────────────────────
+
+${contextoActual}
+
+${resumenAnterior}
+
+# ── PERSONALIDAD Y TONO ────────────────────────────────────────────────────
+
+- Habla de forma natural. Frases cortas y directas.
+- 0 o 1 emoji por mensaje.
+- Nunca digas nada robótico.
+- Máximo 3-4 líneas por mensaje. Una sola pregunta por mensaje.
+
+# ── REGLAS DURAS ───────────────────────────────────────────────────────────
+
+1. Una pregunta por mensaje. Nunca dos seguidas.
+2. Nunca inventes huecos, fechas, precios ni datos.
+3. Si la clienta pide algo que no puedes gestionar → accion: "escalar_humano". Di: "${handoffMessage}"
+4. Si llega solo con "hola", pregunta qué necesita.
+
+# ── FORMATO DE SALIDA ──────────────────────────────────────────────────────
+
+Responde SIEMPRE con este JSON y nada más:
+
 {
-  "respuesta": "mensaje para el cliente",
+  "respuesta": "mensaje para la clienta",
   "cita_confirmada": false,
   "slot_rechazado": false,
   "accion": null,
+  "idioma_detectado": "es",
   "datos": {
     "nombre": null,
-    "telefono": null,
-    "tratamiento": null,
-    "preferencia_horaria": null,
+    "servicio": null,
+    "categoria_servicio": null,
+    "estilista_preferida": null,
     "fecha_cita": null,
     "hora_cita": null,
+    "upselling_aceptado": [],
     "notas": null
   }
 }
 
-NOTAS SOBRE EL JSON:
-* cita_confirmada: true → solo cuando el cliente acepta explícitamente el hueco propuesto. NUNCA junto con slot_rechazado: true.
-* slot_rechazado: true → cuando el cliente rechaza el hueco propuesto y quiere otro. NUNCA junto con cita_confirmada: true.
-* accion: "cancelar" | "cambiar" | null → solo si la cita está ya confirmada y el cliente pide modificarla${partialData.__reagendando ? '. En modo reagendamiento, SIEMPRE null.' : ''}
-* En "datos.nombre": pon ÚNICAMENTE el nombre propio del cliente (ej: "María"). NUNCA pongas ahí el nombre de un tratamiento.
-* En "datos.tratamiento": pon únicamente tratamientos de la lista TRATAMIENTOS DISPONIBLES. Si lo que dijo el cliente no aparece en esa lista, pon null.
-* Solo rellena en "datos" los campos que el cliente haya mencionado explícitamente en este mensaje.
-* No inventes datos. Si no los mencionó → null`;
+Valores posibles de accion: "cancelar" | "cambiar" | "escalar_humano" | null
+cita_confirmada: true → solo cuando la clienta acepta explícitamente un hueco. NUNCA junto con slot_rechazado: true.`;
 }
 
-function getFallbackResponse(partialData) {
-    return {
-        respuesta: 'Se me ha ido la conexión un momento 😅 ¿me repites eso?',
-        cita_confirmada: false,
+// ─── Dispatcher ─────────────────────────────────────────────────────────────
+
+function buildSystemPrompt(orgId, partialData, intent, reservaConfirmada, summary, agentCfg) {
+    const orgType = getOrgType(orgId);
+    if (orgType === 'salon') {
+        return buildSantePrompt(partialData, intent, reservaConfirmada, summary, agentCfg);
+    }
+    return buildSanRemoPrompt(partialData, intent, reservaConfirmada, summary, agentCfg);
+}
+
+function getFallbackResponse(orgId, language) {
+    const orgType = getOrgType(orgId);
+    const fallbackMessages = {
+        en: 'I lost connection for a moment 😅 Could you repeat that?',
+        ru: 'Связь прервалась на секунду 😅 Можешь повторить?',
+        uk: "Зв'язок перервався на мить 😅 Можеш повторити?",
+    };
+    const fallbackText = (language && fallbackMessages[language]) || 'Se me ha ido la conexión un momento 😅 ¿me repites eso?';
+    const base = {
+        respuesta: fallbackText,
         slot_rechazado: false,
         accion: null,
-        datos: { nombre: null, telefono: null, tratamiento: null, preferencia_horaria: null, fecha_cita: null, hora_cita: null, notas: null }
+    };
+    if (orgType === 'salon') {
+        return {
+            ...base,
+            cita_confirmada: false,
+            idioma_detectado: language || 'es',
+            datos: { nombre: null, servicio: null, categoria_servicio: null, estilista_preferida: null, fecha_cita: null, hora_cita: null, upselling_aceptado: [], notas: null },
+        };
+    }
+    return {
+        ...base,
+        reserva_confirmada: false,
+        datos: { nombre: null, telefono: null, personas: null, fecha_cita: null, hora_cita: null, ocasion: null, allergies: null, preferences: null, notas: null },
     };
 }
 
-async function getChatbotResponse(history, partialData = {}, intent = 'general', citaConfirmada = false, summary = null) {
-    if (!OPENAI_API_KEY) return getFallbackResponse(partialData);
+async function getChatbotResponse(orgId, history, partialData = {}, intent = 'general', reservaConfirmada = false, summary = null) {
+    const clientLang = partialData?.__clientLanguage || null;
+    if (!OPENAI_API_KEY) return getFallbackResponse(orgId, clientLang);
+
+    const agentCfg = await db.getAgentConfig(orgId).catch(() => null);
 
     const cleanHistory = history
         .filter(m => m && m.content && typeof m.content === 'string' && m.content.trim())
         .slice(-14);
 
     const messages = [
-        { role: 'system', content: buildSystemPrompt(partialData, intent, citaConfirmada) },
+        { role: 'system', content: buildSystemPrompt(orgId, partialData, intent, reservaConfirmada, summary, agentCfg) },
+        ...cleanHistory.map(m => ({ role: m.role, content: m.content })),
     ];
-
-    if (summary) {
-        messages.push({
-            role: 'system',
-            content: `CONTEXTO DE CONVERSACIONES ANTERIORES CON ESTE CLIENTE:\n${summary}\n\nUsa este contexto para personalizar tu respuesta, pero no lo menciones explícitamente al cliente.`
-        });
-    }
-
-    messages.push(...cleanHistory.map(m => ({ role: m.role, content: m.content })));
 
     let response;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -209,29 +455,38 @@ async function getChatbotResponse(history, partialData = {}, intent = 'general',
             break;
         } catch (e) {
             if (attempt === 1) {
-                console.error('❌ Error OpenAI definitivo:', e.response?.data || e.message);
-                return getFallbackResponse(partialData);
+                logger.error('openai_error_definitivo', { error: e.response?.data || e.message });
+                return getFallbackResponse(orgId, clientLang);
             }
-            console.warn('⚠️ Reintentando LLM...');
+            logger.warn('openai_reintentando');
         }
     }
 
     const raw = response?.data?.choices?.[0]?.message?.content;
-    if (!raw || !raw.includes('{')) return getFallbackResponse(partialData);
+    if (!raw || !raw.includes('{')) return getFallbackResponse(orgId, clientLang);
 
     let parsed;
     try {
         parsed = JSON.parse(raw);
     } catch {
-        return getFallbackResponse(partialData);
+        return getFallbackResponse(orgId, clientLang);
     }
 
-    if (!parsed.respuesta) return getFallbackResponse(partialData);
+    if (!parsed.respuesta) return getFallbackResponse(orgId, clientLang);
 
-    // Normalizar campos faltantes en datos
-    const datosBase = { nombre: null, telefono: null, tratamiento: null, preferencia_horaria: null, fecha_cita: null, hora_cita: null, notas: null };
-    parsed.datos = { ...datosBase, ...(parsed.datos || {}) };
-    parsed.cita_confirmada = !!parsed.cita_confirmada;
+    const orgType = getOrgType(orgId);
+    if (orgType === 'salon') {
+        const datosBase = { nombre: null, servicio: null, categoria_servicio: null, estilista_preferida: null, fecha_cita: null, hora_cita: null, upselling_aceptado: [], notas: null };
+        parsed.datos = { ...datosBase, ...(parsed.datos || {}) };
+        parsed.cita_confirmada = !!parsed.cita_confirmada;
+        parsed.idioma_detectado = parsed.idioma_detectado || 'es';
+        // Normalize: salon uses cita_confirmada, map to reserva_confirmada for bot.js compatibility
+        parsed.reserva_confirmada = parsed.cita_confirmada;
+    } else {
+        const datosBase = { nombre: null, telefono: null, personas: null, fecha_cita: null, hora_cita: null, ocasion: null, allergies: null, preferences: null, notas: null };
+        parsed.datos = { ...datosBase, ...(parsed.datos || {}) };
+        parsed.reserva_confirmada = !!parsed.reserva_confirmada;
+    }
     parsed.slot_rechazado = !!parsed.slot_rechazado;
     parsed.accion = parsed.accion || null;
 
@@ -255,7 +510,7 @@ async function summarizeHistory(messages, partialData = {}) {
             messages: [
                 {
                     role: 'system',
-                    content: 'Resume en 3-4 frases los puntos clave de esta conversación de WhatsApp entre un bot de clínica estética y un cliente. Incluye: nombre del cliente, tratamiento de interés, preferencias horarias, estado de la cita, y cualquier detalle relevante. Sin saludos, solo hechos concretos.'
+                    content: 'Resume en 3-4 frases los puntos clave de esta conversación de WhatsApp. Incluye: nombre del cliente, servicio solicitado, fecha/hora de la cita, estilista, y cualquier detalle relevante. Sin saludos, solo hechos concretos.'
                 },
                 { role: 'user', content: conversation }
             ],
@@ -267,7 +522,7 @@ async function summarizeHistory(messages, partialData = {}) {
 
         return response?.data?.choices?.[0]?.message?.content?.trim() || null;
     } catch (e) {
-        console.error('Error summarizeHistory:', e.message);
+        logger.error('error_summarize_history', { error: e.message });
         return null;
     }
 }

@@ -16,6 +16,9 @@ data/session
 # Dependencias
 node_modules/
 
+# Supabase CLI (estado local)
+supabase/.temp/
+
 # Herramientas de agentes (no son parte del proyecto)
 .agents/
 .devin/

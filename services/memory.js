@@ -5,7 +5,7 @@ const Database = require('better-sqlite3');
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const DB_PATH = path.join(DATA_DIR, 'clients.db');
 const LEGACY_JSON = path.join(DATA_DIR, 'clients.json');
-const MAX_HISTORY_LOADED = 40; // messages loaded into RAM per session
+const MAX_HISTORY_LOADED = 40;
 
 // --- Init ---
 
@@ -15,7 +15,6 @@ if (!fs.existsSync(DATA_DIR)) {
 
 const db = new Database(DB_PATH);
 
-// WAL mode: writes survive crashes, reads never block writes
 db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
 
@@ -33,16 +32,13 @@ db.exec(`
     firstSeen    INTEGER NOT NULL,
     lastSeen     INTEGER NOT NULL
   );
-  -- Add summary column if upgrading from older DB version
   CREATE TABLE IF NOT EXISTS _migrations (id TEXT PRIMARY KEY);
 `);
 
-// Safe migration: add summary column if it doesn't exist yet
 try {
   db.exec(`ALTER TABLE clients ADD COLUMN summary TEXT`);
 } catch (_) { /* column already exists */ }
 
-// Prepared statements — compiled once, reused on every call
 const stmtGet    = db.prepare('SELECT * FROM clients WHERE phone = ?');
 const stmtUpsert = db.prepare(`
   INSERT INTO clients
@@ -80,7 +76,7 @@ function migrateFromJSON() {
   const insert = db.transaction((entries) => {
     for (const [phone, entry] of entries) {
       const existing = stmtGet.get(phone);
-      if (existing) continue; // Never overwrite existing DB data
+      if (existing) continue;
 
       stmtUpsert.run({
         phone,
@@ -104,7 +100,6 @@ function migrateFromJSON() {
   insert(entries);
   console.log(`📦 Migración completada: ${entries.length} clientes importados desde JSON`);
 
-  // Rename legacy file to avoid re-importing
   try {
     fs.renameSync(LEGACY_JSON, LEGACY_JSON + '.migrated');
   } catch (_) {}
@@ -115,10 +110,23 @@ migrateFromJSON();
 console.log(`📂 Base de datos SQLite lista: ${clientCount()} clientes`);
 
 // --- Public API ---
+// orgId prefix in the key ensures the same phone talking to two orgs gets separate sessions.
 
-function loadClient(phone) {
-  const key = normalizePhone(phone);
-  const row = stmtGet.get(key);
+function makeKey(orgId, phone) {
+  const digits = phone.replace('@c.us', '').replace(/\D/g, '');
+  return orgId ? `${orgId}:${digits}` : digits;
+}
+
+function loadClient(orgId, phone) {
+  const key = makeKey(orgId, phone);
+  let row = stmtGet.get(key);
+
+  // Fallback: try legacy key (no orgId prefix) for backward compat
+  if (!row && orgId) {
+    const legacyKey = phone.replace('@c.us', '').replace(/\D/g, '');
+    row = stmtGet.get(legacyKey);
+  }
+
   if (!row) return null;
 
   const fullHistory = JSON.parse(row.history);
@@ -128,7 +136,6 @@ function loadClient(phone) {
 
   return {
     partialData:   JSON.parse(row.partialData),
-    // Load only recent messages into RAM; older ones are captured in summary
     history:       fullHistory.slice(-MAX_HISTORY_LOADED),
     summary:       row.summary || null,
     leadGuardado:  row.leadGuardado === 1,
@@ -142,16 +149,14 @@ function loadClient(phone) {
   };
 }
 
-function saveClient(phone, session) {
-  const key = normalizePhone(phone);
+function saveClient(orgId, phone, session) {
+  const key = makeKey(orgId, phone);
   const existing = stmtGet.get(key);
 
-  // Merge in-RAM history with whatever is already persisted so we never lose old messages
   let mergedHistory = session.history || [];
   if (existing) {
     const storedHistory = JSON.parse(existing.history);
     if (storedHistory.length > mergedHistory.length) {
-      // Keep older messages from DB + new ones from session
       const oldPart = storedHistory.slice(0, storedHistory.length - MAX_HISTORY_LOADED);
       mergedHistory = [...oldPart, ...mergedHistory];
     }
@@ -172,24 +177,20 @@ function saveClient(phone, session) {
   });
 }
 
-function saveSummary(phone, summary) {
-  stmtSaveSummary.run(summary, normalizePhone(phone));
+function saveSummary(orgId, phone, summary) {
+  stmtSaveSummary.run(summary, makeKey(orgId, phone));
 }
 
-function isReturningClient(phone) {
-  return Boolean(stmtExists.get(normalizePhone(phone)));
+function isReturningClient(orgId, phone) {
+  return Boolean(stmtExists.get(makeKey(orgId, phone)));
 }
 
-function deleteClient(phone) {
-  stmtDelete.run(normalizePhone(phone));
+function deleteClient(orgId, phone) {
+  stmtDelete.run(makeKey(orgId, phone));
 }
 
 function clientCount() {
   return stmtCount.get().n;
-}
-
-function normalizePhone(phone) {
-  return phone.replace('@c.us', '').replace(/\D/g, '');
 }
 
 module.exports = { loadClient, saveClient, saveSummary, isReturningClient, clientCount, deleteClient };
