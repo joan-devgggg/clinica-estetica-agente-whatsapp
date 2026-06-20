@@ -156,6 +156,15 @@ async function sendDirectMessage(orgId, userPhone, text) {
 }
 
 // ─── Slots ───────────────────────────────────────────────────────────────────
+// Una estilista solo es válida para un servicio si tiene la skill de su categoría.
+// Evita asignar, p.ej., a Veronika para un masaje (que solo hace Larisa): si la
+// clienta la nombra pero no es elegible, la ignoramos y el motor elige una válida.
+function stylistCanDoService(stylist, service) {
+    if (!service?.categoria) return true; // sin servicio aún → no podemos filtrar
+    const skills = Array.isArray(stylist?.skills) ? stylist.skills : [];
+    return skills.some(s => String(s).toLowerCase() === String(service.categoria).toLowerCase());
+}
+
 async function loadAvailableSlots(session) {
     const orgId = session.orgId;
     try {
@@ -168,6 +177,16 @@ async function loadAvailableSlots(session) {
                 preferencia: session.partialData.preferencia_horaria || {},
             });
             session.availableSlots = slots;
+
+            // Si solo hay una estilista posible para el servicio (p.ej. masajes → Larisa),
+            // asígnala automáticamente y sáltate la pregunta de preferencia. Así el flujo
+            // avanza directo a proponer huecos en vez de quedarse atascado pidiendo estilista.
+            if (!session.selectedStylist && slots.length > 0) {
+                const distinctStylists = [...new Set(slots.map(s => s.stylistId))];
+                if (distinctStylists.length === 1) {
+                    session.selectedStylist = { id: slots[0].stylistId, nombre: slots[0].stylistName };
+                }
+            }
         } else {
             const pref = session.partialData.preferencia_horaria || {};
             const slots = await calendar.getAvailableSlots(pref);
@@ -598,6 +617,25 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             return;
         }
 
+        // ─── Salon: detectar servicio/estilista ANTES del LLM ────────────
+        // Así los huecos se calculan en el MISMO turno en que la clienta nombra
+        // el servicio (ej. "un masaje relajante") y el LLM los propone directamente,
+        // sin un turno de espera ni mensajes de "un momento".
+        if (orgType === 'salon') {
+            const agentCfgPre = await getAgentConfig(orgId);
+            if (!session.selectedService) {
+                const matchedSvc = extractServiceFromText(sanitized, agentCfgPre?.services || []);
+                if (matchedSvc) session.selectedService = matchedSvc;
+            }
+            if (!session.selectedStylist) {
+                const stylistsPre = await getStylistsByOrg(orgId);
+                const matchedSty = extractStylistFromText(sanitized, stylistsPre);
+                if (matchedSty && stylistCanDoService(matchedSty, session.selectedService)) {
+                    session.selectedStylist = { id: matchedSty.id, nombre: matchedSty.name };
+                }
+            }
+        }
+
         // ─── Load slots when ready ───────────────────────────────────────
         if (orgType === 'salon') {
             // Load slots when we have a service selected
@@ -607,6 +645,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             const prefCambiada = JSON.stringify(prevData.preferencia_horaria) !== JSON.stringify(session.partialData.preferencia_horaria);
             if (session.selectedService && prefCambiada) {
                 await loadAvailableSlots(session);
+            }
+            // Si la clienta no tiene preferencia de estilista ("me da igual", "la que sea"...),
+            // asignamos la primera disponible y avanzamos a proponer huecos.
+            if (session.selectedService && !session.selectedStylist && session.availableSlots.length > 0
+                && /\b(me da igual|cualquiera|la que sea|el que sea|no tengo preferencia|me es igual|sin preferencia|whoever|anyone|любой|любую)\b/i.test(sanitized)) {
+                const slot = session.availableSlots[session.currentSlotIndex] || session.availableSlots[0];
+                session.selectedStylist = { id: slot.stylistId, nombre: slot.stylistName };
             }
         } else {
             const missingFields = getMissingFields(session.partialData);
@@ -713,7 +758,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             if (aiResponse.datos?.estilista_preferida && !session.selectedStylist) {
                 const stylists = await getStylistsByOrg(orgId);
                 const matched = extractStylistFromText(aiResponse.datos.estilista_preferida, stylists);
-                if (matched) session.selectedStylist = { id: matched.id, nombre: matched.name };
+                if (matched && stylistCanDoService(matched, session.selectedService)) session.selectedStylist = { id: matched.id, nombre: matched.name };
             }
 
             // Upselling tracking

@@ -257,9 +257,11 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
         if (partialData.__clienteRecurrente && !selectedService) return 'Saluda con calidez y pregunta en qué puedes ayudarla.';
         if (!partialData.nombre && !partialData.__clienteRecurrente) return 'Saluda y pregunta cómo se llama.';
         if (!selectedService) return 'Pregunta qué servicio necesita. Si no tiene claro, ofrécele las categorías principales.';
-        if (partialData.__upsellingSuggested === false) return `UPSELLING: antes de buscar disponibilidad, sugiere los servicios complementarios de forma natural y sutil. No los impongas.`;
+        if (slotsDisponibles.length > 0) {
+            return `Confirma el servicio (precio y duración) y propón directamente los huecos disponibles (máximo 3) en UN solo mensaje; pregunta cuál le viene bien. NO sugieras otros servicios en este mensaje: el upselling NUNCA sustituye ni retrasa la propuesta de huecos.`;
+        }
         if (!selectedStylist && !partialData.__stylistAutoAssigned) return '¿Tiene preferencia por alguna estilista en concreto? Si no, le asignamos la mejor disponible.';
-        if (slotsDisponibles.length > 0) return `Propón los huecos disponibles. Pregunta cuál le va bien.`;
+        if (partialData.__upsellingSuggested === false) return `Confirma el servicio (precio y duración) y, si encaja, sugiere UN servicio complementario de forma sutil.`;
         return 'Espera confirmación o nueva preferencia.';
     })();
 
@@ -311,9 +313,10 @@ ${catalogoStr}
 
 # ── REGLAS DE UPSELLING ────────────────────────────────────────────────────
 
-Después de que la clienta elija su servicio principal, sugiere de forma natural UN servicio complementario según estas reglas:
+Una vez propuestos los huecos (o cuando la clienta ya haya elegido uno), puedes sugerir de forma natural UN servicio complementario según estas reglas:
 ${upsellingStr}
 
+El upselling va SIEMPRE después de proponer la disponibilidad, nunca en lugar de ella.
 No insistas si dice que no. Sé sutil: "Mientras el color actúa, ¿te gustaría aprovechar para una manicura?"
 
 # ── DISPONIBILIDAD ─────────────────────────────────────────────────────────
@@ -322,6 +325,11 @@ HUECOS DISPONIBLES:
 ${slotsStr}
 
 NUNCA inventes fechas, horas ni disponibilidad. Solo usa los huecos de esta lista.
+La disponibilidad YA está calculada y la tienes arriba. NUNCA digas que vas a "revisar",
+"consultar" o "mirar" los huecos, ni "un momento" o "déjame ver". Cuando haya huecos en la
+lista, tu mensaje DEBE incluir esos huecos directamente (máximo 3) en ESE MISMO mensaje.
+Nunca mandes un mensaje de espera. El upselling NUNCA sustituye la propuesta de huecos:
+si hay huecos, proponlos; el complemento, como mucho, va en un mensaje POSTERIOR.
 
 # ── DATO QUE NECESITAS AHORA ───────────────────────────────────────────────
 
@@ -330,11 +338,9 @@ SIGUIENTE PASO: ${proximoPaso}
 FLUJO DE LA CITA:
 1. Saludo → pregunta nombre si es nueva (si es recurrente, salúdala por nombre).
 2. Pregunta qué servicio necesita. Si dice algo genérico ("cortarme el pelo"), mapéalo al servicio más probable del catálogo.
-3. Confirma servicio + precio + duración.
-4. UPSELLING: sugiere UN servicio complementario según las reglas.
-5. ¿Tiene preferencia de estilista? Si es recurrente, sugiere su estilista habitual. Si no pide ninguna, dile que le asignamos la mejor disponible.
-6. Propón los huecos disponibles (máximo 3). Pregunta cuál le va bien.
-7. Cuando acepte un hueco → marca cita_confirmada: true.
+3. Confirma servicio + precio + duración y, en el MISMO mensaje, propón los huecos disponibles (máximo 3) y pregunta cuál le va bien. NO sugieras otros servicios todavía.
+4. Cuando acepte un hueco → marca cita_confirmada: true.
+5. UPSELLING (solo DESPUÉS de proponer los huecos, nunca antes): sugiere UN servicio complementario según las reglas, en un mensaje aparte y sin presionar.
 
 # ── MODOS ESPECIALES ──────────────────────────────────────────────────────
 ${modoCita}

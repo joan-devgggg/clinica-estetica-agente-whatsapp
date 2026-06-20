@@ -77,7 +77,7 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
             const daySchedule = scheduleByDay.get(dayOfWeek);
             if (!daySchedule) continue;
 
-            const dateStr = date.toISOString().split('T')[0];
+            const dateStr = toLocalDateStr(date);
             const diaNombre = DIAS_SEMANA[dayOfWeek];
 
             // Filter by preference
@@ -106,7 +106,7 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
 
             // Existing appointments for this stylist on this date
             const dayAppts = appointments.filter(a => {
-                const aDate = new Date(a.starts_at).toISOString().split('T')[0];
+                const aDate = toLocalDateStr(new Date(a.starts_at));
                 return aDate === dateStr;
             }).map(a => ({
                 start: toMinutes(new Date(a.starts_at)),
@@ -115,8 +115,8 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
 
             // Blocks on this date
             const dayBlocks = blocks.filter(b => {
-                const bStart = new Date(b.starts_at).toISOString().split('T')[0];
-                const bEnd = new Date(b.ends_at).toISOString().split('T')[0];
+                const bStart = toLocalDateStr(new Date(b.starts_at));
+                const bEnd = toLocalDateStr(new Date(b.ends_at));
                 return bStart <= dateStr && bEnd >= dateStr;
             }).map(b => ({
                 start: toMinutes(new Date(b.starts_at)),
@@ -190,6 +190,16 @@ function addSlot(slots, dateStr, minuteOfDay, diaNombre, stylist, serviceDuratio
 
 function toMinutes(date) {
     return date.getHours() * 60 + date.getMinutes();
+}
+
+// Formatea una fecha como YYYY-MM-DD en hora LOCAL (no UTC).
+// Imprescindible: date.toISOString() convierte a UTC y, en zonas adelantadas
+// (España, UTC+1/+2), la medianoche local cae el día anterior → desfase de un día.
+function toLocalDateStr(date) {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
 }
 
 function formatSlotForMessage(slot) {
