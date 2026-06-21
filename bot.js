@@ -8,7 +8,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative, normalizeText } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary } = require('./services/memory');
@@ -392,6 +392,54 @@ function pickChosenSlot(session, datos) {
     return slots[session.currentSlotIndex] || slots[0];
 }
 
+// Mapea una selección posicional/ordinal de la clienta a un hueco concreto.
+// "el primero", "la 2ª", "el de las 14", "el último", o un número suelto → slot.
+// Tolerante a erratas (usa includes, no \b) porque el LLM no siempre extrae la hora
+// cuando la clienta elige por posición. Solo debe usarse cuando ya hay huecos propuestos.
+function parseSlotSelection(text, slots) {
+    if (!slots || !slots.length) return null;
+    const t = normalizeText(text);
+    if (!t) return null;
+
+    // 1) Por hora explícita ("el de las 14", "a las 15:30", "14h"). Extracción
+    //    permisiva + match estricto contra los huecos reales evita falsos positivos.
+    const horaMatch = t.match(/\b(\d{1,2})(?:[:.](\d{2}))?\s*h?\b/);
+    if (horaMatch) {
+        const target = normalizeHora(`${horaMatch[1]}:${horaMatch[2] || '00'}`);
+        const byHora = slots.find(s => normalizeHora(s.hora) === target);
+        if (byHora) return byHora;
+    }
+
+    // 2) Por ordinal en palabras (con tolerancia a erratas vía includes).
+    const ordinalGroups = [
+        { idx: 0, words: ['primero', 'primera', 'primer', '1o', '1a', '1º', '1ª'] },
+        { idx: 1, words: ['segundo', 'segunda', '2o', '2a', '2º', '2ª'] },
+        { idx: 2, words: ['tercero', 'tercera', 'tercer', '3o', '3a', '3º', '3ª'] },
+        { idx: 3, words: ['cuarto', 'cuarta', '4o', '4a', '4º', '4ª'] },
+        { idx: 4, words: ['quinto', 'quinta', '5o', '5a', '5º', '5ª'] },
+    ];
+    for (const g of ordinalGroups) {
+        if (g.idx < slots.length && g.words.some(w => t.includes(w))) return slots[g.idx];
+    }
+    if (['ultimo', 'ultima', 'el final', 'la final'].some(w => t.includes(w))) {
+        return slots[slots.length - 1];
+    }
+
+    // 3) Número de opción: suelto ("2") o con marcador ("el 2", "opción 2", "el hueco 2").
+    const bare = t.match(/^\s*(\d{1,2})\s*$/);
+    if (bare) {
+        const n = parseInt(bare[1], 10);
+        if (n >= 1 && n <= slots.length) return slots[n - 1];
+    }
+    const conMarcador = t.match(/\b(?:el|la|los|las|opcion|numero|num|hueco|hora|cita)\s+(\d{1,2})\b/);
+    if (conMarcador) {
+        const n = parseInt(conMarcador[1], 10);
+        if (n >= 1 && n <= slots.length) return slots[n - 1];
+    }
+
+    return null;
+}
+
 // Decide si la clienta ha aceptado un hueco y devuelve { slot, motivo } o null.
 // No nos fiamos solo del flag del LLM (lo omite a menudo y dice "te he reservado" sin
 // disparar el guardado → fallo silencioso). Reservamos cuando: (1) el LLM pone el flag,
@@ -413,6 +461,14 @@ function resolveSalonConfirmation(session, aiResponse, sanitized) {
         const fechaSel = aiResponse.datos?.fecha_cita || null;
         const match = session.availableSlots.find(s => normalizeHora(s.hora) === horaSel && (!fechaSel || s.fecha === fechaSel));
         if (match) return { slot: match, motivo: 'match_hora' };
+    }
+
+    // Selección posicional/ordinal: "el primero", "la segunda", "el de las 14"...
+    // El LLM a menudo NO extrae la hora cuando la clienta elige por posición, así
+    // que lo resolvemos nosotros contra la lista real de huecos propuestos.
+    if (session.slotsProposed) {
+        const bySel = parseSlotSelection(sanitized, session.availableSlots);
+        if (bySel) return { slot: bySel, motivo: 'seleccion_posicional' };
     }
 
     if (session.slotsProposed && isAffirmative(sanitized)) {
@@ -985,8 +1041,11 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         }
 
         // Marca que ya hemos propuesto huecos a la clienta: a partir de aquí un "sí/vale"
-        // se interpreta como aceptación del hueco (confirmación determinista).
-        if (orgType === 'salon' && slotsParaLLM.length > 0 && !session.reservaConfirmada) {
+        // o una selección posicional se interpreta como aceptación del hueco.
+        // Usamos availableSlots (no slotsParaLLM, que se calcula ANTES de la llamada al
+        // LLM): en el turno en que se identifica el servicio los huecos se cargan DESPUÉS,
+        // así que slotsParaLLM iba vacío y slotsProposed se quedaba un turno por detrás.
+        if (orgType === 'salon' && session.availableSlots.length > 0 && !session.reservaConfirmada) {
             session.slotsProposed = true;
         }
 
