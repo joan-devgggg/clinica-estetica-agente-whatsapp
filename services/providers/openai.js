@@ -267,6 +267,11 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
         if (partialData.__clienteRecurrente && !selectedService) return 'Saluda con calidez y pregunta en qué puedes ayudarla.';
         if (!partialData.nombre && !partialData.__clienteRecurrente) return 'Saluda y pregunta cómo se llama.';
         if (!selectedService) return 'Pregunta qué servicio necesita. Si no tiene claro, ofrécele las categorías principales.';
+        if (partialData.__askStylistFirst) {
+            const names = (partialData.__eligibleStylistNames || []).join(', ');
+            const pref = partialData.__preferredStylistName ? ` Su estilista habitual es ${partialData.__preferredStylistName}: sugiérela primero.` : '';
+            return `Confirma el servicio (precio y duración) y pregunta si prefiere alguna estilista en concreto${names ? ` (disponibles: ${names})` : ''} o si le asignas la mejor disponible.${pref} NO propongas todavía horarios concretos: primero necesitas saber la estilista.`;
+        }
         if (slotsDisponibles.length > 0) {
             return `Confirma el servicio (precio y duración) y propón directamente los huecos disponibles (máximo 3) en UN solo mensaje; pregunta cuál le viene bien. NO sugieras otros servicios en este mensaje: el upselling NUNCA sustituye ni retrasa la propuesta de huecos.`;
         }
@@ -360,9 +365,10 @@ SIGUIENTE PASO: ${proximoPaso}
 FLUJO DE LA CITA:
 1. Saludo → pregunta nombre si es nueva (si es recurrente, salúdala por nombre).
 2. Pregunta qué servicio necesita. Si dice algo genérico ("cortarme el pelo"), mapéalo al servicio más probable del catálogo.
-3. Confirma servicio + precio + duración y, en el MISMO mensaje, propón los huecos disponibles (máximo 3) y pregunta cuál le va bien. NO sugieras otros servicios todavía.
-4. Cuando acepte un hueco → marca cita_confirmada: true.
-5. UPSELLING (solo DESPUÉS de proponer los huecos, nunca antes): sugiere UN servicio complementario según las reglas, en un mensaje aparte y sin presionar.
+3. Si varias estilistas pueden hacer el servicio, pregunta si tiene preferencia (o le asignas la mejor disponible) ANTES de proponer horarios. Si solo una puede hacerlo, no preguntes.
+4. Confirma servicio + precio + duración y, en el MISMO mensaje, propón los huecos disponibles (máximo 3) y pregunta cuál le va bien. NO sugieras otros servicios todavía.
+5. Cuando acepte un hueco → marca cita_confirmada: true.
+6. UPSELLING (solo DESPUÉS de proponer los huecos, nunca antes): sugiere UN servicio complementario según las reglas, en un mensaje aparte y sin presionar.
 
 # ── MODOS ESPECIALES ──────────────────────────────────────────────────────
 ${modoCita}

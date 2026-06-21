@@ -273,9 +273,22 @@ function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], tea
         }
     }
 
-    // Time preference
+    // Time preference (semana: esta/siguiente). El periodo comida/cena del restaurante no
+    // aplica al salón, así que lo descartamos y detectamos mañana/tarde, que es lo que el
+    // motor de huecos (calendar-sante) sabe filtrar.
     const pref = extractPreferenciaHoraria(text);
-    if (pref) result.preferencia_horaria = { ...(result.preferencia_horaria || {}), ...pref };
+    if (pref) {
+        const { periodo, ...rest } = pref; // periodo de restaurante (comida/cena) no se usa aquí
+        if (Object.keys(rest).length) result.preferencia_horaria = { ...(result.preferencia_horaria || {}), ...rest };
+    }
+
+    // Periodo del día (solo expresiones inequívocas; "mañana" a secas = día siguiente, no franja).
+    const t = normalizeText(text);
+    if (/\b(por la mañana|por la manana|en la mañana|en la manana|de mañana|de manana|la mañana|la manana|morning|утром|вранці)\b/.test(t)) {
+        result.preferencia_horaria = { ...(result.preferencia_horaria || {}), periodo: 'mañana' };
+    } else if (/\b(por la tarde|en la tarde|de tarde|la tarde|afternoon|evening|днем|днём|вдень|ввечері)\b/.test(t)) {
+        result.preferencia_horaria = { ...(result.preferencia_horaria || {}), periodo: 'tarde' };
+    }
 
     return result;
 }

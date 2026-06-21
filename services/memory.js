@@ -39,16 +39,25 @@ try {
   db.exec(`ALTER TABLE clients ADD COLUMN summary TEXT`);
 } catch (_) { /* column already exists */ }
 
+// Estado específico del salón (Sante) que no cabe en partialData: servicio/estilista
+// seleccionados, idioma, upselling, etc. Se persiste para sobrevivir a reinicios de
+// PM2 o timeouts de sesión a mitad de flujo (si no, al aceptar el hueco no hay servicio
+// que resolver y la cita no se guarda). Los huecos NO se persisten: se recalculan.
+try {
+  db.exec(`ALTER TABLE clients ADD COLUMN extra TEXT`);
+} catch (_) { /* column already exists */ }
+
 const stmtGet    = db.prepare('SELECT * FROM clients WHERE phone = ?');
 const stmtUpsert = db.prepare(`
   INSERT INTO clients
-    (phone, partialData, history, summary, leadGuardado, leadStatus, botActivo, messageCount, variant, firstSeen, lastSeen)
+    (phone, partialData, history, summary, extra, leadGuardado, leadStatus, botActivo, messageCount, variant, firstSeen, lastSeen)
   VALUES
-    (@phone, @partialData, @history, @summary, @leadGuardado, @leadStatus, @botActivo, @messageCount, @variant, @firstSeen, @lastSeen)
+    (@phone, @partialData, @history, @summary, @extra, @leadGuardado, @leadStatus, @botActivo, @messageCount, @variant, @firstSeen, @lastSeen)
   ON CONFLICT(phone) DO UPDATE SET
     partialData  = excluded.partialData,
     history      = excluded.history,
     summary      = COALESCE(excluded.summary, clients.summary),
+    extra        = excluded.extra,
     leadGuardado = excluded.leadGuardado,
     leadStatus   = excluded.leadStatus,
     botActivo    = excluded.botActivo,
@@ -83,6 +92,7 @@ function migrateFromJSON() {
         partialData:  JSON.stringify(entry.partialData || { telefono: phone }),
         history:      JSON.stringify(entry.history || []),
         summary:      entry.summary || null,
+        extra:        entry.extra ? JSON.stringify(entry.extra) : null,
         leadGuardado: entry.leadGuardado ? 1 : 0,
         leadStatus:   entry.leadStatus || 'in_progress',
         botActivo:    entry.botActivo !== false ? 1 : 0,
@@ -134,10 +144,14 @@ function loadClient(orgId, phone) {
 
   console.log(`🧠 Cliente conocido: ${key} | mensajes totales: ${totalMessages} | último: ${new Date(row.lastSeen).toLocaleString()}`);
 
+  let extra = null;
+  if (row.extra) { try { extra = JSON.parse(row.extra); } catch { extra = null; } }
+
   return {
     partialData:   JSON.parse(row.partialData),
     history:       fullHistory.slice(-MAX_HISTORY_LOADED),
     summary:       row.summary || null,
+    extra,
     leadGuardado:  row.leadGuardado === 1,
     leadStatus:    row.leadStatus,
     botActivo:     row.botActivo === 1,
@@ -167,6 +181,7 @@ function saveClient(orgId, phone, session) {
     partialData:  JSON.stringify(session.partialData || {}),
     history:      JSON.stringify(mergedHistory),
     summary:      session.summary || null,
+    extra:        session.extra ? JSON.stringify(session.extra) : null,
     leadGuardado: session.leadGuardado ? 1 : 0,
     leadStatus:   session.leadStatus   || 'in_progress',
     botActivo:    session.botActivo !== false ? 1 : 0,

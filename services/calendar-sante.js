@@ -155,15 +155,18 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
         slots.sort((a, b) => new Date(`${a.fecha}T${a.hora}`) - new Date(`${b.fecha}T${b.hora}`));
     }
 
-    // Deduplicate: one slot per date-time-stylist combo, max 5
+    // Deduplicar colapsando horas iguales entre estilistas (una sola estilista por
+    // fecha-hora, la primera tras el orden = preferida/más temprana). Así ofrecemos
+    // VARIEDAD de horas (10:00, 11:00, 12:00…) en vez de la misma hora repetida con
+    // varias estilistas, que es lo que llenaba el tope antes. Máximo 6.
     const seen = new Set();
     const unique = [];
     for (const s of slots) {
-        const key = `${s.fecha}-${s.hora}-${s.stylistId}`;
+        const key = `${s.fecha}-${s.hora}`;
         if (seen.has(key)) continue;
         seen.add(key);
         unique.push(s);
-        if (unique.length >= 5) break;
+        if (unique.length >= 6) break;
     }
 
     return unique;

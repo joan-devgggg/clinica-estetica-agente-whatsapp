@@ -8,7 +8,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary } = require('./services/memory');
@@ -107,6 +107,7 @@ function createEmptySession(userId, orgId) {
         language: null,
         selectedService: null,
         selectedStylist: null,
+        slotsProposed: false,
         upsellingSuggested: false,
         upsellingAccepted: [],
         preferredStylistId: null,
@@ -200,8 +201,28 @@ async function loadAvailableSlots(session) {
 }
 
 // ─── Persistencia SQLite ──────────────────────────────────────────────────────
+// El estado del salón (servicio/estilista elegidos, idioma, upselling) no cabe en
+// partialData y se pierde al recargar la sesión tras un reinicio/timeout. Lo volcamos
+// en session.extra para que memory.js lo persista; los huecos se recalculan al volver.
+function buildSessionExtra(session) {
+    if (session.orgType !== 'salon') return null;
+    return {
+        selectedService:   session.selectedService || null,
+        selectedStylist:   session.selectedStylist || null,
+        language:          session.language || null,
+        upsellingAccepted: session.upsellingAccepted || [],
+        upsellingSuggested: !!session.upsellingSuggested,
+        preferredStylistId: session.preferredStylistId || null,
+        currentSlotIndex:  session.currentSlotIndex || 0,
+        slotsProposed:     !!session.slotsProposed,
+    };
+}
+
 function persistSession(orgId, userPhone, session) {
-    try { saveClient(orgId, userPhone, session); } catch (e) { logger.error('sqlite_save_error', { error: e.message }); }
+    try {
+        session.extra = buildSessionExtra(session);
+        saveClient(orgId, userPhone, session);
+    } catch (e) { logger.error('sqlite_save_error', { error: e.message }); }
 }
 
 function triggerAsyncSummary(orgId, userPhone, session) {
@@ -371,6 +392,37 @@ function pickChosenSlot(session, datos) {
     return slots[session.currentSlotIndex] || slots[0];
 }
 
+// Decide si la clienta ha aceptado un hueco y devuelve { slot, motivo } o null.
+// No nos fiamos solo del flag del LLM (lo omite a menudo y dice "te he reservado" sin
+// disparar el guardado → fallo silencioso). Reservamos cuando: (1) el LLM pone el flag,
+// (2) el LLM devuelve una hora que coincide con un hueco real, o (3) la clienta responde
+// afirmativamente DESPUÉS de que ya le hayamos propuesto huecos. Guardas: tiene que haber
+// servicio y huecos cargados, para no reservar prematuramente.
+function resolveSalonConfirmation(session, aiResponse, sanitized) {
+    if (session.reservaConfirmada) return null;
+    if (!session.selectedService) return null;
+    if (!(session.availableSlots || []).length) return null;
+
+    if (aiResponse.reserva_confirmada) {
+        const slot = pickChosenSlot(session, aiResponse.datos);
+        if (slot) return { slot, motivo: 'llm_flag' };
+    }
+
+    const horaSel = normalizeHora(aiResponse.datos?.hora_cita);
+    if (horaSel) {
+        const fechaSel = aiResponse.datos?.fecha_cita || null;
+        const match = session.availableSlots.find(s => normalizeHora(s.hora) === horaSel && (!fechaSel || s.fecha === fechaSel));
+        if (match) return { slot: match, motivo: 'match_hora' };
+    }
+
+    if (session.slotsProposed && isAffirmative(sanitized)) {
+        const slot = pickChosenSlot(session, aiResponse.datos);
+        if (slot) return { slot, motivo: 'afirmativo_tras_propuesta' };
+    }
+
+    return null;
+}
+
 // ─── Finalización directa de cita (Sante) ───────────────────────────────────
 // Devuelve true SOLO si la cita se guardó en Supabase. Marca la sesión como
 // confirmada únicamente en ese caso, para no decirle a la clienta que está
@@ -386,11 +438,21 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
     session.partialData.fecha_cita = fecha;
     session.partialData.hora_cita = hora;
 
+    logger.info('cita_sante_intento', {
+        orgId, telefono: userPhone, fecha, hora, stylistId,
+        servicio: session.selectedService?.nombre || null, contactId: session.leadId,
+    });
+
     try {
-        const rid = await saveLead(orgId, { ...session.partialData, leadId: session.leadId });
+        const rid = await saveLead(orgId, { ...session.partialData, leadId: session.leadId, language: session.language });
         if (rid) session.leadId = rid;
         session.leadGuardado = true;
         incrementMetric('leadsSaved');
+
+        if (!session.leadId) {
+            logger.error('cita_sante_sin_contacto', { orgId, telefono: userPhone, fecha, hora });
+            return false;
+        }
 
         const allServices = [session.selectedService?.nombre, ...(session.upsellingAccepted || [])].filter(Boolean).join(' + ');
         const totalDuration = (session.selectedService?.duracion || 60) + (session.upsellingAccepted || []).length * 30;
@@ -403,10 +465,11 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
         });
 
         if (!result.success) {
-            logger.error('cita_sante_no_guardada', { orgId, telefono: userPhone, fecha, hora, contactId: session.leadId });
+            logger.error('cita_sante_no_guardada', { orgId, telefono: userPhone, fecha, hora, stylistId, contactId: session.leadId });
             return false;
         }
 
+        logger.info('cita_sante_guardada', { orgId, telefono: userPhone, appointmentId: result.appointmentId, fecha, hora, stylistId, contactId: session.leadId });
         session.appointmentId = result.appointmentId;
         session.partialData.estado_cita = 'confirmado';
         await updateLead(orgId, { leadId: session.leadId, appointment_id: result.appointmentId, estado_cita: 'confirmado' });
@@ -491,6 +554,21 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 newSession.history = persisted.history || [];
                 newSession.summary = persisted.summary || null;
                 newSession.botActivo = persisted.botActivo;
+
+                // Restaurar estado del salón (servicio/estilista/idioma...) para no perder
+                // el flujo tras un reinicio o timeout. Los huecos se recalculan más abajo
+                // (loadAvailableSlots) en cuanto haya selectedService.
+                if (newSession.orgType === 'salon' && persisted.extra) {
+                    const ex = persisted.extra;
+                    newSession.selectedService    = ex.selectedService || null;
+                    newSession.selectedStylist    = ex.selectedStylist || null;
+                    newSession.language           = ex.language || null;
+                    newSession.upsellingAccepted  = ex.upsellingAccepted || [];
+                    newSession.upsellingSuggested = !!ex.upsellingSuggested;
+                    newSession.preferredStylistId = ex.preferredStylistId || null;
+                    newSession.currentSlotIndex   = ex.currentSlotIndex || 0;
+                    newSession.slotsProposed      = !!ex.slotsProposed;
+                }
 
                 if (persisted.leadGuardado) {
                     const estadoCita = persisted.partialData?.estado_cita;
@@ -667,20 +745,34 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 
         // ─── Load slots when ready ───────────────────────────────────────
         if (orgType === 'salon') {
-            // Load slots when we have a service selected
-            if (session.selectedService && session.availableSlots.length === 0) {
-                await loadAvailableSlots(session);
+            const meDaIgual = /\b(me da igual|cualquiera|la que sea|el que sea|no tengo preferencia|me es igual|sin preferencia|whoever|anyone|любой|любую)\b/i.test(sanitized);
+
+            // Estilistas que pueden hacer el servicio (por skills). Si solo hay una,
+            // la asignamos y no preguntamos. Si hay varias, preguntamos preferencia ANTES
+            // de proponer huecos (decisión de producto).
+            let eligibleStylists = [];
+            if (session.selectedService) {
+                const allStylists = await getStylistsByOrg(orgId);
+                eligibleStylists = allStylists.filter(s => stylistCanDoService(s, session.selectedService));
+                if (!session.selectedStylist && eligibleStylists.length === 1) {
+                    session.selectedStylist = { id: eligibleStylists[0].id, nombre: eligibleStylists[0].name };
+                }
             }
-            const prefCambiada = JSON.stringify(prevData.preferencia_horaria) !== JSON.stringify(session.partialData.preferencia_horaria);
-            if (session.selectedService && prefCambiada) {
-                await loadAvailableSlots(session);
+            session._eligibleStylistNames = eligibleStylists.map(s => s.name);
+
+            const variasEstilistas = !!session.selectedService && !session.selectedStylist && eligibleStylists.length > 1;
+            // "me da igual" → asignamos la primera elegible y avanzamos.
+            if (variasEstilistas && meDaIgual) {
+                session.selectedStylist = { id: eligibleStylists[0].id, nombre: eligibleStylists[0].name };
             }
-            // Si la clienta no tiene preferencia de estilista ("me da igual", "la que sea"...),
-            // asignamos la primera disponible y avanzamos a proponer huecos.
-            if (session.selectedService && !session.selectedStylist && session.availableSlots.length > 0
-                && /\b(me da igual|cualquiera|la que sea|el que sea|no tengo preferencia|me es igual|sin preferencia|whoever|anyone|любой|любую)\b/i.test(sanitized)) {
-                const slot = session.availableSlots[session.currentSlotIndex] || session.availableSlots[0];
-                session.selectedStylist = { id: slot.stylistId, nombre: slot.stylistName };
+            session.askStylistFirst = !!session.selectedService && !session.selectedStylist && eligibleStylists.length > 1;
+
+            // Cargar huecos solo cuando ya no haya que preguntar estilista.
+            if (session.selectedService && !session.askStylistFirst) {
+                const prefCambiada = JSON.stringify(prevData.preferencia_horaria) !== JSON.stringify(session.partialData.preferencia_horaria);
+                if (session.availableSlots.length === 0 || prefCambiada) {
+                    await loadAvailableSlots(session);
+                }
             }
         } else {
             const missingFields = getMissingFields(session.partialData);
@@ -715,6 +807,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             partialDataWithCtx.__selectedStylist = session.selectedStylist;
             partialDataWithCtx.__upsellingSuggested = session.upsellingSuggested;
             partialDataWithCtx.__stylistAutoAssigned = !!session.selectedStylist;
+            partialDataWithCtx.__askStylistFirst = !!session.askStylistFirst;
+            partialDataWithCtx.__eligibleStylistNames = session._eligibleStylistNames || [];
             partialDataWithCtx.__clientLanguage = session.language;
             if (session.preferredStylistId) {
                 const stylists = await getStylistsByOrg(orgId);
@@ -798,15 +892,18 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 session.upsellingSuggested = true;
             }
 
-            // Appointment confirmation (Sante: no Bizum)
-            if (aiResponse.reserva_confirmada && !session.reservaConfirmada) {
-                const slot = pickChosenSlot(session, aiResponse.datos);
-                const ok = slot && session.selectedService
-                    ? await finalizarCitaSante(client, session, userPhone, slot)
-                    : false;
-                if (!ok) {
-                    // No se pudo reservar (sin hueco real o fallo al guardar):
-                    // NO confirmamos a la clienta para no mentirle.
+            // Appointment confirmation (Sante: no Bizum). No dependemos solo del flag del
+            // LLM: resolveSalonConfirmation también reserva si la clienta acepta un hueco
+            // propuesto (hora que coincide o "sí/vale" tras la propuesta).
+            const confirm = resolveSalonConfirmation(session, aiResponse, sanitized);
+            if (confirm) {
+                logger.info('cita_sante_confirmacion', { orgId, telefono: userPhone, motivo: confirm.motivo, fecha: confirm.slot.fecha, hora: confirm.slot.hora });
+                const ok = await finalizarCitaSante(client, session, userPhone, confirm.slot);
+                if (ok) {
+                    // Garantizamos que la respuesta confirme aunque el LLM no lo hiciera.
+                    aiResponse.reserva_confirmada = true;
+                } else {
+                    // No se pudo reservar (fallo al guardar): NO confirmamos para no mentirle.
                     aiResponse.reserva_confirmada = false;
                     const retryMsgs = {
                         en: "Sorry, I couldn't lock that slot 😕 Which of the available times works best for you?",
@@ -816,6 +913,17 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     aiResponse.respuesta = (session.language && retryMsgs[session.language])
                         || 'Uy, no he podido fijar ese hueco 😕 ¿Cuál de los horarios disponibles te viene mejor?';
                 }
+            } else if (aiResponse.reserva_confirmada && !session.reservaConfirmada) {
+                // El LLM dijo confirmada pero no hay servicio/hueco resoluble: no mentimos.
+                logger.warn('cita_sante_flag_sin_slot', { orgId, telefono: userPhone, tieneServicio: !!session.selectedService, numHuecos: (session.availableSlots || []).length });
+                aiResponse.reserva_confirmada = false;
+                const retryMsgs = {
+                    en: "Sorry, I couldn't lock that slot 😕 Which of the available times works best for you?",
+                    ru: 'Извините, не удалось закрепить это время 😕 Какое из свободных окошек тебе удобнее?',
+                    uk: 'Вибач, не вдалося зафіксувати цей час 😕 Яке з вільних віконець тобі зручніше?',
+                };
+                aiResponse.respuesta = (session.language && retryMsgs[session.language])
+                    || 'Uy, no he podido fijar ese hueco 😕 ¿Cuál de los horarios disponibles te viene mejor?';
             }
         }
 
@@ -874,6 +982,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             if (p2) { await new Promise(r => setTimeout(r, 80)); await sendWithDelay(client, userPhone, p2, orgId); }
         } else {
             await sendWithDelay(client, userPhone, aiResponse.respuesta, orgId);
+        }
+
+        // Marca que ya hemos propuesto huecos a la clienta: a partir de aquí un "sí/vale"
+        // se interpreta como aceptación del hueco (confirmación determinista).
+        if (orgType === 'salon' && slotsParaLLM.length > 0 && !session.reservaConfirmada) {
+            session.slotsProposed = true;
         }
 
         // Save lead if we have enough data
