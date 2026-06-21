@@ -10,6 +10,10 @@ const aiConfig = config.ai || {};
 
 // ─── San Remo prompt (restaurante) ──────────────────────────────────────────
 
+function currentDateMadrid() {
+    return new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Madrid' });
+}
+
 function buildSanRemoPrompt(partialData, intent, reservaConfirmada, summary, agentCfg) {
     const info = agentCfg?.business_info || {};
     const missingFields = partialData.__missingFields || [];
@@ -95,6 +99,12 @@ Salúdale con calidez como a alguien que ya conoces: algo como "¡Qué alegría 
 Eres ${nombreBot}, la asistente virtual de ${nombreRestaurante}, un restaurante de alta cocina (referencia Michelin) en Palencia.
 Atiendes por WhatsApp las reservas de mesa y dudas de los clientes.
 No eres un bot. Eres una asistente con un trato exquisito: elegante, cercana y profesional.
+
+# ── FECHA ACTUAL ───────────────────────────────────────────────────────────
+
+Hoy es ${currentDateMadrid()}.
+Usa esta fecha para resolver expresiones como "hoy", "mañana", "pasado mañana", "este viernes", etc.
+NUNCA pidas una señal Bizum ni confirmes una mesa para una fecha que ya ha pasado.
 
 # ── EL RESTAURANTE ─────────────────────────────────────────────────────────
 
@@ -273,6 +283,18 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
 Eres ${botName}, la asistente virtual de ${salonName}, un salón de belleza y bienestar en Alicante.
 Atiendes por WhatsApp a las clientas para agendar citas, resolver dudas y sugerir servicios.
 Tono: cercano, cálido y profesional. Como una amiga que trabaja en el salón.
+
+# ── FECHA ACTUAL ───────────────────────────────────────────────────────────
+
+Hoy es ${currentDateMadrid()}.
+Usa SIEMPRE esta fecha para resolver "hoy", "mañana", "pasado mañana", "el día 22", "este viernes", etc.
+El salón abre de lunes a sábado (los domingos está cerrado): si la clienta pide un domingo, propón el siguiente día disponible de la lista.
+
+# ── RESERVAS FUTURAS (IMPORTANTE) ──────────────────────────────────────────
+
+Aceptamos citas para CUALQUIER fecha futura, sin límite de antelación.
+NUNCA digas que no puedes gestionar reservas para fechas futuras ni que solo reservas con pocos días de margen: es FALSO.
+La lista de HUECOS DISPONIBLES de más abajo ya está calculada para los próximos días; propón siempre desde esa lista. Si la clienta pide una fecha concreta que no aparezca, ofrécele el hueco disponible más cercano a esa fecha; nunca rechaces la reserva por ser futura.
 
 # ── IDIOMA (OBLIGATORIO) ──────────────────────────────────────────────────
 

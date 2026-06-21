@@ -349,11 +349,35 @@ async function finalizarReservaConBizum(client, session, userPhone) {
     await sendWithDelay(client, userPhone, respuesta, orgId);
 }
 
+// ─── Selección del hueco elegido por la clienta (Sante) ─────────────────────
+// El LLM nos devuelve la hora que la clienta acepta; buscamos ese hueco exacto
+// en la lista para no reservar siempre el primero. Fallback: el hueco actual.
+function normalizeHora(h) {
+    if (!h) return null;
+    const m = String(h).match(/(\d{1,2})\s*[:h.]?\s*(\d{2})?/);
+    if (!m) return null;
+    return `${String(m[1]).padStart(2, '0')}:${(m[2] || '00').padStart(2, '0')}`;
+}
+
+function pickChosenSlot(session, datos) {
+    const slots = session.availableSlots || [];
+    if (!slots.length) return null;
+    const horaSel = normalizeHora(datos?.hora_cita);
+    const fechaSel = datos?.fecha_cita || null;
+    if (horaSel) {
+        const match = slots.find(s => normalizeHora(s.hora) === horaSel && (!fechaSel || s.fecha === fechaSel));
+        if (match) return match;
+    }
+    return slots[session.currentSlotIndex] || slots[0];
+}
+
 // ─── Finalización directa de cita (Sante) ───────────────────────────────────
-async function finalizarCitaSante(client, session, userPhone, aiResponse) {
+// Devuelve true SOLO si la cita se guardó en Supabase. Marca la sesión como
+// confirmada únicamente en ese caso, para no decirle a la clienta que está
+// confirmada cuando en realidad no se ha persistido nada.
+async function finalizarCitaSante(client, session, userPhone, slot) {
     const orgId = session.orgId;
-    const slot = session.availableSlots[session.currentSlotIndex];
-    if (!slot) return;
+    if (!slot) return false;
 
     const fecha = slot.fecha;
     const hora = slot.hora;
@@ -361,7 +385,6 @@ async function finalizarCitaSante(client, session, userPhone, aiResponse) {
 
     session.partialData.fecha_cita = fecha;
     session.partialData.hora_cita = hora;
-    session.partialData.estado_cita = 'confirmado';
 
     try {
         const rid = await saveLead(orgId, { ...session.partialData, leadId: session.leadId });
@@ -379,20 +402,26 @@ async function finalizarCitaSante(client, session, userPhone, aiResponse) {
             notas: session.partialData.notas || null,
         });
 
-        if (result.success) {
-            session.appointmentId = result.appointmentId;
-            await updateLead(orgId, { leadId: session.leadId, appointment_id: result.appointmentId, estado_cita: 'confirmado' });
-            // Update preferred stylist for returning visits
-            if (stylistId && session.leadId) {
-                updateContactPreferredStylist(orgId, session.leadId, stylistId).catch(() => {});
-            }
+        if (!result.success) {
+            logger.error('cita_sante_no_guardada', { orgId, telefono: userPhone, fecha, hora, contactId: session.leadId });
+            return false;
         }
+
+        session.appointmentId = result.appointmentId;
+        session.partialData.estado_cita = 'confirmado';
+        await updateLead(orgId, { leadId: session.leadId, appointment_id: result.appointmentId, estado_cita: 'confirmado' });
+        // Update preferred stylist for returning visits
+        if (stylistId && session.leadId) {
+            updateContactPreferredStylist(orgId, session.leadId, stylistId).catch(() => {});
+        }
+
+        session.reservaConfirmada = true;
+        session.leadStatus = 'completed';
+        return true;
     } catch (e) {
         logger.error('error_finalizar_cita_sante', { telefono: userPhone, error: e.message });
+        return false;
     }
-
-    session.reservaConfirmada = true;
-    session.leadStatus = 'completed';
 }
 
 // ─── Resolución desde Telegram (Bizum confirm/reject) ───────────────────────
@@ -771,11 +800,21 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 
             // Appointment confirmation (Sante: no Bizum)
             if (aiResponse.reserva_confirmada && !session.reservaConfirmada) {
-                const slot = session.availableSlots[session.currentSlotIndex];
-                if (slot && session.selectedService) {
-                    await finalizarCitaSante(client, session, userPhone, aiResponse);
-                } else {
+                const slot = pickChosenSlot(session, aiResponse.datos);
+                const ok = slot && session.selectedService
+                    ? await finalizarCitaSante(client, session, userPhone, slot)
+                    : false;
+                if (!ok) {
+                    // No se pudo reservar (sin hueco real o fallo al guardar):
+                    // NO confirmamos a la clienta para no mentirle.
                     aiResponse.reserva_confirmada = false;
+                    const retryMsgs = {
+                        en: "Sorry, I couldn't lock that slot 😕 Which of the available times works best for you?",
+                        ru: 'Извините, не удалось закрепить это время 😕 Какое из свободных окошек тебе удобнее?',
+                        uk: 'Вибач, не вдалося зафіксувати цей час 😕 Яке з вільних віконець тобі зручніше?',
+                    };
+                    aiResponse.respuesta = (session.language && retryMsgs[session.language])
+                        || 'Uy, no he podido fijar ese hueco 😕 ¿Cuál de los horarios disponibles te viene mejor?';
                 }
             }
         }

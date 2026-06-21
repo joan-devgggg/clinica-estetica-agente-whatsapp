@@ -7,7 +7,7 @@ const db = require('./db');
 const logger = require('../lib/logger');
 
 const DIAS_SEMANA = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
-const SLOT_STEP_MIN = 15; // granularidad de slots
+const SLOT_OFFER_STEP_MIN = 60; // intervalo entre huecos ofrecidos dentro de una ventana libre (10:00, 11:00, 12:00...)
 
 /**
  * Devuelve huecos disponibles para un servicio en los próximos 14 días.
@@ -125,17 +125,21 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
 
             const occupied = [...dayAppts, ...dayBlocks].sort((a, b) => a.start - b.start);
 
-            // Find free windows
+            // Construir las ventanas libres (huecos entre citas/bloqueos y hasta el cierre).
+            const freeWindows = [];
             let cursor = workStart;
             for (const occ of occupied) {
-                if (cursor + serviceDuration <= occ.start) {
-                    addSlot(slots, dateStr, cursor, diaNombre, stylist, serviceDuration, preferencia);
-                }
+                if (occ.start > cursor) freeWindows.push([cursor, Math.min(occ.start, workEnd)]);
                 cursor = Math.max(cursor, occ.end);
             }
-            // After last occupied slot
-            if (cursor + serviceDuration <= workEnd) {
-                addSlot(slots, dateStr, cursor, diaNombre, stylist, serviceDuration, preferencia);
+            if (cursor < workEnd) freeWindows.push([cursor, workEnd]);
+
+            // Recorrer cada ventana en pasos de SLOT_OFFER_STEP_MIN para ofrecer varios
+            // huecos (10:00, 11:00, 12:00...), no solo el inicio de la ventana.
+            for (const [winStart, winEnd] of freeWindows) {
+                for (let t = winStart; t + serviceDuration <= winEnd; t += SLOT_OFFER_STEP_MIN) {
+                    addSlot(slots, dateStr, t, diaNombre, stylist, serviceDuration, preferencia);
+                }
             }
         }
     }
