@@ -447,9 +447,20 @@ function parseSlotSelection(text, slots) {
 // afirmativamente DESPUÉS de que ya le hayamos propuesto huecos. Guardas: tiene que haber
 // servicio y huecos cargados, para no reservar prematuramente.
 function resolveSalonConfirmation(session, aiResponse, sanitized) {
-    if (session.reservaConfirmada) return null;
-    if (!session.selectedService) return null;
-    if (!(session.availableSlots || []).length) return null;
+    // [DIAG P1] Trazamos cada guardia para ver exactamente dónde se corta el flujo
+    // cuando el bot dice "te he reservado" pero no se persiste la cita.
+    console.log('[DIAG resolveSalonConfirmation]', JSON.stringify({
+        reservaConfirmada: session.reservaConfirmada,
+        selectedService: session.selectedService?.nombre || null,
+        numSlots: (session.availableSlots || []).length,
+        slotsProposed: !!session.slotsProposed,
+        llmFlag: !!aiResponse.reserva_confirmada,
+        horaLLM: aiResponse.datos?.hora_cita || null,
+        sanitized,
+    }));
+    if (session.reservaConfirmada) { console.log('[DIAG resolveSalonConfirmation] null: ya confirmada'); return null; }
+    if (!session.selectedService) { console.log('[DIAG resolveSalonConfirmation] null: sin selectedService'); return null; }
+    if (!(session.availableSlots || []).length) { console.log('[DIAG resolveSalonConfirmation] null: sin availableSlots'); return null; }
 
     if (aiResponse.reserva_confirmada) {
         const slot = pickChosenSlot(session, aiResponse.datos);
@@ -476,6 +487,7 @@ function resolveSalonConfirmation(session, aiResponse, sanitized) {
         if (slot) return { slot, motivo: 'afirmativo_tras_propuesta' };
     }
 
+    console.log('[DIAG resolveSalonConfirmation] null: ninguna rama de aceptación coincidió');
     return null;
 }
 
@@ -484,6 +496,10 @@ function resolveSalonConfirmation(session, aiResponse, sanitized) {
 // confirmada únicamente en ese caso, para no decirle a la clienta que está
 // confirmada cuando en realidad no se ha persistido nada.
 async function finalizarCitaSante(client, session, userPhone, slot) {
+    console.log('[DIAG finalizarCitaSante] ENTRA', JSON.stringify({
+        telefono: userPhone, slot: slot ? { fecha: slot.fecha, hora: slot.hora, stylistId: slot.stylistId } : null,
+        servicio: session.selectedService?.nombre || null, leadId: session.leadId,
+    }));
     const orgId = session.orgId;
     if (!slot) return false;
 
@@ -829,6 +845,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 if (session.availableSlots.length === 0 || prefCambiada) {
                     await loadAvailableSlots(session);
                 }
+                // Si ya hay huecos cargados marcamos slotsProposed YA (no solo al final del
+                // turno tras enviar): así un "sí/vale" o una selección posicional en el turno
+                // siguiente se interpreta como aceptación aunque el LLM omita el flag — el
+                // fallo silencioso de "te he reservado" sin guardar venía del desfase de un turno.
+                if (session.availableSlots.length > 0 && !session.reservaConfirmada) {
+                    session.slotsProposed = true;
+                }
             }
         } else {
             const missingFields = getMissingFields(session.partialData);
@@ -952,6 +975,11 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // LLM: resolveSalonConfirmation también reserva si la clienta acepta un hueco
             // propuesto (hora que coincide o "sí/vale" tras la propuesta).
             const confirm = resolveSalonConfirmation(session, aiResponse, sanitized);
+            console.log('[DIAG bot.js] antes de if(confirm)', JSON.stringify({
+                telefono: userPhone, hayConfirm: !!confirm, motivo: confirm?.motivo || null,
+                slot: confirm?.slot ? { fecha: confirm.slot.fecha, hora: confirm.slot.hora } : null,
+                respuestaLLM: (aiResponse.respuesta || '').slice(0, 120),
+            }));
             if (confirm) {
                 logger.info('cita_sante_confirmacion', { orgId, telefono: userPhone, motivo: confirm.motivo, fecha: confirm.slot.fecha, hora: confirm.slot.hora });
                 const ok = await finalizarCitaSante(client, session, userPhone, confirm.slot);

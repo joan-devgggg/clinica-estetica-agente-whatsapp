@@ -23,14 +23,21 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     const allStylists = await db.getStylistsByOrg(orgId);
     if (!allStylists.length) return [];
 
-    // Filter by skills
+    // Filtrar por skill: SOLO estilistas cuyo `skills` incluye exactamente la categoría
+    // del servicio. Antes había un fallback a TODAS las estilistas si ninguna hacía match,
+    // y eso colaba a Larisa (solo masajes) o a Olgha (solo uñas) en cortes/color. Ahora,
+    // si nadie tiene la skill, devolvemos lista vacía (sin huecos) en vez de ofrecer a
+    // quien no sabe hacer el servicio — preferimos "no hay hueco" antes que asignar mal.
     let eligible = allStylists;
     if (serviceCategory) {
         eligible = allStylists.filter(s => {
             const skills = Array.isArray(s.skills) ? s.skills : [];
-            return skills.some(skill => skill.toLowerCase() === serviceCategory.toLowerCase());
+            return skills.some(skill => String(skill).toLowerCase() === String(serviceCategory).toLowerCase());
         });
-        if (!eligible.length) eligible = allStylists;
+        if (!eligible.length) {
+            logger.warn('sante_sin_estilista_para_categoria', { orgId, serviceCategory });
+            return [];
+        }
     }
 
     // If preferred stylist, put her first (but keep others as fallback)

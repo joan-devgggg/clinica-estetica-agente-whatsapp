@@ -5,6 +5,7 @@ import { Clock } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
 import { BotToggle } from "@/components/configuracion/bot-toggle";
+import { StylistsConfig } from "@/components/configuracion/stylists-config";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -270,6 +271,9 @@ export default function ConfiguracionPage() {
             onToggle={handleBotToggle}
             loading={savingBot}
           />
+
+          {/* Estilistas — solo salón */}
+          {orgType === "salon" && <StylistsConfig orgId={orgId} />}
 
           {/* Información del restaurante — solo restaurant */}
           {orgType !== "salon" && <Card className="border-border/60 shadow-sm">

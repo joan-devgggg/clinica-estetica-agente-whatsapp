@@ -800,16 +800,24 @@ async function getStylistSchedule(orgId, stylistId) {
 
 async function upsertStylistSchedule(orgId, stylistId, schedules) {
     const oid = resolveOrg(orgId);
-    const rows = schedules.map(s => ({
+    // Reemplazo total: borramos el horario actual de la estilista y reinsertamos el nuevo.
+    // Imprescindible para que un día desmarcado en el panel desaparezca de verdad — un
+    // upsert por (stylist_id, day_of_week) dejaría los días eliminados colgados en la BD.
+    await supabase
+        .from('stylist_schedules')
+        .delete()
+        .eq('organization_id', oid)
+        .eq('stylist_id', stylistId);
+    const rows = (schedules || []).map(s => ({
         organization_id: oid,
         stylist_id: stylistId,
         day_of_week: s.day_of_week,
         start_time: s.start_time,
         end_time: s.end_time,
     }));
-    await supabase
-        .from('stylist_schedules')
-        .upsert(rows, { onConflict: 'stylist_id,day_of_week' });
+    if (rows.length) {
+        await supabase.from('stylist_schedules').insert(rows);
+    }
     return getStylistSchedule(oid, stylistId);
 }
 
