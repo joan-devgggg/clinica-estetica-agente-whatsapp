@@ -172,21 +172,17 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
         slots.sort((a, b) => new Date(`${a.fecha}T${a.hora}`) - new Date(`${b.fecha}T${b.hora}`));
     }
 
-    // Selección final con VARIEDAD de días: deduplicamos por fecha-hora (una estilista
-    // por hueco) y limitamos a MÁX_POR_DIA por jornada, repartiendo entre días distintos
-    // en vez de volcar 3 horas seguidas del mismo día (BUG 4). Máximo 6 huecos.
-    const MAX_POR_DIA = 2;
-    const MAX_TOTAL = 6;
+    // Deduplicar por fecha-hora (una estilista por hueco).
+    // Cuando hay un día concreto seleccionado devolvemos TODOS los huecos de ese día;
+    // sin día concreto, cap generoso para no saturar el prompt.
+    const diaConcreto = !!(preferencia.fecha || Number.isInteger(preferencia.diaSemana));
+    const MAX_TOTAL = diaConcreto ? Infinity : 20;
     const seen = new Set();
-    const porDia = new Map();
     const unique = [];
     for (const s of slots) {
         const key = `${s.fecha}-${s.hora}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        const enEsteDia = porDia.get(s.fecha) || 0;
-        if (enEsteDia >= MAX_POR_DIA) continue;
-        porDia.set(s.fecha, enEsteDia + 1);
         unique.push(s);
         if (unique.length >= MAX_TOTAL) break;
     }

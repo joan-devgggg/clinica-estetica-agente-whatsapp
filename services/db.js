@@ -798,6 +798,16 @@ async function getStylistSchedule(orgId, stylistId) {
     return data || [];
 }
 
+async function getAllStylistSchedules(orgId) {
+    const oid = resolveOrg(orgId);
+    const { data } = await supabase
+        .from('stylist_schedules')
+        .select('*')
+        .eq('organization_id', oid)
+        .order('stylist_id, day_of_week');
+    return data || [];
+}
+
 async function upsertStylistSchedule(orgId, stylistId, schedules) {
     const oid = resolveOrg(orgId);
     // Reemplazo total: borramos el horario actual de la estilista y reinsertamos el nuevo.
@@ -1002,6 +1012,7 @@ module.exports = {
     createStylist,
     updateStylist,
     getStylistSchedule,
+    getAllStylistSchedules,
     upsertStylistSchedule,
     // Schedule blocks
     getScheduleBlocks,

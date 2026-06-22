@@ -4,7 +4,7 @@ const {
     saveLead, updateLead, findByPhone, saveMessage, saveAppointment,
     updateAppointment, setLeadBotMode, setBlacklist, createPendingAction,
     getAgentConfig, updateContactLanguage, updateContactPreferredStylist,
-    getStylistsByOrg, getLastCompletedAppointment,
+    getStylistsByOrg, getAllStylistSchedules, getLastCompletedAppointment,
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
@@ -1087,6 +1087,22 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             partialDataWithCtx.__ultimaEstilista = session.ultimaEstilista || null;
             partialDataWithCtx.__guestBooking = !!session.guestBooking;
             partialDataWithCtx.__guestName = session.guestName || null;
+
+            // Inyectar días de trabajo de cada estilista para que el LLM sepa cuándo libran
+            const DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+            try {
+                const allStylists = await getStylistsByOrg(orgId);
+                const allSchedules = await getAllStylistSchedules(orgId);
+                partialDataWithCtx.__stylistScheduleInfo = allStylists.map(st => {
+                    const dias = allSchedules
+                        .filter(sc => sc.stylist_id === st.id)
+                        .sort((a, b) => a.day_of_week - b.day_of_week)
+                        .map(sc => DIAS[sc.day_of_week]);
+                    return { nombre: st.name, rol: st.role, dias: dias.join(', ') || 'Sin horario' };
+                });
+            } catch (e) {
+                logger.error('error_loading_stylist_schedules', { orgId, error: e.message });
+            }
         }
 
         // ─── LLM call ────────────────────────────────────────────────────

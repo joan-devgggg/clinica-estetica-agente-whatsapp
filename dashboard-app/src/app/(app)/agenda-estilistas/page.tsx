@@ -12,6 +12,7 @@ import { ChevronLeft, ChevronRight, Plus, Ban } from "lucide-react";
 import { toast } from "sonner";
 import { useOrg } from "@/lib/org-context";
 import { API, apiHeaders } from "@/lib/api";
+import { ymd } from "@/lib/date";
 import type { Stylist, Reserva, ScheduleBlock, StylistSchedule } from "@/lib/types";
 
 function getWeekRange(offset: number) {
@@ -25,8 +26,8 @@ function getWeekRange(offset: number) {
   sunday.setDate(monday.getDate() + 6);
 
   return {
-    start: monday.toISOString().split("T")[0],
-    end: sunday.toISOString().split("T")[0],
+    start: ymd(monday),
+    end: ymd(sunday),
     label: `${monday.toLocaleDateString("es-ES", { day: "numeric", month: "short" })} — ${sunday.toLocaleDateString("es-ES", { day: "numeric", month: "short" })}`,
   };
 }
