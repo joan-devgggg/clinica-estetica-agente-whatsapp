@@ -804,7 +804,8 @@ async function getAllStylistSchedules(orgId) {
         .from('stylist_schedules')
         .select('*')
         .eq('organization_id', oid)
-        .order('stylist_id, day_of_week');
+        .order('stylist_id')
+        .order('day_of_week');
     return data || [];
 }
 
