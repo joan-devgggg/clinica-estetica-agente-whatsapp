@@ -1126,7 +1126,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         let aiResponse;
         const t0 = Date.now();
         try {
-            const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 9000));
+            const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 30000));
             aiResponse = await Promise.race([
                 getChatbotResponse(orgId, session.history.slice(-12), partialDataWithCtx, intent, session.reservaConfirmada, session.summary),
                 timeout
@@ -1137,9 +1137,27 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         }
 
         if (!aiResponse?.respuesta) {
-            const fbMsgs = { en: 'I lost connection 😅 Could you repeat that?', ru: 'Связь прервалась 😅 Можешь повторить?', uk: "Зв'язок перервався 😅 Можеш повторити?" };
-            const fbText = (session.language && fbMsgs[session.language]) || 'Se me ha ido la conexión 😅 ¿me repites?';
-            aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
+            const pendingSlots = session.availableSlots?.slice(session.currentSlotIndex) || [];
+            if (orgType === 'salon' && pendingSlots.length > 0 && session.selectedService) {
+                const svcName = session.selectedService.nombre || 'tu servicio';
+                const svcPrecio = session.selectedService.precio;
+                const svcDur = session.selectedService.duracion;
+                const slotsTexto = pendingSlots.map((s, i) => `${i + 1}. ${s.texto}`).join('\n');
+                const fbSlotMsgs = {
+                    es: `${svcName} (${svcPrecio}€, ${svcDur} min). Estos son los huecos disponibles:\n\n${slotsTexto}\n\n¿Cuál te viene mejor?`,
+                    en: `${svcName} (${svcPrecio}€, ${svcDur} min). Here are the available slots:\n\n${slotsTexto}\n\nWhich one works best for you?`,
+                    ru: `${svcName} (${svcPrecio}€, ${svcDur} мин). Вот доступные слоты:\n\n${slotsTexto}\n\nКакой тебе подходит?`,
+                    uk: `${svcName} (${svcPrecio}€, ${svcDur} хв). Ось доступні слоти:\n\n${slotsTexto}\n\nЯкий тобі підходить?`,
+                };
+                const lang = session.language || 'es';
+                const fbText = fbSlotMsgs[lang] || fbSlotMsgs.es;
+                aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
+                logger.info('llm_timeout_slots_fallback', { orgId, telefono: userPhone, numSlots: pendingSlots.length });
+            } else {
+                const fbMsgs = { en: 'I lost connection 😅 Could you repeat that?', ru: 'Связь прервалась 😅 Можешь повторить?', uk: "Зв'язок перервався 😅 Можеш повторити?" };
+                const fbText = (session.language && fbMsgs[session.language]) || 'Se me ha ido la conexión 😅 ¿me repites?';
+                aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
+            }
         }
 
         // ─── Process LLM response ────────────────────────────────────────
