@@ -91,7 +91,10 @@ function extractTelefono(text) {
 function isAffirmative(text) {
     const t = normalizeText(text);
     return ['si', 'sí', 'este', 'mismo', 'vale', 'correcto', 'perfecto', 'ok',
-        'de acuerdo', 'confirmo', 'confirmado', 'genial', 'claro'].some(w => t.includes(w));
+        'de acuerdo', 'confirmo', 'confirmado', 'genial', 'claro',
+        'dale', 'venga', 'listo', 'bueno', 'adelante', 'eso', 'ese', 'esa',
+        'me viene bien', 'me va bien', 'quiero ese',
+        'that works', 'sounds good', 'да', 'давай', 'так'].some(w => t.includes(w));
 }
 
 function isNegative(text) {

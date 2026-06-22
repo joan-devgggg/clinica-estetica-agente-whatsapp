@@ -456,13 +456,35 @@ function llmClaimsBooked(text) {
     if (!text) return false;
     const t = normalizeText(text);
     return [
+        // ES
         'te he reservado', 'te la he reservado', 'te lo he reservado',
         'te reservo', 'te la reservo', 'te lo reservo',
-        'queda confirmada', 'queda reservada', 'queda agendada',
+        'te apunto', 'te anoto', 'te he apuntado', 'te he anotado',
+        'queda confirmada', 'queda reservada', 'queda agendada', 'queda fijada', 'queda apuntada', 'queda anotada',
         'esta reservado', 'esta reservada', 'esta confirmada', 'esta confirmado',
-        'cita confirmada', 'cita reservada', 'cita agendada',
-        'reserva confirmada', 'confirmada tu cita', 'confirmada la cita',
+        'esta agendada', 'esta apuntada', 'esta anotada',
+        'cita confirmada', 'cita reservada', 'cita agendada', 'cita apuntada', 'cita anotada',
+        'reserva confirmada', 'reservada para', 'confirmada tu cita', 'confirmada la cita',
+        // EN
+        "you're booked", 'youre booked', "i've booked", 'ive booked', 'booked you',
+        'appointment is confirmed', "you're all set", 'youre all set', 'see you on',
+        'i have booked', 'i booked you',
+        // RU
+        'записала', 'записал', 'вы записаны', 'бронь подтверждена', 'запись подтверждена',
+        // UK
+        'записала вас', 'записано', 'бронювання підтверджено', 'запис підтверджено',
     ].some(p => t.includes(p));
+}
+
+// Mensaje de reintento (multiidioma) cuando no se pudo fijar el hueco. Se reutiliza en
+// las tres ramas de confirmación de Sante para no triplicar el literal.
+function salonRetryMsg(language) {
+    const retryMsgs = {
+        en: "Sorry, I couldn't lock that slot 😕 Which of the available times works best for you?",
+        ru: 'Извините, не удалось закрепить это время 😕 Какое из свободных окошек тебе удобнее?',
+        uk: 'Вибач, не вдалося зафіксувати цей час 😕 Яке з вільних віконець тобі зручніше?',
+    };
+    return (language && retryMsgs[language]) || 'Uy, no he podido fijar ese hueco 😕 ¿Cuál de los horarios disponibles te viene mejor?';
 }
 
 // Decide si la clienta ha aceptado un hueco y devuelve { slot, motivo } o null.
@@ -679,19 +701,29 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 
                 if (persisted.leadGuardado) {
                     const estadoCita = persisted.partialData?.estado_cita;
-                    if (estadoCita === 'confirmado' || estadoCita === 'pendiente_bizum') {
+                    if (estadoCita === 'pendiente_bizum') {
                         const { telefono } = newSession.partialData;
                         newSession.partialData = { telefono, ...persisted.partialData };
                         newSession.leadGuardado = true;
                         newSession.reservaConfirmada = true;
                         newSession.bizumAsked = true;
-                        newSession.bizumPendiente = estadoCita === 'pendiente_bizum';
+                        newSession.bizumPendiente = true;
                         newSession.appointmentId = persisted.partialData?.appointment_id || null;
                         newSession.leadStatus = 'completed';
                     } else {
+                        // Cita anterior completada (confirmada/cancelada/etc.) →
+                        // cliente recurrente que puede reservar de nuevo.
                         newSession.clienteRecurrente = true;
                         newSession.ultimaVisita = persisted.partialData?.fecha_cita || null;
                         if (persisted.partialData?.nombre) newSession.partialData.nombre = persisted.partialData.nombre;
+                        // Limpiar estado de reserva anterior para no bloquear nuevas citas
+                        newSession.selectedService = null;
+                        newSession.selectedStylist = null;
+                        newSession.availableSlots = [];
+                        newSession.currentSlotIndex = 0;
+                        newSession.slotsProposed = false;
+                        newSession.upsellingAccepted = [];
+                        newSession.upsellingSuggested = false;
                     }
                 } else {
                     const { telefono } = newSession.partialData;
@@ -699,7 +731,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession.leadGuardado = persisted.leadGuardado;
                     newSession.messageCount = persisted.messageCount;
                     const estadoCita = persisted.partialData?.estado_cita;
-                    newSession.reservaConfirmada = estadoCita === 'confirmado' || estadoCita === 'pendiente_bizum';
+                    newSession.reservaConfirmada = estadoCita === 'pendiente_bizum';
                     newSession.bizumAsked = newSession.reservaConfirmada;
                     newSession.bizumPendiente = estadoCita === 'pendiente_bizum';
                     newSession.appointmentId = persisted.partialData?.appointment_id || null;
@@ -1024,25 +1056,35 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 } else {
                     // No se pudo reservar (fallo al guardar): NO confirmamos para no mentirle.
                     aiResponse.reserva_confirmada = false;
-                    const retryMsgs = {
-                        en: "Sorry, I couldn't lock that slot 😕 Which of the available times works best for you?",
-                        ru: 'Извините, не удалось закрепить это время 😕 Какое из свободных окошек тебе удобнее?',
-                        uk: 'Вибач, не вдалося зафіксувати цей час 😕 Яке з вільних віконець тобі зручніше?',
-                    };
-                    aiResponse.respuesta = (session.language && retryMsgs[session.language])
-                        || 'Uy, no he podido fijar ese hueco 😕 ¿Cuál de los horarios disponibles te viene mejor?';
+                    aiResponse.respuesta = salonRetryMsg(session.language);
                 }
             } else if (aiResponse.reserva_confirmada && !session.reservaConfirmada) {
                 // El LLM dijo confirmada pero no hay servicio/hueco resoluble: no mentimos.
                 logger.warn('cita_sante_flag_sin_slot', { orgId, telefono: userPhone, tieneServicio: !!session.selectedService, numHuecos: (session.availableSlots || []).length });
                 aiResponse.reserva_confirmada = false;
-                const retryMsgs = {
-                    en: "Sorry, I couldn't lock that slot 😕 Which of the available times works best for you?",
-                    ru: 'Извините, не удалось закрепить это время 😕 Какое из свободных окошек тебе удобнее?',
-                    uk: 'Вибач, не вдалося зафіксувати цей час 😕 Яке з вільних віконець тобі зручніше?',
-                };
-                aiResponse.respuesta = (session.language && retryMsgs[session.language])
-                    || 'Uy, no he podido fijar ese hueco 😕 ¿Cuál de los horarios disponibles te viene mejor?';
+                aiResponse.respuesta = salonRetryMsg(session.language);
+            }
+
+            // ─── Red de seguridad final anti-mentira ─────────────────────────
+            // Invariante: nunca enviar un mensaje que AFIRME que la cita queda reservada
+            // sin haberla persistido. Si ninguna rama anterior guardó la cita pero el texto
+            // del LLM dice que reservó, intentamos guardar con el mejor hueco; si no se puede,
+            // reemplazamos el mensaje para no mentirle a la clienta.
+            if (!session.reservaConfirmada && llmClaimsBooked(aiResponse.respuesta)) {
+                const slot = (session.selectedService && (session.availableSlots || []).length)
+                    ? pickChosenSlot(session, aiResponse.datos) : null;
+                let ok = false;
+                if (slot) {
+                    logger.warn('cita_sante_red_seguridad', { orgId, telefono: userPhone, fecha: slot.fecha, hora: slot.hora });
+                    ok = await finalizarCitaSante(client, session, userPhone, slot);
+                }
+                if (ok) {
+                    aiResponse.reserva_confirmada = true;
+                } else {
+                    logger.warn('cita_sante_texto_sin_guardar', { orgId, telefono: userPhone, tieneServicio: !!session.selectedService, numHuecos: (session.availableSlots || []).length });
+                    aiResponse.reserva_confirmada = false;
+                    aiResponse.respuesta = salonRetryMsg(session.language);
+                }
             }
         }
 

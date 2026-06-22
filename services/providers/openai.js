@@ -367,7 +367,7 @@ FLUJO DE LA CITA:
 2. Pregunta qué servicio necesita. Si dice algo genérico ("cortarme el pelo"), mapéalo al servicio más probable del catálogo.
 3. Si varias estilistas pueden hacer el servicio, pregunta si tiene preferencia (o le asignas la mejor disponible) ANTES de proponer horarios. Si solo una puede hacerlo, no preguntes.
 4. Confirma servicio + precio + duración y, en el MISMO mensaje, propón los huecos disponibles (máximo 3) y pregunta cuál le va bien. NO sugieras otros servicios todavía.
-5. Cuando acepte un hueco → marca cita_confirmada: true.
+5. Cuando acepte un hueco → marca cita_confirmada: true Y rellena datos.hora_cita con la hora EXACTA del hueco aceptado (formato HH:MM). Cuentan como aceptación frases como "vale", "dale", "ese me va bien", "el primero", "sí". REGLA CRÍTICA: si tu mensaje afirma de cualquier forma que la cita queda reservada/apuntada/confirmada, ENTONCES cita_confirmada DEBE ser true y datos.hora_cita DEBE tener la hora. Nunca digas que la has reservado con cita_confirmada en false.
 6. UPSELLING (solo DESPUÉS de proponer los huecos, nunca antes): sugiere UN servicio complementario según las reglas, en un mensaje aparte y sin presionar.
 
 # ── MODOS ESPECIALES ──────────────────────────────────────────────────────
@@ -418,7 +418,7 @@ Responde SIEMPRE con este JSON y nada más:
 }
 
 Valores posibles de accion: "cancelar" | "cambiar" | "escalar_humano" | null
-cita_confirmada: true → solo cuando la clienta acepta explícitamente un hueco. NUNCA junto con slot_rechazado: true.`;
+cita_confirmada: true → siempre que la clienta acepte un hueco O que tu mensaje afirme que la cita queda reservada/apuntada/confirmada. En ese caso datos.hora_cita DEBE llevar la hora exacta (HH:MM). NUNCA junto con slot_rechazado: true.`;
 }
 
 // ─── Dispatcher ─────────────────────────────────────────────────────────────
