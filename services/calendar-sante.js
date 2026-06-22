@@ -40,13 +40,15 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
         }
     }
 
-    // If preferred stylist, put her first (but keep others as fallback)
+    // Si la clienta eligió una estilista concreta, FILTRAMOS a ella (no solo ordenar).
+    // Antes se ordenaba preferida-primero pero se conservaban las demás como fallback;
+    // tras el dedup por fecha-hora eso dejaba huecos de OTRA estilista en horas donde la
+    // preferida no trabajaba, y un match por hora podía guardar la estilista equivocada
+    // (BUG 2). Si la preferida no tiene NINGÚN hueco, caemos al resto elegible para no
+    // dejar a la clienta sin opciones.
     if (preferredStylistId) {
-        eligible.sort((a, b) => {
-            if (a.id === preferredStylistId) return -1;
-            if (b.id === preferredStylistId) return 1;
-            return 0;
-        });
+        const onlyPreferred = eligible.filter(s => s.id === preferredStylistId);
+        if (onlyPreferred.length) eligible = onlyPreferred;
     }
 
     const now = new Date();
@@ -86,6 +88,14 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
 
             const dateStr = toLocalDateStr(date);
             const diaNombre = DIAS_SEMANA[dayOfWeek];
+
+            // Filtro por fecha concreta ("el 24") o día de la semana ("el miércoles").
+            // La fecha exacta manda sobre el día de la semana si ambas vienen dadas.
+            if (preferencia.fecha) {
+                if (dateStr !== preferencia.fecha) continue;
+            } else if (Number.isInteger(preferencia.diaSemana)) {
+                if (dayOfWeek !== preferencia.diaSemana) continue;
+            }
 
             // Filter by preference
             if (preferencia.semana === 'siguiente') {
@@ -162,18 +172,23 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
         slots.sort((a, b) => new Date(`${a.fecha}T${a.hora}`) - new Date(`${b.fecha}T${b.hora}`));
     }
 
-    // Deduplicar colapsando horas iguales entre estilistas (una sola estilista por
-    // fecha-hora, la primera tras el orden = preferida/más temprana). Así ofrecemos
-    // VARIEDAD de horas (10:00, 11:00, 12:00…) en vez de la misma hora repetida con
-    // varias estilistas, que es lo que llenaba el tope antes. Máximo 6.
+    // Selección final con VARIEDAD de días: deduplicamos por fecha-hora (una estilista
+    // por hueco) y limitamos a MÁX_POR_DIA por jornada, repartiendo entre días distintos
+    // en vez de volcar 3 horas seguidas del mismo día (BUG 4). Máximo 6 huecos.
+    const MAX_POR_DIA = 2;
+    const MAX_TOTAL = 6;
     const seen = new Set();
+    const porDia = new Map();
     const unique = [];
     for (const s of slots) {
         const key = `${s.fecha}-${s.hora}`;
         if (seen.has(key)) continue;
         seen.add(key);
+        const enEsteDia = porDia.get(s.fecha) || 0;
+        if (enEsteDia >= MAX_POR_DIA) continue;
+        porDia.set(s.fecha, enEsteDia + 1);
         unique.push(s);
-        if (unique.length >= 6) break;
+        if (unique.length >= MAX_TOTAL) break;
     }
 
     return unique;

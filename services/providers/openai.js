@@ -285,8 +285,11 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
             const pref = partialData.__preferredStylistName ? ` Su estilista habitual es ${partialData.__preferredStylistName}: sugiérela primero.` : '';
             return `Confirma el servicio (precio y duración) y pregunta si prefiere alguna estilista en concreto${names ? ` (disponibles: ${names})` : ''} o si le asignas la mejor disponible.${pref} NO propongas todavía horarios concretos: primero necesitas saber la estilista.`;
         }
+        if (partialData.__askDatePreferenceFirst) {
+            return `Confirma el servicio (precio y duración) y pregunta QUÉ DÍA O SEMANA le viene mejor (p.ej. "esta semana", "la que viene", "el miércoles", "por la tarde"). NO propongas todavía horarios concretos: primero necesitas saber cuándo quiere venir.`;
+        }
         if (slotsDisponibles.length > 0) {
-            return `Confirma el servicio (precio y duración) y propón directamente los huecos disponibles (máximo 3) en UN solo mensaje; pregunta cuál le viene bien. NO sugieras otros servicios en este mensaje: el upselling NUNCA sustituye ni retrasa la propuesta de huecos.`;
+            return `Confirma el servicio (precio y duración) y propón directamente los huecos disponibles (hasta 4, repartidos en varios días) en UN solo mensaje; pregunta cuál le viene bien. NO sugieras otros servicios en este mensaje: el upselling NUNCA sustituye ni retrasa la propuesta de huecos.`;
         }
         if (!selectedStylist && !partialData.__stylistAutoAssigned) return '¿Tiene preferencia por alguna estilista en concreto? Si no, le asignamos la mejor disponible.';
         if (partialData.__upsellingSuggested === false) return `Confirma el servicio (precio y duración) y, si encaja, sugiere UN servicio complementario de forma sutil.`;
@@ -373,9 +376,12 @@ ${slotsStr}
 NUNCA inventes fechas, horas ni disponibilidad. Solo usa los huecos de esta lista.
 La disponibilidad YA está calculada y la tienes arriba. NUNCA digas que vas a "revisar",
 "consultar" o "mirar" los huecos, ni "un momento" o "déjame ver". Cuando haya huecos en la
-lista, tu mensaje DEBE incluir esos huecos directamente (máximo 3) en ESE MISMO mensaje.
+lista, tu mensaje DEBE incluir esos huecos directamente (hasta 4, intentando que sean de
+DÍAS distintos para dar variedad) en ESE MISMO mensaje.
 Nunca mandes un mensaje de espera. El upselling NUNCA sustituye la propuesta de huecos:
 si hay huecos, proponlos; el complemento, como mucho, va en un mensaje POSTERIOR.
+Si la lista de huecos está vacía porque aún no sabes qué día prefiere, pregúntale primero
+qué día o semana le viene mejor; NO te inventes horarios.
 
 # ── DATO QUE NECESITAS AHORA ───────────────────────────────────────────────
 
@@ -385,9 +391,10 @@ FLUJO DE LA CITA:
 1. Saludo → pregunta nombre si es nueva (si es recurrente, salúdala por nombre).
 2. Pregunta qué servicio necesita. Si dice algo genérico ("cortarme el pelo"), mapéalo al servicio más probable del catálogo.
 3. Si varias estilistas pueden hacer el servicio, pregunta si tiene preferencia (o le asignas la mejor disponible) ANTES de proponer horarios. Si solo una puede hacerlo, no preguntes.
-4. Confirma servicio + precio + duración y, en el MISMO mensaje, propón los huecos disponibles (máximo 3) y pregunta cuál le va bien. NO sugieras otros servicios todavía.
-5. Cuando acepte un hueco → marca cita_confirmada: true Y rellena datos.hora_cita con la hora EXACTA del hueco aceptado (formato HH:MM). Cuentan como aceptación frases como "vale", "dale", "ese me va bien", "el primero", "sí". REGLA CRÍTICA: si tu mensaje afirma de cualquier forma que la cita queda reservada/apuntada/confirmada, ENTONCES cita_confirmada DEBE ser true y datos.hora_cita DEBE tener la hora. Nunca digas que la has reservado con cita_confirmada en false.
-6. UPSELLING (solo DESPUÉS de proponer los huecos, nunca antes): sugiere UN servicio complementario según las reglas, en un mensaje aparte y sin presionar.
+4. Si la clienta aún NO ha dicho cuándo quiere venir (ni día, ni semana, ni franja), pregúntale qué día o semana le viene mejor ANTES de proponer horarios. Si ya lo dijo, sáltate este paso.
+5. Confirma servicio + precio + duración y, en el MISMO mensaje, propón los huecos disponibles (hasta 4, de días distintos cuando puedas) y pregunta cuál le va bien. NO sugieras otros servicios todavía.
+6. Cuando acepte un hueco → marca cita_confirmada: true Y rellena datos.hora_cita con la hora EXACTA (HH:MM) Y datos.fecha_cita con la fecha EXACTA (YYYY-MM-DD) del hueco aceptado, copiadas tal cual de la lista de huecos. Esto es imprescindible para no confundir dos días con la misma hora. Cuentan como aceptación frases como "vale", "dale", "ese me va bien", "el primero", "sí". REGLA CRÍTICA: si tu mensaje afirma de cualquier forma que la cita queda reservada/apuntada/confirmada, ENTONCES cita_confirmada DEBE ser true y datos.hora_cita + datos.fecha_cita DEBEN tener valor. Nunca digas que la has reservado con cita_confirmada en false.
+7. UPSELLING (solo DESPUÉS de proponer los huecos, nunca antes): sugiere UN servicio complementario según las reglas, en un mensaje aparte y sin presionar.
 
 # ── MODOS ESPECIALES ──────────────────────────────────────────────────────
 ${modoCita}

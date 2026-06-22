@@ -108,6 +108,9 @@ function createEmptySession(userId, orgId) {
         selectedService: null,
         selectedStylist: null,
         slotsProposed: false,
+        proposedSlots: [],
+        askDatePreferenceFirst: false,
+        datePreferenceAsked: false,
         upsellingSuggested: false,
         upsellingAccepted: [],
         preferredStylistId: null,
@@ -277,7 +280,11 @@ async function handleAppointmentAction(client, session, userPhone, accion, respu
         session.bizumPendiente = false;
         session.appointmentId = null;
         session.availableSlots = [];
+        session.proposedSlots = [];
         session.currentSlotIndex = 0;
+        session.slotsProposed = false;
+        // 'cambiar' ya pregunta día/hora en su propio mensaje: no re-preguntamos preferencia.
+        session.datePreferenceAsked = true;
         session.modoReagendamiento = true;
         delete session.partialData.preferencia_horaria;
         delete session.partialData.fecha_cita;
@@ -385,16 +392,34 @@ function normalizeHora(h) {
     return `${String(m[1]).padStart(2, '0')}:${(m[2] || '00').padStart(2, '0')}`;
 }
 
+// Resuelve el hueco que la clienta acepta contra la lista EXACTA que se le propuso
+// (session.proposedSlots = lo numerado que vio el LLM). Nunca adivina con slots[0]:
+// si la selección es ambigua devuelve null y el bot vuelve a preguntar, en vez de
+// guardar el hueco más temprano (que causaba BUG 2 estilista y BUG 3 fecha/hora).
 function pickChosenSlot(session, datos) {
-    const slots = session.availableSlots || [];
+    const slots = (session.proposedSlots && session.proposedSlots.length)
+        ? session.proposedSlots
+        : (session.availableSlots || []);
     if (!slots.length) return null;
+
     const horaSel = normalizeHora(datos?.hora_cita);
     const fechaSel = datos?.fecha_cita || null;
-    if (horaSel) {
-        const match = slots.find(s => normalizeHora(s.hora) === horaSel && (!fechaSel || s.fecha === fechaSel));
-        if (match) return match;
+
+    // (a) fecha + hora exactas → match inequívoco.
+    if (horaSel && fechaSel) {
+        const exact = slots.find(s => normalizeHora(s.hora) === horaSel && s.fecha === fechaSel);
+        if (exact) return exact;
     }
-    return slots[session.currentSlotIndex] || slots[0];
+    // (b) solo hora, pero únicamente si NO es ambigua (un solo día propuesto con esa hora).
+    if (horaSel) {
+        const byHora = slots.filter(s => normalizeHora(s.hora) === horaSel);
+        if (byHora.length === 1) return byHora[0];
+    }
+    // (c) un único hueco propuesto → no hay nada que confundir.
+    if (slots.length === 1) return slots[0];
+
+    // Ambiguo: no elegimos por la clienta.
+    return null;
 }
 
 // Mapea una selección posicional/ordinal de la clienta a un hueco concreto.
@@ -502,8 +527,10 @@ function resetForSecondBooking(session, sanitized) {
     session.selectedService = null;
     session.selectedStylist = null;
     session.availableSlots = [];
+    session.proposedSlots = [];
     session.currentSlotIndex = 0;
     session.slotsProposed = false;
+    session.datePreferenceAsked = false;
     session.upsellingAccepted = [];
     session.upsellingSuggested = false;
     session.modoReagendamiento = false;
@@ -548,23 +575,31 @@ function resolveSalonConfirmation(session, aiResponse, sanitized) {
     if (!session.selectedService) { console.log('[DIAG resolveSalonConfirmation] null: sin selectedService'); return null; }
     if (!(session.availableSlots || []).length) { console.log('[DIAG resolveSalonConfirmation] null: sin availableSlots'); return null; }
 
+    // Trabajamos SIEMPRE contra la lista exacta de huecos propuestos (lo que vio el LLM
+    // numerado), no contra availableSlots: así un ordinal ("el 2") o un "sí" se resuelven
+    // al hueco que realmente se mostró, con su estilista y fecha correctas.
+    const proposed = (session.proposedSlots && session.proposedSlots.length)
+        ? session.proposedSlots
+        : (session.availableSlots || []);
+
     if (aiResponse.reserva_confirmada) {
         const slot = pickChosenSlot(session, aiResponse.datos);
         if (slot) return { slot, motivo: 'llm_flag' };
     }
 
+    // Match por hora: exige fecha si varios huecos comparten esa hora (evita coger el día
+    // más temprano por error). pickChosenSlot ya aplica esta regla de no-ambigüedad.
     const horaSel = normalizeHora(aiResponse.datos?.hora_cita);
     if (horaSel) {
-        const fechaSel = aiResponse.datos?.fecha_cita || null;
-        const match = session.availableSlots.find(s => normalizeHora(s.hora) === horaSel && (!fechaSel || s.fecha === fechaSel));
-        if (match) return { slot: match, motivo: 'match_hora' };
+        const slot = pickChosenSlot(session, aiResponse.datos);
+        if (slot) return { slot, motivo: 'match_hora' };
     }
 
     // Selección posicional/ordinal: "el primero", "la segunda", "el de las 14"...
     // El LLM a menudo NO extrae la hora cuando la clienta elige por posición, así
     // que lo resolvemos nosotros contra la lista real de huecos propuestos.
     if (session.slotsProposed) {
-        const bySel = parseSlotSelection(sanitized, session.availableSlots);
+        const bySel = parseSlotSelection(sanitized, proposed);
         if (bySel) return { slot: bySel, motivo: 'seleccion_posicional' };
     }
 
@@ -970,10 +1005,25 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             }
             session.askStylistFirst = !!session.selectedService && !session.selectedStylist && eligibleStylists.length > 1;
 
-            // Cargar huecos solo cuando ya no haya que preguntar estilista. Si es una
-            // reserva para un acompañante y aún no sabemos su nombre, lo pedimos primero.
+            // Si es una reserva para un acompañante y aún no sabemos su nombre, lo pedimos primero.
             const esperandoNombreInvitado = session.guestBooking && !session.guestName;
-            if (session.selectedService && !session.askStylistFirst && !esperandoNombreInvitado) {
+
+            // Puerta de preferencia de fecha (BUG 4): si la clienta NO ha dado ninguna
+            // pista de CUÁNDO quiere (semana/día/fecha/franja), preguntamos "¿qué día o
+            // semana te viene mejor?" ANTES de proponer huecos. Solo una vez
+            // (datePreferenceAsked) para no bloquear si luego responde vagamente; "me da
+            // igual" cuenta como pista y proponemos directamente.
+            const prefFecha = session.partialData.preferencia_horaria || {};
+            const tienePistaFecha = !!(prefFecha.semana || prefFecha.periodo || prefFecha.fecha ||
+                Number.isInteger(prefFecha.diaSemana)) || meDaIgual;
+            session.askDatePreferenceFirst =
+                !!session.selectedService && !session.askStylistFirst && !esperandoNombreInvitado &&
+                !tienePistaFecha && !session.datePreferenceAsked && !session.reservaConfirmada &&
+                session.availableSlots.length === 0;
+            if (session.askDatePreferenceFirst) session.datePreferenceAsked = true;
+
+            // Cargar huecos solo cuando ya no haya que preguntar estilista NI fecha.
+            if (session.selectedService && !session.askStylistFirst && !session.askDatePreferenceFirst && !esperandoNombreInvitado) {
                 const prefCambiada = JSON.stringify(prevData.preferencia_horaria) !== JSON.stringify(session.partialData.preferencia_horaria);
                 if (session.availableSlots.length === 0 || prefCambiada) {
                     await loadAvailableSlots(session);
@@ -999,6 +1049,11 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // ─── Build context for LLM ───────────────────────────────────────
         const slotsParaLLM = session.availableSlots.slice(session.currentSlotIndex);
 
+        // Rastreamos los huecos EXACTOS que ve el LLM (numerados) para que, cuando la
+        // clienta acepte uno ("el 2", "el de las 14", "sí"), persistamos ESE hueco con su
+        // estilista y fecha — no un re-match difuso contra availableSlots (BUG 2/3).
+        if (orgType === 'salon') session.proposedSlots = slotsParaLLM;
+
         const partialDataWithCtx = {
             ...session.partialData,
             __missingFields: orgType === 'salon' ? [] : getMissingFields(session.partialData),
@@ -1020,6 +1075,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             partialDataWithCtx.__upsellingSuggested = session.upsellingSuggested;
             partialDataWithCtx.__stylistAutoAssigned = !!session.selectedStylist;
             partialDataWithCtx.__askStylistFirst = !!session.askStylistFirst;
+            partialDataWithCtx.__askDatePreferenceFirst = !!session.askDatePreferenceFirst;
             partialDataWithCtx.__eligibleStylistNames = session._eligibleStylistNames || [];
             partialDataWithCtx.__clientLanguage = session.language;
             if (session.preferredStylistId) {

@@ -359,7 +359,74 @@ function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], tea
         result.preferencia_horaria = { ...(result.preferencia_horaria || {}), periodo: 'tarde' };
     }
 
+    // Día de la semana ("el miércoles") y fecha concreta ("el 24", "24 de junio").
+    // El motor (calendar-sante) filtra por diaSemana (0=Lunes) o por fecha (YYYY-MM-DD).
+    const datePref = extractDatePreferenceSante(t);
+    if (datePref) {
+        result.preferencia_horaria = { ...(result.preferencia_horaria || {}), ...datePref };
+    }
+
     return result;
+}
+
+// Día de la semana → 0=Lunes…6=Domingo (misma convención que stylist_schedules).
+const DIA_SEMANA_MAP = {
+    lunes: 0, monday: 0, martes: 1, tuesday: 1, miercoles: 2, wednesday: 2,
+    jueves: 3, thursday: 3, viernes: 4, friday: 4, sabado: 5, saturday: 5,
+    domingo: 6, sunday: 6,
+};
+const MESES_MAP = {
+    enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5, julio: 6,
+    agosto: 7, septiembre: 8, setiembre: 8, octubre: 9, noviembre: 10, diciembre: 11,
+};
+
+// Extrae preferencia de FECHA del salón a partir de texto ya normalizado (sin tildes).
+// Devuelve { diaSemana } y/o { fecha: 'YYYY-MM-DD' }, o null. Para no chocar con la
+// selección de hueco por número ("el 2" = opción 2), solo tomamos día del mes suelto
+// si es >= 10; los días 1-9 requieren mes explícito ("3 de julio").
+function extractDatePreferenceSante(t) {
+    const pref = {};
+
+    for (const [nombre, idx] of Object.entries(DIA_SEMANA_MAP)) {
+        if (new RegExp(`\\b${nombre}\\b`).test(t)) { pref.diaSemana = idx; break; }
+    }
+
+    // "24 de junio" / "3 de julio" — día + mes explícito.
+    const conMes = t.match(/\b(\d{1,2})\s+de\s+([a-z]+)\b/);
+    if (conMes && MESES_MAP[conMes[2]] !== undefined) {
+        const dom = parseInt(conMes[1], 10);
+        const f = resolveUpcomingDate(dom, MESES_MAP[conMes[2]]);
+        if (f) pref.fecha = f;
+    } else {
+        // "el 24" — día del mes suelto, solo >= 10 para no confundir con opciones 1-9.
+        const soloDia = t.match(/\bel\s+(\d{1,2})\b/);
+        if (soloDia) {
+            const dom = parseInt(soloDia[1], 10);
+            if (dom >= 10 && dom <= 31) {
+                const f = resolveUpcomingDate(dom, null);
+                if (f) pref.fecha = f;
+            }
+        }
+    }
+
+    return Object.keys(pref).length ? pref : null;
+}
+
+// Resuelve un día del mes (y mes opcional) a la próxima fecha YYYY-MM-DD a partir de hoy.
+function resolveUpcomingDate(dom, month) {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    for (let i = 0; i < 366; i++) {
+        const d = new Date(now);
+        d.setDate(now.getDate() + i);
+        if (d.getDate() !== dom) continue;
+        if (month !== null && d.getMonth() !== month) continue;
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${dd}`;
+    }
+    return null;
 }
 
 module.exports = {
