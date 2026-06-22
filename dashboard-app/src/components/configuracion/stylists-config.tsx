@@ -279,18 +279,18 @@ export function StylistsConfig({ orgId }: { orgId: string }) {
                         </span>
                         {d.abierto ? (
                           <>
-                            <Input
+                            <input
                               type="time"
                               value={d.apertura}
                               onChange={(e) => updateDay(stylist.id, idx, { apertura: e.target.value })}
-                              className="h-8 w-28 text-[12.5px]"
+                              className="h-8 w-28 rounded-md border border-input bg-transparent px-2 text-[12.5px] outline-none focus:border-ring focus:ring-3 focus:ring-ring/50"
                             />
                             <span className="text-[12px] text-muted-foreground">–</span>
-                            <Input
+                            <input
                               type="time"
                               value={d.cierre}
                               onChange={(e) => updateDay(stylist.id, idx, { cierre: e.target.value })}
-                              className="h-8 w-28 text-[12.5px]"
+                              className="h-8 w-28 rounded-md border border-input bg-transparent px-2 text-[12.5px] outline-none focus:border-ring focus:ring-3 focus:ring-ring/50"
                             />
                           </>
                         ) : (

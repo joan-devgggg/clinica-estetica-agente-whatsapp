@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { API, apiHeaders } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
@@ -414,32 +415,35 @@ export default function ConfiguracionPage() {
             </CardHeader>
             <CardContent className="px-5 pb-5 space-y-3">
               {DIAS.map(({ key, label }) => {
-                const dia = horario[key] ?? { apertura: "10:00", cierre: "20:00", abierto: true };
+                const dia = horario[key] ?? { apertura: "10:00", cierre: "19:00", abierto: true };
                 return (
                   <div key={key} className="flex items-center gap-4">
-                    <button
-                      type="button"
-                      onClick={() => updateHorario(key, "abierto", !dia.abierto)}
-                      className={`w-28 text-left text-[13px] font-medium transition-colors ${
-                        dia.abierto ? "text-foreground" : "text-muted-foreground line-through"
+                    <Switch
+                      checked={dia.abierto}
+                      onCheckedChange={(checked) => updateHorario(key, "abierto", checked)}
+                      aria-label={`${label} ${dia.abierto ? "abierto" : "cerrado"}`}
+                    />
+                    <span
+                      className={`w-28 text-[13px] font-medium transition-colors ${
+                        dia.abierto ? "text-foreground" : "text-muted-foreground"
                       }`}
                     >
                       {label}
-                    </button>
+                    </span>
                     {dia.abierto ? (
                       <>
-                        <Input
+                        <input
                           type="time"
                           value={dia.apertura}
                           onChange={(e) => updateHorario(key, "apertura", e.target.value)}
-                          className="h-8 w-32 text-[12.5px]"
+                          className="h-8 w-32 rounded-md border border-input bg-transparent px-2.5 text-[12.5px] outline-none focus:border-ring focus:ring-3 focus:ring-ring/50"
                         />
                         <span className="text-[12px] text-muted-foreground">–</span>
-                        <Input
+                        <input
                           type="time"
                           value={dia.cierre}
                           onChange={(e) => updateHorario(key, "cierre", e.target.value)}
-                          className="h-8 w-32 text-[12.5px]"
+                          className="h-8 w-32 rounded-md border border-input bg-transparent px-2.5 text-[12.5px] outline-none focus:border-ring focus:ring-3 focus:ring-ring/50"
                         />
                       </>
                     ) : (
