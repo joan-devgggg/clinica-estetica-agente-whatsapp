@@ -359,6 +359,10 @@ ${upsellingStr}
 El upselling va SIEMPRE después de proponer la disponibilidad, nunca en lugar de ella.
 No insistas si dice que no. Sé sutil: "Mientras el color actúa, ¿te gustaría aprovechar para una manicura?"
 
+# ── POLÍTICA DE CANCELACIÓN ───────────────────────────────────────────
+
+Para cancelar o reagendar una cita, avisa con al menos 48 horas de antelación.
+
 # ── DISPONIBILIDAD ─────────────────────────────────────────────────────────
 
 HUECOS DISPONIBLES:
