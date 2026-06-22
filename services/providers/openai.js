@@ -227,6 +227,10 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
         : 'Aún no se conoce el idioma. Detecta el idioma de su PRIMER mensaje y responde en ese mismo idioma.';
 
     // Modes
+    // Segunda reserva en la misma conversación (para un acompañante).
+    const guestBooking = !!partialData.__guestBooking;
+    const guestName = partialData.__guestName || null;
+
     let modoCita = '';
     if (citaConfirmada) {
         modoCita = `
@@ -267,10 +271,6 @@ ${historialStr}
 ${stylistHabitual ? `Su estilista habitual es ${stylistHabitual}. Sugiere primero esa estilista.` : ''}
 Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a su último servicio de forma natural.`;
     }
-
-    // Segunda reserva en la misma conversación (para un acompañante).
-    const guestBooking = !!partialData.__guestBooking;
-    const guestName = partialData.__guestName || null;
 
     // Next step logic
     const proximoPaso = (() => {
