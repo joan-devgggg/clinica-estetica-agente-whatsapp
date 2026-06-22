@@ -8,6 +8,7 @@ import { CreateAppointmentDialog } from "@/components/agenda/create-appointment-
 import { CreateBlockDialog } from "@/components/agenda/create-block-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { ChevronLeft, ChevronRight, Plus, Ban } from "lucide-react";
 import { toast } from "sonner";
 import { useOrg } from "@/lib/org-context";
@@ -42,6 +43,8 @@ export default function AgendaEstilistasPage() {
   const [loading, setLoading] = useState(true);
   const [showNewAppt, setShowNewAppt] = useState(false);
   const [showNewBlock, setShowNewBlock] = useState(false);
+  const [blockToDelete, setBlockToDelete] = useState<ScheduleBlock | null>(null);
+  const [deletingBlock, setDeletingBlock] = useState(false);
 
   const { orgId } = useOrg();
   const supabase = createClient();
@@ -96,6 +99,25 @@ export default function AgendaEstilistasPage() {
 
   const activeStylist = stylists.find(s => s.id === activeStylistId);
   const stylistAppointments = appointments.filter(a => a.stylist_id === activeStylistId);
+
+  async function handleDeleteBlock() {
+    if (!blockToDelete) return;
+    setDeletingBlock(true);
+    try {
+      const res = await fetch(`${API}/api/schedule-blocks/${blockToDelete.id}`, {
+        method: "DELETE",
+        headers: apiHeaders(orgId),
+      });
+      if (!res.ok) throw new Error();
+      toast.success("Bloqueo eliminado");
+      setBlockToDelete(null);
+      loadData();
+    } catch {
+      toast.error("Error al eliminar el bloqueo");
+    } finally {
+      setDeletingBlock(false);
+    }
+  }
 
   return (
     <>
@@ -163,6 +185,7 @@ export default function AgendaEstilistasPage() {
               blocks={blocks}
               schedule={schedule}
               stylist={activeStylist}
+              onBlockClick={setBlockToDelete}
             />
           ) : (
             <p className="text-center text-muted-foreground py-12">No hay estilistas configuradas</p>
@@ -189,6 +212,37 @@ export default function AgendaEstilistasPage() {
           onCreated={() => { setShowNewBlock(false); loadData(); }}
         />
       )}
+
+      <Dialog open={!!blockToDelete} onOpenChange={(open) => { if (!open) setBlockToDelete(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Eliminar bloqueo</DialogTitle>
+            <DialogDescription>
+              {blockToDelete && (() => {
+                const start = new Date(blockToDelete.starts_at);
+                const end = new Date(blockToDelete.ends_at);
+                const fecha = start.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+                const hi = start.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+                const hf = end.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+                return (
+                  <>
+                    Se liberará el hueco del {fecha} de {hi} a {hf}
+                    {blockToDelete.reason ? ` (${blockToDelete.reason})` : ""}. Esta acción no se puede deshacer.
+                  </>
+                );
+              })()}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => setBlockToDelete(null)} disabled={deletingBlock}>
+              Cancelar
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteBlock} disabled={deletingBlock}>
+              {deletingBlock ? "Eliminando..." : "Eliminar bloqueo"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

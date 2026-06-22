@@ -26,12 +26,6 @@ const DIAS = [
   { key: "dom", label: "Domingo" },
 ];
 
-const TONES = [
-  { value: "amigable", label: "Amigable" },
-  { value: "profesional", label: "Profesional" },
-  { value: "formal", label: "Formal" },
-];
-
 interface HorarioDia {
   apertura: string;
   cierre: string;
@@ -209,33 +203,6 @@ export default function ConfiguracionPage() {
     await putConfig(orgId, "horas_recordatorio", horas);
     setConfig((c) => ({ ...c, horas_recordatorio: horas }));
     toast.success("Tiempo guardado");
-  }
-
-  // ── Identidad del bot ──
-  async function handleSaveIdentidad(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const form = new FormData(e.currentTarget);
-    try {
-      await patchAgentConfig(orgId, {
-        tone: form.get("tone") as string,
-        handoff_message: form.get("handoff_message") as string,
-      });
-      toast.success("Identidad guardada");
-    } catch {
-      toast.error("Error al guardar");
-    }
-  }
-
-  // ── System prompt ──
-  async function handleSavePrompt(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const form = new FormData(e.currentTarget);
-    try {
-      await patchAgentConfig(orgId, { system_prompt: form.get("system_prompt") as string });
-      toast.success("System prompt guardado");
-    } catch {
-      toast.error("Error al guardar");
-    }
   }
 
   if (loading) {
@@ -517,74 +484,6 @@ export default function ConfiguracionPage() {
                 </div>
                 <div className="flex justify-end">
                   <Button type="submit" size="sm">Guardar tiempo</Button>
-                </div>
-              </form>
-            </CardContent>
-          </Card>
-
-          {/* Identidad del bot */}
-          <Card className="border-border/60 shadow-sm">
-            <CardHeader className="pb-2 pt-5 px-5">
-              <p className="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">
-                Identidad del bot
-              </p>
-            </CardHeader>
-            <CardContent className="px-5 pb-5">
-              <form onSubmit={handleSaveIdentidad} className="space-y-4">
-                <div className="space-y-1.5">
-                  <Label className="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground">
-                    Tono
-                  </Label>
-                  <select
-                    name="tone"
-                    defaultValue={agentCfg.tone ?? "amigable"}
-                    className="h-9 w-48 rounded-md border border-input bg-transparent px-3 text-[13.5px] focus:outline-none focus:ring-1 focus:ring-ring"
-                  >
-                    {TONES.map((t) => (
-                      <option key={t.value} value={t.value}>{t.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground">
-                    Mensaje de traspaso a humano
-                  </Label>
-                  <Textarea
-                    name="handoff_message"
-                    defaultValue={agentCfg.handoff_message ?? ""}
-                    rows={2}
-                    placeholder="Un momento, le paso su consulta a Alberto."
-                    className="resize-none text-[13.5px]"
-                  />
-                </div>
-                <div className="flex justify-end">
-                  <Button type="submit" size="sm">Guardar identidad</Button>
-                </div>
-              </form>
-            </CardContent>
-          </Card>
-
-          {/* System prompt */}
-          <Card className="border-border/60 shadow-sm">
-            <CardHeader className="pb-2 pt-5 px-5">
-              <p className="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">
-                System prompt
-              </p>
-            </CardHeader>
-            <CardContent className="px-5 pb-5">
-              <form onSubmit={handleSavePrompt} className="space-y-3">
-                <p className="text-[12px] text-muted-foreground">
-                  Instrucciones base del bot. Se anteponen al contexto de la conversación.
-                </p>
-                <Textarea
-                  name="system_prompt"
-                  defaultValue={agentCfg.system_prompt ?? ""}
-                  rows={8}
-                  placeholder="Eres la asistente virtual del restaurante. Tu objetivo es..."
-                  className="resize-y text-[13px] font-mono"
-                />
-                <div className="flex justify-end">
-                  <Button type="submit" size="sm">Guardar prompt</Button>
                 </div>
               </form>
             </CardContent>

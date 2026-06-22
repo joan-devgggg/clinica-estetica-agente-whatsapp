@@ -191,6 +191,7 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
     const salonName = info.companyName || 'Sante Healthy Hair Salon';
     const botName = info.botName || 'Asistente de Santé';
     const direccion = info.direccion || '';
+    const horario = info.horario || '';
     const cancelacion = info.cancelacion || 'Avisar con 48 horas de antelación';
 
     // Services catalog
@@ -347,7 +348,7 @@ Cliente: "Hola, quiero pedir cita"
 
 # ── EL SALÓN ───────────────────────────────────────────────────────────────
 
-${direccion}
+${direccion}${horario ? `\nHorario del salón: ${horario}` : ''}
 Política de cancelación: ${cancelacion}
 
 # ── EQUIPO ─────────────────────────────────────────────────────────────────

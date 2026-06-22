@@ -10,6 +10,7 @@ interface StylistAgendaProps {
   blocks: ScheduleBlock[];
   schedule: StylistSchedule[];
   stylist: Stylist;
+  onBlockClick?: (block: ScheduleBlock) => void;
 }
 
 const HOURS = Array.from({ length: 10 }, (_, i) => i + 10); // 10:00 to 19:00
@@ -62,7 +63,7 @@ function getBlockPosition(block: ScheduleBlock, dateStr: string) {
   return { startRow, span: endRow - startRow };
 }
 
-export function StylistAgenda({ weekStart, appointments, blocks, schedule, stylist }: StylistAgendaProps) {
+export function StylistAgenda({ weekStart, appointments, blocks, schedule, stylist, onBlockClick }: StylistAgendaProps) {
   const days = getWeekDays(weekStart, schedule);
 
   return (
@@ -152,14 +153,17 @@ export function StylistAgenda({ weekStart, appointments, blocks, schedule, styli
                       return hour >= blockStartH && hour < blockEndH;
                     })
                     .map(b => (
-                      <div
+                      <button
                         key={b.id}
-                        className="absolute inset-0 bg-muted/60 border border-dashed border-muted-foreground/30 flex items-center justify-center"
+                        type="button"
+                        onClick={() => onBlockClick?.(b)}
+                        title="Eliminar bloqueo"
+                        className="absolute inset-0 bg-muted/60 border border-dashed border-muted-foreground/30 flex items-center justify-center cursor-pointer hover:bg-destructive/15 hover:border-destructive/40 transition-colors z-20"
                       >
                         <span className="text-[9px] text-muted-foreground uppercase tracking-wider">
                           {b.reason || "Bloqueado"}
                         </span>
-                      </div>
+                      </button>
                     ))}
                 </div>
               );

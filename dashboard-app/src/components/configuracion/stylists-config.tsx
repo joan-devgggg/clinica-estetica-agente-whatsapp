@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { API, apiHeaders } from "@/lib/api";
 
 // Esquema: day_of_week 0 = Lunes … 6 = Domingo (igual que stylist_schedules en Supabase).
@@ -261,18 +262,21 @@ export function StylistsConfig({ orgId }: { orgId: string }) {
                 <Label className={LBL}>Horario</Label>
                 <div className="space-y-2">
                   {DIAS.map((label, idx) => {
-                    const d = days[idx];
+                    const d = days[idx] ?? { abierto: false, apertura: "10:00", cierre: "19:00" };
                     return (
                       <div key={label} className="flex items-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() => updateDay(stylist.id, idx, { abierto: !d.abierto })}
-                          className={`w-24 text-left text-[12.5px] font-medium transition-colors ${
-                            d.abierto ? "text-foreground" : "text-muted-foreground line-through"
+                        <Switch
+                          checked={d.abierto}
+                          onCheckedChange={(checked) => updateDay(stylist.id, idx, { abierto: checked })}
+                          aria-label={`${label} ${d.abierto ? "abierto" : "libre"}`}
+                        />
+                        <span
+                          className={`w-24 text-[12.5px] font-medium transition-colors ${
+                            d.abierto ? "text-foreground" : "text-muted-foreground"
                           }`}
                         >
                           {label}
-                        </button>
+                        </span>
                         {d.abierto ? (
                           <>
                             <Input
@@ -290,7 +294,7 @@ export function StylistsConfig({ orgId }: { orgId: string }) {
                             />
                           </>
                         ) : (
-                          <span className="text-[12px] text-muted-foreground italic">Libra</span>
+                          <span className="text-[12px] text-muted-foreground italic">Libre</span>
                         )}
                       </div>
                     );
