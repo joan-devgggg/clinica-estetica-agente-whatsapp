@@ -1,30 +1,38 @@
 "use client";
 
 import { Card } from "@/components/ui/card";
-import type { Stylist, Reserva, ScheduleBlock } from "@/lib/types";
+import type { Stylist, Reserva, ScheduleBlock, StylistSchedule } from "@/lib/types";
 import { ymd, parseYmd, addDays, madridDateKey } from "@/lib/date";
 
 interface StylistAgendaProps {
   weekStart: string;
   appointments: Reserva[];
   blocks: ScheduleBlock[];
+  schedule: StylistSchedule[];
   stylist: Stylist;
 }
 
 const HOURS = Array.from({ length: 10 }, (_, i) => i + 10); // 10:00 to 19:00
 const DAY_NAMES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 
-function getWeekDays(weekStart: string) {
+// El esquema usa day_of_week 0 = Lunes … 6 = Domingo, y weekStart es siempre un
+// lunes, así que el índice del día (0..6) coincide con day_of_week.
+function getWeekDays(weekStart: string, schedule: StylistSchedule[]) {
   const start = parseYmd(weekStart);
   const todayKey = ymd(new Date());
+  const byDow = new Map(schedule.map((r) => [r.day_of_week, r]));
   return Array.from({ length: 7 }, (_, i) => {
     const d = addDays(start, i);
     const key = ymd(d);
+    const row = byDow.get(i);
     return {
       date: key,
       dayName: DAY_NAMES[i],
       dayNum: d.getDate(),
       isToday: key === todayKey,
+      // Jornada de la estilista ese día (null = libra).
+      worksStartH: row ? parseInt(row.start_time.split(":")[0]) : null,
+      worksEndH: row ? parseInt(row.end_time.split(":")[0]) : null,
     };
   });
 }
@@ -54,27 +62,35 @@ function getBlockPosition(block: ScheduleBlock, dateStr: string) {
   return { startRow, span: endRow - startRow };
 }
 
-export function StylistAgenda({ weekStart, appointments, blocks, stylist }: StylistAgendaProps) {
-  const days = getWeekDays(weekStart);
+export function StylistAgenda({ weekStart, appointments, blocks, schedule, stylist }: StylistAgendaProps) {
+  const days = getWeekDays(weekStart, schedule);
 
   return (
     <Card className="border-border/60 shadow-sm overflow-hidden">
       <div className="grid grid-cols-[60px_repeat(7,1fr)] text-xs">
         {/* Header row */}
         <div className="border-b border-r border-border bg-muted/50 px-2 py-2" />
-        {days.map(day => (
-          <div
-            key={day.date}
-            className={`border-b border-r border-border px-2 py-2 text-center ${
-              day.isToday ? "bg-primary/5 font-semibold" : "bg-muted/50"
-            }`}
-          >
-            <p className="text-muted-foreground">{day.dayName}</p>
-            <p className={`text-lg font-semibold ${day.isToday ? "text-primary" : "text-foreground"}`}>
-              {day.dayNum}
-            </p>
-          </div>
-        ))}
+        {days.map(day => {
+          const libra = day.worksStartH === null;
+          return (
+            <div
+              key={day.date}
+              className={`border-b border-r border-border px-2 py-2 text-center ${
+                libra ? "bg-muted/30" : day.isToday ? "bg-primary/5 font-semibold" : "bg-muted/50"
+              }`}
+            >
+              <p className="text-muted-foreground">{day.dayName}</p>
+              <p
+                className={`text-lg font-semibold ${
+                  libra ? "text-muted-foreground/50" : day.isToday ? "text-primary" : "text-foreground"
+                }`}
+              >
+                {day.dayNum}
+              </p>
+              {libra && <p className="text-[9px] uppercase tracking-wider text-muted-foreground/60">Libra</p>}
+            </div>
+          );
+        })}
 
         {/* Time grid */}
         {HOURS.map(hour => (
@@ -90,8 +106,20 @@ export function StylistAgenda({ weekStart, appointments, blocks, stylist }: Styl
                 return bStart <= day.date && bEnd >= day.date;
               });
 
+              // Hora fuera de la jornada de la estilista (libra ese día o fuera de su horario).
+              const offHour =
+                day.worksStartH === null ||
+                day.worksEndH === null ||
+                hour < day.worksStartH ||
+                hour >= day.worksEndH;
+
               return (
-                <div key={day.date} className="border-r border-b border-border relative h-14">
+                <div
+                  key={day.date}
+                  className={`border-r border-b border-border relative h-14 ${
+                    offHour ? "bg-muted/40 bg-[repeating-linear-gradient(45deg,transparent,transparent_6px,rgba(0,0,0,0.03)_6px,rgba(0,0,0,0.03)_12px)]" : ""
+                  }`}
+                >
                   {/* Appointment blocks for this hour */}
                   {dayAppts
                     .filter(a => {

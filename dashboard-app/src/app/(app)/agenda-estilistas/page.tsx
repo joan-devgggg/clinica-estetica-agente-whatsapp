@@ -12,7 +12,7 @@ import { ChevronLeft, ChevronRight, Plus, Ban } from "lucide-react";
 import { toast } from "sonner";
 import { useOrg } from "@/lib/org-context";
 import { API, apiHeaders } from "@/lib/api";
-import type { Stylist, Reserva, ScheduleBlock } from "@/lib/types";
+import type { Stylist, Reserva, ScheduleBlock, StylistSchedule } from "@/lib/types";
 
 function getWeekRange(offset: number) {
   const now = new Date();
@@ -35,6 +35,7 @@ export default function AgendaEstilistasPage() {
   const [stylists, setStylists] = useState<Stylist[]>([]);
   const [appointments, setAppointments] = useState<Reserva[]>([]);
   const [blocks, setBlocks] = useState<ScheduleBlock[]>([]);
+  const [schedule, setSchedule] = useState<StylistSchedule[]>([]);
   const [activeStylistId, setActiveStylistId] = useState<string>("");
   const [weekOffset, setWeekOffset] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -64,11 +65,15 @@ export default function AgendaEstilistasPage() {
       }
 
       if (activeStylistId) {
-        const blockRes = await fetch(
-          `${API}/api/schedule-blocks?stylistId=${activeStylistId}&desde=${week.start}&hasta=${week.end}`,
-          { headers: apiHeaders(orgId) }
-        );
+        const [blockRes, schedRes] = await Promise.all([
+          fetch(
+            `${API}/api/schedule-blocks?stylistId=${activeStylistId}&desde=${week.start}&hasta=${week.end}`,
+            { headers: apiHeaders(orgId) }
+          ),
+          fetch(`${API}/api/stylist-schedule/${activeStylistId}`, { headers: apiHeaders(orgId) }),
+        ]);
         setBlocks(blockRes.ok ? await blockRes.json() : []);
+        setSchedule(schedRes.ok ? await schedRes.json() : []);
       }
     } catch {
       toast.error("Error cargando la agenda");
@@ -155,6 +160,7 @@ export default function AgendaEstilistasPage() {
               weekStart={week.start}
               appointments={stylistAppointments}
               blocks={blocks}
+              schedule={schedule}
               stylist={activeStylist}
             />
           ) : (
