@@ -454,6 +454,25 @@ async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duraci
     const durationMs = (duracionMin || 120) * 60 * 1000;
     const endsAt = new Date(startsAt.getTime() + durationMs);
 
+    // Idempotencia: nunca crear DOS veces la misma cita. Si ya existe una cita activa
+    // (no cancelada) para este contacto a la MISMA hora de inicio, devolvemos la existente
+    // en vez de insertar un duplicado. Backstop a nivel de datos contra cualquier reintento,
+    // race o red de seguridad que intente reservar el mismo hueco más de una vez.
+    {
+        const { data: existing } = await supabase
+            .from('appointments')
+            .select('*')
+            .eq('organization_id', oid)
+            .eq('contact_id', contactId)
+            .eq('starts_at', startsAt.toISOString())
+            .neq('status', 'cancelled')
+            .maybeSingle();
+        if (existing) {
+            console.warn('[saveAppointment] cita duplicada evitada (ya existe activa)', { contactId, startsAt: startsAt.toISOString() });
+            return existing;
+        }
+    }
+
     const { data, error } = await supabase
         .from('appointments')
         .insert({

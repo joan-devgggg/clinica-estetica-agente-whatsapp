@@ -223,6 +223,7 @@ function buildSessionExtra(session) {
         slotsProposed:     !!session.slotsProposed,
         guestBooking:      !!session.guestBooking,
         guestName:         session.guestName || null,
+        bookedSlots:       Array.isArray(session.bookedSlots) ? session.bookedSlots : [],
     };
 }
 
@@ -636,6 +637,18 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
     const hora = slot.hora;
     const stylistId = slot.stylistId;
 
+    // Guarda de idempotencia por sesión: no reservar dos veces el MISMO hueco
+    // (fecha+hora+estilista) en una conversación. Evita que la resolución de confirmación
+    // y la red de seguridad (o un reset/segunda reserva mal disparado) creen citas
+    // duplicadas. Una segunda cita REAL será otro hueco distinto y sí pasará esta guarda.
+    const slotSig = `${fecha}|${hora}|${stylistId || ''}`;
+    if (!Array.isArray(session.bookedSlots)) session.bookedSlots = [];
+    if (session.bookedSlots.includes(slotSig)) {
+        logger.warn('cita_sante_duplicada_evitada', { orgId, telefono: userPhone, slotSig });
+        session.reservaConfirmada = true;
+        return true; // ya reservada en esta sesión: no creamos otra
+    }
+
     session.partialData.fecha_cita = fecha;
     session.partialData.hora_cita = hora;
 
@@ -686,6 +699,9 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
 
         session.reservaConfirmada = true;
         session.leadStatus = 'completed';
+        // Registramos el hueco reservado para que la guarda de idempotencia bloquee
+        // cualquier intento de volver a crear esta misma cita en la conversación.
+        session.bookedSlots.push(slotSig);
         // Cita guardada: limpiamos el estado de "reserva para acompañante" para que una
         // eventual tercera reserva arranque limpia.
         session.guestBooking = false;
@@ -780,6 +796,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession.slotsProposed      = !!ex.slotsProposed;
                     newSession.guestBooking       = !!ex.guestBooking;
                     newSession.guestName          = ex.guestName || null;
+                    newSession.bookedSlots        = Array.isArray(ex.bookedSlots) ? ex.bookedSlots : [];
                 }
 
                 if (persisted.leadGuardado) {
@@ -1210,7 +1227,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // sin haberla persistido. Si ninguna rama anterior guardó la cita pero el texto
             // del LLM dice que reservó, intentamos guardar con el mejor hueco; si no se puede,
             // reemplazamos el mensaje para no mentirle a la clienta.
-            if (!session.reservaConfirmada && llmClaimsBooked(aiResponse.respuesta)) {
+            if (!session.reservaConfirmada && session.slotsProposed && llmClaimsBooked(aiResponse.respuesta)) {
                 const slot = (session.selectedService && (session.availableSlots || []).length)
                     ? pickChosenSlot(session, aiResponse.datos) : null;
                 let ok = false;
