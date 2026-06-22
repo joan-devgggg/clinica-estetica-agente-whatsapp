@@ -403,11 +403,19 @@ function parseSlotSelection(text, slots) {
 
     // 1) Por hora explícita ("el de las 14", "a las 15:30", "14h"). Extracción
     //    permisiva + match estricto contra los huecos reales evita falsos positivos.
+    //    Prioriza SIEMPRE la lectura de hora sobre la posicional: "a las 2" es las 14:00,
+    //    no "la opción 2". Como el salón trabaja por la tarde, probamos la hora literal
+    //    y su variante de tarde (+12); solo gana si coincide con un hueco real.
     const horaMatch = t.match(/\b(\d{1,2})(?:[:.](\d{2}))?\s*h?\b/);
     if (horaMatch) {
-        const target = normalizeHora(`${horaMatch[1]}:${horaMatch[2] || '00'}`);
-        const byHora = slots.find(s => normalizeHora(s.hora) === target);
-        if (byHora) return byHora;
+        const h = parseInt(horaMatch[1], 10);
+        const mm = horaMatch[2] || '00';
+        const candidatos = [normalizeHora(`${h}:${mm}`)];
+        if (h >= 1 && h <= 11) candidatos.push(normalizeHora(`${h + 12}:${mm}`)); // "a las 2" → 14:00
+        for (const target of candidatos) {
+            const byHora = slots.find(s => normalizeHora(s.hora) === target);
+            if (byHora) return byHora;
+        }
     }
 
     // 2) Por ordinal en palabras (con tolerancia a erratas vía includes).
@@ -440,12 +448,30 @@ function parseSlotSelection(text, slots) {
     return null;
 }
 
+// Detecta que el LLM AFIRMA en su texto que la cita queda reservada/confirmada.
+// Sirve de red de seguridad: el LLM a menudo escribe "te he reservado" sin poner el
+// flag reserva_confirmada → si no lo cazamos, el bot miente y no persiste nada.
+// normalizeText quita acentos, así que comparamos sin tildes ("esta" por "está").
+function llmClaimsBooked(text) {
+    if (!text) return false;
+    const t = normalizeText(text);
+    return [
+        'te he reservado', 'te la he reservado', 'te lo he reservado',
+        'te reservo', 'te la reservo', 'te lo reservo',
+        'queda confirmada', 'queda reservada', 'queda agendada',
+        'esta reservado', 'esta reservada', 'esta confirmada', 'esta confirmado',
+        'cita confirmada', 'cita reservada', 'cita agendada',
+        'reserva confirmada', 'confirmada tu cita', 'confirmada la cita',
+    ].some(p => t.includes(p));
+}
+
 // Decide si la clienta ha aceptado un hueco y devuelve { slot, motivo } o null.
 // No nos fiamos solo del flag del LLM (lo omite a menudo y dice "te he reservado" sin
 // disparar el guardado → fallo silencioso). Reservamos cuando: (1) el LLM pone el flag,
-// (2) el LLM devuelve una hora que coincide con un hueco real, o (3) la clienta responde
-// afirmativamente DESPUÉS de que ya le hayamos propuesto huecos. Guardas: tiene que haber
-// servicio y huecos cargados, para no reservar prematuramente.
+// (2) el LLM devuelve una hora que coincide con un hueco real, (3) la clienta responde
+// afirmativamente DESPUÉS de que ya le hayamos propuesto huecos, o (4) el propio texto del
+// LLM afirma que la cita queda reservada. Guardas: tiene que haber servicio y huecos
+// cargados, para no reservar prematuramente.
 function resolveSalonConfirmation(session, aiResponse, sanitized) {
     // [DIAG P1] Trazamos cada guardia para ver exactamente dónde se corta el flujo
     // cuando el bot dice "te he reservado" pero no se persiste la cita.
@@ -455,6 +481,7 @@ function resolveSalonConfirmation(session, aiResponse, sanitized) {
         numSlots: (session.availableSlots || []).length,
         slotsProposed: !!session.slotsProposed,
         llmFlag: !!aiResponse.reserva_confirmada,
+        llmClaimsBooked: llmClaimsBooked(aiResponse.respuesta),
         horaLLM: aiResponse.datos?.hora_cita || null,
         sanitized,
     }));
@@ -485,6 +512,14 @@ function resolveSalonConfirmation(session, aiResponse, sanitized) {
     if (session.slotsProposed && isAffirmative(sanitized)) {
         const slot = pickChosenSlot(session, aiResponse.datos);
         if (slot) return { slot, motivo: 'afirmativo_tras_propuesta' };
+    }
+
+    // (4) Red de seguridad anti-fallo-silencioso: el LLM dice en su texto que la cita
+    // queda reservada pero no puso el flag y nada encajó arriba. Guardamos el hueco que
+    // más encaje (o el último propuesto) para no mentirle a la clienta sin persistir.
+    if (session.slotsProposed && llmClaimsBooked(aiResponse.respuesta)) {
+        const slot = pickChosenSlot(session, aiResponse.datos);
+        if (slot) return { slot, motivo: 'texto_llm_confirma' };
     }
 
     console.log('[DIAG resolveSalonConfirmation] null: ninguna rama de aceptación coincidió');
@@ -1211,4 +1246,6 @@ module.exports = {
     setConversationBotMode,
     setWAClient,
     resolveBizumResult,
+    // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
+    _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked },
 };
