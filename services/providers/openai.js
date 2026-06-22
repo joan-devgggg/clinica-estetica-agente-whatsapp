@@ -236,6 +236,13 @@ MODO CITA CONFIRMADA:
 * Si quiere cancelar → accion: "cancelar". Si quiere cambiar → accion: "cambiar".`;
     }
 
+    const modoSegundaCita = guestBooking ? `
+MODO SEGUNDA CITA (ACOMPAÑANTE):
+* La clienta ya tiene una cita confirmada y ahora quiere reservar OTRA para otra persona.
+* ${guestName ? `Esta nueva cita es para ${guestName}. Trátala como una reserva nueva e independiente.` : 'Aún no sabes para quién es: pregunta primero el nombre de esa persona, no des nada por hecho.'}
+* NO repitas la cita ya confirmada del titular; estás gestionando una cita NUEVA desde cero.
+* Sigue el flujo normal (servicio → estilista → huecos → confirmar) para esta nueva cita.` : '';
+
     const modoReagendamiento = partialData.__reagendando ? `
 MODO REAGENDAMIENTO:
 * La clienta quiere cambiar su cita. Buscando nuevos huecos.
@@ -261,9 +268,15 @@ ${stylistHabitual ? `Su estilista habitual es ${stylistHabitual}. Sugiere primer
 Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a su último servicio de forma natural.`;
     }
 
+    // Segunda reserva en la misma conversación (para un acompañante).
+    const guestBooking = !!partialData.__guestBooking;
+    const guestName = partialData.__guestName || null;
+
     // Next step logic
     const proximoPaso = (() => {
         if (citaConfirmada) return 'Sigue las instrucciones del modo cita confirmada.';
+        if (guestBooking && !guestName) return 'La clienta quiere reservar OTRA cita para otra persona (un acompañante). Pregunta el nombre de esa persona antes de continuar.';
+        if (guestBooking && guestName && !selectedService) return `Esta nueva cita es para ${guestName}. Pregunta qué servicio quiere ${guestName}.`;
         if (partialData.__clienteRecurrente && !selectedService) return 'Saluda con calidez y pregunta en qué puedes ayudarla.';
         if (!partialData.nombre && !partialData.__clienteRecurrente) return 'Saluda y pregunta cómo se llama.';
         if (!selectedService) return 'Pregunta qué servicio necesita. Si no tiene claro, ofrécele las categorías principales.';
@@ -372,6 +385,7 @@ FLUJO DE LA CITA:
 
 # ── MODOS ESPECIALES ──────────────────────────────────────────────────────
 ${modoCita}
+${modoSegundaCita}
 ${modoReagendamiento}
 ${modoClienteRecurrente}
 

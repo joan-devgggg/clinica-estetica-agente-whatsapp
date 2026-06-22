@@ -8,7 +8,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative, normalizeText } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, detectGuestBooking, extractGuestName, isValidName } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary } = require('./services/memory');
@@ -113,6 +113,9 @@ function createEmptySession(userId, orgId) {
         preferredStylistId: null,
         ultimoServicio: null,
         ultimaEstilista: null,
+        // Segunda reserva en la misma conversación (para un acompañante)
+        guestBooking: false,
+        guestName: null,
     };
 }
 
@@ -215,6 +218,8 @@ function buildSessionExtra(session) {
         preferredStylistId: session.preferredStylistId || null,
         currentSlotIndex:  session.currentSlotIndex || 0,
         slotsProposed:     !!session.slotsProposed,
+        guestBooking:      !!session.guestBooking,
+        guestName:         session.guestName || null,
     };
 }
 
@@ -487,6 +492,38 @@ function salonRetryMsg(language) {
     return (language && retryMsgs[language]) || 'Uy, no he podido fijar ese hueco 😕 ¿Cuál de los horarios disponibles te viene mejor?';
 }
 
+// ─── Segunda reserva en la misma conversación (Sante) ───────────────────────
+// Tras confirmar una cita, la clienta puede pedir otra (para ella o un acompañante).
+// Reiniciamos SOLO el estado de reserva, conservando idioma, contacto e historial,
+// para que el flujo arranque limpio y guarde también esta segunda cita.
+function resetForSecondBooking(session, sanitized) {
+    session.reservaConfirmada = false;
+    session.appointmentId = null;
+    session.selectedService = null;
+    session.selectedStylist = null;
+    session.availableSlots = [];
+    session.currentSlotIndex = 0;
+    session.slotsProposed = false;
+    session.upsellingAccepted = [];
+    session.upsellingSuggested = false;
+    session.modoReagendamiento = false;
+    session.leadStatus = 'in_progress';
+    delete session.partialData.preferencia_horaria;
+    delete session.partialData.fecha_cita;
+    delete session.partialData.hora_cita;
+    delete session.partialData.estado_cita;
+    delete session.partialData.notas;
+
+    // ¿Es para otra persona? Pedimos su nombre; si ya viene en el mensaje, lo capturamos.
+    const esInvitado = detectGuestBooking(sanitized);
+    session.guestBooking = esInvitado;
+    session.guestName = esInvitado ? extractGuestName(sanitized) : null;
+
+    logger.info('segunda_reserva_iniciada', {
+        orgId: session.orgId, guestBooking: session.guestBooking, guestName: session.guestName || null,
+    });
+}
+
 // Decide si la clienta ha aceptado un hueco y devuelve { slot, motivo } o null.
 // No nos fiamos solo del flag del LLM (lo omite a menudo y dice "te he reservado" sin
 // disparar el guardado → fallo silencioso). Reservamos cuando: (1) el LLM pone el flag,
@@ -586,11 +623,16 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
         const allServices = [session.selectedService?.nombre, ...(session.upsellingAccepted || [])].filter(Boolean).join(' + ');
         const totalDuration = (session.selectedService?.duracion || 60) + (session.upsellingAccepted || []).length * 30;
 
+        // Si la cita es para un acompañante, lo dejamos anotado en la cita (el contacto
+        // sigue siendo el titular del WhatsApp, pero la cita es para otra persona).
+        const guestNote = session.guestBooking && session.guestName ? `Cita para: ${session.guestName}` : null;
+        const notasCita = [guestNote, session.partialData.notas].filter(Boolean).join(' · ') || null;
+
         const result = await calendarSante.bookAppointment(orgId, slot, session.leadId, {
             servicio: allServices || session.selectedService?.nombre || 'Cita',
             duracionMin: totalDuration,
             stylistId,
-            notas: session.partialData.notas || null,
+            notas: notasCita,
         });
 
         if (!result.success) {
@@ -609,6 +651,10 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
 
         session.reservaConfirmada = true;
         session.leadStatus = 'completed';
+        // Cita guardada: limpiamos el estado de "reserva para acompañante" para que una
+        // eventual tercera reserva arranque limpia.
+        session.guestBooking = false;
+        session.guestName = null;
         return true;
     } catch (e) {
         logger.error('error_finalizar_cita_sante', { telefono: userPhone, error: e.message });
@@ -697,6 +743,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession.preferredStylistId = ex.preferredStylistId || null;
                     newSession.currentSlotIndex   = ex.currentSlotIndex || 0;
                     newSession.slotsProposed      = !!ex.slotsProposed;
+                    newSession.guestBooking       = !!ex.guestBooking;
+                    newSession.guestName          = ex.guestName || null;
                 }
 
                 if (persisted.leadGuardado) {
@@ -855,6 +903,22 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 
         const intent = detectIntent(sanitized);
 
+        // ─── Salon: segunda reserva en la misma conversación ─────────────
+        // Si ya hay una cita confirmada y la clienta pide otra (para ella o un
+        // acompañante), reiniciamos el flujo para gestionar y guardar la nueva cita.
+        if (orgType === 'salon') {
+            if (session.reservaConfirmada && wantsAnotherBooking(sanitized)) {
+                resetForSecondBooking(session, sanitized);
+            }
+            // Mientras esperamos el nombre del acompañante, intentamos capturarlo de
+            // la respuesta (nombre suelto o "se llama X") sin pisar el nombre del titular.
+            if (session.guestBooking && !session.guestName) {
+                const g = extractGuestName(sanitized) ||
+                    (sanitized.trim().split(/\s+/).length <= 2 && isValidName(sanitized.trim()) ? sanitized.trim() : null);
+                if (g) session.guestName = g.charAt(0).toUpperCase() + g.slice(1).toLowerCase();
+            }
+        }
+
         // San Remo: Bizum confirmation
         if (orgType === 'restaurant' && session.bizumAsked && !session.bizumPendiente && intent === 'bizum_hecho') {
             await finalizarReservaConBizum(client, session, userPhone);
@@ -906,8 +970,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             }
             session.askStylistFirst = !!session.selectedService && !session.selectedStylist && eligibleStylists.length > 1;
 
-            // Cargar huecos solo cuando ya no haya que preguntar estilista.
-            if (session.selectedService && !session.askStylistFirst) {
+            // Cargar huecos solo cuando ya no haya que preguntar estilista. Si es una
+            // reserva para un acompañante y aún no sabemos su nombre, lo pedimos primero.
+            const esperandoNombreInvitado = session.guestBooking && !session.guestName;
+            if (session.selectedService && !session.askStylistFirst && !esperandoNombreInvitado) {
                 const prefCambiada = JSON.stringify(prevData.preferencia_horaria) !== JSON.stringify(session.partialData.preferencia_horaria);
                 if (session.availableSlots.length === 0 || prefCambiada) {
                     await loadAvailableSlots(session);
@@ -963,6 +1029,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             }
             partialDataWithCtx.__ultimoServicio = session.ultimoServicio || null;
             partialDataWithCtx.__ultimaEstilista = session.ultimaEstilista || null;
+            partialDataWithCtx.__guestBooking = !!session.guestBooking;
+            partialDataWithCtx.__guestName = session.guestName || null;
         }
 
         // ─── LLM call ────────────────────────────────────────────────────

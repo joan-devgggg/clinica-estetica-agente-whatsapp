@@ -249,6 +249,72 @@ function extractStylistFromText(text, teamList) {
     return null;
 }
 
+// ─── Segunda reserva en la misma conversación (Sante) ───────────────────────
+// Tras confirmar una cita, la clienta puede querer reservar OTRA (para ella o para
+// un acompañante). Detectamos esa intención para reiniciar el flujo de reserva.
+
+// Palabras que indican que la cita es para OTRA persona, no para el titular del WA.
+const GUEST_NOT_NAMES = ['amigo', 'amiga', 'madre', 'padre', 'hija', 'hijo', 'hermana',
+    'hermano', 'pareja', 'marido', 'mujer', 'novia', 'novio', 'prima', 'primo', 'persona',
+    'otra', 'otro', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo',
+    'manana', 'tarde', 'noche', 'hoy', 'semana', 'dia', 'cita', 'reserva', 'corte', 'color'];
+
+// La cita es para un acompañante ("para mi amiga", "para mi madre", "para otra persona").
+function detectGuestBooking(text) {
+    const t = normalizeText(text);
+    const markers = [
+        'para un amigo', 'para una amiga', 'para mi amigo', 'para mi amiga',
+        'para mi madre', 'para mi padre', 'para mi hija', 'para mi hijo',
+        'para mi hermana', 'para mi hermano', 'para mi pareja', 'para mi marido',
+        'para mi mujer', 'para mi novia', 'para mi novio', 'para mi prima', 'para mi primo',
+        'para otra persona', 'para una persona', 'es para otra', 'no es para mi',
+        'for a friend', 'for my friend', 'for my mother', 'for my sister', 'for my daughter',
+        'for someone', 'for another person',
+        'для друга', 'для подруги', 'для мамы', 'для сестры',
+    ];
+    return markers.some(p => t.includes(normalizeText(p)));
+}
+
+// La clienta pide OTRA cita. Solo debe consultarse cuando ya hay una confirmada en sesión.
+// Coincidencia por frases (no por palabras sueltas) para no confundir "otra duda sobre
+// mi cita" con una segunda reserva.
+function wantsAnotherBooking(text) {
+    const t = normalizeText(text);
+    if (detectGuestBooking(text)) return true;
+    const phrases = [
+        'otra cita', 'otra reserva', 'una cita mas', 'una reserva mas', 'otra mas',
+        'segunda cita', 'segunda reserva', 'reservar otra', 'reservar tambien',
+        'tambien quiero reservar', 'tambien reservar', 'tambien una cita',
+        'tambien quiero una cita', 'quiero otra', 'reservar para', 'reservame otra',
+        'apuntar otra', 'agendar otra', 'pedir otra cita',
+        'another appointment', 'another booking', 'book another', 'one more appointment',
+        'also book', 'second appointment', 'second booking',
+        'еще одну запись', 'ещё одну запись', 'ще один запис',
+    ];
+    return phrases.some(p => t.includes(normalizeText(p)));
+}
+
+// Intenta extraer el nombre del acompañante ("para mi amiga María", "es para Ana").
+// Conservador: descarta palabras de relación/tiempo para no tomarlas por nombre.
+function extractGuestName(text) {
+    if (!text) return null;
+    const patterns = [
+        /para\s+(?:mi|un|una|el|la)\s+\w+[\s,]+([a-záéíóúñ]{2,})/i,
+        /es para\s+([a-záéíóúñ]{2,})/i,
+        /se llama\s+([a-záéíóúñ]{2,})/i,
+        /^para\s+([a-záéíóúñ]{2,})\s*$/i,
+    ];
+    for (const p of patterns) {
+        const m = text.match(p);
+        if (m && m[1]) {
+            const cand = m[1].trim();
+            if (GUEST_NOT_NAMES.includes(normalizeText(cand))) continue;
+            if (isValidName(cand)) return cand.charAt(0).toUpperCase() + cand.slice(1).toLowerCase();
+        }
+    }
+    return null;
+}
+
 function getMissingFieldsSante(partialData) {
     const missing = [];
     if (!partialData?.nombre || partialData.nombre === 'desconocido') missing.push('nombre');
@@ -313,4 +379,7 @@ module.exports = {
     extractStylistFromText,
     getMissingFieldsSante,
     extractQuickDataSante,
+    wantsAnotherBooking,
+    detectGuestBooking,
+    extractGuestName,
 };
