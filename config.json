@@ -40,6 +40,7 @@
     "abandonThresholdMs": 1800000,
     "duplicateMessageWindowMs": 1500,
     "maxMessagesPerSession": 30,
+    "maxMessagesPerSessionSalon": 60,
     "technicalErrorMessage": "Lo siento, ha ocurrido un error técnico. Por favor, inténtalo de nuevo.",
     "deactivatedMessage": "Has desactivado el asistente automático.",
     "reactivatedMessage": "Asistente activado de nuevo.",

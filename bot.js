@@ -8,7 +8,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, detectGuestBooking, extractGuestName, isValidName } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, detectGuestBooking, extractGuestName, isValidName, detectLanguage } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary } = require('./services/memory');
@@ -184,6 +184,10 @@ async function loadAvailableSlots(session) {
                 preferencia: session.partialData.preferencia_horaria || {},
             });
             session.availableSlots = slots;
+            // Si el día concreto pedido no tenía disponibilidad real, calendar-sante
+            // devuelve los huecos más cercanos y marca esta bandera para que el LLM
+            // avise a la clienta en vez de afirmar que el día pedido está libre.
+            session.slotsRequestedDayUnavailable = !!slots.requestedDayUnavailable;
 
             // Si solo hay una estilista posible para el servicio (p.ej. masajes → Larisa),
             // asígnala automáticamente y sáltate la pregunta de preferencia. Así el flujo
@@ -560,21 +564,9 @@ function resetForSecondBooking(session, sanitized) {
 // LLM afirma que la cita queda reservada. Guardas: tiene que haber servicio y huecos
 // cargados, para no reservar prematuramente.
 function resolveSalonConfirmation(session, aiResponse, sanitized) {
-    // [DIAG P1] Trazamos cada guardia para ver exactamente dónde se corta el flujo
-    // cuando el bot dice "te he reservado" pero no se persiste la cita.
-    console.log('[DIAG resolveSalonConfirmation]', JSON.stringify({
-        reservaConfirmada: session.reservaConfirmada,
-        selectedService: session.selectedService?.nombre || null,
-        numSlots: (session.availableSlots || []).length,
-        slotsProposed: !!session.slotsProposed,
-        llmFlag: !!aiResponse.reserva_confirmada,
-        llmClaimsBooked: llmClaimsBooked(aiResponse.respuesta),
-        horaLLM: aiResponse.datos?.hora_cita || null,
-        sanitized,
-    }));
-    if (session.reservaConfirmada) { console.log('[DIAG resolveSalonConfirmation] null: ya confirmada'); return null; }
-    if (!session.selectedService) { console.log('[DIAG resolveSalonConfirmation] null: sin selectedService'); return null; }
-    if (!(session.availableSlots || []).length) { console.log('[DIAG resolveSalonConfirmation] null: sin availableSlots'); return null; }
+    if (session.reservaConfirmada) return null;
+    if (!session.selectedService) return null;
+    if (!(session.availableSlots || []).length) return null;
 
     // Trabajamos SIEMPRE contra la lista exacta de huecos propuestos (lo que vio el LLM
     // numerado), no contra availableSlots: así un ordinal ("el 2") o un "sí" se resuelven
@@ -617,7 +609,6 @@ function resolveSalonConfirmation(session, aiResponse, sanitized) {
         if (slot) return { slot, motivo: 'texto_llm_confirma' };
     }
 
-    console.log('[DIAG resolveSalonConfirmation] null: ninguna rama de aceptación coincidió');
     return null;
 }
 
@@ -626,10 +617,6 @@ function resolveSalonConfirmation(session, aiResponse, sanitized) {
 // confirmada únicamente en ese caso, para no decirle a la clienta que está
 // confirmada cuando en realidad no se ha persistido nada.
 async function finalizarCitaSante(client, session, userPhone, slot) {
-    console.log('[DIAG finalizarCitaSante] ENTRA', JSON.stringify({
-        telefono: userPhone, slot: slot ? { fecha: slot.fecha, hora: slot.hora, stylistId: slot.stylistId } : null,
-        servicio: session.selectedService?.nombre || null, leadId: session.leadId,
-    }));
     const orgId = session.orgId;
     if (!slot) return false;
 
@@ -923,10 +910,28 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         if (session.lastMessageTime && (now - session.lastMessageTime) < (config.conversation?.duplicateMessageWindowMs || 1500)) return;
 
         session.messageCount++;
-        const maxMsg = config.conversation?.maxMessagesPerSession || 30;
+        // BUG 5: el salón tiene conversaciones más largas (idioma, servicio, estilista,
+        // upselling, segunda cita) → límite más alto para no cortar reservas normales.
+        // Y el mensaje de límite de San Remo ("Alberto te contactará") NO debe filtrarse
+        // a Sante: usamos uno neutral y multiidioma.
+        const maxMsg = orgType === 'salon'
+            ? (config.conversation?.maxMessagesPerSessionSalon || 60)
+            : (config.conversation?.maxMessagesPerSession || 30);
         if (session.messageCount > maxMsg) {
             if (session.messageCount === maxMsg + 1) {
-                await sendWithDelay(client, userPhone, config.conversation?.limitMessage || 'Hemos llegado al límite de mensajes.', orgId);
+                let limitMsg;
+                if (orgType === 'salon') {
+                    const limitMsgs = {
+                        en: 'For anything else, our team will get back to you shortly 😊',
+                        ru: 'По любым другим вопросам наша команда скоро свяжется с тобой 😊',
+                        uk: 'З будь-яких інших питань наша команда незабаром зв’яжеться з тобою 😊',
+                    };
+                    limitMsg = (session.language && limitMsgs[session.language]) ||
+                        'Para cualquier otra cosa, nuestro equipo te atenderá enseguida 😊';
+                } else {
+                    limitMsg = config.conversation?.limitMessage || 'Hemos llegado al límite de mensajes.';
+                }
+                await sendWithDelay(client, userPhone, limitMsg, orgId);
                 session.botActivo = false;
             }
             return;
@@ -948,6 +953,16 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         if (orgType === 'salon') {
             // Salon: extract name, preference, detect service/stylist from LLM
             session.partialData = extractQuickDataSante(sanitized, session.partialData);
+            // BUG 4: fija el idioma de forma heurística si aún no lo conocemos, para que
+            // los fallbacks/mensajes de sistema salgan en el idioma correcto aunque el LLM
+            // falle. El LLM (idioma_detectado) sigue mandando y puede corregirlo después.
+            if (!session.language) {
+                const lang = detectLanguage(sanitized);
+                if (lang) {
+                    session.language = lang;
+                    if (session.leadId) updateContactLanguage(orgId, session.leadId, lang).catch(() => {});
+                }
+            }
         } else {
             // Restaurant: extract name, personas, preference
             session.partialData = extractQuickData(sanitized, session.partialData);
@@ -1104,6 +1119,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             partialDataWithCtx.__ultimaEstilista = session.ultimaEstilista || null;
             partialDataWithCtx.__guestBooking = !!session.guestBooking;
             partialDataWithCtx.__guestName = session.guestName || null;
+            partialDataWithCtx.__requestedDayUnavailable = !!session.slotsRequestedDayUnavailable;
 
             // Inyectar días de trabajo de cada estilista para que el LLM sepa cuándo libran
             const DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
@@ -1153,9 +1169,18 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 const fbText = fbSlotMsgs[lang] || fbSlotMsgs.es;
                 aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
                 logger.info('llm_timeout_slots_fallback', { orgId, telefono: userPhone, numSlots: pendingSlots.length });
+            } else if (orgType === 'salon') {
+                // BUG 6: mensaje NEUTRAL (no de error) y multiidioma cuando el LLM falla y
+                // aún no hay huecos que ofrecer. Evita el "se me ha ido la conexión".
+                const fbMsgs = {
+                    en: 'One moment, please 😊',
+                    ru: 'Минутку, пожалуйста 😊',
+                    uk: 'Хвилинку, будь ласка 😊',
+                };
+                const fbText = (session.language && fbMsgs[session.language]) || 'Un momento, por favor 😊';
+                aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
             } else {
-                const fbMsgs = { en: 'I lost connection 😅 Could you repeat that?', ru: 'Связь прервалась 😅 Можешь повторить?', uk: "Зв'язок перервався 😅 Можеш повторити?" };
-                const fbText = (session.language && fbMsgs[session.language]) || 'Se me ha ido la conexión 😅 ¿me repites?';
+                const fbText = 'Se me ha ido la conexión 😅 ¿me repites?';
                 aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
             }
         }
@@ -1217,11 +1242,6 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // LLM: resolveSalonConfirmation también reserva si la clienta acepta un hueco
             // propuesto (hora que coincide o "sí/vale" tras la propuesta).
             const confirm = resolveSalonConfirmation(session, aiResponse, sanitized);
-            console.log('[DIAG bot.js] antes de if(confirm)', JSON.stringify({
-                telefono: userPhone, hayConfirm: !!confirm, motivo: confirm?.motivo || null,
-                slot: confirm?.slot ? { fecha: confirm.slot.fecha, hora: confirm.slot.hora } : null,
-                respuestaLLM: (aiResponse.respuesta || '').slice(0, 120),
-            }));
             if (confirm) {
                 logger.info('cita_sante_confirmacion', { orgId, telefono: userPhone, motivo: confirm.motivo, fecha: confirm.slot.fecha, hora: confirm.slot.hora });
                 const ok = await finalizarCitaSante(client, session, userPhone, confirm.slot);

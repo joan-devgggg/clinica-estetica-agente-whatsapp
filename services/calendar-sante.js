@@ -62,103 +62,123 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     const fromStr = from.toISOString();
     const toStr = to.toISOString();
 
-    const slots = [];
-
+    // Prefetch del horario/bloqueos/citas de cada estilista UNA sola vez. Así podemos
+    // recorrer los días dos veces (con el filtro de día pedido y, si no hay nada, sin él)
+    // sin volver a pegarle a la base de datos.
+    const stylistData = [];
     for (const stylist of eligible) {
         const schedule = await db.getStylistSchedule(orgId, stylist.id);
         const blocks = await db.getScheduleBlocks(orgId, stylist.id, fromStr, toStr);
         const appointments = await db.getAppointmentsByStylistAndRange(orgId, stylist.id, fromStr, toStr);
-
         const scheduleByDay = new Map();
-        for (const s of schedule) {
-            scheduleByDay.set(s.day_of_week, s);
-        }
+        for (const s of schedule) scheduleByDay.set(s.day_of_week, s);
+        stylistData.push({ stylist, scheduleByDay, blocks, appointments });
+    }
 
-        // Iterate each day
-        for (let d = 0; d < 14; d++) {
-            const date = new Date(from);
-            date.setDate(from.getDate() + d);
+    // Recorre los próximos 14 días y construye los huecos reales según horario, citas y
+    // bloqueos. `pref` puede traer filtros de día/semana/franja. NUNCA inventa huecos:
+    // si la estilista no trabaja ese día (no hay daySchedule), simplemente no se generan.
+    function buildSlots(pref) {
+        const out = [];
+        for (const { stylist, scheduleByDay, blocks, appointments } of stylistData) {
+            for (let d = 0; d < 14; d++) {
+                const date = new Date(from);
+                date.setDate(from.getDate() + d);
 
-            // JS getDay: 0=Sunday, our schema: 0=Monday
-            const jsDay = date.getDay();
-            const dayOfWeek = jsDay === 0 ? 6 : jsDay - 1; // convert to 0=Monday
+                // JS getDay: 0=Sunday, our schema: 0=Monday
+                const jsDay = date.getDay();
+                const dayOfWeek = jsDay === 0 ? 6 : jsDay - 1; // convert to 0=Monday
 
-            const daySchedule = scheduleByDay.get(dayOfWeek);
-            if (!daySchedule) continue;
+                const daySchedule = scheduleByDay.get(dayOfWeek);
+                if (!daySchedule) continue; // la estilista NO trabaja este día → sin huecos
 
-            const dateStr = toLocalDateStr(date);
-            const diaNombre = DIAS_SEMANA[dayOfWeek];
+                const dateStr = toLocalDateStr(date);
+                const diaNombre = DIAS_SEMANA[dayOfWeek];
 
-            // Filtro por fecha concreta ("el 24") o día de la semana ("el miércoles").
-            // La fecha exacta manda sobre el día de la semana si ambas vienen dadas.
-            if (preferencia.fecha) {
-                if (dateStr !== preferencia.fecha) continue;
-            } else if (Number.isInteger(preferencia.diaSemana)) {
-                if (dayOfWeek !== preferencia.diaSemana) continue;
-            }
+                // Filtro por fecha concreta ("el 24") o día de la semana ("el miércoles").
+                // La fecha exacta manda sobre el día de la semana si ambas vienen dadas.
+                if (pref.fecha) {
+                    if (dateStr !== pref.fecha) continue;
+                } else if (Number.isInteger(pref.diaSemana)) {
+                    if (dayOfWeek !== pref.diaSemana) continue;
+                }
 
-            // Filter by preference
-            if (preferencia.semana === 'siguiente') {
-                const endOfThisWeek = new Date(now);
-                endOfThisWeek.setDate(now.getDate() + (7 - (now.getDay() || 7)));
-                if (date <= endOfThisWeek) continue;
-            } else if (preferencia.semana === 'esta') {
-                const endOfThisWeek = new Date(now);
-                endOfThisWeek.setDate(now.getDate() + (7 - (now.getDay() || 7)));
-                if (date > endOfThisWeek) continue;
-            }
+                // Filter by preference
+                if (pref.semana === 'siguiente') {
+                    const endOfThisWeek = new Date(now);
+                    endOfThisWeek.setDate(now.getDate() + (7 - (now.getDay() || 7)));
+                    if (date <= endOfThisWeek) continue;
+                } else if (pref.semana === 'esta') {
+                    const endOfThisWeek = new Date(now);
+                    endOfThisWeek.setDate(now.getDate() + (7 - (now.getDay() || 7)));
+                    if (date > endOfThisWeek) continue;
+                }
 
-            // Working hours for this day
-            const [startH, startM] = daySchedule.start_time.split(':').map(Number);
-            const [endH, endM] = daySchedule.end_time.split(':').map(Number);
-            const workStart = startH * 60 + startM;
-            const workEnd = endH * 60 + endM;
+                // Working hours for this day
+                const [startH, startM] = daySchedule.start_time.split(':').map(Number);
+                const [endH, endM] = daySchedule.end_time.split(':').map(Number);
+                const workStart = startH * 60 + startM;
+                const workEnd = endH * 60 + endM;
 
-            // Filter by period preference
-            if (preferencia.periodo === 'mañana' || preferencia.periodo === 'manana') {
-                if (workStart >= 14 * 60) continue; // skip if starts after 14:00
-            } else if (preferencia.periodo === 'tarde') {
-                // we'll filter individual slots below
-            }
+                // Filter by period preference
+                if (pref.periodo === 'mañana' || pref.periodo === 'manana') {
+                    if (workStart >= 14 * 60) continue; // skip if starts after 14:00
+                }
 
-            // Existing appointments for this stylist on this date
-            const dayAppts = appointments.filter(a => {
-                const aDate = toLocalDateStr(new Date(a.starts_at));
-                return aDate === dateStr;
-            }).map(a => ({
-                start: toMinutes(new Date(a.starts_at)),
-                end: toMinutes(new Date(a.ends_at)),
-            }));
+                // Existing appointments for this stylist on this date
+                const dayAppts = appointments.filter(a => {
+                    const aDate = toLocalDateStr(new Date(a.starts_at));
+                    return aDate === dateStr;
+                }).map(a => ({
+                    start: toMinutes(new Date(a.starts_at)),
+                    end: toMinutes(new Date(a.ends_at)),
+                }));
 
-            // Blocks on this date
-            const dayBlocks = blocks.filter(b => {
-                const bStart = toLocalDateStr(new Date(b.starts_at));
-                const bEnd = toLocalDateStr(new Date(b.ends_at));
-                return bStart <= dateStr && bEnd >= dateStr;
-            }).map(b => ({
-                start: toMinutes(new Date(b.starts_at)),
-                end: toMinutes(new Date(b.ends_at)),
-            }));
+                // Blocks on this date
+                const dayBlocks = blocks.filter(b => {
+                    const bStart = toLocalDateStr(new Date(b.starts_at));
+                    const bEnd = toLocalDateStr(new Date(b.ends_at));
+                    return bStart <= dateStr && bEnd >= dateStr;
+                }).map(b => ({
+                    start: toMinutes(new Date(b.starts_at)),
+                    end: toMinutes(new Date(b.ends_at)),
+                }));
 
-            const occupied = [...dayAppts, ...dayBlocks].sort((a, b) => a.start - b.start);
+                const occupied = [...dayAppts, ...dayBlocks].sort((a, b) => a.start - b.start);
 
-            // Construir las ventanas libres (huecos entre citas/bloqueos y hasta el cierre).
-            const freeWindows = [];
-            let cursor = workStart;
-            for (const occ of occupied) {
-                if (occ.start > cursor) freeWindows.push([cursor, Math.min(occ.start, workEnd)]);
-                cursor = Math.max(cursor, occ.end);
-            }
-            if (cursor < workEnd) freeWindows.push([cursor, workEnd]);
+                // Construir las ventanas libres (huecos entre citas/bloqueos y hasta el cierre).
+                const freeWindows = [];
+                let cursor = workStart;
+                for (const occ of occupied) {
+                    if (occ.start > cursor) freeWindows.push([cursor, Math.min(occ.start, workEnd)]);
+                    cursor = Math.max(cursor, occ.end);
+                }
+                if (cursor < workEnd) freeWindows.push([cursor, workEnd]);
 
-            // Recorrer cada ventana en pasos de SLOT_OFFER_STEP_MIN para ofrecer varios
-            // huecos (10:00, 11:00, 12:00...), no solo el inicio de la ventana.
-            for (const [winStart, winEnd] of freeWindows) {
-                for (let t = winStart; t + serviceDuration <= winEnd; t += SLOT_OFFER_STEP_MIN) {
-                    addSlot(slots, dateStr, t, diaNombre, stylist, serviceDuration, preferencia);
+                // Recorrer cada ventana en pasos de SLOT_OFFER_STEP_MIN para ofrecer varios
+                // huecos (10:00, 11:00, 12:00...), no solo el inicio de la ventana.
+                for (const [winStart, winEnd] of freeWindows) {
+                    for (let t = winStart; t + serviceDuration <= winEnd; t += SLOT_OFFER_STEP_MIN) {
+                        addSlot(out, dateStr, t, diaNombre, stylist, serviceDuration, pref);
+                    }
                 }
             }
         }
+        return out;
+    }
+
+    let slots = buildSlots(preferencia);
+
+    // Fallback anti-invención (BUG 1/2/3): si se pidió un DÍA concreto en el que la(s)
+    // estilista(s) no trabaja(n), buildSlots devuelve [] y antes el LLM acababa inventando
+    // fechas. En vez de eso, recalculamos los huecos REALES más cercanos de esa misma
+    // estilista/servicio ignorando solo el filtro de día (conservando semana/franja),
+    // para proponer alternativas verídicas y próximas, nunca inventadas.
+    let pedidoDiaSinHueco = false;
+    if (!slots.length && (preferencia.fecha || Number.isInteger(preferencia.diaSemana))) {
+        const { fecha, diaSemana, ...resto } = preferencia;
+        slots = buildSlots(resto);
+        pedidoDiaSinHueco = slots.length > 0;
     }
 
     // Sort: preferred stylist first, then by date
@@ -173,9 +193,9 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     }
 
     // Deduplicar por fecha-hora (una estilista por hueco).
-    // Cuando hay un día concreto seleccionado devolvemos TODOS los huecos de ese día;
-    // sin día concreto, cap generoso para no saturar el prompt.
-    const diaConcreto = !!(preferencia.fecha || Number.isInteger(preferencia.diaSemana));
+    // Cuando hay un día concreto CON huecos reales devolvemos TODOS los de ese día;
+    // sin día concreto (o en fallback de día sin hueco), cap generoso para no saturar.
+    const diaConcreto = !pedidoDiaSinHueco && !!(preferencia.fecha || Number.isInteger(preferencia.diaSemana));
     const MAX_TOTAL = diaConcreto ? Infinity : 20;
     const seen = new Set();
     const unique = [];
@@ -187,6 +207,9 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
         if (unique.length >= MAX_TOTAL) break;
     }
 
+    // Bandera para que el bot avise al LLM: el día pedido no tenía disponibilidad real
+    // y estos son los huecos más cercanos (alternativas verídicas, no inventadas).
+    unique.requestedDayUnavailable = pedidoDiaSinHueco;
     return unique;
 }
 

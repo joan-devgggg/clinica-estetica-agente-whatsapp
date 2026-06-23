@@ -221,6 +221,13 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
         ? slotsDisponibles.map((s, i) => `  ${i + 1}. ${s.texto}`).join('\n')
         : 'Todavía no hay huecos cargados — necesito saber qué servicio quiere la clienta antes de buscar disponibilidad.';
 
+    // El día concreto que pidió la clienta no tenía disponibilidad real: los huecos de
+    // arriba son las alternativas más cercanas (calculadas de los horarios reales). El LLM
+    // DEBE avisar de esto y NO afirmar que el día pedido está libre.
+    const avisoDiaNoDisponible = partialData.__requestedDayUnavailable
+        ? '\nAVISO IMPORTANTE: El día exacto que pidió la clienta NO tiene disponibilidad (la estilista no trabaja ese día o está completo). Los huecos de arriba son las alternativas REALES más cercanas. Dile con amabilidad que ese día no hay hueco y ofrécele estas fechas. NUNCA confirmes ni propongas el día original.'
+        : '';
+
     // Selected service info
     const selectedService = partialData.__selectedService;
     const selectedStylist = partialData.__selectedStylist;
@@ -377,6 +384,7 @@ Para cancelar o reagendar una cita, avisa con al menos 48 horas de antelación.
 
 HUECOS DISPONIBLES:
 ${slotsStr}
+${avisoDiaNoDisponible}
 
 NUNCA inventes fechas, horas ni disponibilidad. Solo usa los huecos de esta lista.
 La disponibilidad YA está calculada y la tienes arriba. NUNCA digas que vas a "revisar",
@@ -465,12 +473,20 @@ function buildSystemPrompt(orgId, partialData, intent, reservaConfirmada, summar
 
 function getFallbackResponse(orgId, language) {
     const orgType = getOrgType(orgId);
-    const fallbackMessages = {
+    // Salón (BUG 6): mensaje NEUTRAL, nunca de error. Restaurante (San Remo): se mantiene.
+    const salonMsgs = {
+        en: 'One moment, please 😊',
+        ru: 'Минутку, пожалуйста 😊',
+        uk: 'Хвилинку, будь ласка 😊',
+    };
+    const restMsgs = {
         en: 'I lost connection for a moment 😅 Could you repeat that?',
         ru: 'Связь прервалась на секунду 😅 Можешь повторить?',
         uk: "Зв'язок перервався на мить 😅 Можеш повторити?",
     };
-    const fallbackText = (language && fallbackMessages[language]) || 'Se me ha ido la conexión un momento 😅 ¿me repites eso?';
+    const fallbackText = orgType === 'salon'
+        ? ((language && salonMsgs[language]) || 'Un momento, por favor 😊')
+        : ((language && restMsgs[language]) || 'Se me ha ido la conexión un momento 😅 ¿me repites eso?');
     const base = {
         respuesta: fallbackText,
         slot_rechazado: false,

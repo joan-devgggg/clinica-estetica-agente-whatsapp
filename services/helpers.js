@@ -7,6 +7,34 @@ function normalizeText(value) {
         .toLowerCase();
 }
 
+// ─── Detección de idioma (heurística, salón) ────────────────────────────────
+// Defensa para BUG 4: fija el idioma a partir del texto de la clienta ANTES de llamar
+// al LLM, para que los mensajes de fallback/límite salgan en su idioma aunque OpenAI
+// falle o tarde. El LLM sigue siendo la fuente autoritativa (idioma_detectado) y puede
+// corregir esto en el mismo turno. Devuelve 'es'|'en'|'ru'|'uk' o null si no es seguro.
+function detectLanguage(text) {
+    if (!text || typeof text !== 'string') return null;
+    const raw = text.trim();
+    if (!raw) return null;
+
+    // Cirílico → ucraniano si tiene letras propias del ucraniano, si no ruso.
+    if (/[а-яёіїєґ]/i.test(raw)) {
+        if (/[іїєґ]/i.test(raw)) return 'uk';
+        return 'ru';
+    }
+
+    const t = raw.toLowerCase();
+    // Marcadores claros de español (signos, ñ, palabras frecuentes).
+    if (/[ñ¿¡]/.test(raw)) return 'es';
+    const esWords = /\b(hola|buenas|quiero|quería|cita|gracias|por favor|cuánto|cuanto|para|reservar|reserva|qué|que tal|cómo|como estas|necesito|tengo|disponible|mañana|hoy|día|dia|tarde)\b/;
+    const enWords = /\b(hi|hello|hey|i'?d|i'?m|i want|i would|i need|please|thanks|thank you|appointment|book|booking|available|tomorrow|today|morning|afternoon|how much|can i|could i|would like|my name)\b/;
+    const hasEs = esWords.test(t);
+    const hasEn = enWords.test(t);
+    if (hasEn && !hasEs) return 'en';
+    if (hasEs && !hasEn) return 'es';
+    return null; // ambiguo (p.ej. solo un nombre): que decida el LLM
+}
+
 // ─── Detección de intención ───────────────────────────────────────────────────
 
 function isBizumDone(text) {
@@ -431,6 +459,7 @@ function resolveUpcomingDate(dom, month) {
 
 module.exports = {
     normalizeText,
+    detectLanguage,
     detectIntent,
     isBizumDone,
     getMissingFields,
