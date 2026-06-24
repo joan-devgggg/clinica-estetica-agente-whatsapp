@@ -11,6 +11,9 @@ const openrouter = new OpenAI({
     apiKey: OPENROUTER_API_KEY,
 });
 const aiConfig = config.ai || {};
+// Modelo LLM. Fuente única de verdad: config.ai.model (con fallback). El ID
+// debe ser un slug válido de OpenRouter (ver https://openrouter.ai/api/v1/models).
+const LLM_MODEL = aiConfig.model || 'anthropic/claude-haiku-4.5';
 
 // ─── San Remo prompt (restaurante) ──────────────────────────────────────────
 
@@ -535,7 +538,7 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
         let response;
         try {
             response = await openrouter.chat.completions.create({
-                model: 'anthropic/claude-haiku-3-5',
+                model: LLM_MODEL,
                 messages,
                 temperature: aiConfig.temperature ?? 0.5,
                 max_tokens: aiConfig.max_tokens ?? 450,
@@ -607,7 +610,7 @@ async function summarizeHistory(messages, partialData = {}) {
             .join('\n');
 
         const response = await openrouter.chat.completions.create({
-            model: 'anthropic/claude-haiku-3-5',
+            model: LLM_MODEL,
             messages: [
                 {
                     role: 'system',
