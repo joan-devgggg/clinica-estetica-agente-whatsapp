@@ -482,11 +482,10 @@ function buildSystemPrompt(orgId, partialData, intent, reservaConfirmada, summar
 
 function getFallbackResponse(orgId, language) {
     const orgType = getOrgType(orgId);
-    // Salón (BUG 6): mensaje NEUTRAL, nunca de error. Restaurante (San Remo): se mantiene.
     const salonMsgs = {
-        en: 'One moment, please 😊',
-        ru: 'Минутку, пожалуйста 😊',
-        uk: 'Хвилинку, будь ласка 😊',
+        en: "Sorry, I couldn't process that. Could you repeat? 😊",
+        ru: 'Извини, не удалось обработать. Можешь повторить? 😊',
+        uk: 'Вибач, не вдалося обробити. Можеш повторити? 😊',
     };
     const restMsgs = {
         en: 'I lost connection for a moment 😅 Could you repeat that?',
@@ -494,7 +493,7 @@ function getFallbackResponse(orgId, language) {
         uk: "Зв'язок перервався на мить 😅 Можеш повторити?",
     };
     const fallbackText = orgType === 'salon'
-        ? ((language && salonMsgs[language]) || 'Un momento, por favor 😊')
+        ? ((language && salonMsgs[language]) || 'Perdona, no he podido procesar tu mensaje. ¿Me lo repites? 😊')
         : ((language && restMsgs[language]) || 'Se me ha ido la conexión un momento 😅 ¿me repites eso?');
     const base = {
         respuesta: fallbackText,

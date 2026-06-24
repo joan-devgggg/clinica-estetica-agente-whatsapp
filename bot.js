@@ -1270,23 +1270,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
                 logger.info('llm_timeout_slots_fallback', { orgId, telefono: userPhone, numSlots: pendingSlots.length });
             } else if (orgType === 'salon') {
-                if (sentWaitingMessage) {
-                    const retryMsgs = {
-                        en: "Sorry, I couldn't process that. Could you repeat? 😊",
-                        ru: 'Извини, не удалось обработать. Можешь повторить? 😊',
-                        uk: 'Вибач, не вдалося обробити. Можеш повторити? 😊',
-                    };
-                    const fbText = (session.language && retryMsgs[session.language]) || 'Perdona, no he podido procesar tu mensaje. ¿Me lo repites? 😊';
-                    aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
-                } else {
-                    const fbMsgs = {
-                        en: 'One moment, please 😊',
-                        ru: 'Минутку, пожалуйста 😊',
-                        uk: 'Хвилинку, будь ласка 😊',
-                    };
-                    const fbText = (session.language && fbMsgs[session.language]) || 'Un momento, por favor 😊';
-                    aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
-                }
+                const retryMsgs = {
+                    en: "Sorry, I couldn't process that. Could you repeat? 😊",
+                    ru: 'Извини, не удалось обработать. Можешь повторить? 😊',
+                    uk: 'Вибач, не вдалося обробити. Можеш повторити? 😊',
+                };
+                const fbText = (session.language && retryMsgs[session.language]) || 'Perdona, no he podido procesar tu mensaje. ¿Me lo repites? 😊';
+                aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
             } else {
                 const fbText = 'Se me ha ido la conexión 😅 ¿me repites?';
                 aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
