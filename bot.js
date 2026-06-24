@@ -8,7 +8,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, detectGuestBooking, extractGuestName, isValidName, detectLanguage } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, detectGuestBooking, extractGuestName, isValidName, detectLanguage, matchUpsellSuggestion, buildSanteConfirmationExtras } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary } = require('./services/memory');
@@ -1361,6 +1361,9 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // Appointment confirmation (Sante: no Bizum). No dependemos solo del flag del
             // LLM: resolveSalonConfirmation también reserva si la clienta acepta un hueco
             // propuesto (hora que coincide o "sí/vale" tras la propuesta).
+            // BUG2/BUG3: recordamos si la cita YA estaba confirmada antes de este turno para
+            // detectar la transición y añadir upselling + dirección + política 48h una sola vez.
+            const yaEstabaConfirmada = session.reservaConfirmada;
             const confirm = resolveSalonConfirmation(session, aiResponse, sanitized);
             if (confirm) {
                 logger.info('cita_sante_confirmacion', { orgId, telefono: userPhone, motivo: confirm.motivo, fecha: confirm.slot.fecha, hora: confirm.slot.hora });
@@ -1399,6 +1402,29 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     logger.warn('cita_sante_texto_sin_guardar', { orgId, telefono: userPhone, tieneServicio: !!session.selectedService, numHuecos: (session.availableSlots || []).length });
                     aiResponse.reserva_confirmada = false;
                     aiResponse.respuesta = salonRetryMsg(session.language);
+                }
+            }
+
+            // ─── BUG2/BUG3: extras garantizados al confirmar ─────────────────
+            // Si la cita se acaba de confirmar EN ESTE turno, añadimos SIEMPRE al mensaje:
+            //   • upselling: sugerencia de servicio complementario (si hay regla aplicable)
+            //   • dirección del salón (San Juan Bosco 14)
+            //   • política de cancelación de 48h
+            // De forma determinista para que no dependa de que el LLM se acuerde.
+            if (!yaEstabaConfirmada && session.reservaConfirmada && aiResponse.reserva_confirmada) {
+                const cfgConf = await getAgentConfig(orgId);
+                const infoConf = cfgConf?.business_info || {};
+                const upsellSug = (session.upsellingAccepted || []).length
+                    ? null // ya añadió un complemento: no insistimos
+                    : matchUpsellSuggestion(session.selectedService, infoConf.upselling || []);
+                const extras = buildSanteConfirmationExtras({
+                    direccion: infoConf.direccion,
+                    language: session.language,
+                    upsellSuggestion: upsellSug,
+                });
+                if (extras) {
+                    aiResponse.respuesta = `${(aiResponse.respuesta || '').trim()}\n\n${extras}`.trim();
+                    if (upsellSug) session.upsellingSuggested = true;
                 }
             }
         }

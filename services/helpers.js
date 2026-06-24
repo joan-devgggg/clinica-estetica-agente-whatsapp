@@ -214,6 +214,14 @@ function extractQuickData(text, partialData = {}) {
 
 // ─── Salon-specific: service extraction ─────────────────────────────────────
 
+// Palabras vacías (normalizadas, sin acentos) que NO deben puntuar al emparejar la
+// variante concreta de un servicio dentro de una categoría. Incluye artículos y
+// preposiciones frecuentes; "una" colisiona con "uña" tras quitar acentos.
+const SERVICE_MATCH_STOPWORDS = new Set([
+    'una', 'uno', 'con', 'del', 'los', 'las', 'para', 'por', 'que', 'mas',
+    'sus', 'tus', 'mis', 'este', 'esta', 'esto', 'esa', 'ese',
+]);
+
 function extractServiceFromText(text, servicesCatalog) {
     if (!text || !servicesCatalog?.length) return null;
     const t = normalizeText(text);
@@ -258,20 +266,34 @@ function extractServiceFromText(text, servicesCatalog) {
             if (keywords.some(kw => t.includes(normalizeText(kw)))) {
                 const catNorm = normalizeText(categoria);
                 const inCat = servicesCatalog.filter(s => normalizeText(s.categoria) === catNorm);
-                if (inCat.length) {
-                    let best = inCat[0];
-                    let bestScore = 0;
-                    for (const svc of inCat) {
-                        const nameWords = normalizeText(svc.nombre).split(/\s+/);
-                        const score = nameWords.filter(w => w.length > 2 && t.includes(w)).length;
-                        if (score > bestScore) {
-                            bestScore = score;
-                            best = svc;
-                        }
+                if (!inCat.length) continue;
+
+                // Buscar el servicio CONCRETO cuyas palabras aparezcan en el texto.
+                // Excluimos stopwords y dígitos: tras quitar acentos, "una" (artículo)
+                // colisionaba con "uña" → matcheaba "Reparación 1 uña" para "quiero una
+                // manicura". Solo cuentan palabras distintivas del nombre del servicio.
+                let best = null;
+                let bestScore = 0;
+                for (const svc of inCat) {
+                    const nameWords = normalizeText(svc.nombre).split(/\s+/);
+                    const score = nameWords.filter(w =>
+                        w.length > 2 && !SERVICE_MATCH_STOPWORDS.has(w) && !/^\d+$/.test(w) && t.includes(w)
+                    ).length;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best = svc;
                     }
-                    bestMatch = best;
-                    break;
                 }
+                // BUG1: NO adivinar un servicio arbitrario para una categoría ambigua.
+                // Antes se devolvía inCat[0] (p.ej. "manicura" → "Higiénica mujer", el primero
+                // de la categoría) aunque la clienta no hubiera nombrado esa variante.
+                // - Si nombró una variante concreta (score>0) → esa.
+                // - Si la categoría tiene un único servicio → no hay ambigüedad → ese.
+                // - Si no (genérico como "manicura" con muchas variantes) → null, para que
+                //   el bot le pregunte qué variante quiere en vez de guardar una incorrecta.
+                if (bestScore > 0) { bestMatch = best; break; }
+                if (inCat.length === 1) { bestMatch = inCat[0]; break; }
+                // categoría ambigua sin variante nombrada → seguimos sin match (null)
             }
         }
     }
@@ -471,6 +493,62 @@ function resolveUpcomingDate(dom, month) {
     return null;
 }
 
+// ─── Confirmación de cita (salón): extras deterministas ──────────────────────
+// BUG2/BUG3: tras confirmar una cita SIEMPRE garantizamos en el mensaje (a) una
+// sugerencia de servicio complementario si aplica (upselling), (b) la dirección del
+// salón y (c) la política de cancelación de 48h. Se hace de forma determinista (no
+// dependemos del LLM) y multi-idioma (es/en/ru/uk) para que NUNCA falte.
+
+// Devuelve la primera sugerencia de upselling cuyo "servicio" case con el servicio
+// elegido (por nombre o categoría), o null si no hay regla aplicable.
+function matchUpsellSuggestion(selectedService, upsellingRules) {
+    if (!selectedService || !Array.isArray(upsellingRules) || !upsellingRules.length) return null;
+    const name = normalizeText(selectedService.nombre);
+    const cat = normalizeText(selectedService.categoria);
+    for (const rule of upsellingRules) {
+        const r = normalizeText(rule.servicio);
+        if (!r) continue;
+        if (name.includes(r) || cat.includes(r) || r.includes(name)) {
+            const sug = (rule.sugerencias || [])[0];
+            if (sug) return sug;
+        }
+    }
+    return null;
+}
+
+// Construye el bloque de texto que se añade al mensaje de confirmación.
+function buildSanteConfirmationExtras({ direccion, language, upsellSuggestion } = {}) {
+    const lang = ['es', 'en', 'ru', 'uk'].includes(language) ? language : 'es';
+    const dir = (direccion || '').trim();
+    const T = {
+        es: {
+            upsell: s => `Por cierto, mientras estás aquí podrías aprovechar para ${s.toLowerCase()}. ¿Te lo añado?`,
+            addr: d => `📍 Te esperamos en ${d}.`,
+            cancel: 'Si necesitas cancelar o reagendar, avísanos con al menos 48 horas de antelación 🙏',
+        },
+        en: {
+            upsell: s => `By the way, while you're here you could also add ${s.toLowerCase()}. Want me to include it?`,
+            addr: d => `📍 We'll be waiting for you at ${d}.`,
+            cancel: 'If you need to cancel or reschedule, please let us know at least 48 hours in advance 🙏',
+        },
+        ru: {
+            upsell: s => `Кстати, пока вы у нас, можно добавить ${s.toLowerCase()}. Добавить?`,
+            addr: d => `📍 Ждём вас по адресу: ${d}.`,
+            cancel: 'Если нужно отменить или перенести запись, предупредите нас минимум за 48 часов 🙏',
+        },
+        uk: {
+            upsell: s => `До речі, поки ви у нас, можна додати ${s.toLowerCase()}. Додати?`,
+            addr: d => `📍 Чекаємо на вас за адресою: ${d}.`,
+            cancel: 'Якщо потрібно скасувати або перенести запис, попередьте нас щонайменше за 48 годин 🙏',
+        },
+    }[lang];
+    const parts = [];
+    if (upsellSuggestion) parts.push(T.upsell(upsellSuggestion));
+    if (dir) parts.push(T.addr(dir));
+    parts.push(T.cancel);
+    return parts.join('\n\n');
+}
+
 module.exports = {
     normalizeText,
     detectLanguage,
@@ -492,4 +570,6 @@ module.exports = {
     wantsAnotherBooking,
     detectGuestBooking,
     extractGuestName,
+    matchUpsellSuggestion,
+    buildSanteConfirmationExtras,
 };

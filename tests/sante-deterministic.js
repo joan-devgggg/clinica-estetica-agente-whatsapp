@@ -155,10 +155,32 @@ function styId(name) { return stylists.find(s => s.name === name).id; }
         assert.strictEqual(helpers.detectLanguage('Привіт, хочу записатися'), 'uk');
     });
 
-    await test('Servicio: "manicura"/"masaje"/"color raíz" mapean a su categoría', () => {
-        assert.strictEqual(helpers.extractServiceFromText('quiero una manicura', services).categoria, 'Manicura/Pedicura');
+    await test('Servicio: variante concreta mapea bien; genérico ambiguo NO adivina (BUG1)', () => {
+        // Cuando nombra la variante concreta, debe mapear a ESE servicio (no a otro).
+        assert.strictEqual(helpers.extractServiceFromText('manicura japonesa', services).nombre, 'Japonesa');
+        assert.strictEqual(helpers.extractServiceFromText('quiero una manicura japonesa', services).nombre, 'Japonesa');
         assert.strictEqual(helpers.extractServiceFromText('un masaje relajante', services).categoria, 'Masajes y SPA');
-        assert.strictEqual(helpers.extractServiceFromText('cortarme el pelo', services).categoria, 'Cortes');
+        // BUG1: "manicura" a secas es ambiguo (muchas variantes). Antes devolvía
+        // "Higiénica mujer" (el primero de la categoría). Ahora devuelve null para
+        // que el bot pregunte qué variante quiere, en vez de guardar una incorrecta.
+        assert.strictEqual(helpers.extractServiceFromText('quiero una manicura', services), null);
+        const generico = helpers.extractServiceFromText('quiero una manicura', services);
+        assert.notStrictEqual(generico?.nombre, 'Higiénica mujer', 'no debe fijar "Higiénica mujer" por defecto');
+    });
+
+    await test('BUG1: flujo manicura→japonesa NO queda fijado en "Higiénica mujer"', () => {
+        // Simula los dos turnos: turno 1 "manicura" (genérico) → no fija servicio;
+        // turno 2 "japonesa" → fija la variante correcta. Reproduce la lógica de bot.js.
+        const session = { selectedService: null };
+        // Turno 1
+        let m = helpers.extractServiceFromText('hola quiero una manicura', services);
+        if (!session.selectedService && m) session.selectedService = m;
+        assert.strictEqual(session.selectedService, null, 'turno 1 genérico no debe fijar servicio');
+        // Turno 2
+        m = helpers.extractServiceFromText('la japonesa por favor', services);
+        if (!session.selectedService && m) session.selectedService = m;
+        assert.ok(session.selectedService, 'turno 2 debe fijar la variante');
+        assert.strictEqual(session.selectedService.nombre, 'Japonesa', 'debe guardar Japonesa, NO Higiénica mujer');
     });
 
     await test('Estilista: "con Veronika" se extrae', () => {
@@ -182,6 +204,71 @@ function styId(name) { return stylists.find(s => s.name === name).id; }
     await test('Fecha: "el jueves" → diaSemana=3; "el 24" → fecha futura', () => {
         const d = helpers.extractQuickDataSante('quiero el jueves', {});
         assert.strictEqual(d.preferencia_horaria.diaSemana, 3);
+    });
+
+    console.log('\n═══ CONFIRMACIÓN DE CITA: upselling + dirección + 48h (BUG2/BUG3) ═══');
+
+    const upRules = cfg.business_info?.upselling || [];
+    const direccionCfg = cfg.business_info?.direccion || '';
+
+    await test('BUG2: upselling se resuelve según el servicio elegido', () => {
+        // "Color raíz" tiene regla de upselling (→ Manicura, según business_info).
+        const colorRaiz = services.find(s => s.nombre === 'Color raíz');
+        const sug = helpers.matchUpsellSuggestion(colorRaiz, upRules);
+        assert.ok(sug, 'Color raíz debe tener una sugerencia de upselling');
+        // Un servicio sin regla (p.ej. Japonesa/manicura) no debe inventar sugerencia.
+        const japonesa = services.find(s => s.nombre === 'Japonesa');
+        assert.strictEqual(helpers.matchUpsellSuggestion(japonesa, upRules), null);
+    });
+
+    await test('BUG3: el mensaje de confirmación SIEMPRE incluye 48h y dirección', () => {
+        const extras = helpers.buildSanteConfirmationExtras({ direccion: direccionCfg, language: 'es' });
+        assert.ok(/48/.test(extras), 'debe mencionar las 48 horas de cancelación');
+        assert.ok(extras.includes('San Juan Bosco 14'), 'debe incluir la dirección (San Juan Bosco 14)');
+    });
+
+    await test('BUG2+BUG3: confirmación con upselling incluye sugerencia + 48h + dirección', () => {
+        const colorRaiz = services.find(s => s.nombre === 'Color raíz');
+        const sug = helpers.matchUpsellSuggestion(colorRaiz, upRules);
+        const extras = helpers.buildSanteConfirmationExtras({
+            direccion: direccionCfg, language: 'es', upsellSuggestion: sug,
+        });
+        assert.ok(extras.toLowerCase().includes(String(sug).toLowerCase()), 'incluye la sugerencia de upselling');
+        assert.ok(/48/.test(extras), 'incluye política 48h');
+        assert.ok(extras.includes('San Juan Bosco 14'), 'incluye dirección');
+    });
+
+    await test('BUG3: extras en otros idiomas (en/ru/uk) también traen 48h + dirección', () => {
+        for (const lang of ['en', 'ru', 'uk']) {
+            const extras = helpers.buildSanteConfirmationExtras({ direccion: direccionCfg, language: lang });
+            assert.ok(/48/.test(extras), `[${lang}] debe mencionar 48`);
+            assert.ok(extras.includes('San Juan Bosco 14'), `[${lang}] debe incluir dirección`);
+        }
+    });
+
+    await test('BUG2+BUG3: simulación del wiring de bot.js al confirmar la cita', () => {
+        // Reproduce el bloque de bot.js que añade extras tras confirmar.
+        const session = {
+            selectedService: services.find(s => s.nombre === 'Color raíz'),
+            upsellingAccepted: [],
+            language: 'es',
+        };
+        const aiResponse = { respuesta: '¡Listo! Tu cita queda confirmada para el jueves a las 10:00 con Veronika 😊', reserva_confirmada: true };
+        const yaEstabaConfirmada = false;
+        session.reservaConfirmada = true; // finalizarCitaSante lo pondría a true
+        if (!yaEstabaConfirmada && session.reservaConfirmada && aiResponse.reserva_confirmada) {
+            const upsellSug = (session.upsellingAccepted || []).length
+                ? null
+                : helpers.matchUpsellSuggestion(session.selectedService, upRules);
+            const extras = helpers.buildSanteConfirmationExtras({
+                direccion: direccionCfg, language: session.language, upsellSuggestion: upsellSug,
+            });
+            aiResponse.respuesta = `${aiResponse.respuesta.trim()}\n\n${extras}`.trim();
+        }
+        assert.ok(aiResponse.respuesta.includes('confirmada'), 'conserva la confirmación del LLM');
+        assert.ok(/48/.test(aiResponse.respuesta), 'mensaje final incluye 48h');
+        assert.ok(aiResponse.respuesta.includes('San Juan Bosco 14'), 'mensaje final incluye dirección');
+        assert.ok(/manicura/i.test(aiResponse.respuesta), 'mensaje final ofrece complementario (manicura)');
     });
 
     console.log('\n═══ WORKERS (reminder / review) — consultas DB ═══');
