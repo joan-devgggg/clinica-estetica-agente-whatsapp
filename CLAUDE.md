@@ -31,7 +31,7 @@ server.js              ← Punto de entrada: crea N clientes WA, arranca workers
     ├── memory.js          ← Sesiones SQLite (clave compuesta orgId:phone)
     ├── metrics.js         ← Métricas internas
     └── providers/
-        └── openai.js      ← System prompts por tipo de org + llamadas OpenAI
+        └── openai.js      ← System prompts por tipo de org + llamadas Claude API (Anthropic)
 ```
 
 ## Multi-tenancy
@@ -104,7 +104,7 @@ getScheduleBlocks(orgId, stylistId, from, to)
 ## Variables de entorno
 
 ```bash
-OPENAI_API_KEY                # GPT-4o-mini
+ANTHROPIC_API_KEY              # Claude Sonnet 4.6
 SUPABASE_URL                  # URL del proyecto Supabase
 SUPABASE_SERVICE_ROLE_KEY     # Service role key
 SANREMO_ORG_ID                # UUID San Remo
