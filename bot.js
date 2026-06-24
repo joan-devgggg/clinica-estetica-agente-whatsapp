@@ -33,6 +33,7 @@ const FALLBACK_PATTERNS = [
     'lo siento, ha ocurrido un error técnico',
     'lo siento, ha ocurrido un error tecnico',
     'lo siento, ha habido un error',
+    'un momento, por favor',
 ];
 function isFallbackText(text) {
     if (!text || typeof text !== 'string') return false;
