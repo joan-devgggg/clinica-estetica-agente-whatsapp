@@ -54,6 +54,21 @@ app.use(express.json());
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
+app.get('/api/wa-status', async (_req, res) => {
+    const statuses = {};
+    if (_waClients instanceof Map) {
+        for (const [orgId, entry] of _waClients) {
+            try {
+                const state = await entry.client.getState();
+                statuses[entry.slug || orgId] = state || 'DISCONNECTED';
+            } catch {
+                statuses[entry.slug || orgId] = 'DISCONNECTED';
+            }
+        }
+    }
+    res.json(statuses);
+});
+
 // ─── Auth middleware ──────────────────────────────────────────────────────────
 function requireApiAuth(req, res, next) {
     if (!DASHBOARD_API_SECRET) {

@@ -49,11 +49,22 @@ for (const org of orgs) {
 
     client.on('disconnected', (reason) => {
         logger.warn('whatsapp_desconectado', { org: org.slug, reason });
+        console.log(`⚠️  WhatsApp desconectado: ${org.slug} (${reason}) — reconectando en 10s...`);
+        setTimeout(() => {
+            logger.info('whatsapp_reconectando', { org: org.slug });
+            console.log(`🔄 Reconectando WhatsApp: ${org.slug}...`);
+            client.initialize().catch((err) => {
+                logger.error('whatsapp_reconexion_fallida', { org: org.slug, error: err.message });
+            });
+        }, 10000);
     });
 
     client.on('message', async (message) => {
         if (message.fromMe) return;
-        if (!isBotActivo(org.orgId)) return; // pausa por organización (no global)
+        if (!isBotActivo(org.orgId)) {
+            logger.info('mensaje_ignorado_bot_pausado', { org: org.slug });
+            return;
+        }
         await handleIncomingMessage(client, message, org.orgId);
     });
 
