@@ -59,7 +59,7 @@ for (const org of orgs) {
         }, 10000);
     });
 
-    client.on('message', async (message) => {
+    client.on('message_create', async (message) => {
         if (message.fromMe) return;
         if (!isBotActivo(org.orgId)) {
             logger.info('mensaje_ignorado_bot_pausado', { org: org.slug });
