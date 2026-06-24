@@ -140,6 +140,17 @@ function sanitizeUserMessage(text) {
     return s.trim();
 }
 
+function stripMarkdown(text) {
+    if (!text) return text;
+    return text
+        .replace(/\*\*(.+?)\*\*/g, '$1')
+        .replace(/\*(.+?)\*/g, '$1')
+        .replace(/__(.+?)__/g, '$1')
+        .replace(/_(.+?)_/g, '$1')
+        .replace(/~~(.+?)~~/g, '$1')
+        .replace(/`(.+?)`/g, '$1');
+}
+
 async function sendWithDelay(client, phone, text, orgId) {
     if (!text?.trim()) return;
     const delay = Math.min(text.length * MESSAGE_DELAY_MS_PER_CHAR, MESSAGE_DELAY_MAX_MS);
@@ -1220,7 +1231,14 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 const svcName = session.selectedService.nombre || 'tu servicio';
                 const svcPrecio = session.selectedService.precio;
                 const svcDur = session.selectedService.duracion;
-                const slotsTexto = pendingSlots.map((s, i) => `${i + 1}. ${s.texto}`).join('\n');
+                const grouped = {};
+                for (const s of pendingSlots) {
+                    const dayLabel = `${s.diaNombre ? s.diaNombre.charAt(0).toUpperCase() + s.diaNombre.slice(1) : ''} ${s.fecha ? new Date(s.fecha + 'T12:00:00').getDate() : ''}`.trim();
+                    const key = dayLabel || s.fecha || 'Dia';
+                    if (!grouped[key]) grouped[key] = [];
+                    grouped[key].push(s.hora);
+                }
+                const slotsTexto = Object.entries(grouped).map(([day, horas]) => `${day}: ${horas.join(' · ')}`).join('\n');
                 const fbSlotMsgs = {
                     es: `${svcName} (${svcPrecio}€, ${svcDur} min). Estos son los huecos disponibles:\n\n${slotsTexto}\n\n¿Cuál te viene mejor?`,
                     en: `${svcName} (${svcPrecio}€, ${svcDur} min). Here are the available slots:\n\n${slotsTexto}\n\nWhich one works best for you?`,
@@ -1398,10 +1416,17 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             }
         }
 
+        if (orgType === 'salon') {
+            aiResponse.respuesta = stripMarkdown(aiResponse.respuesta);
+            if (aiResponse.respuesta.length > 1000) {
+                aiResponse.respuesta = aiResponse.respuesta.slice(0, 997) + '...';
+            }
+        }
+
         session.history.push({ role: 'assistant', content: aiResponse.respuesta });
 
-        // Send response (split if long)
-        if (aiResponse.respuesta.length > 300) {
+        // Send response: salon sends as a single message, restaurant splits if long
+        if (orgType === 'restaurant' && aiResponse.respuesta.length > 300) {
             const mid = aiResponse.respuesta.lastIndexOf(' ', Math.floor(aiResponse.respuesta.length / 2));
             const p1 = aiResponse.respuesta.substring(0, mid).trim();
             const p2 = aiResponse.respuesta.substring(mid).trim();
