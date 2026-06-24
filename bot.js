@@ -1193,7 +1193,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             if (session.preferredStylistId) {
                 const stylists = await getStylistsByOrg(orgId);
                 const pref = stylists.find(s => s.id === session.preferredStylistId);
-                partialDataWithCtx.__preferredStylistName = pref?.name || null;
+                partialDataWithCtx.__preferredStylistName = (pref && stylistCanDoService(pref, session.selectedService)) ? pref.name : null;
             }
             partialDataWithCtx.__ultimoServicio = session.ultimoServicio || null;
             partialDataWithCtx.__ultimaEstilista = session.ultimaEstilista || null;
@@ -1224,7 +1224,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // ("Perdona, ¿me lo repites?"). Sin mensajes de espera intermedios.
         let aiResponse;
         const t0 = Date.now();
-        const LLM_TIMEOUT_MS = 30000;
+        const LLM_TIMEOUT_MS = 45000;
 
         const llmPromise = getChatbotResponse(orgId, session.history.slice(-10), partialDataWithCtx, intent, session.reservaConfirmada, session.summary)
             .catch(e => {
