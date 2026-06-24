@@ -810,6 +810,7 @@ async function resolveBizumResult(pendingAction, confirmed) {
 
 // ─── Core ─────────────────────────────────────────────────────────────────────
 async function processMessageCore(client, message, userPhone, userText, messageKey, orgId) {
+    let _snapshot;
     logger.info('process_core_inicio', { orgId, telefono: userPhone, textoLength: userText?.length || 0 });
     try {
         if (!isBotActivo(orgId)) { logger.info('process_core_bot_inactivo', { orgId }); return; }
@@ -1031,7 +1032,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // ─── Snapshot del estado ANTES de modificar la sesión ────────────
         // Si el LLM falla/timeout, restauramos para no dejar la sesión en un
         // estado parcial que confunde al LLM en el siguiente turno.
-        const _snapshot = {
+        _snapshot = {
             historyLen:          session.history.length,
             selectedService:     session.selectedService ? { ...session.selectedService } : null,
             selectedStylist:     session.selectedStylist ? { ...session.selectedStylist } : null,
@@ -1618,23 +1619,25 @@ async function processMessageCore(client, message, userPhone, userText, messageK
     } catch (err) {
         logger.error('process_message_error', { orgId, telefono: userPhone, error: err.message, stack: err.stack?.split('\n').slice(0, 3).join(' | ') });
         incrementMetric('fallbacksUsed');
-        if (typeof _snapshot !== 'undefined') {
+        const _sKey = sessionKey(orgId, userPhone);
+        const _session = userSessions.get(_sKey);
+        if (_snapshot && _session) {
             try {
-                session.history.length      = _snapshot.historyLen;
-                session.selectedService     = _snapshot.selectedService;
-                session.selectedStylist     = _snapshot.selectedStylist;
-                session.availableSlots      = _snapshot.availableSlots;
-                session.proposedSlots       = _snapshot.proposedSlots;
-                session.currentSlotIndex    = _snapshot.currentSlotIndex;
-                session.slotsProposed       = _snapshot.slotsProposed;
-                session.datePreferenceAsked = _snapshot.datePreferenceAsked;
-                session.upsellingSuggested  = _snapshot.upsellingSuggested;
-                session.partialData         = _snapshot.partialData;
+                _session.history.length      = _snapshot.historyLen;
+                _session.selectedService     = _snapshot.selectedService;
+                _session.selectedStylist     = _snapshot.selectedStylist;
+                _session.availableSlots      = _snapshot.availableSlots;
+                _session.proposedSlots       = _snapshot.proposedSlots;
+                _session.currentSlotIndex    = _snapshot.currentSlotIndex;
+                _session.slotsProposed       = _snapshot.slotsProposed;
+                _session.datePreferenceAsked = _snapshot.datePreferenceAsked;
+                _session.upsellingSuggested  = _snapshot.upsellingSuggested;
+                _session.partialData         = _snapshot.partialData;
                 logger.info('snapshot_restaurado_en_catch', { orgId, telefono: userPhone });
             } catch {}
         }
         try { await sendWithDelay(client, userPhone, config.conversation?.technicalErrorMessage || 'Lo siento, ha habido un error. Inténtalo de nuevo.', orgId); } catch {}
-        try { persistSession(orgId, userPhone, session); } catch {}
+        try { if (_session) persistSession(orgId, userPhone, _session); } catch {}
     }
 }
 
