@@ -222,53 +222,93 @@ function styId(name) { return stylists.find(s => s.name === name).id; }
     });
 
     await test('BUG3: el mensaje de confirmación SIEMPRE incluye 48h y dirección', () => {
-        const extras = helpers.buildSanteConfirmationExtras({ direccion: direccionCfg, language: 'es' });
-        assert.ok(/48/.test(extras), 'debe mencionar las 48 horas de cancelación');
-        assert.ok(extras.includes('San Juan Bosco 14'), 'debe incluir la dirección (San Juan Bosco 14)');
+        const msg = helpers.buildSanteConfirmationMessage({
+            nombre: 'Test', fecha: '2025-07-01', hora: '10:00',
+            servicio: 'Corte señora', stylistNombre: 'Veronika',
+            precio: 25, duracion: 45, categoria: 'Cortes',
+            direccion: direccionCfg, language: 'es',
+        });
+        assert.ok(/48/.test(msg), 'debe mencionar las 48 horas de cancelación');
+        assert.ok(msg.includes('San Juan Bosco 14'), 'debe incluir la dirección (San Juan Bosco 14)');
+        assert.ok(msg.includes('✅'), 'debe incluir emoji ✅');
+        assert.ok(msg.includes('📅'), 'debe incluir emoji 📅');
+        assert.ok(msg.includes('✂️'), 'debe incluir emoji ✂️ para corte');
+        assert.ok(msg.includes('💰'), 'debe incluir emoji 💰');
+        assert.ok(msg.includes('📍'), 'debe incluir emoji 📍');
+        assert.ok(msg.includes('🙏'), 'debe incluir emoji 🙏');
     });
 
     await test('BUG2+BUG3: confirmación con upselling incluye sugerencia + 48h + dirección', () => {
         const colorRaiz = services.find(s => s.nombre === 'Color raíz');
         const sug = helpers.matchUpsellSuggestion(colorRaiz, upRules);
-        const extras = helpers.buildSanteConfirmationExtras({
+        const msg = helpers.buildSanteConfirmationMessage({
+            nombre: 'Test', fecha: '2025-07-01', hora: '10:00',
+            servicio: 'Color raíz', stylistNombre: 'Veronika',
+            precio: 45, duracion: 90, categoria: 'Color Premium',
             direccion: direccionCfg, language: 'es', upsellSuggestion: sug,
         });
-        assert.ok(extras.toLowerCase().includes(String(sug).toLowerCase()), 'incluye la sugerencia de upselling');
-        assert.ok(/48/.test(extras), 'incluye política 48h');
-        assert.ok(extras.includes('San Juan Bosco 14'), 'incluye dirección');
+        assert.ok(msg.toLowerCase().includes(String(sug).toLowerCase()), 'incluye la sugerencia de upselling');
+        assert.ok(/48/.test(msg), 'incluye política 48h');
+        assert.ok(msg.includes('San Juan Bosco 14'), 'incluye dirección');
     });
 
-    await test('BUG3: extras en otros idiomas (en/ru/uk) también traen 48h + dirección', () => {
+    await test('BUG3: mensaje en otros idiomas (en/ru/uk) también trae 48h + dirección', () => {
         for (const lang of ['en', 'ru', 'uk']) {
-            const extras = helpers.buildSanteConfirmationExtras({ direccion: direccionCfg, language: lang });
-            assert.ok(/48/.test(extras), `[${lang}] debe mencionar 48`);
-            assert.ok(extras.includes('San Juan Bosco 14'), `[${lang}] debe incluir dirección`);
+            const msg = helpers.buildSanteConfirmationMessage({
+                nombre: 'Test', fecha: '2025-07-01', hora: '10:00',
+                servicio: 'Corte', stylistNombre: 'V', precio: 25, duracion: 45,
+                categoria: 'Cortes', direccion: direccionCfg, language: lang,
+            });
+            assert.ok(/48/.test(msg), `[${lang}] debe mencionar 48`);
+            assert.ok(msg.includes('San Juan Bosco 14'), `[${lang}] debe incluir dirección`);
         }
+    });
+
+    await test('Emoji por categoría: uñas=💅, masaje=💆, pelo=✂️', () => {
+        const test = (cat, emoji) => {
+            const msg = helpers.buildSanteConfirmationMessage({
+                nombre: 'X', fecha: '2025-07-01', hora: '10:00',
+                servicio: 'Test', precio: 10, duracion: 30,
+                categoria: cat, direccion: 'Dir', language: 'es',
+            });
+            assert.ok(msg.includes(emoji), `categoría "${cat}" debe usar ${emoji}`);
+        };
+        test('Manicura/Pedicura', '💅');
+        test('Masajes y SPA', '💆');
+        test('Cortes', '✂️');
+        test('Color Premium', '✂️');
     });
 
     await test('BUG2+BUG3: simulación del wiring de bot.js al confirmar la cita', () => {
-        // Reproduce el bloque de bot.js que añade extras tras confirmar.
         const session = {
             selectedService: services.find(s => s.nombre === 'Color raíz'),
+            selectedStylist: { id: 'c3d4...0101', nombre: 'Veronika' },
             upsellingAccepted: [],
             language: 'es',
+            partialData: { nombre: 'María', fecha_cita: '2025-07-03', hora_cita: '10:00' },
         };
-        const aiResponse = { respuesta: '¡Listo! Tu cita queda confirmada para el jueves a las 10:00 con Veronika 😊', reserva_confirmada: true };
+        const aiResponse = { respuesta: '(LLM text ignored)', reserva_confirmada: true };
         const yaEstabaConfirmada = false;
-        session.reservaConfirmada = true; // finalizarCitaSante lo pondría a true
+        session.reservaConfirmada = true;
         if (!yaEstabaConfirmada && session.reservaConfirmada && aiResponse.reserva_confirmada) {
+            const svc = session.selectedService || {};
             const upsellSug = (session.upsellingAccepted || []).length
                 ? null
                 : helpers.matchUpsellSuggestion(session.selectedService, upRules);
-            const extras = helpers.buildSanteConfirmationExtras({
+            aiResponse.respuesta = helpers.buildSanteConfirmationMessage({
+                nombre: session.partialData.nombre,
+                fecha: session.partialData.fecha_cita,
+                hora: session.partialData.hora_cita,
+                servicio: svc.nombre, stylistNombre: session.selectedStylist?.nombre,
+                precio: svc.precio, duracion: svc.duracion, categoria: svc.categoria,
                 direccion: direccionCfg, language: session.language, upsellSuggestion: upsellSug,
             });
-            aiResponse.respuesta = `${aiResponse.respuesta.trim()}\n\n${extras}`.trim();
         }
-        assert.ok(aiResponse.respuesta.includes('confirmada'), 'conserva la confirmación del LLM');
+        assert.ok(aiResponse.respuesta.includes('✅'), 'mensaje final incluye ✅');
         assert.ok(/48/.test(aiResponse.respuesta), 'mensaje final incluye 48h');
         assert.ok(aiResponse.respuesta.includes('San Juan Bosco 14'), 'mensaje final incluye dirección');
         assert.ok(/manicura/i.test(aiResponse.respuesta), 'mensaje final ofrece complementario (manicura)');
+        assert.ok(!aiResponse.respuesta.includes('LLM text ignored'), 'LLM text replaced, not appended');
     });
 
     console.log('\n═══ WORKERS (reminder / review) — consultas DB ═══');
@@ -380,6 +420,80 @@ function styId(name) { return stylists.find(s => s.name === name).id; }
 
     // Limpieza
     await cleanupPhone(TEST_PHONE);
+
+    console.log('\n═══ BUFFER DE MENSAJES (bot.js) ═══');
+
+    const bot = require('../bot');
+    const { messageBuffers, BUFFER_DELAY_MS } = bot._internals;
+
+    await test('Buffer: mensajes rápidos se acumulan en un solo buffer', async () => {
+        const testOrgId = ORG;
+        const testPhone = '34600000099@c.us';
+        const sink = [];
+        const fakeClient = {
+            sendMessage: async (_p, text) => sink.push(text),
+            getChatById: async () => ({ sendStateTyping: async () => {} }),
+        };
+        let counter = 0;
+        const makeMsg = (text) => ({
+            from: testPhone, body: text, fromMe: false, isStatus: false, isBroadcast: false, hasMedia: false,
+            id: { _serialized: `BUF_TEST_${Date.now()}_${counter++}` },
+        });
+
+        // Limpiar buffers previos
+        const sKey = `${testOrgId}:${testPhone}`;
+        const prev = messageBuffers.get(sKey);
+        if (prev?.timer) clearTimeout(prev.timer);
+        messageBuffers.delete(sKey);
+
+        await bot.handleIncomingMessage(fakeClient, makeMsg('Hola'), testOrgId);
+        await bot.handleIncomingMessage(fakeClient, makeMsg('quiero cita'), testOrgId);
+        await bot.handleIncomingMessage(fakeClient, makeMsg('el martes'), testOrgId);
+
+        const buffer = bot._internals.getBuffer(testOrgId, testPhone);
+        assert.ok(buffer, 'debe existir un buffer para el chat');
+        assert.strictEqual(buffer.state, 'buffering', 'estado debe ser buffering');
+        assert.strictEqual(buffer.texts.length, 3, 'debe acumular 3 mensajes');
+        assert.ok(buffer.texts.join('\n').includes('Hola'), 'contiene primer mensaje');
+        assert.ok(buffer.texts.join('\n').includes('quiero cita'), 'contiene segundo mensaje');
+        assert.ok(buffer.texts.join('\n').includes('el martes'), 'contiene tercer mensaje');
+
+        // Limpiar
+        if (buffer.timer) clearTimeout(buffer.timer);
+        messageBuffers.delete(sKey);
+    });
+
+    await test('Buffer: BUFFER_DELAY_MS es 5 segundos', () => {
+        assert.strictEqual(BUFFER_DELAY_MS, 5000, 'el delay debe ser 5000ms');
+    });
+
+    await test('Buffer: dedup evita duplicados por messageKey', async () => {
+        const testOrgId = ORG;
+        const testPhone = '34600000098@c.us';
+        const fakeClient = {
+            sendMessage: async () => {},
+            getChatById: async () => ({ sendStateTyping: async () => {} }),
+        };
+        const sKey = `${testOrgId}:${testPhone}`;
+        const prev = messageBuffers.get(sKey);
+        if (prev?.timer) clearTimeout(prev.timer);
+        messageBuffers.delete(sKey);
+
+        const dupeId = `DUPE_${Date.now()}`;
+        const makeMsg = (text) => ({
+            from: testPhone, body: text, fromMe: false, isStatus: false, isBroadcast: false, hasMedia: false,
+            id: { _serialized: dupeId },
+        });
+
+        await bot.handleIncomingMessage(fakeClient, makeMsg('hola'), testOrgId);
+        await bot.handleIncomingMessage(fakeClient, makeMsg('hola'), testOrgId);
+
+        const buffer = bot._internals.getBuffer(testOrgId, testPhone);
+        assert.strictEqual(buffer.texts.length, 1, 'el duplicado no debe acumularse');
+
+        if (buffer.timer) clearTimeout(buffer.timer);
+        messageBuffers.delete(sKey);
+    });
 
     console.log(`\n═══ RESUMEN deterministas: ${pass} ✅  /  ${fail} ❌ ═══`);
     if (failures.length) {

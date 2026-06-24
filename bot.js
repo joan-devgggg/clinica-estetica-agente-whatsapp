@@ -8,7 +8,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, detectGuestBooking, extractGuestName, isValidName, detectLanguage, matchUpsellSuggestion, buildSanteConfirmationExtras } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, detectGuestBooking, extractGuestName, isValidName, detectLanguage, matchUpsellSuggestion, buildSanteConfirmationMessage } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary } = require('./services/memory');
@@ -20,13 +20,13 @@ const logger = require('./lib/logger');
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 const userSessions = new Map();
-const userQueues = new Map();
-const latestMessages = new Map();
+const messageBuffers = new Map(); // sKey → { texts, messageKeys, timer, state, ... }
+const BUFFER_DELAY_MS = 5000;
 
 const SESSION_TIMEOUT = config.conversation?.sessionTimeoutMs || 3600000;
 const ABANDON_THRESHOLD_MS = config.conversation?.abandonThresholdMs || 1800000;
 const DEDUPE_TTL_MS = 60000;
-const QUEUE_TTL_MS = 60000;
+const BUFFER_CLEANUP_TTL_MS = 60000;
 const GC_INTERVAL_MS = 3600000;
 const MESSAGE_DELAY_MS_PER_CHAR = 2;
 const MESSAGE_DELAY_MAX_MS = 120;
@@ -807,6 +807,9 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 newSession.history = persisted.history || [];
                 newSession.summary = persisted.summary || null;
                 newSession.botActivo = persisted.botActivo;
+                if (!persisted.botActivo) {
+                    logger.info('session_botActivo_from_sqlite', { orgId, telefono: userPhone, botActivo: false, source: 'sqlite' });
+                }
 
                 // Restaurar estado del salón (servicio/estilista/idioma...) para no perder
                 // el flujo tras un reinicio o timeout. Los huecos se recalculan más abajo
@@ -874,6 +877,9 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             const prev = existingSession;
             userSessions.set(sKey, createEmptySession(userPhone, orgId));
             userSessions.get(sKey).botActivo = prev.botActivo;
+            if (!prev.botActivo) {
+                logger.info('session_botActivo_inherited_timeout', { orgId, telefono: userPhone, botActivo: false, source: 'session_timeout_inherit' });
+            }
             isNewSession = true;
         }
 
@@ -885,7 +891,14 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             try {
                 const contact = await findByPhone(orgId, session.partialData.telefono);
                 if (contact) {
-                    if (contact.bot_mode === 'manual') { session.botActivo = false; logger.info('process_core_bot_mode_manual', { orgId, telefono: userPhone }); }
+                    if (contact.bot_mode === 'manual') {
+                        session.botActivo = false;
+                        logger.info('process_core_bot_mode_manual', { orgId, telefono: userPhone, source: 'supabase_contact' });
+                    } else if (!session.botActivo) {
+                        // Estado sucio: SQLite o sesión anterior tenía botActivo=false pero Supabase dice auto → limpiar
+                        session.botActivo = true;
+                        logger.info('session_botActivo_reset_to_auto', { orgId, telefono: userPhone, contactBotMode: contact.bot_mode || 'auto', previousSource: loadedFromSQLite ? 'sqlite' : 'session_timeout' });
+                    }
                     if (contact.is_blacklisted) { session.isBlacklisted = true; logger.info('process_core_blacklisted', { orgId, telefono: userPhone }); }
                     session.leadId = session.leadId || contact.id;
                     session.language = contact.language || null;
@@ -905,6 +918,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                             }
                         } catch (e) { logger.error('error_load_last_appt', { orgId, error: e.message }); }
                     }
+                } else if (!session.botActivo && loadedFromSQLite) {
+                    // Contacto no existe en DB pero SQLite tenía botActivo=false → estado huérfano, limpiar
+                    session.botActivo = true;
+                    logger.info('session_botActivo_reset_orphan', { orgId, telefono: userPhone, source: 'sqlite_no_contact' });
                 }
             } catch (e) { logger.error('error_check_contact', { orgId, telefono: userPhone, error: e.message }); }
         }
@@ -1407,27 +1424,38 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 }
             }
 
-            // ─── BUG2/BUG3: extras garantizados al confirmar ─────────────────
-            // Si la cita se acaba de confirmar EN ESTE turno, añadimos SIEMPRE al mensaje:
-            //   • upselling: sugerencia de servicio complementario (si hay regla aplicable)
-            //   • dirección del salón (San Juan Bosco 14)
-            //   • política de cancelación de 48h
-            // De forma determinista para que no dependa de que el LLM se acuerde.
             if (!yaEstabaConfirmada && session.reservaConfirmada && aiResponse.reserva_confirmada) {
                 const cfgConf = await getAgentConfig(orgId);
                 const infoConf = cfgConf?.business_info || {};
+                const svc = session.selectedService || {};
                 const upsellSug = (session.upsellingAccepted || []).length
-                    ? null // ya añadió un complemento: no insistimos
+                    ? null
                     : matchUpsellSuggestion(session.selectedService, infoConf.upselling || []);
-                const extras = buildSanteConfirmationExtras({
+                const upsellingDur = (session.upsellingAccepted || []).reduce((sum, name) => {
+                    const s = (cfgConf?.services || []).find(x => normalizeText(x.nombre) === normalizeText(name));
+                    return sum + (s?.duracion || 30);
+                }, 0);
+                const upsellingPrice = (session.upsellingAccepted || []).reduce((sum, name) => {
+                    const s = (cfgConf?.services || []).find(x => normalizeText(x.nombre) === normalizeText(name));
+                    return sum + (s?.precio || 0);
+                }, 0);
+                const totalDur = (svc.duracion || 60) + upsellingDur;
+                const totalPrice = (svc.precio || 0) + upsellingPrice;
+                const allServices = [svc.nombre, ...(session.upsellingAccepted || [])].filter(Boolean).join(' + ');
+                aiResponse.respuesta = buildSanteConfirmationMessage({
+                    nombre: session.partialData.nombre,
+                    fecha: session.partialData.fecha_cita,
+                    hora: session.partialData.hora_cita,
+                    servicio: allServices || svc.nombre || 'Cita',
+                    stylistNombre: session.selectedStylist?.nombre,
+                    precio: totalPrice || svc.precio,
+                    duracion: totalDur,
+                    categoria: svc.categoria,
                     direccion: infoConf.direccion,
                     language: session.language,
                     upsellSuggestion: upsellSug,
                 });
-                if (extras) {
-                    aiResponse.respuesta = `${(aiResponse.respuesta || '').trim()}\n\n${extras}`.trim();
-                    if (upsellSug) session.upsellingSuggested = true;
-                }
+                if (upsellSug) session.upsellingSuggested = true;
             }
         }
 
@@ -1521,7 +1549,49 @@ async function processMessageCore(client, message, userPhone, userText, messageK
     }
 }
 
-// ─── Handler principal ────────────────────────────────────────────────────────
+// ─── Buffer flush: combina mensajes acumulados y los procesa ────────────────
+async function flushBuffer(sKey) {
+    const buffer = messageBuffers.get(sKey);
+    if (!buffer || buffer.texts.length === 0) return;
+
+    buffer.state = 'processing';
+    if (buffer.timer) { clearTimeout(buffer.timer); buffer.timer = null; }
+
+    const combinedText = buffer.texts.join('\n');
+    const { client, message, userPhone, orgId } = buffer;
+    const msgCount = buffer.texts.length;
+
+    buffer.texts = [];
+    buffer.seenKeys = new Set();
+
+    logger.info('buffer_flush', { orgId, telefono: userPhone, mensajesCombinados: msgCount, textoLength: combinedText.length, textoCombinado: combinedText.slice(0, 200) });
+
+    try {
+        await processMessageCore(client, message, userPhone, combinedText, null, orgId);
+    } catch (e) {
+        logger.error('error_buffer_process', { orgId, telefono: userPhone, error: e.message });
+    }
+
+    if (buffer.pendingTexts && buffer.pendingTexts.length > 0) {
+        buffer.texts = buffer.pendingTexts;
+        buffer.seenKeys = buffer.pendingSeenKeys || new Set();
+        buffer.pendingTexts = null;
+        buffer.pendingSeenKeys = null;
+        buffer.state = 'buffering';
+        logger.info('buffer_post_flush_restart', { orgId, telefono: userPhone, mensajesPendientes: buffer.texts.length });
+        buffer.timer = setTimeout(() => flushBuffer(sKey), BUFFER_DELAY_MS);
+    } else {
+        buffer.state = 'idle';
+        setTimeout(() => {
+            const b = messageBuffers.get(sKey);
+            if (b && b.state === 'idle' && b.texts.length === 0) {
+                messageBuffers.delete(sKey);
+            }
+        }, BUFFER_CLEANUP_TTL_MS);
+    }
+}
+
+// ─── Handler principal (con buffer de 5s) ────────────────────────────────────
 async function handleIncomingMessage(client, message, orgId) {
     try {
         if (!message) return;
@@ -1530,9 +1600,13 @@ async function handleIncomingMessage(client, message, orgId) {
 
         const userPhone = message.from;
         const sKey = sessionKey(orgId, userPhone);
+
         if (messageKey) {
             const s = userSessions.get(sKey);
-            if (s?.seenMessages?.has(messageKey)) return;
+            if (s?.seenMessages?.has(messageKey)) {
+                logger.info('buffer_msg_duplicado_session', { orgId, telefono: userPhone, messageKey });
+                return;
+            }
         }
 
         let userText = message.body?.trim() || '';
@@ -1562,27 +1636,47 @@ async function handleIncomingMessage(client, message, orgId) {
             return;
         }
 
-        const messageId = messageKey || Date.now().toString();
-        latestMessages.set(sKey, { message, userText, messageId, timestamp: Date.now() });
-
         saveMessage(orgId, { telefono: userPhone.replace('@c.us', '').replace(/\D/g, ''), contenido: userText, direccion: 'entrante' }).catch(() => {});
 
-        const currentQueue = userQueues.get(sKey) || Promise.resolve();
-        const newQueue = currentQueue.then(async () => {
-            const latest = latestMessages.get(sKey);
-            if (!latest || latest.messageId !== messageId) { logger.info('cola_msg_descartado', { telefono: userPhone, messageId, latestId: latest?.messageId }); return; }
-            try { await processMessageCore(client, message, userPhone, userText, messageKey, orgId); } catch (e) { logger.error('error_cola', { telefono: userPhone, error: e.message }); }
-        }).catch(e => logger.error('error_cola_catch', { error: e.message }));
+        let buffer = messageBuffers.get(sKey);
+        if (!buffer) {
+            buffer = {
+                texts: [], seenKeys: new Set(), timer: null, state: 'idle',
+                pendingTexts: null, pendingSeenKeys: null,
+                client, userPhone, orgId, message,
+            };
+            messageBuffers.set(sKey, buffer);
+        }
 
-        userQueues.set(sKey, newQueue);
-        newQueue.finally(() => {
-            setTimeout(() => {
-                if (userQueues.get(sKey) === newQueue) {
-                    userQueues.delete(sKey);
-                    latestMessages.delete(sKey);
-                }
-            }, QUEUE_TTL_MS);
-        });
+        if (messageKey) {
+            const keysSet = buffer.state === 'processing' ? (buffer.pendingSeenKeys || (buffer.pendingSeenKeys = new Set())) : buffer.seenKeys;
+            if (keysSet.has(messageKey)) {
+                logger.info('buffer_msg_duplicado', { orgId, telefono: userPhone, messageKey });
+                return;
+            }
+            keysSet.add(messageKey);
+        }
+
+        if (buffer.state === 'processing') {
+            if (!buffer.pendingTexts) buffer.pendingTexts = [];
+            buffer.pendingTexts.push(userText);
+            logger.info('buffer_msg_durante_procesamiento', { orgId, telefono: userPhone, textoLength: userText.length, pendientes: buffer.pendingTexts.length });
+            return;
+        }
+
+        buffer.texts.push(userText);
+        buffer.client = client;
+        buffer.message = message;
+        buffer.state = 'buffering';
+
+        if (buffer.timer) {
+            clearTimeout(buffer.timer);
+            logger.info('buffer_timer_reiniciado', { orgId, telefono: userPhone, mensajesAcumulados: buffer.texts.length });
+        } else {
+            logger.info('buffer_msg_entrante', { orgId, telefono: userPhone, textoLength: userText.length });
+        }
+
+        buffer.timer = setTimeout(() => flushBuffer(sKey), BUFFER_DELAY_MS);
     } catch (err) {
         logger.error('error_incoming_message', { error: err.message });
     }
@@ -1644,5 +1738,7 @@ module.exports = {
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
         // Solo para introspección en tests (no usar en producción):
-        getSession: (orgId, userPhone) => userSessions.get(sessionKey(orgId, userPhone)) },
+        getSession: (orgId, userPhone) => userSessions.get(sessionKey(orgId, userPhone)),
+        getBuffer: (orgId, userPhone) => messageBuffers.get(sessionKey(orgId, userPhone)),
+        messageBuffers, BUFFER_DELAY_MS, flushBuffer: (orgId, userPhone) => flushBuffer(sessionKey(orgId, userPhone)) },
 };

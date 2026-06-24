@@ -170,7 +170,7 @@ ${resumenAnterior}
 
 # ── FORMATO DE SALIDA ──────────────────────────────────────────────────────
 
-Responde SIEMPRE con este JSON y nada más:
+Responde SIEMPRE con JSON puro y nada más. SIN backticks, SIN markdown, SIN texto antes o después del JSON. Tu respuesta COMPLETA debe ser SOLO este objeto JSON:
 
 {
   "respuesta": "mensaje para el cliente",
@@ -183,6 +183,8 @@ Responde SIEMPRE con este JSON y nada más:
     "allergies": null, "preferences": null, "notas": null
   }
 }
+
+PROHIBIDO envolver el JSON en \`\`\`json o \`\`\` — devuelve el objeto { } directamente.
 
 Valores posibles de accion: "cancelar" | "cambiar" | "escalar_humano" | null${partialData.__reagendando ? '\nEn modo reagendamiento, accion es siempre null.' : ''}
 Usa "escalar_humano" si el cliente pide hablar con una persona o la situación supera lo que puedes gestionar.`;
@@ -449,7 +451,7 @@ ${resumenAnterior}
 
 # ── FORMATO DE SALIDA ──────────────────────────────────────────────────────
 
-Responde SIEMPRE con este JSON y nada más:
+Responde SIEMPRE con JSON puro y nada más. SIN backticks, SIN markdown, SIN texto antes o después del JSON. Tu respuesta COMPLETA debe ser SOLO este objeto JSON:
 
 {
   "respuesta": "mensaje para la clienta",
@@ -468,6 +470,8 @@ Responde SIEMPRE con este JSON y nada más:
     "notas": null
   }
 }
+
+PROHIBIDO envolver el JSON en \`\`\`json o \`\`\` — devuelve el objeto { } directamente.
 
 Valores posibles de accion: "cancelar" | "cambiar" | "escalar_humano" | null
 cita_confirmada: true → siempre que la clienta acepte un hueco O que tu mensaje afirme que la cita queda reservada/apuntada/confirmada. En ese caso datos.hora_cita DEBE llevar la hora exacta (HH:MM). NUNCA junto con slot_rechazado: true.`;
@@ -533,8 +537,14 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
         ...cleanHistory.map(m => ({ role: m.role, content: m.content })),
     ];
 
+    const MAX_ATTEMPTS = 3;
+    const RETRY_DELAYS = [0, 1500, 3000];
     let parsed;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        if (attempt > 0 && RETRY_DELAYS[attempt]) {
+            await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]));
+        }
+        const isLastAttempt = attempt === MAX_ATTEMPTS - 1;
         let response;
         try {
             response = await openrouter.chat.completions.create({
@@ -544,18 +554,20 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
                 max_tokens: aiConfig.max_tokens ?? 450,
             });
         } catch (e) {
-            if (attempt === 1) {
-                logger.error('claude_error_definitivo', { error: e.message });
+            const status = e.status || e.statusCode || null;
+            logger.warn('claude_api_error', { attempt, status, error: e.message?.slice(0, 200) });
+            if (isLastAttempt) {
+                logger.error('claude_error_definitivo', { error: e.message, status });
                 return getFallbackResponse(orgId, clientLang);
             }
-            logger.warn('claude_reintentando', { reason: 'api_error' });
             continue;
         }
 
         let raw = response?.choices?.[0]?.message?.content;
+        logger.info('llm_raw_response', { attempt, model: LLM_MODEL, raw: raw?.slice(0, 500) || null });
         if (!raw || !raw.includes('{')) {
-            if (attempt === 1) return getFallbackResponse(orgId, clientLang);
-            logger.warn('claude_reintentando', { reason: 'no_json_in_response' });
+            if (isLastAttempt) return getFallbackResponse(orgId, clientLang);
+            logger.warn('claude_reintentando', { reason: 'no_json_in_response', raw: raw?.slice(0, 200) || null });
             continue;
         }
 
@@ -573,8 +585,8 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
 
         if (parsed?.respuesta) break;
 
-        if (attempt === 1) return getFallbackResponse(orgId, clientLang);
-        logger.warn('claude_reintentando', { reason: 'json_parse_failed' });
+        if (isLastAttempt) return getFallbackResponse(orgId, clientLang);
+        logger.warn('claude_reintentando', { reason: 'json_parse_failed', raw: raw?.slice(0, 300) || null });
         parsed = undefined;
     }
 

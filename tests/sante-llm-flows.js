@@ -46,9 +46,11 @@ class Convo {
     }
     // Envía un mensaje y espera a que el bot termine de responder. Un mensaje de espera
     // ("Un momento") NO se considera respuesta final: seguimos esperando la real (test 24).
+    // Fuerza flush del buffer para no esperar 5s de debounce en cada turno de test.
     async send(text, { timeout = 90000, quiet = 3000 } = {}) {
         const before = this.sink.length;
         await bot.handleIncomingMessage(this.client, makeMessage(this.phone, text), ORG);
+        await bot._internals.flushBuffer(ORG, this.phone);
         const deadline = Date.now() + timeout;
         let lastLen = this.sink.length;
         let lastChange = Date.now();

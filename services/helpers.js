@@ -517,36 +517,76 @@ function matchUpsellSuggestion(selectedService, upsellingRules) {
 }
 
 // Construye el bloque de texto que se añade al mensaje de confirmación.
-function buildSanteConfirmationExtras({ direccion, language, upsellSuggestion } = {}) {
+function _serviceEmoji(categoria) {
+    const cat = normalizeText(categoria || '');
+    if (['manicura', 'pedicura', 'unas'].some(k => cat.includes(k))) return '💅';
+    if (['masaje', 'spa', 'relax'].some(k => cat.includes(k))) return '💆';
+    return '✂️';
+}
+
+function _formatFechaHora(fecha, hora, lang) {
+    const d = new Date(`${fecha}T${hora}:00`);
+    if (isNaN(d)) return `${fecha} ${hora}`;
+    const locale = { es: 'es-ES', en: 'en-GB', ru: 'ru-RU', uk: 'uk-UA' }[lang] || 'es-ES';
+    const dayStr = d.toLocaleDateString(locale, { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Europe/Madrid' });
+    const cap = (dayStr.charAt(0).toUpperCase() + dayStr.slice(1)).replace(/,\s*/, ' ');
+    const T = { es: 'a las', en: 'at', ru: 'в', uk: 'о' };
+    return `${cap} ${T[lang] || T.es} ${hora}`;
+}
+
+function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistNombre, precio, duracion, categoria, direccion, language, upsellSuggestion } = {}) {
     const lang = ['es', 'en', 'ru', 'uk'].includes(language) ? language : 'es';
     const dir = (direccion || '').trim();
+    const emoji = _serviceEmoji(categoria);
+    const fechaStr = _formatFechaHora(fecha, hora, lang);
+    const svcLine = stylistNombre ? `${servicio} con ${stylistNombre}` : servicio;
+    const priceLine = (precio != null && duracion != null)
+        ? `${precio}€ · ${duracion} minutos`
+        : precio != null ? `${precio}€` : duracion != null ? `${duracion} minutos` : null;
+
     const T = {
         es: {
+            header: n => `✅ Perfecto, ${n}. Cita reservada:`,
+            cancel: '🙏 Si necesitas cancelar o cambiar, avísanos con 48h de antelación.',
+            more: '¿Algo más en lo que pueda ayudarte?',
             upsell: s => `Por cierto, mientras estás aquí podrías aprovechar para ${s.toLowerCase()}. ¿Te lo añado?`,
-            addr: d => `📍 Te esperamos en ${d}.`,
-            cancel: 'Si necesitas cancelar o reagendar, avísanos con al menos 48 horas de antelación 🙏',
         },
         en: {
+            header: n => `✅ Perfect, ${n}. Appointment booked:`,
+            cancel: '🙏 If you need to cancel or change, please let us know 48h in advance.',
+            more: 'Anything else I can help you with?',
             upsell: s => `By the way, while you're here you could also add ${s.toLowerCase()}. Want me to include it?`,
-            addr: d => `📍 We'll be waiting for you at ${d}.`,
-            cancel: 'If you need to cancel or reschedule, please let us know at least 48 hours in advance 🙏',
         },
         ru: {
+            header: n => `✅ Отлично, ${n}. Запись подтверждена:`,
+            cancel: '🙏 Если нужно отменить или изменить, предупредите нас за 48ч.',
+            more: 'Могу ещё чем-то помочь?',
             upsell: s => `Кстати, пока вы у нас, можно добавить ${s.toLowerCase()}. Добавить?`,
-            addr: d => `📍 Ждём вас по адресу: ${d}.`,
-            cancel: 'Если нужно отменить или перенести запись, предупредите нас минимум за 48 часов 🙏',
         },
         uk: {
+            header: n => `✅ Чудово, ${n}. Запис підтверджено:`,
+            cancel: '🙏 Якщо потрібно скасувати або змінити, попередьте нас за 48год.',
+            more: 'Чим ще можу допомогти?',
             upsell: s => `До речі, поки ви у нас, можна додати ${s.toLowerCase()}. Додати?`,
-            addr: d => `📍 Чекаємо на вас за адресою: ${d}.`,
-            cancel: 'Якщо потрібно скасувати або перенести запис, попередьте нас щонайменше за 48 годин 🙏',
         },
-    }[lang];
-    const parts = [];
-    if (upsellSuggestion) parts.push(T.upsell(upsellSuggestion));
-    if (dir) parts.push(T.addr(dir));
-    parts.push(T.cancel);
-    return parts.join('\n\n');
+    };
+    const t = T[lang] || T.es;
+
+    const lines = [t.header(nombre || ''), ''];
+    lines.push(`📅 ${fechaStr}`);
+    lines.push(`${emoji} ${svcLine}`);
+    if (priceLine) lines.push(`💰 ${priceLine}`);
+    if (dir) lines.push(`📍 ${dir}`);
+    lines.push('');
+    lines.push(t.cancel);
+    if (upsellSuggestion) {
+        lines.push('');
+        lines.push(t.upsell(upsellSuggestion));
+    } else {
+        lines.push('');
+        lines.push(t.more);
+    }
+    return lines.join('\n');
 }
 
 module.exports = {
@@ -571,5 +611,5 @@ module.exports = {
     detectGuestBooking,
     extractGuestName,
     matchUpsellSuggestion,
-    buildSanteConfirmationExtras,
+    buildSanteConfirmationMessage,
 };
