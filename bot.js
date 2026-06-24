@@ -974,8 +974,30 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // Si ya hay una cita confirmada y la clienta pide otra (para ella o un
         // acompañante), reiniciamos el flujo para gestionar y guardar la nueva cita.
         if (orgType === 'salon') {
-            if (session.reservaConfirmada && wantsAnotherBooking(sanitized)) {
-                resetForSecondBooking(session, sanitized);
+            // Segunda reserva: además de las frases explícitas ("otra cita", "reservar otra"),
+            // detectamos cuando la clienta —con una cita YA confirmada— pide un SERVICIO o una
+            // ESTILISTA distintos del reservado (ej. "quiero matiz con Irina" tras una manicura
+            // con Olgha). Sin esto, el flujo NO se reiniciaba: reservaConfirmada seguía en true,
+            // el estado quedaba obsoleto (servicio/estilista de la 1ª cita), no se cargaban los
+            // huecos reales de la nueva petición y el LLM improvisaba disponibilidad inventada
+            // (p.ej. "Irina el viernes", cuando no trabaja ese día) y decía "confirmada" mientras
+            // la guarda de reservaConfirmada impedía guardar → cita perdida en silencio.
+            if (session.reservaConfirmada) {
+                let nuevaReserva = wantsAnotherBooking(sanitized);
+                if (!nuevaReserva) {
+                    try {
+                        const cfgSecond = await getAgentConfig(orgId);
+                        const svcNuevo = extractServiceFromText(sanitized, cfgSecond?.services || []);
+                        if (svcNuevo && svcNuevo.nombre !== session.selectedService?.nombre) {
+                            nuevaReserva = true;
+                        } else {
+                            const stylistsSecond = await getStylistsByOrg(orgId);
+                            const styNuevo = extractStylistFromText(sanitized, stylistsSecond);
+                            if (styNuevo && styNuevo.id !== session.selectedStylist?.id) nuevaReserva = true;
+                        }
+                    } catch (e) { logger.error('error_deteccion_segunda_reserva', { orgId, error: e.message }); }
+                }
+                if (nuevaReserva) resetForSecondBooking(session, sanitized);
             }
             // Mientras esperamos el nombre del acompañante, intentamos capturarlo de
             // la respuesta (nombre suelto o "se llama X") sin pisar el nombre del titular.
