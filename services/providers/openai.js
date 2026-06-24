@@ -541,7 +541,10 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
 
     const messages = [
         { role: 'system', content: buildSystemPrompt(orgId, partialData, intent, reservaConfirmada, summary, agentCfg) },
-        ...cleanHistory.map(m => ({ role: m.role, content: m.content })),
+        ...cleanHistory.map(m => m.role === 'assistant'
+            ? { role: 'assistant', content: JSON.stringify({ respuesta: m.content }) }
+            : { role: m.role, content: m.content }
+        ),
     ];
 
     const MAX_ATTEMPTS = 2;
