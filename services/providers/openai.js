@@ -1,11 +1,14 @@
-const Anthropic = require('@anthropic-ai/sdk').default;
+const OpenAI = require('openai');
 require('dotenv').config();
 const config = require('../../config.json');
 const db = require('../db');
 const { getOrgType } = require('../org-registry');
 const logger = require('../../lib/logger');
 
-const anthropic = new Anthropic();
+const openrouter = new OpenAI({
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKey: process.env.OPENROUTER_API_KEY,
+});
 const aiConfig = config.ai || {};
 
 // ─── San Remo prompt (restaurante) ──────────────────────────────────────────
@@ -509,7 +512,7 @@ function getFallbackResponse(orgId, language) {
 
 async function getChatbotResponse(orgId, history, partialData = {}, intent = 'general', reservaConfirmada = false, summary = null) {
     const clientLang = partialData?.__clientLanguage || null;
-    if (!process.env.ANTHROPIC_API_KEY) return getFallbackResponse(orgId, clientLang);
+    if (!process.env.OPENROUTER_API_KEY) return getFallbackResponse(orgId, clientLang);
 
     const agentCfg = await db.getAgentConfig(orgId).catch(() => null);
 
@@ -517,21 +520,20 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
         .filter(m => m && m.content && typeof m.content === 'string' && m.content.trim())
         .slice(-10);
 
-    const systemPrompt = buildSystemPrompt(orgId, partialData, intent, reservaConfirmada, summary, agentCfg);
-    const claudeMessages = cleanHistory.map(m => ({ role: m.role, content: m.content }));
-    if (claudeMessages.length === 0 || claudeMessages[0].role !== 'user') {
-        claudeMessages.unshift({ role: 'user', content: '(inicio de conversación)' });
-    }
+    const messages = [
+        { role: 'system', content: buildSystemPrompt(orgId, partialData, intent, reservaConfirmada, summary, agentCfg) },
+        ...cleanHistory.map(m => ({ role: m.role, content: m.content })),
+    ];
 
     let response;
     for (let attempt = 0; attempt < 2; attempt++) {
         try {
-            response = await anthropic.messages.create({
-                model: 'claude-sonnet-4-6',
-                system: systemPrompt,
-                messages: claudeMessages,
-                max_tokens: aiConfig.max_tokens ?? 450,
+            response = await openrouter.chat.completions.create({
+                model: 'anthropic/claude-sonnet-4-6',
+                messages,
                 temperature: aiConfig.temperature ?? 0.5,
+                max_tokens: aiConfig.max_tokens ?? 450,
+                response_format: { type: 'json_object' },
             });
             break;
         } catch (e) {
@@ -543,7 +545,7 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
         }
     }
 
-    const raw = response?.content?.find(b => b.type === 'text')?.text;
+    const raw = response?.choices?.[0]?.message?.content;
     if (!raw || !raw.includes('{')) return getFallbackResponse(orgId, clientLang);
 
     let parsed;
@@ -579,24 +581,27 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
 }
 
 async function summarizeHistory(messages, partialData = {}) {
-    if (!process.env.ANTHROPIC_API_KEY || !messages?.length) return null;
+    if (!process.env.OPENROUTER_API_KEY || !messages?.length) return null;
     try {
         const conversation = messages
             .filter(m => m?.content)
             .map(m => `${m.role === 'user' ? 'Cliente' : 'Bot'}: ${m.content}`)
             .join('\n');
 
-        const response = await anthropic.messages.create({
-            model: 'claude-sonnet-4-6',
-            system: 'Resume en 3-4 frases los puntos clave de esta conversación de WhatsApp. Incluye: nombre del cliente, servicio solicitado, fecha/hora de la cita, estilista, y cualquier detalle relevante. Sin saludos, solo hechos concretos.',
+        const response = await openrouter.chat.completions.create({
+            model: 'anthropic/claude-sonnet-4-6',
             messages: [
+                {
+                    role: 'system',
+                    content: 'Resume en 3-4 frases los puntos clave de esta conversación de WhatsApp. Incluye: nombre del cliente, servicio solicitado, fecha/hora de la cita, estilista, y cualquier detalle relevante. Sin saludos, solo hechos concretos.'
+                },
                 { role: 'user', content: conversation }
             ],
-            max_tokens: 200,
             temperature: 0.2,
+            max_tokens: 200,
         });
 
-        return response?.content?.find(b => b.type === 'text')?.text?.trim() || null;
+        return response?.choices?.[0]?.message?.content?.trim() || null;
     } catch (e) {
         logger.error('error_summarize_history', { error: e.message });
         return null;
