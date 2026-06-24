@@ -1053,6 +1053,15 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             if (session.selectedService) {
                 const allStylists = await getStylistsByOrg(orgId);
                 eligibleStylists = allStylists.filter(s => stylistCanDoService(s, session.selectedService));
+
+                // Validar estilista seleccionada: si fue elegida ANTES de conocer el
+                // servicio (ej. "cita con Larisa" → luego "manicura") o viene de una
+                // sesión anterior, puede no tener la skill. Limpiarla para asignar bien.
+                if (session.selectedStylist) {
+                    const sigueElegible = eligibleStylists.some(s => s.id === session.selectedStylist.id);
+                    if (!sigueElegible) session.selectedStylist = null;
+                }
+
                 if (!session.selectedStylist && eligibleStylists.length === 1) {
                     session.selectedStylist = { id: eligibleStylists[0].id, nombre: eligibleStylists[0].name };
                 }
@@ -1069,11 +1078,14 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // Si es una reserva para un acompañante y aún no sabemos su nombre, lo pedimos primero.
             const esperandoNombreInvitado = session.guestBooking && !session.guestName;
 
-            // Puerta de preferencia de fecha (BUG 4): si la clienta NO ha dado ninguna
-            // pista de CUÁNDO quiere (semana/día/fecha/franja), preguntamos "¿qué día o
-            // semana te viene mejor?" ANTES de proponer huecos. Solo una vez
-            // (datePreferenceAsked) para no bloquear si luego responde vagamente; "me da
-            // igual" cuenta como pista y proponemos directamente.
+            // Coherencia: si no hay huecos cargados, slotsProposed y datePreferenceAsked
+            // pueden ser residuos de una interacción anterior en la misma sesión en memoria.
+            // Resetearlos para que la puerta de fecha funcione limpiamente.
+            if (session.availableSlots.length === 0 && !session.reservaConfirmada) {
+                session.slotsProposed = false;
+                session.datePreferenceAsked = false;
+            }
+
             const prefFecha = session.partialData.preferencia_horaria || {};
             const tienePistaFecha = !!(prefFecha.semana || prefFecha.periodo || prefFecha.fecha ||
                 Number.isInteger(prefFecha.diaSemana)) || meDaIgual;
@@ -1174,7 +1186,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         const HARD_TIMEOUT = 30000;
         let sentWaitingMessage = false;
 
-        const llmPromise = getChatbotResponse(orgId, session.history.slice(-12), partialDataWithCtx, intent, session.reservaConfirmada, session.summary)
+        const llmPromise = getChatbotResponse(orgId, session.history.slice(-10), partialDataWithCtx, intent, session.reservaConfirmada, session.summary)
             .catch(e => {
                 logger.error('llm_error', { orgId, telefono: userPhone, error: e.message, latencia_ms: Date.now() - t0 });
                 return null;

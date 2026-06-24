@@ -515,7 +515,7 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
 
     const cleanHistory = history
         .filter(m => m && m.content && typeof m.content === 'string' && m.content.trim())
-        .slice(-14);
+        .slice(-10);
 
     const messages = [
         { role: 'system', content: buildSystemPrompt(orgId, partialData, intent, reservaConfirmada, summary, agentCfg) },
