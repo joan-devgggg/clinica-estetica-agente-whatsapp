@@ -9,12 +9,13 @@
 require('dotenv').config();
 const assert = require('assert');
 const bot = require('../bot');
-const { SANTE_ORG_ID: ORG } = require('../services/org-registry');
+const { SANTE_ORG_ID: ORG, SANREMO_ORG_ID } = require('../services/org-registry');
 const db = require('../services/db');
 const supabase = require('../services/supabase');
 const { deleteClient } = require('../services/memory');
 
-bot.setBotGlobalActivo(true);
+bot.setBotActivo(ORG, true, false);
+bot.setBotActivo(SANREMO_ORG_ID, true, false);
 
 let pass = 0, fail = 0;
 const results = [];
@@ -333,15 +334,17 @@ const SCENARIOS = {
         const phone = '34600000318';
         await cleanupPhone(phone);
         const c = new Convo(phone);
-        bot.setBotGlobalActivo(false);
+        // Pausa SOLO Sante; San Remo debe seguir activo (aislamiento por organización).
+        bot.setBotActivo(ORG, false, false);
+        assert.strictEqual(bot.isBotActivo(SANREMO_ORG_ID), true, 'pausar Sante NO debe afectar a San Remo');
         const m = await c.send('hola hay alguien?', { timeout: 8000 });
-        logTurn('bot off', 'hola', m);
-        assert(m.length === 0, `con bot inactivo no debe responder (respondió: ${JSON.stringify(m)})`);
-        bot.setBotGlobalActivo(true);
+        logTurn('bot off (Sante)', 'hola', m);
+        assert(m.length === 0, `con Sante inactivo no debe responder (respondió: ${JSON.stringify(m)})`);
+        bot.setBotActivo(ORG, true, false);
         const m2 = await c.send('hola de nuevo');
-        logTurn('bot on', 'hola de nuevo', m2);
+        logTurn('bot on (Sante)', 'hola de nuevo', m2);
         assert(m2.length >= 1, 'con bot activo debe responder');
-        console.log(`   📌 off→${m.length} msgs, on→${m2.length} msgs`);
+        console.log(`   📌 Sante off→${m.length} msgs, on→${m2.length} msgs | San Remo intacto ✅`);
     },
 };
 

@@ -35,12 +35,12 @@ app.use(cors({
 
 let _waClients = null; // Map<orgId, { client, ... }>
 let _setConvMode = null;
-let _setBotGlobalActivo = null;
+let _setBotActivo = null; // (orgId, valor, persist) → actualiza el estado por org
 
-function setWAClient(clients, setConvMode, setBotGlobalActivo) {
+function setWAClient(clients, setConvMode, setBotActivo) {
     _waClients = clients;
     _setConvMode = setConvMode;
-    _setBotGlobalActivo = setBotGlobalActivo;
+    _setBotActivo = setBotActivo;
 }
 
 function getWAClient(orgId) {
@@ -313,8 +313,10 @@ app.put('/api/config/:clave', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
         await db.setConfigValue(orgId, req.params.clave, req.body.valor);
-        if (req.params.clave === 'bot_activo' && _setBotGlobalActivo) {
-            _setBotGlobalActivo(!!req.body.valor);
+        // El toggle del bot es POR organización: solo afecta a la org de la petición.
+        // La config ya quedó persistida arriba → actualizamos memoria sin re-escribir.
+        if (req.params.clave === 'bot_activo' && _setBotActivo) {
+            _setBotActivo(orgId, !!req.body.valor, false);
         }
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }

@@ -33,12 +33,34 @@ const MESSAGE_DELAY_MAX_MS = 120;
 const MAX_USER_MESSAGE_LENGTH = 500;
 const SUMMARY_THRESHOLD = 20;
 
-let _botGlobalActivo = true;
-function isBotGlobalActivo() { return _botGlobalActivo; }
-function setBotGlobalActivo(v) {
-    _botGlobalActivo = v;
-    const { setConfigValue } = require('./services/db');
-    setConfigValue(null, 'bot_activo', v);
+// Estado del bot POR organización. Multi-tenant: pausar Sante no debe afectar a San
+// Remo (cada org es independiente). Por defecto activo cuando no hay valor cargado.
+const _botActivoByOrg = new Map(); // orgId → bool
+function isBotActivo(orgId) {
+    return _botActivoByOrg.has(orgId) ? _botActivoByOrg.get(orgId) : true;
+}
+// persist=false → solo actualiza el estado en memoria (p.ej. al cargar config al
+// arrancar, o cuando el panel ya escribió en config antes de avisar al proceso).
+function setBotActivo(orgId, v, persist = true) {
+    _botActivoByOrg.set(orgId, !!v);
+    if (persist) {
+        const { setConfigValue } = require('./services/db');
+        setConfigValue(orgId, 'bot_activo', !!v);
+    }
+}
+
+// ── Compatibilidad con la API "global" anterior (callers sin orgId). NO usar en
+// código nuevo: pasar siempre orgId para mantener el aislamiento por organización.
+function isBotGlobalActivo(orgId) {
+    if (orgId !== undefined) return isBotActivo(orgId);
+    if (_botActivoByOrg.size === 0) return true; // por defecto activo
+    for (const v of _botActivoByOrg.values()) if (v) return true;
+    return false;
+}
+function setBotGlobalActivo(v, orgId) {
+    if (orgId !== undefined) return setBotActivo(orgId, v);
+    const { getAllOrgs } = require('./services/org-registry');
+    for (const o of getAllOrgs()) setBotActivo(o.orgId, v);
 }
 
 let _waClients = null; // Map<orgId, { client, ... }>
@@ -761,7 +783,7 @@ async function resolveBizumResult(pendingAction, confirmed) {
 // ─── Core ─────────────────────────────────────────────────────────────────────
 async function processMessageCore(client, message, userPhone, userText, messageKey, orgId) {
     try {
-        if (!isBotGlobalActivo()) return;
+        if (!isBotActivo(orgId)) return;
 
         const sKey = sessionKey(orgId, userPhone);
         const orgType = getOrgType(orgId);
@@ -1578,6 +1600,9 @@ function setConversationBotMode(phone, active) {
 
 module.exports = {
     handleIncomingMessage,
+    isBotActivo,
+    setBotActivo,
+    // Alias de compatibilidad (API global anterior):
     isBotGlobalActivo,
     setBotGlobalActivo,
     setConversationBotMode,

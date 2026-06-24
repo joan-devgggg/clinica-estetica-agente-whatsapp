@@ -8,7 +8,8 @@ require('dotenv').config();
 
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
-const { handleIncomingMessage, isBotGlobalActivo, setBotGlobalActivo, setConversationBotMode, setWAClient: setBotWAClient } = require('./bot');
+const { handleIncomingMessage, isBotActivo, setBotActivo, setConversationBotMode, setWAClient: setBotWAClient } = require('./bot');
+const { getConfigValue } = require('./services/db');
 const { startWebhookServer, setWAClient } = require('./webhook');
 const { startReminderWorker } = require('./services/reminder');
 const { startReviewWorker } = require('./services/review');
@@ -52,22 +53,39 @@ for (const org of orgs) {
 
     client.on('message', async (message) => {
         if (message.fromMe) return;
-        if (!isBotGlobalActivo()) return;
+        if (!isBotActivo(org.orgId)) return; // pausa por organización (no global)
         await handleIncomingMessage(client, message, org.orgId);
     });
 
     waClients.set(org.orgId, { client, ...org });
 }
 
+// ─── Estado del bot por organización (cargado desde config) ──────────────────
+// Cada org arranca con su propio bot_activo. Pausar una NO afecta a las demás.
+(async () => {
+    for (const org of orgs) {
+        try {
+            const v = await getConfigValue(org.orgId, 'bot_activo');
+            if (v !== null && v !== undefined) {
+                const activo = v === true || v === 'true' || v === 1;
+                setBotActivo(org.orgId, activo, false); // solo memoria; ya está en config
+                if (!activo) logger.info('bot_pausado_al_arrancar', { org: org.slug });
+            }
+        } catch (e) {
+            logger.error('error_cargar_bot_activo', { org: org.slug, error: e.message });
+        }
+    }
+})();
+
 // ─── Webhook / API REST ──────────────────────────────────────────────────────
-setWAClient(waClients, setConversationBotMode, setBotGlobalActivo);
+setWAClient(waClients, setConversationBotMode, setBotActivo);
 setBotWAClient(waClients);
 startWebhookServer(process.env.PORT || 3000);
 
 // ─── Bot de Telegram (panel de administración multi-org) ─────────────────────
 startTelegramBot({
-    getBotActivo: isBotGlobalActivo,
-    setBotActivo: setBotGlobalActivo,
+    getBotActivo: isBotActivo,
+    setBotActivo: setBotActivo,
     waClients,
 });
 

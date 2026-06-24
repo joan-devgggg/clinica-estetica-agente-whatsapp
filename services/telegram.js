@@ -348,19 +348,19 @@ async function ejecutarAccion(orgId, accion, datos, bot, chatId) {
             const agentCfg = await getAgentConfig(orgId);
             const info = agentCfg?.business_info || {};
             return `⚙️ *Configuración actual:*\n` +
-                `• Bot WhatsApp: ${getBotActivoFn() ? '🟢 Activo' : '🔴 Pausado'}\n` +
+                `• Bot WhatsApp: ${getBotActivoFn(orgId) ? '🟢 Activo' : '🔴 Pausado'}\n` +
                 (info.bizum ? `• Bizum: ${info.bizum.importe ?? '?'}€ al ${info.bizum.numero ?? '?'}\n` : '') +
                 `• Umbral VIP: ${info.vip?.visitasParaSugerir ?? '?'} visitas`;
         }
 
         case 'pause_bot': {
-            setBotActivoFn(false);
-            return '⏸️ Bot de WhatsApp *pausado*.';
+            setBotActivoFn(orgId, false); // pausa SOLO la org de este admin
+            return '⏸️ Bot de WhatsApp *pausado* para tu negocio.';
         }
 
         case 'resume_bot': {
-            setBotActivoFn(true);
-            return '▶️ Bot de WhatsApp *reactivado*.';
+            setBotActivoFn(orgId, true);
+            return '▶️ Bot de WhatsApp *reactivado* para tu negocio.';
         }
 
         default:
