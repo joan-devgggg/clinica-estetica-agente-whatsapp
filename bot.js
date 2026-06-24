@@ -788,8 +788,9 @@ async function resolveBizumResult(pendingAction, confirmed) {
 
 // ─── Core ─────────────────────────────────────────────────────────────────────
 async function processMessageCore(client, message, userPhone, userText, messageKey, orgId) {
+    logger.info('process_core_inicio', { orgId, telefono: userPhone, textoLength: userText?.length || 0 });
     try {
-        if (!isBotActivo(orgId)) return;
+        if (!isBotActivo(orgId)) { logger.info('process_core_bot_inactivo', { orgId }); return; }
 
         const sKey = sessionKey(orgId, userPhone);
         const orgType = getOrgType(orgId);
@@ -884,8 +885,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             try {
                 const contact = await findByPhone(orgId, session.partialData.telefono);
                 if (contact) {
-                    if (contact.bot_mode === 'manual') session.botActivo = false;
-                    if (contact.is_blacklisted) session.isBlacklisted = true;
+                    if (contact.bot_mode === 'manual') { session.botActivo = false; logger.info('process_core_bot_mode_manual', { orgId, telefono: userPhone }); }
+                    if (contact.is_blacklisted) { session.isBlacklisted = true; logger.info('process_core_blacklisted', { orgId, telefono: userPhone }); }
                     session.leadId = session.leadId || contact.id;
                     session.language = contact.language || null;
                     session.preferredStylistId = contact.preferred_stylist_id || null;
@@ -908,7 +909,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             } catch (e) { logger.error('error_check_contact', { orgId, telefono: userPhone, error: e.message }); }
         }
 
-        if (messageKey && session.seenMessages.has(messageKey)) return;
+        if (messageKey && session.seenMessages.has(messageKey)) { logger.info('process_core_msg_duplicado', { orgId, telefono: userPhone, messageKey }); return; }
         if (messageKey) session.seenMessages.add(messageKey);
 
         // Blacklist check
@@ -943,10 +944,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             await sendWithDelay(client, userPhone, config.conversation?.reactivatedMessage || 'Asistente activado.', orgId);
             return;
         }
-        if (!session.botActivo) return;
+        if (!session.botActivo) { logger.info('process_core_sesion_bot_inactivo', { orgId, telefono: userPhone }); return; }
 
         const now = Date.now();
-        if (session.lastMessageTime && (now - session.lastMessageTime) < (config.conversation?.duplicateMessageWindowMs || 1500)) return;
+        if (session.lastMessageTime && (now - session.lastMessageTime) < (config.conversation?.duplicateMessageWindowMs || 1500)) { logger.info('process_core_msg_rapido_duplicado', { orgId, telefono: userPhone, deltaMs: now - session.lastMessageTime }); return; }
 
         session.messageCount++;
         // BUG 5: el salón tiene conversaciones más largas (idioma, servicio, estilista,
@@ -1222,6 +1223,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // Esperamos la respuesta del LLM hasta 30s. Si responde, la usamos; si
         // falla o tarda más, aiResponse queda null y cae al fallback de abajo
         // ("Perdona, ¿me lo repites?"). Sin mensajes de espera intermedios.
+        logger.info('process_core_pre_llm', { orgId, telefono: userPhone, historyLen: session.history.length, servicio: session.selectedService?.nombre || null });
         let aiResponse;
         const t0 = Date.now();
         const LLM_TIMEOUT_MS = 45000;
@@ -1568,7 +1570,7 @@ async function handleIncomingMessage(client, message, orgId) {
         const currentQueue = userQueues.get(sKey) || Promise.resolve();
         const newQueue = currentQueue.then(async () => {
             const latest = latestMessages.get(sKey);
-            if (!latest || latest.messageId !== messageId) return;
+            if (!latest || latest.messageId !== messageId) { logger.info('cola_msg_descartado', { telefono: userPhone, messageId, latestId: latest?.messageId }); return; }
             try { await processMessageCore(client, message, userPhone, userText, messageKey, orgId); } catch (e) { logger.error('error_cola', { telefono: userPhone, error: e.message }); }
         }).catch(e => logger.error('error_cola_catch', { error: e.message }));
 
