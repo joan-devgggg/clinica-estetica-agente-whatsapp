@@ -1194,7 +1194,6 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         let aiResponse;
         const t0 = Date.now();
         const WAIT_MSG_DELAY = 8000;
-        const HARD_TIMEOUT = 30000;
         let sentWaitingMessage = false;
 
         const llmPromise = getChatbotResponse(orgId, session.history.slice(-10), partialDataWithCtx, intent, session.reservaConfirmada, session.summary)
@@ -1216,12 +1215,11 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             await sendWithDelay(client, userPhone, waitMsg, orgId);
             sentWaitingMessage = true;
 
-            const hardTimer = new Promise(resolve => setTimeout(() => resolve(null), HARD_TIMEOUT - WAIT_MSG_DELAY));
-            aiResponse = await Promise.race([llmPromise, hardTimer]);
+            aiResponse = await llmPromise;
             if (aiResponse) {
                 logger.info('llm_response_after_wait', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
             } else {
-                logger.error('llm_timeout', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
+                logger.error('llm_failed_after_wait', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
             }
         }
 
@@ -1251,16 +1249,22 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 logger.info('llm_timeout_slots_fallback', { orgId, telefono: userPhone, numSlots: pendingSlots.length });
             } else if (orgType === 'salon') {
                 if (sentWaitingMessage) {
-                    persistSession(orgId, userPhone, session);
-                    return;
+                    const retryMsgs = {
+                        en: "Sorry, I couldn't process that. Could you repeat? 😊",
+                        ru: 'Извини, не удалось обработать. Можешь повторить? 😊',
+                        uk: 'Вибач, не вдалося обробити. Можеш повторити? 😊',
+                    };
+                    const fbText = (session.language && retryMsgs[session.language]) || 'Perdona, no he podido procesar tu mensaje. ¿Me lo repites? 😊';
+                    aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
+                } else {
+                    const fbMsgs = {
+                        en: 'One moment, please 😊',
+                        ru: 'Минутку, пожалуйста 😊',
+                        uk: 'Хвилинку, будь ласка 😊',
+                    };
+                    const fbText = (session.language && fbMsgs[session.language]) || 'Un momento, por favor 😊';
+                    aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
                 }
-                const fbMsgs = {
-                    en: 'One moment, please 😊',
-                    ru: 'Минутку, пожалуйста 😊',
-                    uk: 'Хвилинку, будь ласка 😊',
-                };
-                const fbText = (session.language && fbMsgs[session.language]) || 'Un momento, por favor 😊';
-                aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
             } else {
                 const fbText = 'Se me ha ido la conexión 😅 ¿me repites?';
                 aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
