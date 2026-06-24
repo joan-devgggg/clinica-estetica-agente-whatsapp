@@ -233,7 +233,7 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
     const selectedStylist = partialData.__selectedStylist;
     const clientLanguage = partialData.__clientLanguage || null;
     const langConstraint = clientLanguage
-        ? `Idioma de la clienta (ya detectado): "${clientLanguage}". DEBES responder en "${clientLanguage}".`
+        ? `Último idioma detectado: "${clientLanguage}". Úsalo SOLO si el mensaje actual no deja claro el idioma. Si el mensaje actual está en otro idioma, responde en ESE idioma y actualiza "idioma_detectado".`
         : 'Aún no se conoce el idioma. Detecta el idioma de su PRIMER mensaje y responde en ese mismo idioma.';
 
     // Modes

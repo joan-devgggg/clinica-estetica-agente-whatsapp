@@ -953,15 +953,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         if (orgType === 'salon') {
             // Salon: extract name, preference, detect service/stylist from LLM
             session.partialData = extractQuickDataSante(sanitized, session.partialData);
-            // BUG 4: fija el idioma de forma heurística si aún no lo conocemos, para que
-            // los fallbacks/mensajes de sistema salgan en el idioma correcto aunque el LLM
-            // falle. El LLM (idioma_detectado) sigue mandando y puede corregirlo después.
-            if (!session.language) {
-                const lang = detectLanguage(sanitized);
-                if (lang) {
-                    session.language = lang;
-                    if (session.leadId) updateContactLanguage(orgId, session.leadId, lang).catch(() => {});
-                }
+            // Detectar idioma en CADA mensaje para que el bot responda en el
+            // idioma actual del cliente, no en el de una sesión anterior.
+            const lang = detectLanguage(sanitized);
+            if (lang) {
+                session.language = lang;
+                if (session.leadId) updateContactLanguage(orgId, session.leadId, lang).catch(() => {});
             }
         } else {
             // Restaurant: extract name, personas, preference
