@@ -35,10 +35,12 @@ app.use(cors({
 
 let _waClients = null; // Map<orgId, { client, ... }>
 let _setConvMode = null;
+let _setBotGlobalActivo = null;
 
-function setWAClient(clients, setConvMode) {
+function setWAClient(clients, setConvMode, setBotGlobalActivo) {
     _waClients = clients;
     _setConvMode = setConvMode;
+    _setBotGlobalActivo = setBotGlobalActivo;
 }
 
 function getWAClient(orgId) {
@@ -309,7 +311,11 @@ app.get('/api/config', async (req, res) => {
 
 app.put('/api/config/:clave', async (req, res) => {
     try {
-        await db.setConfigValue(extractOrgId(req), req.params.clave, req.body.valor);
+        const orgId = extractOrgId(req);
+        await db.setConfigValue(orgId, req.params.clave, req.body.valor);
+        if (req.params.clave === 'bot_activo' && _setBotGlobalActivo) {
+            _setBotGlobalActivo(!!req.body.valor);
+        }
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -351,9 +357,18 @@ app.post('/api/send', async (req, res) => {
         const { telefono, mensaje } = req.body;
         if (!telefono || !mensaje) return res.status(400).json({ error: 'telefono y mensaje requeridos' });
         const client = getWAClient(orgId);
-        if (!client) return res.status(503).json({ error: 'WhatsApp no conectado' });
+        if (!client) return res.status(503).json({ error: 'WhatsApp no conectado — reconecta el bot e inténtalo de nuevo' });
         const userPhone = `${telefono.replace(/\D/g, '')}@c.us`;
-        await client.sendMessage(userPhone, mensaje);
+        try {
+            await client.sendMessage(userPhone, mensaje);
+        } catch (waErr) {
+            const msg = String(waErr?.message || waErr || '');
+            if (msg.includes('LID') || msg.includes('not connected') || msg.includes('ECONNREFUSED') || msg.includes('Protocol error')) {
+                logger.warn('wa_send_desconectado', { orgId, telefono, error: msg });
+                return res.status(503).json({ error: 'WhatsApp no conectado — reconecta el bot e inténtalo de nuevo' });
+            }
+            throw waErr;
+        }
         await db.saveMessage(orgId, { telefono: telefono.replace(/\D/g, ''), contenido: mensaje, direccion: 'saliente', esManual: true });
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }

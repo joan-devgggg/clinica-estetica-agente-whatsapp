@@ -60,7 +60,7 @@ for (const org of orgs) {
 }
 
 // ─── Webhook / API REST ──────────────────────────────────────────────────────
-setWAClient(waClients, setConversationBotMode);
+setWAClient(waClients, setConversationBotMode, setBotGlobalActivo);
 setBotWAClient(waClients);
 startWebhookServer(process.env.PORT || 3000);
 
