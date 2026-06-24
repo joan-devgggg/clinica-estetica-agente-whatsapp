@@ -1584,5 +1584,7 @@ module.exports = {
     setWAClient,
     resolveBizumResult,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
-    _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked },
+    _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
+        // Solo para introspección en tests (no usar en producción):
+        getSession: (orgId, userPhone) => userSessions.get(sessionKey(orgId, userPhone)) },
 };
