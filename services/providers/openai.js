@@ -505,6 +505,7 @@ function getFallbackResponse(orgId, language) {
     const base = {
         respuesta: fallbackText,
         _isFallback: true,
+        _fallbackReason: null,
         slot_rechazado: false,
         accion: null,
     };
@@ -525,7 +526,12 @@ function getFallbackResponse(orgId, language) {
 
 async function getChatbotResponse(orgId, history, partialData = {}, intent = 'general', reservaConfirmada = false, summary = null) {
     const clientLang = partialData?.__clientLanguage || null;
-    if (!OPENROUTER_API_KEY || OPENROUTER_API_KEY === 'YOUR_KEY_HERE') return getFallbackResponse(orgId, clientLang);
+    if (!OPENROUTER_API_KEY || OPENROUTER_API_KEY === 'YOUR_KEY_HERE') {
+        logger.warn('llm_fallback_reason', { orgId, reason: 'no_api_key', key: OPENROUTER_API_KEY ? 'YOUR_KEY_HERE' : 'missing' });
+        const fb = getFallbackResponse(orgId, clientLang);
+        fb._fallbackReason = 'no_api_key';
+        return fb;
+    }
 
     const agentCfg = await db.getAgentConfig(orgId).catch(() => null);
 
@@ -563,7 +569,9 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
             logger.warn('claude_api_error', { attempt, status, latencia_ms: Date.now() - t0Attempt, error: e.message?.slice(0, 200) });
             if (isLastAttempt) {
                 logger.error('claude_error_definitivo', { error: e.message, status, total_ms: Date.now() - t0Total });
-                return getFallbackResponse(orgId, clientLang);
+                const fb = getFallbackResponse(orgId, clientLang);
+                fb._fallbackReason = `api_error:${status}:${e.message?.slice(0, 100)}`;
+                return fb;
             }
             continue;
         }
@@ -573,7 +581,9 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
         if (!raw || !raw.includes('{')) {
             if (isLastAttempt) {
                 logger.warn('claude_sin_json_definitivo', { total_ms: Date.now() - t0Total, raw: raw?.slice(0, 200) || null });
-                return getFallbackResponse(orgId, clientLang);
+                const fb = getFallbackResponse(orgId, clientLang);
+                fb._fallbackReason = `no_json_in_response:${raw?.slice(0, 120) || 'empty'}`;
+                return fb;
             }
             logger.warn('claude_reintentando', { reason: 'no_json_in_response', raw: raw?.slice(0, 200) || null });
             continue;
@@ -595,7 +605,9 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
 
         if (isLastAttempt) {
             logger.warn('claude_json_invalido_definitivo', { total_ms: Date.now() - t0Total, raw: raw?.slice(0, 300) || null });
-            return getFallbackResponse(orgId, clientLang);
+            const fb = getFallbackResponse(orgId, clientLang);
+            fb._fallbackReason = `json_parse_failed:${raw?.slice(0, 120) || 'empty'}`;
+            return fb;
         }
         logger.warn('claude_reintentando', { reason: 'json_parse_failed', raw: raw?.slice(0, 300) || null });
         parsed = undefined;

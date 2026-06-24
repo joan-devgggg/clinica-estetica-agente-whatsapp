@@ -1318,7 +1318,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         );
         const llmPromise = getChatbotResponse(orgId, llmHistory, partialDataWithCtx, intent, session.reservaConfirmada, session.summary)
             .catch(e => {
-                logger.error('llm_error', { orgId, telefono: userPhone, error: e.message, latencia_ms: Date.now() - t0 });
+                logger.error('llm_error', { orgId, telefono: userPhone, error: e.message, stack: e.stack?.split('\n').slice(0, 3).join(' | '), latencia_ms: Date.now() - t0 });
                 return null;
             });
 
@@ -1330,10 +1330,17 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             logger.error('llm_timeout', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
         } else {
             aiResponse = result;
-            if (aiResponse) logger.info('llm_response', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
+            if (aiResponse) logger.info('llm_response', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0, isFallback: !!aiResponse._isFallback, fallbackReason: aiResponse._fallbackReason || null, hasRespuesta: !!aiResponse.respuesta });
         }
 
         if (!aiResponse?.respuesta || aiResponse._isFallback) {
+            logger.warn('fallback_diagnostico', {
+                orgId, telefono: userPhone, textoRecibido: userText?.slice(0, 80),
+                motivo: result === TIMED_OUT ? 'timeout' : !aiResponse ? 'llm_returned_null' : aiResponse._isFallback ? `llm_fallback:${aiResponse._fallbackReason || 'unknown'}` : 'no_respuesta_field',
+                latencia_ms: Date.now() - t0,
+                aiResponseKeys: aiResponse ? Object.keys(aiResponse).join(',') : 'null',
+                historyLen: session.history.length,
+            });
             // ── Restaurar snapshot: el LLM no pudo responder (timeout, error API,
             // o getFallbackResponse), así que deshacemos
             // todos los cambios de estado (servicio, estilista, slots, historial)
