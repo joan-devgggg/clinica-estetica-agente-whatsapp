@@ -999,6 +999,22 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         const sanitized = sanitizeUserMessage(userText);
         if (!sanitized) return;
 
+        // ─── Snapshot del estado ANTES de modificar la sesión ────────────
+        // Si el LLM falla/timeout, restauramos para no dejar la sesión en un
+        // estado parcial que confunde al LLM en el siguiente turno.
+        const _snapshot = {
+            historyLen:          session.history.length,
+            selectedService:     session.selectedService ? { ...session.selectedService } : null,
+            selectedStylist:     session.selectedStylist ? { ...session.selectedStylist } : null,
+            availableSlots:      session.availableSlots.slice(),
+            proposedSlots:       (session.proposedSlots || []).slice(),
+            currentSlotIndex:    session.currentSlotIndex,
+            slotsProposed:       session.slotsProposed,
+            datePreferenceAsked: session.datePreferenceAsked,
+            upsellingSuggested:  session.upsellingSuggested,
+            partialData:         JSON.parse(JSON.stringify(session.partialData)),
+        };
+
         session.history.push({ role: 'user', content: sanitized });
         incrementMetric('userReplied');
 
@@ -1263,13 +1279,30 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         }
 
         if (!aiResponse?.respuesta) {
-            const pendingSlots = session.availableSlots?.slice(session.currentSlotIndex) || [];
-            if (orgType === 'salon' && pendingSlots.length > 0 && session.selectedService) {
-                const svcName = session.selectedService.nombre || 'tu servicio';
-                const svcPrecio = session.selectedService.precio;
-                const svcDur = session.selectedService.duracion;
+            // ── Restaurar snapshot: el LLM no pudo responder, así que deshacemos
+            // todos los cambios de estado (servicio, estilista, slots, historial)
+            // para que el siguiente mensaje arranque limpio sin estado corrupto.
+            session.history.length        = _snapshot.historyLen;
+            session.selectedService       = _snapshot.selectedService;
+            session.selectedStylist       = _snapshot.selectedStylist;
+            session.availableSlots        = _snapshot.availableSlots;
+            session.proposedSlots         = _snapshot.proposedSlots;
+            session.currentSlotIndex      = _snapshot.currentSlotIndex;
+            session.slotsProposed         = _snapshot.slotsProposed;
+            session.datePreferenceAsked   = _snapshot.datePreferenceAsked;
+            session.upsellingSuggested    = _snapshot.upsellingSuggested;
+            session.partialData           = _snapshot.partialData;
+            logger.info('snapshot_restaurado', { orgId, telefono: userPhone, motivo: result === TIMED_OUT ? 'timeout' : 'llm_null' });
+
+            // Fallback: si ya teníamos slots cargados ANTES del fallo, los proponemos
+            // directamente (la detección de servicio fue en un turno anterior válido).
+            const preSlots = _snapshot.availableSlots.slice(_snapshot.currentSlotIndex);
+            if (orgType === 'salon' && preSlots.length > 0 && _snapshot.selectedService) {
+                const svcName = _snapshot.selectedService.nombre || 'tu servicio';
+                const svcPrecio = _snapshot.selectedService.precio;
+                const svcDur = _snapshot.selectedService.duracion;
                 const grouped = {};
-                for (const s of pendingSlots) {
+                for (const s of preSlots) {
                     const dayLabel = `${s.diaNombre ? s.diaNombre.charAt(0).toUpperCase() + s.diaNombre.slice(1) : ''} ${s.fecha ? new Date(s.fecha + 'T12:00:00').getDate() : ''}`.trim();
                     const key = dayLabel || s.fecha || 'Dia';
                     if (!grouped[key]) grouped[key] = [];
@@ -1285,7 +1318,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 const lang = session.language || 'es';
                 const fbText = fbSlotMsgs[lang] || fbSlotMsgs.es;
                 aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
-                logger.info('llm_timeout_slots_fallback', { orgId, telefono: userPhone, numSlots: pendingSlots.length });
+                logger.info('llm_fallback_slots_preexistentes', { orgId, telefono: userPhone, numSlots: preSlots.length });
             } else if (orgType === 'salon') {
                 const retryMsgs = {
                     en: "Sorry, I couldn't process that. Could you repeat? 😊",
@@ -1298,6 +1331,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 const fbText = 'Se me ha ido la conexión 😅 ¿me repites?';
                 aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
             }
+
+            // Enviar fallback SIN guardarlo en history ni procesar más lógica
+            await sendWithDelay(client, userPhone, aiResponse.respuesta, orgId);
+            incrementMetric('fallbacksUsed');
+            persistSession(orgId, userPhone, session);
+            return;
         }
 
         // ─── Process LLM response ────────────────────────────────────────
@@ -1543,9 +1582,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         triggerAsyncSummary(orgId, userPhone, session);
 
     } catch (err) {
-        logger.error('process_message_error', { orgId, telefono: userPhone, error: err.message });
+        logger.error('process_message_error', { orgId, telefono: userPhone, error: err.message, stack: err.stack?.split('\n').slice(0, 3).join(' | ') });
         incrementMetric('fallbacksUsed');
         try { await sendWithDelay(client, userPhone, config.conversation?.technicalErrorMessage || 'Lo siento, ha habido un error. Inténtalo de nuevo.', orgId); } catch {}
+        try { persistSession(orgId, userPhone, session); } catch {}
     }
 }
 

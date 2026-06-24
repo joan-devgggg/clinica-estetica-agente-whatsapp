@@ -537,27 +537,31 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
         ...cleanHistory.map(m => ({ role: m.role, content: m.content })),
     ];
 
-    const MAX_ATTEMPTS = 3;
-    const RETRY_DELAYS = [0, 1500, 3000];
+    const MAX_ATTEMPTS = 2;
+    const RETRY_DELAYS = [0, 2000];
+    const t0Total = Date.now();
     let parsed;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         if (attempt > 0 && RETRY_DELAYS[attempt]) {
             await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]));
         }
         const isLastAttempt = attempt === MAX_ATTEMPTS - 1;
+        const t0Attempt = Date.now();
         let response;
         try {
+            logger.info('llm_intento_inicio', { attempt, model: LLM_MODEL });
             response = await openrouter.chat.completions.create({
                 model: LLM_MODEL,
                 messages,
                 temperature: aiConfig.temperature ?? 0.5,
                 max_tokens: aiConfig.max_tokens ?? 450,
             });
+            logger.info('llm_intento_ok', { attempt, latencia_ms: Date.now() - t0Attempt });
         } catch (e) {
             const status = e.status || e.statusCode || null;
-            logger.warn('claude_api_error', { attempt, status, error: e.message?.slice(0, 200) });
+            logger.warn('claude_api_error', { attempt, status, latencia_ms: Date.now() - t0Attempt, error: e.message?.slice(0, 200) });
             if (isLastAttempt) {
-                logger.error('claude_error_definitivo', { error: e.message, status });
+                logger.error('claude_error_definitivo', { error: e.message, status, total_ms: Date.now() - t0Total });
                 return getFallbackResponse(orgId, clientLang);
             }
             continue;
@@ -566,7 +570,10 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
         let raw = response?.choices?.[0]?.message?.content;
         logger.info('llm_raw_response', { attempt, model: LLM_MODEL, raw: raw?.slice(0, 500) || null });
         if (!raw || !raw.includes('{')) {
-            if (isLastAttempt) return getFallbackResponse(orgId, clientLang);
+            if (isLastAttempt) {
+                logger.warn('claude_sin_json_definitivo', { total_ms: Date.now() - t0Total, raw: raw?.slice(0, 200) || null });
+                return getFallbackResponse(orgId, clientLang);
+            }
             logger.warn('claude_reintentando', { reason: 'no_json_in_response', raw: raw?.slice(0, 200) || null });
             continue;
         }
@@ -585,7 +592,10 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
 
         if (parsed?.respuesta) break;
 
-        if (isLastAttempt) return getFallbackResponse(orgId, clientLang);
+        if (isLastAttempt) {
+            logger.warn('claude_json_invalido_definitivo', { total_ms: Date.now() - t0Total, raw: raw?.slice(0, 300) || null });
+            return getFallbackResponse(orgId, clientLang);
+        }
         logger.warn('claude_reintentando', { reason: 'json_parse_failed', raw: raw?.slice(0, 300) || null });
         parsed = undefined;
     }
