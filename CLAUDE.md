@@ -104,7 +104,7 @@ getScheduleBlocks(orgId, stylistId, from, to)
 ## Variables de entorno
 
 ```bash
-OPENROUTER_API_KEY             # Claude Sonnet 4.6 via OpenRouter
+OPENROUTER_API_KEY             # Claude Haiku 3.5 via OpenRouter
 SUPABASE_URL                  # URL del proyecto Supabase
 SUPABASE_SERVICE_ROLE_KEY     # Service role key
 SANREMO_ORG_ID                # UUID San Remo

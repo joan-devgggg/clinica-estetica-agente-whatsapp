@@ -535,7 +535,7 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
     for (let attempt = 0; attempt < 2; attempt++) {
         try {
             response = await openrouter.chat.completions.create({
-                model: 'anthropic/claude-sonnet-4-6',
+                model: 'anthropic/claude-haiku-3-5',
                 messages,
                 temperature: aiConfig.temperature ?? 0.5,
                 max_tokens: aiConfig.max_tokens ?? 450,
@@ -599,7 +599,7 @@ async function summarizeHistory(messages, partialData = {}) {
             .join('\n');
 
         const response = await openrouter.chat.completions.create({
-            model: 'anthropic/claude-sonnet-4-6',
+            model: 'anthropic/claude-haiku-3-5',
             messages: [
                 {
                     role: 'system',
