@@ -1213,10 +1213,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         }
 
         // ─── LLM call ────────────────────────────────────────────────────
+        // Esperamos la respuesta del LLM hasta 30s. Si responde, la usamos; si
+        // falla o tarda más, aiResponse queda null y cae al fallback de abajo
+        // ("Perdona, ¿me lo repites?"). Sin mensajes de espera intermedios.
         let aiResponse;
         const t0 = Date.now();
-        const WAIT_MSG_DELAY = 8000;
-        let sentWaitingMessage = false;
+        const LLM_TIMEOUT_MS = 30000;
 
         const llmPromise = getChatbotResponse(orgId, session.history.slice(-10), partialDataWithCtx, intent, session.reservaConfirmada, session.summary)
             .catch(e => {
@@ -1224,25 +1226,15 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 return null;
             });
 
-        const WAITING = {};
-        const waitTimer = new Promise(resolve => setTimeout(() => resolve(WAITING), WAIT_MSG_DELAY));
-        const raceResult = await Promise.race([llmPromise, waitTimer]);
+        const TIMED_OUT = {};
+        const timeout = new Promise(resolve => setTimeout(() => resolve(TIMED_OUT), LLM_TIMEOUT_MS));
+        const result = await Promise.race([llmPromise, timeout]);
 
-        if (raceResult !== WAITING) {
-            aiResponse = raceResult;
-            if (aiResponse) logger.info('llm_response', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
+        if (result === TIMED_OUT) {
+            logger.error('llm_timeout', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
         } else {
-            const waitMsgs = { en: 'One moment, please 😊', ru: 'Минутку, пожалуйста 😊', uk: 'Хвилинку, будь ласка 😊' };
-            const waitMsg = (session.language && waitMsgs[session.language]) || 'Un momento, por favor 😊';
-            await sendWithDelay(client, userPhone, waitMsg, orgId);
-            sentWaitingMessage = true;
-
-            aiResponse = await llmPromise;
-            if (aiResponse) {
-                logger.info('llm_response_after_wait', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
-            } else {
-                logger.error('llm_failed_after_wait', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
-            }
+            aiResponse = result;
+            if (aiResponse) logger.info('llm_response', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
         }
 
         if (!aiResponse?.respuesta) {
