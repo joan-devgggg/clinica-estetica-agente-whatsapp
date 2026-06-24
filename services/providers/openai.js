@@ -530,8 +530,9 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
         ...cleanHistory.map(m => ({ role: m.role, content: m.content })),
     ];
 
-    let response;
+    let parsed;
     for (let attempt = 0; attempt < 2; attempt++) {
+        let response;
         try {
             response = await openrouter.chat.completions.create({
                 model: 'anthropic/claude-haiku-3-5',
@@ -539,32 +540,40 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
                 temperature: aiConfig.temperature ?? 0.5,
                 max_tokens: aiConfig.max_tokens ?? 450,
             });
-            break;
         } catch (e) {
             if (attempt === 1) {
                 logger.error('claude_error_definitivo', { error: e.message });
                 return getFallbackResponse(orgId, clientLang);
             }
-            logger.warn('claude_reintentando');
+            logger.warn('claude_reintentando', { reason: 'api_error' });
+            continue;
         }
+
+        let raw = response?.choices?.[0]?.message?.content;
+        if (!raw || !raw.includes('{')) {
+            if (attempt === 1) return getFallbackResponse(orgId, clientLang);
+            logger.warn('claude_reintentando', { reason: 'no_json_in_response' });
+            continue;
+        }
+
+        const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (fenced) raw = fenced[1].trim();
+
+        try {
+            parsed = JSON.parse(raw);
+        } catch {
+            const jsonMatch = raw.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                try { parsed = JSON.parse(jsonMatch[0]); } catch {}
+            }
+        }
+
+        if (parsed?.respuesta) break;
+
+        if (attempt === 1) return getFallbackResponse(orgId, clientLang);
+        logger.warn('claude_reintentando', { reason: 'json_parse_failed' });
+        parsed = undefined;
     }
-
-    let raw = response?.choices?.[0]?.message?.content;
-    if (!raw || !raw.includes('{')) return getFallbackResponse(orgId, clientLang);
-
-    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fenced) raw = fenced[1].trim();
-
-    let parsed;
-    try {
-        parsed = JSON.parse(raw);
-    } catch {
-        const jsonMatch = raw.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) return getFallbackResponse(orgId, clientLang);
-        try { parsed = JSON.parse(jsonMatch[0]); } catch { return getFallbackResponse(orgId, clientLang); }
-    }
-
-    if (!parsed.respuesta) return getFallbackResponse(orgId, clientLang);
 
     const orgType = getOrgType(orgId);
     if (orgType === 'salon') {
