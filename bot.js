@@ -857,6 +857,27 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession.guestBooking       = !!ex.guestBooking;
                     newSession.guestName          = ex.guestName || null;
                     newSession.bookedSlots        = Array.isArray(ex.bookedSlots) ? ex.bookedSlots : [];
+
+                    const assistantTurns = newSession.history.filter(m => m.role === 'assistant').length;
+                    const extraIncoherente =
+                        (newSession.selectedService && assistantTurns === 0) ||
+                        (newSession.slotsProposed && assistantTurns < 2);
+                    if (extraIncoherente) {
+                        logger.info('extra_sqlite_incoherente_reset', {
+                            orgId, telefono: userPhone,
+                            selectedService: newSession.selectedService?.nombre || null,
+                            slotsProposed: newSession.slotsProposed,
+                            assistantTurns,
+                            historyLen: newSession.history.length,
+                        });
+                        newSession.selectedService    = null;
+                        newSession.selectedStylist    = null;
+                        newSession.availableSlots     = [];
+                        newSession.currentSlotIndex   = 0;
+                        newSession.slotsProposed      = false;
+                        newSession.upsellingAccepted  = [];
+                        newSession.upsellingSuggested = false;
+                    }
                 }
 
                 if (persisted.leadGuardado) {
