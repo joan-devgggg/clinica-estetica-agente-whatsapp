@@ -534,7 +534,6 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
                 messages,
                 temperature: aiConfig.temperature ?? 0.5,
                 max_tokens: aiConfig.max_tokens ?? 450,
-                response_format: { type: 'json_object' },
             });
             break;
         } catch (e) {
@@ -546,14 +545,19 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
         }
     }
 
-    const raw = response?.choices?.[0]?.message?.content;
+    let raw = response?.choices?.[0]?.message?.content;
     if (!raw || !raw.includes('{')) return getFallbackResponse(orgId, clientLang);
+
+    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fenced) raw = fenced[1].trim();
 
     let parsed;
     try {
         parsed = JSON.parse(raw);
     } catch {
-        return getFallbackResponse(orgId, clientLang);
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) return getFallbackResponse(orgId, clientLang);
+        try { parsed = JSON.parse(jsonMatch[0]); } catch { return getFallbackResponse(orgId, clientLang); }
     }
 
     if (!parsed.respuesta) return getFallbackResponse(orgId, clientLang);
