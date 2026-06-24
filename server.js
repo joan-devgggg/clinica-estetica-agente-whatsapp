@@ -17,7 +17,7 @@ const { startTelegramBot } = require('./services/telegram');
 const { getAllOrgs } = require('./services/org-registry');
 const logger = require('./lib/logger');
 
-const required = ['OPENAI_API_KEY'];
+const required = ['OPENROUTER_API_KEY'];
 for (const key of required) {
     if (!process.env[key]) {
         logger.error('env_faltante', { variable: key });

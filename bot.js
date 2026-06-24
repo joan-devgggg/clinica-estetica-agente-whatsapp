@@ -18,6 +18,28 @@ const { getOrgType } = require('./services/org-registry');
 const config = require('./config.json');
 const logger = require('./lib/logger');
 
+// ─── Detección de mensajes fallback que nunca debieron entrar en history ──────
+// Patrones conocidos de respuestas de error del LLM (pre-fix) que contaminaban
+// el contexto del LLM y causaban bucles de "Perdona". Se usan para limpiar
+// sesiones viejas al cargar de SQLite y para filtrar antes de enviar al LLM.
+const FALLBACK_PATTERNS = [
+    'perdona, no he podido procesar',
+    'se me ha ido la conexión',
+    'se me ha ido la conexion',
+    "sorry, i couldn't process",
+    "i couldn't process that",
+    'извини, не удалось обработать',
+    'вибач, не вдалося обробити',
+    'lo siento, ha ocurrido un error técnico',
+    'lo siento, ha ocurrido un error tecnico',
+    'lo siento, ha habido un error',
+];
+function isFallbackText(text) {
+    if (!text || typeof text !== 'string') return false;
+    const lower = text.toLowerCase();
+    return FALLBACK_PATTERNS.some(p => lower.includes(p));
+}
+
 // ─── Constantes ───────────────────────────────────────────────────────────────
 const userSessions = new Map();
 const messageBuffers = new Map(); // sKey → { texts, messageKeys, timer, state, ... }
@@ -804,7 +826,14 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 
             if (persisted) {
                 loadedFromSQLite = true;
-                newSession.history = persisted.history || [];
+                const rawHistory = persisted.history || [];
+                const cleanLen = rawHistory.length;
+                newSession.history = rawHistory.filter(m =>
+                    m.role !== 'assistant' || !isFallbackText(m.content)
+                );
+                if (newSession.history.length < cleanLen) {
+                    logger.info('history_fallbacks_limpiados', { orgId, telefono: userPhone, eliminados: cleanLen - newSession.history.length });
+                }
                 newSession.summary = persisted.summary || null;
                 newSession.botActivo = persisted.botActivo;
                 if (!persisted.botActivo) {
@@ -1261,7 +1290,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         const t0 = Date.now();
         const LLM_TIMEOUT_MS = 45000;
 
-        const llmPromise = getChatbotResponse(orgId, session.history.slice(-10), partialDataWithCtx, intent, session.reservaConfirmada, session.summary)
+        const llmHistory = session.history.slice(-10).filter(m =>
+            m.role !== 'assistant' || !isFallbackText(m.content)
+        );
+        const llmPromise = getChatbotResponse(orgId, llmHistory, partialDataWithCtx, intent, session.reservaConfirmada, session.summary)
             .catch(e => {
                 logger.error('llm_error', { orgId, telefono: userPhone, error: e.message, latencia_ms: Date.now() - t0 });
                 return null;
