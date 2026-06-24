@@ -689,7 +689,13 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
         }
 
         const allServices = [session.selectedService?.nombre, ...(session.upsellingAccepted || [])].filter(Boolean).join(' + ');
-        const totalDuration = (session.selectedService?.duracion || 60) + (session.upsellingAccepted || []).length * 30;
+        const agentCfgDur = await getAgentConfig(orgId);
+        const catalogDur = agentCfgDur?.services || [];
+        const upsellingDuration = (session.upsellingAccepted || []).reduce((sum, name) => {
+            const svc = catalogDur.find(s => normalizeText(s.nombre) === normalizeText(name));
+            return sum + (svc?.duracion || 30);
+        }, 0);
+        const totalDuration = (session.selectedService?.duracion || 60) + upsellingDuration;
 
         // Si la cita es para un acompañante, lo dejamos anotado en la cita (el contacto
         // sigue siendo el titular del WhatsApp, pero la cita es para otra persona).
@@ -1330,6 +1336,23 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // Upselling tracking
             if (aiResponse.datos?.upselling_aceptado?.length > 0) {
                 session.upsellingAccepted = [...new Set([...(session.upsellingAccepted || []), ...aiResponse.datos.upselling_aceptado])];
+
+                if (session.reservaConfirmada && session.appointmentId && session.selectedService) {
+                    const updServices = [session.selectedService.nombre, ...session.upsellingAccepted].filter(Boolean).join(' + ');
+                    const cfgUp = await getAgentConfig(orgId);
+                    const catUp = cfgUp?.services || [];
+                    const upDur = session.upsellingAccepted.reduce((sum, name) => {
+                        const svc = catUp.find(s => normalizeText(s.nombre) === normalizeText(name));
+                        return sum + (svc?.duracion || 30);
+                    }, 0);
+                    const totalDur = (session.selectedService.duracion || 60) + upDur;
+                    const startsAt = new Date(`${session.partialData.fecha_cita}T${session.partialData.hora_cita}:00`);
+                    const endsAt = new Date(startsAt.getTime() + totalDur * 60000);
+                    updateAppointment(orgId, session.appointmentId, {
+                        servicio: updServices,
+                        endsAt: endsAt.toISOString(),
+                    }).catch(e => logger.error('error_update_upselling', { orgId, error: e.message }));
+                }
             }
             if (session.selectedService && !session.upsellingSuggested) {
                 session.upsellingSuggested = true;

@@ -516,6 +516,7 @@ async function updateAppointment(orgId, appointmentId, campos) {
     if (campos.stylistId   !== undefined) updates.stylist_id   = campos.stylistId;
     if (campos.resenaEnviada !== undefined) updates.resena_enviada = campos.resenaEnviada;
     if (campos.recordatorioEnviado !== undefined) updates.recordatorio_enviado = campos.recordatorioEnviado;
+    if (campos.endsAt !== undefined) updates.ends_at = campos.endsAt;
     if (campos.fecha !== undefined && campos.hora !== undefined) {
         const startsAt = new Date(`${campos.fecha}T${campos.hora}:00`);
         const durationMs = (campos.duracionMin || 120) * 60 * 1000;

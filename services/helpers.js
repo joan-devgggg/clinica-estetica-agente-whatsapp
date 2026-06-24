@@ -256,8 +256,22 @@ function extractServiceFromText(text, servicesCatalog) {
 
         for (const { keywords, categoria } of keywordMap) {
             if (keywords.some(kw => t.includes(normalizeText(kw)))) {
-                bestMatch = servicesCatalog.find(s => normalizeText(s.categoria) === normalizeText(categoria));
-                if (bestMatch) break;
+                const catNorm = normalizeText(categoria);
+                const inCat = servicesCatalog.filter(s => normalizeText(s.categoria) === catNorm);
+                if (inCat.length) {
+                    let best = inCat[0];
+                    let bestScore = 0;
+                    for (const svc of inCat) {
+                        const nameWords = normalizeText(svc.nombre).split(/\s+/);
+                        const score = nameWords.filter(w => w.length > 2 && t.includes(w)).length;
+                        if (score > bestScore) {
+                            bestScore = score;
+                            best = svc;
+                        }
+                    }
+                    bestMatch = best;
+                    break;
+                }
             }
         }
     }
