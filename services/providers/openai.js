@@ -504,6 +504,7 @@ function getFallbackResponse(orgId, language) {
         : ((language && restMsgs[language]) || 'Se me ha ido la conexión un momento 😅 ¿me repites eso?');
     const base = {
         respuesta: fallbackText,
+        _isFallback: true,
         slot_rechazado: false,
         accion: null,
     };

@@ -1278,8 +1278,9 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             if (aiResponse) logger.info('llm_response', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
         }
 
-        if (!aiResponse?.respuesta) {
-            // ── Restaurar snapshot: el LLM no pudo responder, así que deshacemos
+        if (!aiResponse?.respuesta || aiResponse._isFallback) {
+            // ── Restaurar snapshot: el LLM no pudo responder (timeout, error API,
+            // o getFallbackResponse), así que deshacemos
             // todos los cambios de estado (servicio, estilista, slots, historial)
             // para que el siguiente mensaje arranque limpio sin estado corrupto.
             session.history.length        = _snapshot.historyLen;
@@ -1292,7 +1293,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             session.datePreferenceAsked   = _snapshot.datePreferenceAsked;
             session.upsellingSuggested    = _snapshot.upsellingSuggested;
             session.partialData           = _snapshot.partialData;
-            logger.info('snapshot_restaurado', { orgId, telefono: userPhone, motivo: result === TIMED_OUT ? 'timeout' : 'llm_null' });
+            const _motivo = result === TIMED_OUT ? 'timeout' : aiResponse?._isFallback ? 'llm_fallback' : 'llm_null';
+            logger.info('snapshot_restaurado', { orgId, telefono: userPhone, motivo: _motivo });
 
             // Fallback: si ya teníamos slots cargados ANTES del fallo, los proponemos
             // directamente (la detección de servicio fue en un turno anterior válido).
@@ -1584,6 +1586,21 @@ async function processMessageCore(client, message, userPhone, userText, messageK
     } catch (err) {
         logger.error('process_message_error', { orgId, telefono: userPhone, error: err.message, stack: err.stack?.split('\n').slice(0, 3).join(' | ') });
         incrementMetric('fallbacksUsed');
+        if (typeof _snapshot !== 'undefined') {
+            try {
+                session.history.length      = _snapshot.historyLen;
+                session.selectedService     = _snapshot.selectedService;
+                session.selectedStylist     = _snapshot.selectedStylist;
+                session.availableSlots      = _snapshot.availableSlots;
+                session.proposedSlots       = _snapshot.proposedSlots;
+                session.currentSlotIndex    = _snapshot.currentSlotIndex;
+                session.slotsProposed       = _snapshot.slotsProposed;
+                session.datePreferenceAsked = _snapshot.datePreferenceAsked;
+                session.upsellingSuggested  = _snapshot.upsellingSuggested;
+                session.partialData         = _snapshot.partialData;
+                logger.info('snapshot_restaurado_en_catch', { orgId, telefono: userPhone });
+            } catch {}
+        }
         try { await sendWithDelay(client, userPhone, config.conversation?.technicalErrorMessage || 'Lo siento, ha habido un error. Inténtalo de nuevo.', orgId); } catch {}
         try { persistSession(orgId, userPhone, session); } catch {}
     }
