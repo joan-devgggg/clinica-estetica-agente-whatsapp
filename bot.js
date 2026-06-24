@@ -1019,12 +1019,22 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // sin un turno de espera ni mensajes de "un momento".
         if (orgType === 'salon') {
             const agentCfgPre = await getAgentConfig(orgId);
+            const stylistsPre = await getStylistsByOrg(orgId);
             if (!session.selectedService) {
                 const matchedSvc = extractServiceFromText(sanitized, agentCfgPre?.services || []);
-                if (matchedSvc) session.selectedService = matchedSvc;
+                if (matchedSvc) {
+                    session.selectedService = matchedSvc;
+                    // Re-validate: stylist set in a prior turn may not have the skill
+                    // for the newly selected service (e.g. Larisa set before manicura).
+                    if (session.selectedStylist) {
+                        const styRec = stylistsPre.find(s => s.id === session.selectedStylist.id);
+                        if (styRec && !stylistCanDoService(styRec, matchedSvc)) {
+                            session.selectedStylist = null;
+                        }
+                    }
+                }
             }
             if (!session.selectedStylist) {
-                const stylistsPre = await getStylistsByOrg(orgId);
                 const matchedSty = extractStylistFromText(sanitized, stylistsPre);
                 if (matchedSty && stylistCanDoService(matchedSty, session.selectedService)) {
                     session.selectedStylist = { id: matchedSty.id, nombre: matchedSty.name };
@@ -1160,15 +1170,36 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // ─── LLM call ────────────────────────────────────────────────────
         let aiResponse;
         const t0 = Date.now();
-        try {
-            const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 30000));
-            aiResponse = await Promise.race([
-                getChatbotResponse(orgId, session.history.slice(-12), partialDataWithCtx, intent, session.reservaConfirmada, session.summary),
-                timeout
-            ]);
-            logger.info('llm_response', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
-        } catch (e) {
-            logger.error('llm_error', { orgId, telefono: userPhone, error: e.message, latencia_ms: Date.now() - t0 });
+        const WAIT_MSG_DELAY = 8000;
+        const HARD_TIMEOUT = 30000;
+        let sentWaitingMessage = false;
+
+        const llmPromise = getChatbotResponse(orgId, session.history.slice(-12), partialDataWithCtx, intent, session.reservaConfirmada, session.summary)
+            .catch(e => {
+                logger.error('llm_error', { orgId, telefono: userPhone, error: e.message, latencia_ms: Date.now() - t0 });
+                return null;
+            });
+
+        const WAITING = {};
+        const waitTimer = new Promise(resolve => setTimeout(() => resolve(WAITING), WAIT_MSG_DELAY));
+        const raceResult = await Promise.race([llmPromise, waitTimer]);
+
+        if (raceResult !== WAITING) {
+            aiResponse = raceResult;
+            if (aiResponse) logger.info('llm_response', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
+        } else {
+            const waitMsgs = { en: 'One moment, please 😊', ru: 'Минутку, пожалуйста 😊', uk: 'Хвилинку, будь ласка 😊' };
+            const waitMsg = (session.language && waitMsgs[session.language]) || 'Un momento, por favor 😊';
+            await sendWithDelay(client, userPhone, waitMsg, orgId);
+            sentWaitingMessage = true;
+
+            const hardTimer = new Promise(resolve => setTimeout(() => resolve(null), HARD_TIMEOUT - WAIT_MSG_DELAY));
+            aiResponse = await Promise.race([llmPromise, hardTimer]);
+            if (aiResponse) {
+                logger.info('llm_response_after_wait', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
+            } else {
+                logger.error('llm_timeout', { orgId, telefono: userPhone, latencia_ms: Date.now() - t0 });
+            }
         }
 
         if (!aiResponse?.respuesta) {
@@ -1189,8 +1220,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 aiResponse = { respuesta: fbText, reserva_confirmada: false, slot_rechazado: false, accion: null, datos: {} };
                 logger.info('llm_timeout_slots_fallback', { orgId, telefono: userPhone, numSlots: pendingSlots.length });
             } else if (orgType === 'salon') {
-                // BUG 6: mensaje NEUTRAL (no de error) y multiidioma cuando el LLM falla y
-                // aún no hay huecos que ofrecer. Evita el "se me ha ido la conexión".
+                if (sentWaitingMessage) {
+                    persistSession(orgId, userPhone, session);
+                    return;
+                }
                 const fbMsgs = {
                     en: 'One moment, please 😊',
                     ru: 'Минутку, пожалуйста 😊',
@@ -1231,14 +1264,21 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 }
             }
 
-            // Service selection from LLM
+            // Service selection from LLM — don't load slots here; let the next
+            // turn's pre-LLM logic check if we need to ask date preference first.
             if (aiResponse.datos?.servicio && !session.selectedService) {
                 const agentCfg = await getAgentConfig(orgId);
                 const servicesCatalog = agentCfg?.services || [];
                 const matched = extractServiceFromText(aiResponse.datos.servicio, servicesCatalog);
                 if (matched) {
                     session.selectedService = matched;
-                    await loadAvailableSlots(session);
+                    if (session.selectedStylist) {
+                        const stylistsPost = await getStylistsByOrg(orgId);
+                        const styRec = stylistsPost.find(s => s.id === session.selectedStylist.id);
+                        if (styRec && !stylistCanDoService(styRec, matched)) {
+                            session.selectedStylist = null;
+                        }
+                    }
                 }
             }
 
