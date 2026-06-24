@@ -5,9 +5,10 @@ const db = require('../db');
 const { getOrgType } = require('../org-registry');
 const logger = require('../../lib/logger');
 
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const openrouter = new OpenAI({
     baseURL: 'https://openrouter.ai/api/v1',
-    apiKey: process.env.OPENROUTER_API_KEY,
+    apiKey: OPENROUTER_API_KEY,
 });
 const aiConfig = config.ai || {};
 
@@ -512,7 +513,7 @@ function getFallbackResponse(orgId, language) {
 
 async function getChatbotResponse(orgId, history, partialData = {}, intent = 'general', reservaConfirmada = false, summary = null) {
     const clientLang = partialData?.__clientLanguage || null;
-    if (!process.env.OPENROUTER_API_KEY) return getFallbackResponse(orgId, clientLang);
+    if (!OPENROUTER_API_KEY || OPENROUTER_API_KEY === 'YOUR_KEY_HERE') return getFallbackResponse(orgId, clientLang);
 
     const agentCfg = await db.getAgentConfig(orgId).catch(() => null);
 
@@ -581,7 +582,7 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
 }
 
 async function summarizeHistory(messages, partialData = {}) {
-    if (!process.env.OPENROUTER_API_KEY || !messages?.length) return null;
+    if (!OPENROUTER_API_KEY || OPENROUTER_API_KEY === 'YOUR_KEY_HERE' || !messages?.length) return null;
     try {
         const conversation = messages
             .filter(m => m?.content)
