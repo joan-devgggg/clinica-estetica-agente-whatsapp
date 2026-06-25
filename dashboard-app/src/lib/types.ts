@@ -90,3 +90,12 @@ export interface ScheduleBlock {
   reason?: string;
   created_at?: string;
 }
+
+export interface BlockedDay {
+  id: string;
+  organization_id: string;
+  stylist_id: string | null;
+  fecha: string;
+  motivo: string;
+  created_at: string;
+}

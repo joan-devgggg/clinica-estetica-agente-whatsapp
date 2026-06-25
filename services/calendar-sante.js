@@ -62,6 +62,18 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     const fromStr = from.toISOString();
     const toStr = to.toISOString();
 
+    // Prefetch blocked days (whole-day closures per stylist or salon-wide)
+    const fromDateStr = from.toISOString().slice(0, 10);
+    const toDateStr = to.toISOString().slice(0, 10);
+    const allBlockedDays = await db.getBlockedDays(orgId, { from: fromDateStr, to: toDateStr });
+    const salonBlockedDates = new Set(allBlockedDays.filter(b => !b.stylist_id).map(b => b.fecha));
+    const stylistBlockedDates = new Map();
+    for (const b of allBlockedDays) {
+        if (!b.stylist_id) continue;
+        if (!stylistBlockedDates.has(b.stylist_id)) stylistBlockedDates.set(b.stylist_id, new Set());
+        stylistBlockedDates.get(b.stylist_id).add(b.fecha);
+    }
+
     // Prefetch del horario/bloqueos/citas de cada estilista UNA sola vez. Así podemos
     // recorrer los días dos veces (con el filtro de día pedido y, si no hay nada, sin él)
     // sin volver a pegarle a la base de datos.
@@ -93,6 +105,10 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
                 if (!daySchedule) continue; // la estilista NO trabaja este día → sin huecos
 
                 const dateStr = toLocalDateStr(date);
+
+                // Skip entire day if blocked (salon-wide or stylist-specific)
+                if (salonBlockedDates.has(dateStr)) continue;
+                if (stylistBlockedDates.get(stylist.id)?.has(dateStr)) continue;
                 const diaNombre = DIAS_SEMANA[dayOfWeek];
 
                 // Filtro por fecha concreta ("el 24") o día de la semana ("el miércoles").

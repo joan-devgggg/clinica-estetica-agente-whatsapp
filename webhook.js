@@ -459,6 +459,34 @@ app.delete('/api/schedule-blocks/:id', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ─── API: Blocked Days ──────────────────────────────────────────────────────
+app.get('/api/blocked-days', async (req, res) => {
+    try {
+        const { from, to, stylistId } = req.query;
+        res.json(await db.getBlockedDays(extractOrgId(req), { from, to, stylistId }));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/blocked-days', async (req, res) => {
+    try {
+        const block = await db.createBlockedDay(extractOrgId(req), req.body);
+        res.status(201).json(block);
+    } catch (e) {
+        const msg = e.message || '';
+        if (msg.includes('duplicate') || msg.includes('unique')) {
+            return res.status(409).json({ error: 'Ese día ya está bloqueado' });
+        }
+        res.status(500).json({ error: msg });
+    }
+});
+
+app.delete('/api/blocked-days/:id', async (req, res) => {
+    try {
+        await db.deleteBlockedDay(extractOrgId(req), req.params.id);
+        res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ─── API: Reviews pending ────────────────────────────────────────────────────
 app.get('/api/reviews-pending', async (req, res) => {
     try {

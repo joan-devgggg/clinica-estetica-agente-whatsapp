@@ -889,6 +889,39 @@ async function deleteScheduleBlock(orgId, blockId) {
     return true;
 }
 
+// ─── Blocked days (full-day blocking per stylist or salon-wide) ──────────────
+
+async function getBlockedDays(orgId, { from, to, stylistId } = {}) {
+    const oid = resolveOrg(orgId);
+    let query = supabase.from('blocked_days').select('*').eq('organization_id', oid);
+    if (stylistId) query = query.or(`stylist_id.eq.${stylistId},stylist_id.is.null`);
+    if (from) query = query.gte('fecha', from);
+    if (to) query = query.lte('fecha', to);
+    const { data } = await query.order('fecha');
+    return data || [];
+}
+
+async function createBlockedDay(orgId, { fecha, stylistId, motivo }) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase.from('blocked_days')
+        .insert({
+            organization_id: oid,
+            fecha,
+            stylist_id: stylistId || null,
+            motivo: motivo || 'otro',
+        })
+        .select()
+        .single();
+    if (error) throw error;
+    return data;
+}
+
+async function deleteBlockedDay(orgId, blockId) {
+    const oid = resolveOrg(orgId);
+    await supabase.from('blocked_days').delete().eq('id', blockId).eq('organization_id', oid);
+    return true;
+}
+
 // ─── Appointments by stylist (for availability) ──────────────────────────────
 
 async function getAppointmentsByStylistAndRange(orgId, stylistId, from, to) {
@@ -1039,6 +1072,9 @@ module.exports = {
     getScheduleBlocks,
     createScheduleBlock,
     deleteScheduleBlock,
+    getBlockedDays,
+    createBlockedDay,
+    deleteBlockedDay,
     // Availability
     getAppointmentsByStylistAndRange,
     // Contact extensions
