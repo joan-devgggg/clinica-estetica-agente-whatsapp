@@ -298,6 +298,10 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
         if (guestBooking && guestName && !selectedService) return `Esta nueva cita es para ${guestName}. Pregunta qué servicio quiere ${guestName}.`;
         if (partialData.__clienteRecurrente && !selectedService) return 'Saluda con calidez y pregunta en qué puedes ayudarla.';
         if (!partialData.nombre && !partialData.__clienteRecurrente) return 'Saluda y pregunta cómo se llama.';
+        if (partialData.__askLargoFirst) {
+            const cat = partialData.__pendingLargoCategory || 'el servicio solicitado';
+            return `La clienta quiere ${cat}, que tiene variaciones según el largo del pelo. ANTES de confirmar precio o buscar huecos, pregúntale: "¿Cuánto largo tienes aproximadamente? Corto (hasta hombros), medio (hasta la espalda) o largo (hasta la cintura o más)" (en su idioma). Si dice que no sabe, respóndele: "No te preocupes, tu estilista te lo confirmará en el salón" y continúa con el flujo. NO menciones precios todavía (dependen del largo). NO propongas huecos.`;
+        }
         if (!selectedService) return 'Pregunta qué servicio necesita. Si no tiene claro, ofrécele las categorías principales.';
         if (partialData.__askStylistFirst) {
             const names = (partialData.__eligibleStylistNames || []).join(', ');

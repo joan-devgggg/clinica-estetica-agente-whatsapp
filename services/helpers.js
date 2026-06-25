@@ -229,17 +229,59 @@ function extractServiceFromText(text, servicesCatalog) {
     let bestMatch = null;
     let bestLen = 0;
 
+    // Pre-compute: services sharing the same normalized name (for disambiguation)
+    const nameGroups = {};
+    for (const svc of servicesCatalog) {
+        const key = normalizeText(svc.nombre);
+        if (!nameGroups[key]) nameGroups[key] = [];
+        nameGroups[key].push(svc);
+    }
+
+    // Pre-compute: how many services each category has
+    const catCounts = {};
+    for (const svc of servicesCatalog) {
+        const key = normalizeText(svc.categoria);
+        catCounts[key] = (catCounts[key] || 0) + 1;
+    }
+
+    // Pass 1a: exact service name match
     for (const svc of servicesCatalog) {
         const svcName = normalizeText(svc.nombre);
-        const svcCat = normalizeText(svc.categoria);
+        if (!t.includes(svcName) || svcName.length <= bestLen) continue;
 
-        if (t.includes(svcName) && svcName.length > bestLen) {
+        if (nameGroups[svcName].length === 1) {
             bestMatch = svc;
             bestLen = svcName.length;
+        } else {
+            // Shared name across categories (e.g. "Largo 1" in Alisado/Mechas/Deco) —
+            // pick the one whose category words also appear in the text.
+            let bestCatScore = 0;
+            let bestCatSvc = null;
+            for (const candidate of nameGroups[svcName]) {
+                const catWords = normalizeText(candidate.categoria).split(/\s+/);
+                const score = catWords.filter(w => w.length >= 4 && t.includes(w)).length;
+                if (score > bestCatScore) {
+                    bestCatScore = score;
+                    bestCatSvc = candidate;
+                }
+            }
+            if (bestCatScore > 0) {
+                bestMatch = bestCatSvc;
+                bestLen = svcName.length;
+            }
         }
-        if (t.includes(svcCat) && svcCat.length > bestLen) {
-            bestMatch = svc;
-            bestLen = svcCat.length;
+    }
+
+    // Pass 1b: category name match — ONLY for single-service categories.
+    // Multi-service categories (e.g. "Alisado vegano" with Largo 1/2/3) are ambiguous
+    // and must NOT pick the first service arbitrarily.
+    if (!bestMatch) {
+        for (const svc of servicesCatalog) {
+            const svcCat = normalizeText(svc.categoria);
+            if (t.includes(svcCat) && svcCat.length > bestLen && catCounts[svcCat] === 1) {
+                bestMatch = svc;
+                bestLen = svcCat.length;
+            }
         }
     }
 
@@ -274,6 +316,7 @@ function extractServiceFromText(text, servicesCatalog) {
                 // manicura". Solo cuentan palabras distintivas del nombre del servicio.
                 let best = null;
                 let bestScore = 0;
+                let tiedCount = 0;
                 for (const svc of inCat) {
                     const nameWords = normalizeText(svc.nombre).split(/\s+/);
                     const score = nameWords.filter(w =>
@@ -282,16 +325,22 @@ function extractServiceFromText(text, servicesCatalog) {
                     if (score > bestScore) {
                         bestScore = score;
                         best = svc;
+                        tiedCount = 1;
+                    } else if (score === bestScore && score > 0) {
+                        tiedCount++;
                     }
                 }
-                // BUG1: NO adivinar un servicio arbitrario para una categoría ambigua.
-                // Antes se devolvía inCat[0] (p.ej. "manicura" → "Higiénica mujer", el primero
-                // de la categoría) aunque la clienta no hubiera nombrado esa variante.
-                // - Si nombró una variante concreta (score>0) → esa.
-                // - Si la categoría tiene un único servicio → no hay ambigüedad → ese.
-                // - Si no (genérico como "manicura" con muchas variantes) → null, para que
-                //   el bot le pregunte qué variante quiere en vez de guardar una incorrecta.
-                if (bestScore > 0) { bestMatch = best; break; }
+                if (bestScore > 0 && tiedCount === 1) { bestMatch = best; break; }
+                if (bestScore > 0 && tiedCount > 1) {
+                    // Multiple variants scored equally (e.g. "color completo" matches
+                    // "Color completo largo 1/2/3" with same score). Try "largo N" number.
+                    const numMatch = t.match(/\blargo\s+(\d)\b/);
+                    if (numMatch) {
+                        const byNum = inCat.find(s => normalizeText(s.nombre).includes(`largo ${numMatch[1]}`));
+                        if (byNum) { bestMatch = byNum; break; }
+                    }
+                    break; // ambiguous — return null
+                }
                 if (inCat.length === 1) { bestMatch = inCat[0]; break; }
                 // categoría ambigua sin variante nombrada → seguimos sin match (null)
             }
@@ -589,6 +638,64 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
     return lines.join('\n');
 }
 
+// Detects if text mentions a service category with hair-length variants (Largo 1/2/3/4).
+// Returns the original category name or null.
+function detectLargoCategory(text, servicesCatalog) {
+    if (!text || !servicesCatalog?.length) return null;
+    const t = normalizeText(text);
+
+    const catMap = {};
+    for (const svc of servicesCatalog) {
+        const catNorm = normalizeText(svc.categoria);
+        if (!catMap[catNorm]) catMap[catNorm] = { name: svc.categoria, services: [] };
+        catMap[catNorm].services.push(svc);
+    }
+
+    const largoCats = Object.values(catMap).filter(({ services }) =>
+        services.filter(s => /\d+\s*$/.test(normalizeText(s.nombre))).length >= 2
+    );
+    if (!largoCats.length) return null;
+
+    for (const { name } of largoCats) {
+        if (t.includes(normalizeText(name))) return name;
+    }
+
+    const largoKeywords = [
+        { kw: ['alisado', 'alisar', 'straighten', 'keratin'], cat: 'alisado vegano' },
+        { kw: ['airtouch'], cat: 'mechas airtouch' },
+        { kw: ['clasica', 'clasicas'], cat: 'mechas clasicas' },
+        { kw: ['total blond', 'decoloracion', 'decolorar', 'deco'], cat: 'deco total blond' },
+        { kw: ['antifrizz', 'anti frizz', 'encrespamiento', 'anti-encrespamiento'], cat: 'anti-encrespamiento' },
+        { kw: ['color completo'], cat: 'color premium' },
+    ];
+
+    for (const { kw, cat: catKey } of largoKeywords) {
+        if (kw.some(k => t.includes(normalizeText(k)))) {
+            const match = largoCats.find(c => normalizeText(c.name) === catKey);
+            if (match) return match.name;
+        }
+    }
+
+    return null;
+}
+
+// Extracts hair length from user response.
+// Returns 1 (short/hombros), 2 (medium/espalda), 3 (long/cintura), 4 (very long), or null.
+function extractLargoPelo(text) {
+    if (!text) return null;
+    const t = normalizeText(text);
+    if (/\blargo\s+\d\b/.test(t)) return null;
+    if (/\b(muy largo|very long|mas de cintura|por debajo de la cintura)\b/.test(t)) return 4;
+    if (/(очень длинн|дуже довг)/.test(t)) return 4;
+    if (/\b(largo|long|cintura)\b/.test(t)) return 3;
+    if (/(до пояса|до талі|длинн|довг[іе])/.test(t)) return 3;
+    if (/\b(medio|medium|espalda|escapula|mid)\b/.test(t)) return 2;
+    if (/(до лопаток|средн|середн)/.test(t)) return 2;
+    if (/\b(corto|short|hombros)\b/.test(t)) return 1;
+    if (/(до плечей|коротк)/.test(t)) return 1;
+    return null;
+}
+
 module.exports = {
     normalizeText,
     detectLanguage,
@@ -612,4 +719,6 @@ module.exports = {
     extractGuestName,
     matchUpsellSuggestion,
     buildSanteConfirmationMessage,
+    detectLargoCategory,
+    extractLargoPelo,
 };

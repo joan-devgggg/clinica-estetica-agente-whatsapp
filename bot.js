@@ -8,7 +8,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, detectGuestBooking, extractGuestName, isValidName, detectLanguage, matchUpsellSuggestion, buildSanteConfirmationMessage } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, detectGuestBooking, extractGuestName, isValidName, detectLanguage, matchUpsellSuggestion, buildSanteConfirmationMessage, detectLargoCategory, extractLargoPelo } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary } = require('./services/memory');
@@ -161,6 +161,9 @@ function createEmptySession(userId, orgId) {
         preferredStylistId: null,
         ultimoServicio: null,
         ultimaEstilista: null,
+        // Hair-length variant flow
+        pendingLargoCategory: null,
+        largoPelo: null,
         // Segunda reserva en la misma conversación (para un acompañante)
         guestBooking: false,
         guestName: null,
@@ -284,6 +287,8 @@ function buildSessionExtra(session) {
         guestBooking:      !!session.guestBooking,
         guestName:         session.guestName || null,
         bookedSlots:       Array.isArray(session.bookedSlots) ? session.bookedSlots : [],
+        pendingLargoCategory: session.pendingLargoCategory || null,
+        largoPelo:         session.largoPelo || null,
     };
 }
 
@@ -596,6 +601,8 @@ function resetForSecondBooking(session, sanitized) {
     session.upsellingAccepted = [];
     session.upsellingSuggested = false;
     session.modoReagendamiento = false;
+    session.pendingLargoCategory = null;
+    session.largoPelo = null;
     session.leadStatus = 'in_progress';
     delete session.partialData.preferencia_horaria;
     delete session.partialData.fecha_cita;
@@ -861,6 +868,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession.guestBooking       = !!ex.guestBooking;
                     newSession.guestName          = ex.guestName || null;
                     newSession.bookedSlots        = Array.isArray(ex.bookedSlots) ? ex.bookedSlots : [];
+                    newSession.pendingLargoCategory = ex.pendingLargoCategory || null;
+                    newSession.largoPelo          = ex.largoPelo || null;
 
                     const assistantTurns = newSession.history.filter(m => m.role === 'assistant').length;
                     const extraIncoherente =
@@ -1067,6 +1076,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             slotsProposed:       session.slotsProposed,
             datePreferenceAsked: session.datePreferenceAsked,
             upsellingSuggested:  session.upsellingSuggested,
+            pendingLargoCategory: session.pendingLargoCategory,
+            largoPelo:           session.largoPelo,
             partialData:         JSON.parse(JSON.stringify(session.partialData)),
         };
 
@@ -1148,6 +1159,31 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         if (orgType === 'salon') {
             const agentCfgPre = await getAgentConfig(orgId);
             const stylistsPre = await getStylistsByOrg(orgId);
+            // ── Largo resolution: if we're waiting for hair length, try to extract it
+            if (session.pendingLargoCategory && !session.selectedService) {
+                const largo = extractLargoPelo(sanitized);
+                const noSabe = /\b(no se|no lo se|ni idea|no tengo idea|no estoy segur|i don.?t know|i.?m not sure|не знаю|не впевнен)\b/.test(normalizeText(sanitized));
+                if (largo != null || noSabe) {
+                    const catalog = agentCfgPre?.services || [];
+                    const catNorm = normalizeText(session.pendingLargoCategory);
+                    const candidates = catalog.filter(s =>
+                        normalizeText(s.categoria) === catNorm && /\d+\s*$/.test(normalizeText(s.nombre))
+                    ).sort((a, b) => {
+                        const na = parseInt(normalizeText(a.nombre).match(/(\d+)\s*$/)?.[1] || '0', 10);
+                        const nb = parseInt(normalizeText(b.nombre).match(/(\d+)\s*$/)?.[1] || '0', 10);
+                        return na - nb;
+                    });
+                    const idx = largo != null
+                        ? Math.min(largo - 1, candidates.length - 1)
+                        : Math.min(1, candidates.length - 1); // default to Largo 2 (medium)
+                    if (idx >= 0 && candidates[idx]) {
+                        session.selectedService = candidates[idx];
+                        session.largoPelo = largo;
+                        session.pendingLargoCategory = null;
+                    }
+                }
+            }
+
             if (!session.selectedService) {
                 const matchedSvc = extractServiceFromText(sanitized, agentCfgPre?.services || []);
                 if (matchedSvc) {
@@ -1160,6 +1196,9 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                             session.selectedStylist = null;
                         }
                     }
+                } else if (!session.pendingLargoCategory) {
+                    const largoCat = detectLargoCategory(sanitized, agentCfgPre?.services || []);
+                    if (largoCat) session.pendingLargoCategory = largoCat;
                 }
             }
             if (!session.selectedStylist) {
@@ -1283,6 +1322,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             partialDataWithCtx.__stylistAutoAssigned = !!session.selectedStylist;
             partialDataWithCtx.__askStylistFirst = !!session.askStylistFirst;
             partialDataWithCtx.__askDatePreferenceFirst = !!session.askDatePreferenceFirst;
+            partialDataWithCtx.__askLargoFirst = !!session.pendingLargoCategory && !session.selectedService;
+            partialDataWithCtx.__pendingLargoCategory = session.pendingLargoCategory || null;
             partialDataWithCtx.__eligibleStylistNames = session._eligibleStylistNames || [];
             partialDataWithCtx.__clientLanguage = session.language;
             if (session.preferredStylistId) {
@@ -1363,6 +1404,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             session.slotsProposed         = _snapshot.slotsProposed;
             session.datePreferenceAsked   = _snapshot.datePreferenceAsked;
             session.upsellingSuggested    = _snapshot.upsellingSuggested;
+            session.pendingLargoCategory  = _snapshot.pendingLargoCategory;
+            session.largoPelo             = _snapshot.largoPelo;
             session.partialData           = _snapshot.partialData;
             const _motivo = result === TIMED_OUT ? 'timeout' : aiResponse?._isFallback ? 'llm_fallback' : 'llm_null';
             logger.info('snapshot_restaurado', { orgId, telefono: userPhone, motivo: _motivo });
@@ -1671,6 +1714,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 _session.slotsProposed       = _snapshot.slotsProposed;
                 _session.datePreferenceAsked = _snapshot.datePreferenceAsked;
                 _session.upsellingSuggested  = _snapshot.upsellingSuggested;
+                _session.pendingLargoCategory = _snapshot.pendingLargoCategory;
+                _session.largoPelo           = _snapshot.largoPelo;
                 _session.partialData         = _snapshot.partialData;
                 logger.info('snapshot_restaurado_en_catch', { orgId, telefono: userPhone });
             } catch {}
