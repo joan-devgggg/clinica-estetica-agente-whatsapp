@@ -205,6 +205,9 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         // Hair-length variant flow
         pendingLargoCategory: null,
         largoPelo: null,
+        // Escalation confirmation (extensiones / permanente / salida de negro)
+        pendingEscalation: false,
+        pendingEscalationService: null,
         // Segunda reserva en la misma conversación (para un acompañante)
         guestBooking: false,
         guestName: null,
@@ -347,6 +350,8 @@ function buildSessionExtra(session) {
         pendingLargoCategory: session.pendingLargoCategory || null,
         largoPelo:         session.largoPelo || null,
         lastUpsellSuggestion: session._lastUpsellSuggestion || null,
+        pendingEscalation: !!session.pendingEscalation,
+        pendingEscalationService: session.pendingEscalationService || null,
     };
 }
 
@@ -942,6 +947,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession.pendingLargoCategory = ex.pendingLargoCategory || null;
                     newSession.largoPelo          = ex.largoPelo || null;
                     newSession._lastUpsellSuggestion = ex.lastUpsellSuggestion || null;
+                    newSession.pendingEscalation     = !!ex.pendingEscalation;
+                    newSession.pendingEscalationService = ex.pendingEscalationService || null;
 
                     const assistantTurns = newSession.history.filter(m => m.role === 'assistant').length;
                     const extraIncoherente =
@@ -1225,34 +1232,14 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             return;
         }
 
-        // ─── Salon: servicios bajo consulta → derivar a humano ──────────
-        if (orgType === 'salon' && !session.selectedService && !session.reservaConfirmada) {
-            const consulta = detectConsultaService(sanitized);
-            if (consulta) {
-                const CONSULTA_MSGS = {
-                    extensiones: {
-                        es: 'Las extensiones se presupuestan según el caso. Te pongo en contacto con el salón para que te asesoren personalmente 😊',
-                        en: 'Extensions are quoted on a case-by-case basis. Let me put you in touch with the salon for a personal consultation 😊',
-                        ru: 'Наращивание рассчитывается индивидуально. Связываю тебя с салоном для личной консультации 😊',
-                        uk: 'Нарощування розраховується індивідуально. Зв\'яжу тебе з салоном для особистої консультації 😊',
-                    },
-                    permanente: {
-                        es: 'La permanente se presupuesta según el caso. Te pongo en contacto con el salón para que te asesoren personalmente 😊',
-                        en: 'Perms are quoted on a case-by-case basis. Let me put you in touch with the salon for a personal consultation 😊',
-                        ru: 'Химическая завивка рассчитывается индивидуально. Связываю тебя с салоном для личной консультации 😊',
-                        uk: 'Хімічна завивка розраховується індивідуально. Зв\'яжу тебе з салоном для особистої консультації 😊',
-                    },
-                    salida_negro: {
-                        es: 'Es un proceso para eliminar el pigmento oscuro antes de aclarar o hacer mechas. El precio varía según el caso, te ponemos en contacto con el salón 😊',
-                        en: 'It\'s a process to remove dark pigment before lightening or adding highlights. The price varies by case, let me put you in touch with the salon 😊',
-                        ru: 'Это процесс удаления тёмного пигмента перед осветлением или мелированием. Цена зависит от случая, связываю тебя с салоном 😊',
-                        uk: 'Це процес видалення темного пігменту перед освітленням або мелюванням. Ціна залежить від випадку, зв\'яжу тебе з салоном 😊',
-                    },
-                };
-                const lang = session.language || 'es';
-                const msg = CONSULTA_MSGS[consulta.type]?.[lang] || CONSULTA_MSGS[consulta.type]?.es;
+        // ─── Salon: respuesta a confirmación de escalada pendiente ─────
+        if (orgType === 'salon' && session.pendingEscalation) {
+            const pendingType = session.pendingEscalationService;
+            if (isAffirmative(sanitized)) {
                 session.botActivo = false;
-                const consultaReason = `consulta_${consulta.type}`;
+                session.pendingEscalation = false;
+                session.pendingEscalationService = null;
+                const consultaReason = `consulta_${pendingType}`;
                 try {
                     await setLeadBotMode(orgId, session.partialData.telefono, 'manual');
                     await setEscalationReason(orgId, session.partialData.telefono, consultaReason);
@@ -1263,7 +1250,51 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         payload: { motivo: consultaReason, mensaje: sanitized },
                     });
                     notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono: session.partialData.telefono }, sanitized, consultaReason).catch(() => {});
-                } catch (e) { logger.error('error_consulta_escalar', { orgId, telefono: userPhone, type: consulta.type, error: e.message }); }
+                } catch (e) { logger.error('error_consulta_escalar', { orgId, telefono: userPhone, type: pendingType, error: e.message }); }
+                const CONFIRM_YES = {
+                    es: 'Perfecto 🙏 En breve una de nuestras especialistas se pondrá en contacto contigo.',
+                    en: 'Perfect 🙏 One of our specialists will contact you shortly.',
+                    ru: 'Отлично 🙏 Скоро одна из наших специалисток свяжется с тобой.',
+                    uk: 'Чудово 🙏 Незабаром одна з наших спеціалісток зв\'яжеться з тобою.',
+                };
+                const lang = session.language || 'es';
+                await _send(CONFIRM_YES[lang] || CONFIRM_YES.es);
+                persistSession(orgId, userPhone, session);
+                return;
+            }
+            session.pendingEscalation = false;
+            session.pendingEscalationService = null;
+            persistSession(orgId, userPhone, session);
+        }
+
+        // ─── Salon: servicios bajo consulta → preguntar antes de escalar ─
+        if (orgType === 'salon' && !session.selectedService && !session.reservaConfirmada) {
+            const consulta = detectConsultaService(sanitized);
+            if (consulta) {
+                const CONSULTA_ASK = {
+                    extensiones: {
+                        es: 'Las extensiones requieren una valoración personalizada 😊 ¿Quieres que te ponga en contacto con una de nuestras especialistas?',
+                        en: 'Extensions require a personalized assessment 😊 Would you like me to put you in touch with one of our specialists?',
+                        ru: 'Наращивание требует индивидуальной оценки 😊 Хочешь, чтобы я связала тебя с одной из наших специалисток?',
+                        uk: 'Нарощування потребує індивідуальної оцінки 😊 Хочеш, щоб я зв\'язала тебе з однією з наших спеціалісток?',
+                    },
+                    permanente: {
+                        es: 'La permanente requiere una valoración personalizada 😊 ¿Quieres que te ponga en contacto con una de nuestras especialistas?',
+                        en: 'Perms require a personalized assessment 😊 Would you like me to put you in touch with one of our specialists?',
+                        ru: 'Химическая завивка требует индивидуальной оценки 😊 Хочешь, чтобы я связала тебя с одной из наших специалисток?',
+                        uk: 'Хімічна завивка потребує індивідуальної оцінки 😊 Хочеш, щоб я зв\'язала тебе з однією з наших спеціалісток?',
+                    },
+                    salida_negro: {
+                        es: 'La salida de negro requiere una valoración personalizada 😊 ¿Quieres que te ponga en contacto con una de nuestras especialistas?',
+                        en: 'Black removal requires a personalized assessment 😊 Would you like me to put you in touch with one of our specialists?',
+                        ru: 'Выход из чёрного требует индивидуальной оценки 😊 Хочешь, чтобы я связала тебя с одной из наших специалисток?',
+                        uk: 'Вихід з чорного потребує індивідуальної оцінки 😊 Хочеш, щоб я зв\'язала тебе з однією з наших спеціалісток?',
+                    },
+                };
+                const lang = session.language || 'es';
+                const msg = CONSULTA_ASK[consulta.type]?.[lang] || CONSULTA_ASK[consulta.type]?.es;
+                session.pendingEscalation = true;
+                session.pendingEscalationService = consulta.type;
                 await _send(msg);
                 persistSession(orgId, userPhone, session);
                 return;
@@ -2055,6 +2086,11 @@ function setConversationBotMode(phone, active) {
         if (keyPhone === phone || keyPhone.includes(digits)
             || session.partialData?.telefono === digits) {
             session.botActivo = active;
+            if (active) {
+                session.pendingEscalation = false;
+                session.pendingEscalationService = null;
+            }
+            persistSession(session.orgId, session.partialData?.telefono || digits, session);
         }
     }
 }
