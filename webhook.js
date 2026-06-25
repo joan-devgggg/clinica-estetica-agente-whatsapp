@@ -375,18 +375,30 @@ app.post('/api/send', async (req, res) => {
         if (!telefono || !mensaje) return res.status(400).json({ error: 'telefono y mensaje requeridos' });
         const client = getWAClient(orgId);
         if (!client) return res.status(503).json({ error: 'WhatsApp no conectado — reconecta el bot e inténtalo de nuevo' });
-        const userPhone = `${telefono.replace(/\D/g, '')}@c.us`;
+        const digits = telefono.replace(/\D/g, '');
+        let userPhone = `${digits}@c.us`;
         try {
             await client.sendMessage(userPhone, mensaje);
         } catch (waErr) {
             const msg = String(waErr?.message || waErr || '');
-            if (msg.includes('LID') || msg.includes('not connected') || msg.includes('ECONNREFUSED') || msg.includes('Protocol error')) {
+            if (msg.includes('LID')) {
+                const { findOriginalJid } = require('./bot');
+                const lidJid = findOriginalJid(orgId, digits);
+                if (lidJid) {
+                    logger.info('wa_send_lid_retry', { orgId, telefono, lidJid });
+                    await client.sendMessage(lidJid, mensaje);
+                } else {
+                    logger.warn('wa_send_lid_no_session', { orgId, telefono });
+                    return res.status(503).json({ error: 'No se puede enviar: el contacto usa LID y no hay sesión activa' });
+                }
+            } else if (msg.includes('not connected') || msg.includes('ECONNREFUSED') || msg.includes('Protocol error')) {
                 logger.warn('wa_send_desconectado', { orgId, telefono, error: msg });
                 return res.status(503).json({ error: 'WhatsApp no conectado — reconecta el bot e inténtalo de nuevo' });
+            } else {
+                throw waErr;
             }
-            throw waErr;
         }
-        await db.saveMessage(orgId, { telefono: telefono.replace(/\D/g, ''), contenido: mensaje, direccion: 'saliente', esManual: true });
+        await db.saveMessage(orgId, { telefono: digits, contenido: mensaje, direccion: 'saliente', esManual: true });
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });

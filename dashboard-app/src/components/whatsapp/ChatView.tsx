@@ -16,6 +16,7 @@ interface ChatViewProps {
   onBotModeToggle: (leadId: number, mode: "auto" | "manual") => Promise<void>;
   onSendMessage: (telefono: string, mensaje: string) => Promise<void>;
   sendingMessage?: boolean;
+  globalBotPaused?: boolean;
 }
 
 export function ChatView({
@@ -24,6 +25,7 @@ export function ChatView({
   onBotModeToggle,
   onSendMessage,
   sendingMessage,
+  globalBotPaused,
 }: ChatViewProps) {
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -65,6 +67,7 @@ export function ChatView({
   }
 
   const isManual = conversation.bot_mode === "manual";
+  const showInput = isManual || !!globalBotPaused;
   const initials = getInitials(conversation.nombre, conversation.telefono);
 
   // Agrupar mensajes por fecha para separadores
@@ -169,24 +172,35 @@ export function ChatView({
 
       {/* Input area */}
       <div className="shrink-0 border-t border-border/60 bg-card px-4 py-3">
-        {isManual ? (
-          <div className="flex items-center gap-2">
-            <Input
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Escribe un mensaje manual..."
-              className="flex-1 h-9 text-[13px] bg-background border-border/50 placeholder:text-muted-foreground/50"
-              disabled={sendingMessage}
-            />
-            <Button
-              size="sm"
-              className="h-9 w-9 p-0 shrink-0"
-              onClick={handleSend}
-              disabled={!draft.trim() || sendingMessage}
-            >
-              <Send size={14} strokeWidth={1.75} />
-            </Button>
+        {showInput ? (
+          <div className="flex flex-col gap-2">
+            {globalBotPaused && !isManual && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                Bot pausado globalmente — escribe aquí para responder manualmente
+              </p>
+            )}
+            <div className="flex items-center gap-2">
+              <Input
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={
+                  globalBotPaused && !isManual
+                    ? "Bot pausado — escribe un mensaje..."
+                    : "Escribe un mensaje manual..."
+                }
+                className="flex-1 h-9 text-[13px] bg-background border-border/50 placeholder:text-muted-foreground/50"
+                disabled={sendingMessage}
+              />
+              <Button
+                size="sm"
+                className="h-9 w-9 p-0 shrink-0"
+                onClick={handleSend}
+                disabled={!draft.trim() || sendingMessage}
+              >
+                <Send size={14} strokeWidth={1.75} />
+              </Button>
+            </div>
           </div>
         ) : (
           <div className="flex items-center justify-between gap-3">

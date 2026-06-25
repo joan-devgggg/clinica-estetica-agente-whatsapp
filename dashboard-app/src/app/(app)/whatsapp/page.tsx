@@ -202,6 +202,7 @@ export default function WhatsAppPage() {
             onBotModeToggle={handleConvBotModeToggle}
             onSendMessage={handleSendMessage}
             sendingMessage={sendingMessage}
+            globalBotPaused={!botActivo}
           />
         </div>
       </div>

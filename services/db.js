@@ -13,7 +13,7 @@ function resolveOrg(orgId) { return orgId || DEFAULT_ORG; }
 
 function sanitizePhone(phone) {
     if (!phone || typeof phone !== 'string') return '';
-    return phone.replace(/["'\s]/g, '').trim();
+    return phone.replace(/["'\s]/g, '').replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '').trim();
 }
 
 function now() { return new Date().toISOString(); }

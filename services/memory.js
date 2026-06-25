@@ -123,7 +123,7 @@ console.log(`📂 Base de datos SQLite lista: ${clientCount()} clientes`);
 // orgId prefix in the key ensures the same phone talking to two orgs gets separate sessions.
 
 function makeKey(orgId, phone) {
-  const digits = phone.replace('@c.us', '').replace(/\D/g, '');
+  const digits = phone.replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '');
   return orgId ? `${orgId}:${digits}` : digits;
 }
 
@@ -133,7 +133,7 @@ function loadClient(orgId, phone) {
 
   // Fallback: try legacy key (no orgId prefix) for backward compat
   if (!row && orgId) {
-    const legacyKey = phone.replace('@c.us', '').replace(/\D/g, '');
+    const legacyKey = phone.replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '');
     row = stmtGet.get(legacyKey);
   }
 

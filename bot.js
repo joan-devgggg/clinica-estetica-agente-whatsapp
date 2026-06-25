@@ -116,9 +116,49 @@ class TTLMessageDedupe {
     }
 }
 
+// ─── LID resolution ─────────────────────────────────────────────────────────
+function isLidJid(jid) {
+    return typeof jid === 'string' && jid.endsWith('@lid');
+}
+
+function extractPhoneFromJid(jid) {
+    if (!jid) return '';
+    if (isLidJid(jid)) return '';
+    return jid.replace('@c.us', '').replace(/\D/g, '');
+}
+
+async function resolvePhoneFromMessage(message) {
+    const from = message.from;
+    if (!from) return { phone: '', jid: from, isLid: false };
+
+    if (!isLidJid(from)) {
+        return {
+            phone: from.replace('@c.us', '').replace(/\D/g, ''),
+            jid: from,
+            isLid: false,
+        };
+    }
+
+    try {
+        const contact = await message.getContact();
+        if (contact?.number) {
+            const phone = String(contact.number).replace(/\D/g, '');
+            if (phone) return { phone, jid: from, isLid: true };
+        }
+    } catch (e) {
+        logger.warn('lid_contact_resolve_failed', { from, error: e.message });
+    }
+
+    return {
+        phone: from.replace('@lid', '').replace(/\D/g, ''),
+        jid: from,
+        isLid: true,
+    };
+}
+
 // ─── Sesión ───────────────────────────────────────────────────────────────────
-function createEmptySession(userId, orgId) {
-    const telefono = userId.replace('@c.us', '').replace(/\D/g, '');
+function createEmptySession(userId, orgId, resolvedPhone) {
+    const telefono = resolvedPhone || userId.replace('@c.us', '').replace(/\D/g, '');
     const orgType = getOrgType(orgId);
     return {
         orgId,
@@ -129,6 +169,7 @@ function createEmptySession(userId, orgId) {
         lastMessageTime: 0,
         messageCount: 0,
         botActivo: true,
+        originalJid: userId,
         partialData: { telefono },
         seenMessages: new TTLMessageDedupe(DEDUPE_TTL_MS),
         reservaConfirmada: false,
@@ -199,7 +240,22 @@ function stripMarkdown(text) {
         .replace(/`(.+?)`/g, '$1');
 }
 
-async function sendWithDelay(client, phone, text, orgId) {
+function isUpsellingAcceptance(text) {
+    if (!text || typeof text !== 'string') return false;
+    const t = normalizeText(text).trim();
+    const patterns = [
+        /^s[ií]$/i, /^vale$/i, /^dale$/i, /^ok$/i, /^okey$/i, /^genial$/i, /^perfecto$/i,
+        /^bueno$/i, /^claro$/i, /^por supuesto$/i, /^venga$/i,
+        /a[nñ][aá]d(e|elo|emelo)/i, /me lo (a[nñ]ades|pones)/i, /me apunto/i,
+        /s[ií].*por favor/i, /s[ií].*a[nñ]ade/i,
+        /^yes$/i, /^yeah$/i, /^yep$/i, /^sure$/i, /^please$/i, /^go ahead$/i, /add it/i,
+        /^[дД][аА]$/i, /^[кК]онечно$/i, /[дД]обавь/i, /^[хХ]орошо$/i,
+        /^[тТ]ак$/i, /[дД]одай/i,
+    ];
+    return patterns.some(p => p.test(t));
+}
+
+async function sendWithDelay(client, phone, text, orgId, dbPhone) {
     if (!text?.trim()) return;
     const delay = Math.min(text.length * MESSAGE_DELAY_MS_PER_CHAR, MESSAGE_DELAY_MAX_MS);
     try {
@@ -209,7 +265,8 @@ async function sendWithDelay(client, phone, text, orgId) {
     } catch {
         await client.sendMessage(phone, text);
     }
-    saveMessage(orgId, { telefono: phone.replace('@c.us', '').replace(/\D/g, ''), contenido: text, direccion: 'saliente' }).catch(() => {});
+    const phoneForDb = dbPhone || extractPhoneFromJid(phone);
+    if (phoneForDb) saveMessage(orgId, { telefono: phoneForDb, contenido: text, direccion: 'saliente' }).catch(() => {});
 }
 
 async function sendDirectMessage(orgId, userPhone, text) {
@@ -289,6 +346,7 @@ function buildSessionExtra(session) {
         bookedSlots:       Array.isArray(session.bookedSlots) ? session.bookedSlots : [],
         pendingLargoCategory: session.pendingLargoCategory || null,
         largoPelo:         session.largoPelo || null,
+        lastUpsellSuggestion: session._lastUpsellSuggestion || null,
     };
 }
 
@@ -337,7 +395,7 @@ async function handleAppointmentAction(client, session, userPhone, accion, respu
         const msg = session.orgType === 'salon'
             ? (session.language && cancelMsgs[session.language]) || 'Tu cita ha sido cancelada ✅ Si quieres reservar otra, dímelo cuando quieras 😊'
             : 'Tu reserva ha sido cancelada ✅ Si quieres reservar otro día, dímelo cuando quieras 😊';
-        await sendWithDelay(client, userPhone, msg, orgId);
+        await sendWithDelay(client, userPhone, msg, orgId, session.partialData.telefono);
         return true;
     }
     if (accion === 'cambiar') {
@@ -359,7 +417,7 @@ async function handleAppointmentAction(client, session, userPhone, accion, respu
         const msg = session.orgType === 'salon'
             ? (session.language && rescheduleMsgs[session.language]) || '¿Qué día y hora te vendría mejor para la nueva cita?'
             : 'Sin problema 😊 ¿Qué día y para comida o cena te vendría mejor?';
-        await sendWithDelay(client, userPhone, msg, orgId);
+        await sendWithDelay(client, userPhone, msg, orgId, session.partialData.telefono);
         return true;
     }
     if (accion === 'escalar_humano') {
@@ -375,7 +433,7 @@ async function handleAppointmentAction(client, session, userPhone, accion, respu
             });
             notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono: session.partialData.telefono }, ultimoMensaje).catch(() => {});
         } catch (e) { logger.error('error_escalar', { telefono: userPhone, error: e.message }); }
-        if (respuesta) await sendWithDelay(client, userPhone, respuesta, orgId);
+        if (respuesta) await sendWithDelay(client, userPhone, respuesta, orgId, session.partialData.telefono);
         return true;
     }
     return false;
@@ -445,7 +503,7 @@ async function finalizarReservaConBizum(client, session, userPhone) {
 
     const respuesta = '¡Gracias! 🙏 En cuanto verifiquemos el Bizum te confirmamos la reserva por aquí.';
     session.history.push({ role: 'assistant', content: respuesta });
-    await sendWithDelay(client, userPhone, respuesta, orgId);
+    await sendWithDelay(client, userPhone, respuesta, orgId, session.partialData.telefono);
 }
 
 // ─── Selección del hueco elegido por la clienta (Sante) ─────────────────────
@@ -779,7 +837,15 @@ async function resolveBizumResult(pendingAction, confirmed) {
     const appointment = pendingAction.appointments;
     const telefono = contact?.wa_phone;
     if (!telefono) return;
-    const userPhone = `${telefono.replace(/\D/g, '')}@c.us`;
+    // Try to find the original JID from an active session (handles LID contacts)
+    let userPhone = null;
+    for (const [key, s] of userSessions.entries()) {
+        if (key.startsWith(orgId + ':') && s.partialData?.telefono === telefono.replace(/\D/g, '')) {
+            userPhone = s.originalJid || key.split(':')[1];
+            break;
+        }
+    }
+    if (!userPhone) userPhone = `${telefono.replace(/\D/g, '')}@c.us`;
 
     if (confirmed) {
         await updateLead(orgId, { leadId: contact.id, estado_cita: 'confirmado' });
@@ -820,8 +886,11 @@ async function resolveBizumResult(pendingAction, confirmed) {
 }
 
 // ─── Core ─────────────────────────────────────────────────────────────────────
-async function processMessageCore(client, message, userPhone, userText, messageKey, orgId) {
+async function processMessageCore(client, message, userPhone, userText, messageKey, orgId, dbPhone) {
     let _snapshot;
+    // Resolved phone for DB operations; falls back to JID extraction for @c.us
+    const _dbPhone = dbPhone || extractPhoneFromJid(userPhone);
+    const _send = (text) => sendWithDelay(client, userPhone, text, orgId, _dbPhone);
     logger.info('process_core_inicio', { orgId, telefono: userPhone, textoLength: userText?.length || 0 });
     try {
         if (!isBotActivo(orgId)) { logger.info('process_core_bot_inactivo', { orgId }); return; }
@@ -834,7 +903,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 
         if (!existingSession) {
             const persisted = loadClient(orgId, userPhone);
-            const newSession = createEmptySession(userPhone, orgId);
+            const newSession = createEmptySession(userPhone, orgId, dbPhone);
 
             if (persisted) {
                 loadedFromSQLite = true;
@@ -870,6 +939,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession.bookedSlots        = Array.isArray(ex.bookedSlots) ? ex.bookedSlots : [];
                     newSession.pendingLargoCategory = ex.pendingLargoCategory || null;
                     newSession.largoPelo          = ex.largoPelo || null;
+                    newSession._lastUpsellSuggestion = ex.lastUpsellSuggestion || null;
 
                     const assistantTurns = newSession.history.filter(m => m.role === 'assistant').length;
                     const extraIncoherente =
@@ -1008,7 +1078,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     });
                     notifyBlacklistAlert(orgId, { nombre: contact?.nombre || session.partialData.nombre, telefono: session.partialData.telefono, blacklist_reason: contact?.blacklist_reason }).catch(() => {});
                 } catch (e) { logger.error('error_blacklist_notify', { telefono: userPhone, error: e.message }); }
-                await sendWithDelay(client, userPhone, 'Gracias por tu mensaje 🙏 En breve te atenderá nuestro equipo.', orgId);
+                await _send('Gracias por tu mensaje 🙏 En breve te atenderá nuestro equipo.');
                 persistSession(orgId, userPhone, session);
             }
             return;
@@ -1017,12 +1087,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         const textLower = userText.toLowerCase().trim();
         if (textLower === 'stop') {
             session.botActivo = false;
-            await sendWithDelay(client, userPhone, config.conversation?.deactivatedMessage || 'Asistente desactivado.', orgId);
+            await _send(config.conversation?.deactivatedMessage || 'Asistente desactivado.');
             return;
         }
         if (textLower === 'start') {
             session.botActivo = true;
-            await sendWithDelay(client, userPhone, config.conversation?.reactivatedMessage || 'Asistente activado.', orgId);
+            await _send(config.conversation?.reactivatedMessage || 'Asistente activado.');
             return;
         }
         if (!session.botActivo) { logger.info('process_core_sesion_bot_inactivo', { orgId, telefono: userPhone }); return; }
@@ -1052,7 +1122,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 } else {
                     limitMsg = config.conversation?.limitMessage || 'Hemos llegado al límite de mensajes.';
                 }
-                await sendWithDelay(client, userPhone, limitMsg, orgId);
+                await _send(limitMsg);
                 session.botActivo = false;
             }
             return;
@@ -1449,7 +1519,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             }
 
             // Enviar fallback SIN guardarlo en history ni procesar más lógica
-            await sendWithDelay(client, userPhone, aiResponse.respuesta, orgId);
+            await _send(aiResponse.respuesta);
             incrementMetric('fallbacksUsed');
             persistSession(orgId, userPhone, session);
             return;
@@ -1507,6 +1577,18 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 if (matched && stylistCanDoService(matched, session.selectedService)) session.selectedStylist = { id: matched.id, nombre: matched.name };
             }
 
+            // Deterministic upselling acceptance: if the bot suggested an upselling
+            // and the client replied affirmatively but the LLM didn't set the field
+            if (session._lastUpsellSuggestion
+                && session.upsellingSuggested
+                && !(session.upsellingAccepted || []).includes(session._lastUpsellSuggestion)
+                && (!aiResponse.datos?.upselling_aceptado?.length)
+                && isUpsellingAcceptance(sanitized)) {
+                aiResponse.datos = aiResponse.datos || {};
+                aiResponse.datos.upselling_aceptado = [session._lastUpsellSuggestion];
+                logger.info('upselling_detectado_deterministico', { orgId, telefono: userPhone, servicio: session._lastUpsellSuggestion });
+            }
+
             // Upselling tracking
             if (aiResponse.datos?.upselling_aceptado?.length > 0) {
                 session.upsellingAccepted = [...new Set([...(session.upsellingAccepted || []), ...aiResponse.datos.upselling_aceptado])];
@@ -1528,9 +1610,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     }).catch(e => logger.error('error_update_upselling', { orgId, error: e.message }));
                 }
             }
-            if (session.selectedService && !session.upsellingSuggested) {
-                session.upsellingSuggested = true;
-            }
+            // upsellingSuggested se setea en la transición de confirmación (más abajo),
+            // NO aquí al seleccionar servicio — hacerlo aquí mataba el proximoPaso del LLM.
 
             // Appointment confirmation (Sante: no Bizum). No dependemos solo del flag del
             // LLM: resolveSalonConfirmation también reserva si la clienta acepta un hueco
@@ -1611,7 +1692,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     language: session.language,
                     upsellSuggestion: upsellSug,
                 });
-                if (upsellSug) session.upsellingSuggested = true;
+                session.upsellingSuggested = true;
+                if (upsellSug) session._lastUpsellSuggestion = upsellSug;
             }
         }
 
@@ -1673,10 +1755,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             const mid = aiResponse.respuesta.lastIndexOf(' ', Math.floor(aiResponse.respuesta.length / 2));
             const p1 = aiResponse.respuesta.substring(0, mid).trim();
             const p2 = aiResponse.respuesta.substring(mid).trim();
-            if (p1) await sendWithDelay(client, userPhone, p1, orgId);
-            if (p2) { await new Promise(r => setTimeout(r, 80)); await sendWithDelay(client, userPhone, p2, orgId); }
+            if (p1) await _send(p1);
+            if (p2) { await new Promise(r => setTimeout(r, 80)); await _send(p2); }
         } else {
-            await sendWithDelay(client, userPhone, aiResponse.respuesta, orgId);
+            await _send(aiResponse.respuesta);
         }
 
         // Marca que ya hemos propuesto huecos a la clienta: a partir de aquí un "sí/vale"
@@ -1720,7 +1802,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 logger.info('snapshot_restaurado_en_catch', { orgId, telefono: userPhone });
             } catch {}
         }
-        try { await sendWithDelay(client, userPhone, config.conversation?.technicalErrorMessage || 'Lo siento, ha habido un error. Inténtalo de nuevo.', orgId); } catch {}
+        try { await _send(config.conversation?.technicalErrorMessage || 'Lo siento, ha habido un error. Inténtalo de nuevo.'); } catch {}
         try { if (_session) persistSession(orgId, userPhone, _session); } catch {}
     }
 }
@@ -1734,7 +1816,7 @@ async function flushBuffer(sKey) {
     if (buffer.timer) { clearTimeout(buffer.timer); buffer.timer = null; }
 
     const combinedText = buffer.texts.join('\n');
-    const { client, message, userPhone, orgId } = buffer;
+    const { client, message, userPhone, orgId, dbPhone } = buffer;
     const msgCount = buffer.texts.length;
 
     buffer.texts = [];
@@ -1743,7 +1825,7 @@ async function flushBuffer(sKey) {
     logger.info('buffer_flush', { orgId, telefono: userPhone, mensajesCombinados: msgCount, textoLength: combinedText.length, textoCombinado: combinedText.slice(0, 200) });
 
     try {
-        await processMessageCore(client, message, userPhone, combinedText, null, orgId);
+        await processMessageCore(client, message, userPhone, combinedText, null, orgId, dbPhone);
     } catch (e) {
         logger.error('error_buffer_process', { orgId, telefono: userPhone, error: e.message });
     }
@@ -1777,6 +1859,13 @@ async function handleIncomingMessage(client, message, orgId) {
         const userPhone = message.from;
         const sKey = sessionKey(orgId, userPhone);
 
+        // Resolve real phone number (handles @lid JIDs)
+        const resolved = await resolvePhoneFromMessage(message);
+        const dbPhone = resolved.phone;
+        if (resolved.isLid) {
+            logger.info('lid_jid_detectado', { orgId, jid: userPhone, resolvedPhone: dbPhone });
+        }
+
         if (messageKey) {
             const s = userSessions.get(sKey);
             if (s?.seenMessages?.has(messageKey)) {
@@ -1800,26 +1889,26 @@ async function handleIncomingMessage(client, message, orgId) {
                 if (!userText) throw new Error('transcripción vacía');
             } catch (e) {
                 logger.error('error_transcripcion', { telefono: userPhone, error: e.message });
-                await sendWithDelay(client, userPhone, 'No pude escuchar el audio 😅 ¿Puedes escribirme lo que necesitas?', orgId);
+                await sendWithDelay(client, userPhone, 'No pude escuchar el audio 😅 ¿Puedes escribirme lo que necesitas?', orgId, dbPhone);
                 return;
             }
         }
 
         if (!userText) {
             if (message.hasMedia) {
-                await sendWithDelay(client, userPhone, 'Gracias por tu mensaje 😊 Solo proceso texto y audios. Si tienes alguna duda, escríbeme.', orgId);
+                await sendWithDelay(client, userPhone, 'Gracias por tu mensaje 😊 Solo proceso texto y audios. Si tienes alguna duda, escríbeme.', orgId, dbPhone);
             }
             return;
         }
 
-        saveMessage(orgId, { telefono: userPhone.replace('@c.us', '').replace(/\D/g, ''), contenido: userText, direccion: 'entrante' }).catch(() => {});
+        saveMessage(orgId, { telefono: dbPhone, contenido: userText, direccion: 'entrante' }).catch(() => {});
 
         let buffer = messageBuffers.get(sKey);
         if (!buffer) {
             buffer = {
                 texts: [], seenKeys: new Set(), timer: null, state: 'idle',
                 pendingTexts: null, pendingSeenKeys: null,
-                client, userPhone, orgId, message,
+                client, userPhone, orgId, message, dbPhone,
             };
             messageBuffers.set(sKey, buffer);
         }
@@ -1892,13 +1981,24 @@ setInterval(() => {
 }, 60000);
 
 function setConversationBotMode(phone, active) {
-    const userPhone = phone.includes('@c.us') ? phone : `${phone.replace(/\D/g, '')}@c.us`;
-    // Search across all orgs
+    const digits = phone.replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '');
     for (const [key, session] of userSessions.entries()) {
-        if (key.endsWith(userPhone) || key.endsWith(phone)) {
+        const keyPhone = key.includes(':') ? key.split(':')[1] : key;
+        if (keyPhone === phone || keyPhone.includes(digits)
+            || session.partialData?.telefono === digits) {
             session.botActivo = active;
         }
     }
+}
+
+function findOriginalJid(orgId, phoneDigits) {
+    const digits = phoneDigits.replace(/\D/g, '');
+    for (const [key, s] of userSessions.entries()) {
+        if (key.startsWith(orgId + ':') && s.partialData?.telefono === digits) {
+            return s.originalJid || null;
+        }
+    }
+    return null;
 }
 
 module.exports = {
@@ -1911,6 +2011,7 @@ module.exports = {
     setConversationBotMode,
     setWAClient,
     resolveBizumResult,
+    findOriginalJid,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
         // Solo para introspección en tests (no usar en producción):
