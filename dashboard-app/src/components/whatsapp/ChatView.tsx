@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { MessageCircle, Bot, UserCheck, Send } from "lucide-react";
+import { MessageCircle, Bot, UserCheck, Send, AlertTriangle } from "lucide-react";
 import { MessageBubble } from "./MessageBubble";
 import type { Conversation, Message } from "@/lib/whatsapp";
 import { getInitials, getDateLabel } from "@/lib/whatsapp";
@@ -67,8 +67,21 @@ export function ChatView({
   }
 
   const isManual = conversation.bot_mode === "manual";
+  const isEscalated = isManual && !!conversation.escalation_reason;
   const showInput = isManual || !!globalBotPaused;
   const initials = getInitials(conversation.nombre, conversation.telefono);
+
+  const ESCALATION_LABELS: Record<string, string> = {
+    escalado_bot: "Escalado por el bot",
+    lista_negra: "Cliente en lista negra",
+    consulta_extensiones: "Consulta sobre extensiones",
+    consulta_permanente: "Consulta sobre permanente",
+    consulta_salida_negro: "Consulta sobre salida de negro",
+    queja_cita: "Queja sobre cita anterior",
+    tono_agresivo: "Tono agresivo",
+    pedir_persona: "Pidió hablar con una persona",
+    pregunta_sin_respuesta: "Pregunta sin respuesta",
+  };
 
   // Agrupar mensajes por fecha para separadores
   const groupedMessages: Array<{ dateLabel: string; msgs: Message[] }> = [];
@@ -125,7 +138,7 @@ export function ChatView({
             {isManual ? (
               <>
                 <Bot size={12} strokeWidth={1.75} />
-                Devolver al bot
+                {isEscalated ? "Resolver y devolver al bot" : "Devolver al bot"}
               </>
             ) : (
               <>
@@ -136,6 +149,16 @@ export function ChatView({
           </Button>
         </div>
       </div>
+
+      {/* Escalation banner */}
+      {isEscalated && (
+        <div className="shrink-0 flex items-center gap-2 px-5 py-2 bg-[oklch(0.95_0.04_25)] border-b border-[oklch(0.85_0.06_25)]">
+          <AlertTriangle size={14} strokeWidth={2} className="text-[oklch(0.45_0.15_25)] shrink-0" />
+          <p className="text-[12px] text-[oklch(0.35_0.08_25)] font-medium flex-1">
+            ⚠️ Requiere atención — {ESCALATION_LABELS[conversation.escalation_reason || ""] || conversation.escalation_reason}
+          </p>
+        </div>
+      )}
 
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto px-5 py-4">

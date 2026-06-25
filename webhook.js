@@ -299,15 +299,26 @@ app.get('/api/pending-actions', async (req, res) => {
 app.post('/api/pending-actions/:id/resolver', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
-        const { accion } = req.body;
-        const pendientes = await db.getPendingActions(orgId, 'vip_suggestion');
+        const { accion, type } = req.body;
+        const pendingType = type || 'vip_suggestion';
+        const pendientes = await db.getPendingActions(orgId, pendingType);
         const pending = pendientes.find(p => String(p.id) === String(req.params.id));
         if (!pending) return res.status(404).json({ error: 'No encontrada' });
 
-        if (accion === 'aceptar' && pending.contact_id) {
-            await db.setVip(orgId, pending.contact_id, true);
+        if (pendingType === 'vip_suggestion') {
+            if (accion === 'aceptar' && pending.contact_id) {
+                await db.setVip(orgId, pending.contact_id, true);
+            }
+        } else if (pendingType === 'escalation' && accion === 'resolver' && pending.contact_id) {
+            const contact = await db.findById(orgId, pending.contact_id);
+            if (contact) {
+                await db.setLeadBotMode(orgId, contact.telefono, 'auto');
+                if (_setConvMode) _setConvMode(contact.telefono, true);
+            }
         }
-        await db.resolvePendingAction(orgId, pending.id, accion === 'aceptar' ? 'aceptado' : 'rechazado');
+
+        const resolution = accion === 'aceptar' || accion === 'resolver' ? 'resuelto' : 'rechazado';
+        await db.resolvePendingAction(orgId, pending.id, resolution);
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -364,6 +375,11 @@ app.put('/api/leads/:id/bot-mode', async (req, res) => {
         const mode = req.body.mode === 'manual' ? 'manual' : 'auto';
         await db.setLeadBotMode(orgId, lead.telefono, mode);
         if (_setConvMode) _setConvMode(lead.telefono, mode === 'auto');
+        if (mode === 'auto') {
+            const escalations = await db.getPendingActions(orgId, 'escalation');
+            const match = escalations.find(e => String(e.contact_id) === String(lead.id));
+            if (match) await db.resolvePendingAction(orgId, match.id, 'resuelto_panel');
+        }
         res.json({ ok: true, mode });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });

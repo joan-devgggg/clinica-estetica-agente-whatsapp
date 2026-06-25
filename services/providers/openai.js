@@ -178,6 +178,7 @@ Responde SIEMPRE con JSON puro y nada más. SIN backticks, SIN markdown, SIN tex
   "reserva_confirmada": false,
   "slot_rechazado": false,
   "accion": null,
+  "motivo_escalado": null,
   "datos": {
     "nombre": null, "telefono": null, "personas": null,
     "fecha_cita": null, "hora_cita": null, "ocasion": null,
@@ -488,6 +489,22 @@ ${resumenAnterior}
 4. Si llega solo con "hola", pregunta qué necesita.
 5. NUNCA uses asteriscos, guiones bajos ni formato markdown en "respuesta". Texto plano limpio.
 
+# ── ESCALADA A HUMANO (accion: "escalar_humano") ─────────────────────────
+
+Escala SIEMPRE y devuelve motivo_escalado en estos casos:
+1. La clienta pide hablar con una persona, con Yulia, con alguien del equipo o con la dueña → motivo_escalado: "pedir_persona"
+2. La clienta se queja de una cita anterior, un servicio mal hecho o un resultado insatisfactorio → motivo_escalado: "queja_cita"
+3. La clienta tiene un tono agresivo, enfadado, muy frustrado o amenazante → motivo_escalado: "tono_agresivo"
+4. La clienta pregunta algo sobre un tratamiento que NO puedes responder con la informacion de arriba → motivo_escalado: "pregunta_sin_respuesta"
+
+Cuando escales, tu "respuesta" debe ser calida, con emojis, y adaptada al motivo:
+- Queja: "Lamento mucho que no hayas quedado satisfecha con tu experiencia 😔 Nuestro equipo se pondra en contacto contigo personalmente para solucionarlo. Gracias por tu paciencia 🙏"
+- Pedir persona: "Por supuesto! 😊 Te paso con nuestro equipo. En breve se pondran en contacto contigo 🙏"
+- Tono agresivo: "Entiendo tu frustracion y quiero que te sientas escuchada 🙏 Voy a pasar tu mensaje a nuestro equipo para que te atiendan personalmente lo antes posible"
+- Pregunta sin respuesta: "Es una gran pregunta! 😊 Para darte la mejor respuesta, voy a consultarlo con nuestras especialistas y te contactan enseguida 🙏"
+
+NO escales para extensiones, permanente ni salida de negro (esas se gestionan automaticamente en codigo, no uses escalar_humano para ellas).
+
 # ── FORMATO DE SALIDA ──────────────────────────────────────────────────────
 
 Responde SIEMPRE con JSON puro y nada más. SIN backticks, SIN markdown, SIN texto antes o después del JSON. Tu respuesta COMPLETA debe ser SOLO este objeto JSON:
@@ -497,6 +514,7 @@ Responde SIEMPRE con JSON puro y nada más. SIN backticks, SIN markdown, SIN tex
   "cita_confirmada": false,
   "slot_rechazado": false,
   "accion": null,
+  "motivo_escalado": null,
   "idioma_detectado": "es",
   "datos": {
     "nombre": null,
@@ -513,6 +531,7 @@ Responde SIEMPRE con JSON puro y nada más. SIN backticks, SIN markdown, SIN tex
 PROHIBIDO envolver el JSON en \`\`\`json o \`\`\` — devuelve el objeto { } directamente.
 
 Valores posibles de accion: "cancelar" | "cambiar" | "escalar_humano" | null
+motivo_escalado: solo cuando accion es "escalar_humano" → "queja_cita" | "tono_agresivo" | "pedir_persona" | "pregunta_sin_respuesta" | null
 cita_confirmada: true → siempre que la clienta acepte un hueco O que tu mensaje afirme que la cita queda reservada/apuntada/confirmada. En ese caso datos.hora_cita DEBE llevar la hora exacta (HH:MM). NUNCA junto con slot_rechazado: true.`;
 }
 
@@ -670,6 +689,7 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
     }
     parsed.slot_rechazado = !!parsed.slot_rechazado;
     parsed.accion = parsed.accion || null;
+    parsed.motivo_escalado = parsed.motivo_escalado || null;
 
     if (parsed.respuesta.length > (aiConfig.responseMaxLength || 280)) {
         parsed.respuesta = parsed.respuesta.slice(0, aiConfig.responseMaxLength || 280);

@@ -2,7 +2,7 @@ require('dotenv').config();
 const { getChatbotResponse } = require('./services/ai');
 const {
     saveLead, updateLead, findByPhone, saveMessage, saveAppointment,
-    updateAppointment, setLeadBotMode, setBlacklist, createPendingAction,
+    updateAppointment, setLeadBotMode, setEscalationReason, setBlacklist, createPendingAction,
     getAgentConfig, updateContactLanguage, updateContactPreferredStylist,
     getStylistsByOrg, getAllStylistSchedules, getLastCompletedAppointment,
 } = require('./services/db');
@@ -376,7 +376,7 @@ function triggerAsyncSummary(orgId, userPhone, session) {
 }
 
 // ─── Acciones de reserva/cita ────────────────────────────────────────────────
-async function handleAppointmentAction(client, session, userPhone, accion, respuesta) {
+async function handleAppointmentAction(client, session, userPhone, accion, respuesta, motivoEscalado) {
     const orgId = session.orgId;
     if (accion === 'cancelar') {
         if (session.appointmentId) {
@@ -422,16 +422,18 @@ async function handleAppointmentAction(client, session, userPhone, accion, respu
     }
     if (accion === 'escalar_humano') {
         session.botActivo = false;
+        const reason = motivoEscalado || 'escalado_bot';
         try {
             await setLeadBotMode(orgId, session.partialData.telefono, 'manual');
+            await setEscalationReason(orgId, session.partialData.telefono, reason);
             const contact = await findByPhone(orgId, session.partialData.telefono);
             const ultimoMensaje = session.history[session.history.length - 1]?.content || '';
             await createPendingAction(orgId, {
                 type: 'escalation',
                 contactId: contact?.id || session.leadId,
-                payload: { motivo: 'escalado_bot', mensaje: ultimoMensaje },
+                payload: { motivo: reason, mensaje: ultimoMensaje },
             });
-            notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono: session.partialData.telefono }, ultimoMensaje).catch(() => {});
+            notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono: session.partialData.telefono }, ultimoMensaje, reason).catch(() => {});
         } catch (e) { logger.error('error_escalar', { telefono: userPhone, error: e.message }); }
         if (respuesta) await sendWithDelay(client, userPhone, respuesta, orgId, session.partialData.telefono);
         return true;
@@ -1070,6 +1072,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 session.botActivo = false;
                 try {
                     await setLeadBotMode(orgId, session.partialData.telefono, 'manual');
+                    await setEscalationReason(orgId, session.partialData.telefono, 'lista_negra');
                     const contact = await findByPhone(orgId, session.partialData.telefono);
                     await createPendingAction(orgId, {
                         type: 'escalation',
@@ -1249,15 +1252,17 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 const lang = session.language || 'es';
                 const msg = CONSULTA_MSGS[consulta.type]?.[lang] || CONSULTA_MSGS[consulta.type]?.es;
                 session.botActivo = false;
+                const consultaReason = `consulta_${consulta.type}`;
                 try {
                     await setLeadBotMode(orgId, session.partialData.telefono, 'manual');
+                    await setEscalationReason(orgId, session.partialData.telefono, consultaReason);
                     const contact = await findByPhone(orgId, session.partialData.telefono);
                     await createPendingAction(orgId, {
                         type: 'escalation',
                         contactId: contact?.id || session.leadId,
-                        payload: { motivo: `consulta_${consulta.type}`, mensaje: sanitized },
+                        payload: { motivo: consultaReason, mensaje: sanitized },
                     });
-                    notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono: session.partialData.telefono }, sanitized).catch(() => {});
+                    notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono: session.partialData.telefono }, sanitized, consultaReason).catch(() => {});
                 } catch (e) { logger.error('error_consulta_escalar', { orgId, telefono: userPhone, type: consulta.type, error: e.message }); }
                 await _send(msg);
                 persistSession(orgId, userPhone, session);
@@ -1592,7 +1597,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 
         // Handle actions (cancel, reschedule, escalate)
         if (aiResponse.accion && !(aiResponse.accion === 'cambiar' && session.modoReagendamiento)) {
-            const handled = await handleAppointmentAction(client, session, userPhone, aiResponse.accion, aiResponse.respuesta);
+            const handled = await handleAppointmentAction(client, session, userPhone, aiResponse.accion, aiResponse.respuesta, aiResponse.motivo_escalado);
             if (handled) {
                 if (aiResponse.accion !== 'escalar_humano') session.history.push({ role: 'assistant', content: aiResponse.respuesta });
                 persistSession(orgId, userPhone, session);

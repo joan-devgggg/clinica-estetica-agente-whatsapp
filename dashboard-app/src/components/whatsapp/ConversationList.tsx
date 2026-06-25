@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Search, UserCheck } from "lucide-react";
+import { Search, UserCheck, AlertTriangle } from "lucide-react";
 import type { Conversation } from "@/lib/whatsapp";
 import { getInitials, formatTimestamp } from "@/lib/whatsapp";
 import { cn } from "@/lib/utils";
@@ -70,6 +70,7 @@ export function ConversationList({ conversations, selectedId, onSelect }: Conver
 
         {filtered.map((conv) => {
           const isActive = conv.id === selectedId;
+          const isEscalated = conv.bot_mode === "manual" && !!conv.escalation_reason;
           const initials = getInitials(conv.nombre, conv.telefono);
 
           return (
@@ -79,16 +80,20 @@ export function ConversationList({ conversations, selectedId, onSelect }: Conver
               className={cn(
                 "w-full text-left px-4 py-3.5 flex items-start gap-3 transition-all duration-150",
                 "border-b border-border/30 hover:bg-card/70",
-                isActive && "bg-secondary/80 border-l-[3px] border-l-primary pl-[13px]"
+                isEscalated && !isActive && "bg-[oklch(0.97_0.02_25)] border-l-[3px] border-l-[oklch(0.45_0.15_25)] pl-[13px]",
+                isEscalated && isActive && "bg-[oklch(0.95_0.03_25)] border-l-[3px] border-l-[oklch(0.45_0.15_25)] pl-[13px]",
+                !isEscalated && isActive && "bg-secondary/80 border-l-[3px] border-l-primary pl-[13px]"
               )}
             >
               {/* Avatar */}
               <div
                 className={cn(
                   "shrink-0 h-9 w-9 rounded-full flex items-center justify-center text-[12px] font-semibold",
-                  isActive
-                    ? "bg-primary/15 text-primary"
-                    : "bg-muted-foreground/12 text-muted-foreground"
+                  isEscalated
+                    ? "bg-destructive/15 text-destructive"
+                    : isActive
+                      ? "bg-primary/15 text-primary"
+                      : "bg-muted-foreground/12 text-muted-foreground"
                 )}
               >
                 {initials}
@@ -117,12 +122,20 @@ export function ConversationList({ conversations, selectedId, onSelect }: Conver
                   >
                     {ESTADO_LABELS[conv.estado_cita] ?? conv.estado_cita}
                   </Badge>
-                  {conv.bot_mode === "manual" && (
+                  {isEscalated ? (
+                    <Badge
+                      variant="destructive"
+                      className="text-[10px] px-1.5 py-0 h-4 font-medium gap-0.5"
+                    >
+                      <AlertTriangle size={9} strokeWidth={2.5} />
+                      Requiere atención
+                    </Badge>
+                  ) : conv.bot_mode === "manual" ? (
                     <span className="flex items-center gap-0.5 text-[10px] font-medium text-primary">
                       <UserCheck size={10} strokeWidth={2} />
                       manual
                     </span>
-                  )}
+                  ) : null}
                 </div>
               </div>
             </button>

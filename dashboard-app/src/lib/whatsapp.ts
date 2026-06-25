@@ -13,6 +13,7 @@ export interface Conversation {
   bot_mode: BotMode;
   is_vip?: boolean;
   is_blacklisted?: boolean;
+  escalation_reason?: string | null;
   updated_at: string;
   created_at: string;
 }
@@ -36,7 +37,12 @@ export async function getConversations(orgId: string): Promise<Conversation[]> {
     const data: Conversation[] = await res.json();
     return data
       .filter((l) => ACTIVE_ESTADOS.includes(l.estado_cita))
-      .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+      .sort((a, b) => {
+        const aEsc = a.bot_mode === "manual" && !!a.escalation_reason ? 1 : 0;
+        const bEsc = b.bot_mode === "manual" && !!b.escalation_reason ? 1 : 0;
+        if (aEsc !== bEsc) return bEsc - aEsc;
+        return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+      });
   } catch {
     return [];
   }

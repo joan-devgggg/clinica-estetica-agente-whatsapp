@@ -92,12 +92,28 @@ async function notifyBizumPending(orgId, reserva) {
     notifyOrgAdmin(orgId, msg);
 }
 
-async function notifyEscalation(orgId, contacto, mensaje) {
-    const msg = `🆘 *Cliente necesita atención*\n\n` +
-        `👤 ${contacto?.nombre || 'Cliente'}\n` +
-        `📞 ${contacto?.telefono || 'Sin teléfono'}\n\n` +
-        `💬 "${mensaje}"\n\n` +
-        `El bot se ha puesto en modo manual para esta conversación. Responde al cliente desde el panel o por WhatsApp.`;
+const ESCALATION_LABELS = {
+    escalado_bot: 'Escalado por el bot',
+    lista_negra: 'Cliente en lista negra',
+    consulta_extensiones: 'Consulta: extensiones de cabello',
+    consulta_permanente: 'Consulta: permanente',
+    consulta_salida_negro: 'Consulta: salida de negro / arrastre de color',
+    queja_cita: 'Queja sobre cita anterior',
+    tono_agresivo: 'Tono agresivo o frustrado',
+    pedir_persona: 'Pide hablar con una persona',
+    pregunta_sin_respuesta: 'Pregunta que el bot no puede responder',
+};
+
+async function notifyEscalation(orgId, contacto, mensaje, reason) {
+    const motivoLabel = ESCALATION_LABELS[reason] || reason || 'Requiere atención humana';
+    const hora = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' });
+    const msg = `⚠️ *ATENCIÓN REQUERIDA — Santé*\n\n` +
+        `👤 Cliente: ${contacto?.nombre || 'Sin nombre'}\n` +
+        `📱 Teléfono: ${contacto?.telefono || 'Sin teléfono'}\n` +
+        `💬 Motivo: ${motivoLabel}\n` +
+        `🕐 Hora: ${hora}\n\n` +
+        (mensaje ? `📝 Último mensaje: "${mensaje.slice(0, 200)}"\n\n` : '') +
+        `👉 Entra al panel para responderle`;
     notifyOrgAdmin(orgId, msg);
 }
 

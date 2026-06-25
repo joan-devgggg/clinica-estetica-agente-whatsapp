@@ -37,6 +37,7 @@ function rowToPublic(row) {
         is_blacklisted:        !!row.is_blacklisted,
         blacklist_reason:      row.blacklist_reason,
         is_vip:                !!row.is_vip,
+        escalation_reason:     row.escalation_reason || null,
         visit_count:           row.visit_count || 0,
         allergies:             row.allergies,
         preferences:           row.preferences,
@@ -387,12 +388,24 @@ async function getMessages(orgId, telefono, { limit = 100 } = {}) {
 async function setLeadBotMode(orgId, telefono, mode) {
     const oid = resolveOrg(orgId);
     const phone = sanitizePhone(telefono);
+    const update = { bot_mode: mode, updated_at: now() };
+    if (mode === 'auto') update.escalation_reason = null;
     await supabase
         .from('contacts')
-        .update({ bot_mode: mode, updated_at: now() })
+        .update(update)
         .eq('organization_id', oid)
         .eq('wa_phone', phone);
     return true;
+}
+
+async function setEscalationReason(orgId, telefono, reason) {
+    const oid = resolveOrg(orgId);
+    const phone = sanitizePhone(telefono);
+    await supabase
+        .from('contacts')
+        .update({ escalation_reason: reason, updated_at: now() })
+        .eq('organization_id', oid)
+        .eq('wa_phone', phone);
 }
 
 // ─── Agent Config ─────────────────────────────────────────────────────────────
@@ -1043,6 +1056,7 @@ module.exports = {
     saveMessage,
     getMessages,
     setLeadBotMode,
+    setEscalationReason,
     saveAppointment,
     updateAppointment,
     getAppointmentsByLead,
