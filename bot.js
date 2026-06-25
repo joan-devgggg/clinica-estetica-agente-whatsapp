@@ -457,10 +457,11 @@ function normalizeHora(h) {
 // (session.proposedSlots = lo numerado que vio el LLM). Nunca adivina con slots[0]:
 // si la selección es ambigua devuelve null y el bot vuelve a preguntar, en vez de
 // guardar el hueco más temprano (que causaba BUG 2 estilista y BUG 3 fecha/hora).
-function pickChosenSlot(session, datos) {
-    const slots = (session.proposedSlots && session.proposedSlots.length)
-        ? session.proposedSlots
-        : (session.availableSlots || []);
+function pickChosenSlot(session, datos, overrideSlots) {
+    const slots = overrideSlots
+        || ((session.proposedSlots && session.proposedSlots.length)
+            ? session.proposedSlots
+            : (session.availableSlots || []));
     if (!slots.length) return null;
 
     const horaSel = normalizeHora(datos?.hora_cita);
@@ -619,20 +620,22 @@ function resetForSecondBooking(session, sanitized) {
 // afirmativamente DESPUÉS de que ya le hayamos propuesto huecos, o (4) el propio texto del
 // LLM afirma que la cita queda reservada. Guardas: tiene que haber servicio y huecos
 // cargados, para no reservar prematuramente.
-function resolveSalonConfirmation(session, aiResponse, sanitized) {
+function resolveSalonConfirmation(session, aiResponse, sanitized, frozenProposed) {
     if (session.reservaConfirmada) return null;
     if (!session.selectedService) return null;
     if (!(session.availableSlots || []).length) return null;
 
-    // Trabajamos SIEMPRE contra la lista exacta de huecos propuestos (lo que vio el LLM
-    // numerado), no contra availableSlots: así un ordinal ("el 2") o un "sí" se resuelven
-    // al hueco que realmente se mostró, con su estilista y fecha correctas.
-    const proposed = (session.proposedSlots && session.proposedSlots.length)
+    // Usamos los huecos que la clienta VIO (frozenProposed, capturados antes de cualquier
+    // recarga de huecos en este turno), no los que puedan haberse recargado si
+    // extractQuickDataSante cambió preferencia_horaria desde el texto de confirmación.
+    const proposed = (frozenProposed && frozenProposed.length)
+        ? frozenProposed
+        : (session.proposedSlots && session.proposedSlots.length)
         ? session.proposedSlots
         : (session.availableSlots || []);
 
     if (aiResponse.reserva_confirmada) {
-        const slot = pickChosenSlot(session, aiResponse.datos);
+        const slot = pickChosenSlot(session, aiResponse.datos, proposed);
         if (slot) return { slot, motivo: 'llm_flag' };
     }
 
@@ -640,7 +643,7 @@ function resolveSalonConfirmation(session, aiResponse, sanitized) {
     // más temprano por error). pickChosenSlot ya aplica esta regla de no-ambigüedad.
     const horaSel = normalizeHora(aiResponse.datos?.hora_cita);
     if (horaSel) {
-        const slot = pickChosenSlot(session, aiResponse.datos);
+        const slot = pickChosenSlot(session, aiResponse.datos, proposed);
         if (slot) return { slot, motivo: 'match_hora' };
     }
 
@@ -653,7 +656,7 @@ function resolveSalonConfirmation(session, aiResponse, sanitized) {
     }
 
     if (session.slotsProposed && isAffirmative(sanitized)) {
-        const slot = pickChosenSlot(session, aiResponse.datos);
+        const slot = pickChosenSlot(session, aiResponse.datos, proposed);
         if (slot) return { slot, motivo: 'afirmativo_tras_propuesta' };
     }
 
@@ -661,7 +664,7 @@ function resolveSalonConfirmation(session, aiResponse, sanitized) {
     // queda reservada pero no puso el flag y nada encajó arriba. Guardamos el hueco que
     // más encaje (o el último propuesto) para no mentirle a la clienta sin persistir.
     if (session.slotsProposed && llmClaimsBooked(aiResponse.respuesta)) {
-        const slot = pickChosenSlot(session, aiResponse.datos);
+        const slot = pickChosenSlot(session, aiResponse.datos, proposed);
         if (slot) return { slot, motivo: 'texto_llm_confirma' };
     }
 
@@ -1167,6 +1170,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             }
         }
 
+        // Capturamos los huecos ANTES de cualquier recarga para que, si la
+        // recarga se dispara por un falso cambio de preferencia en el texto de
+        // confirmación ("vale, mañana" → semana: 'esta'), la resolución de
+        // confirmación siga usando los huecos que la clienta realmente vio.
+        const frozenProposed = (session.proposedSlots || []).slice();
+
         // ─── Load slots when ready ───────────────────────────────────────
         if (orgType === 'salon') {
             const meDaIgual = /\b(me da igual|cualquiera|la que sea|el que sea|no tengo preferencia|me es igual|sin preferencia|whoever|anyone|любой|любую)\b/i.test(sanitized);
@@ -1486,7 +1495,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // BUG2/BUG3: recordamos si la cita YA estaba confirmada antes de este turno para
             // detectar la transición y añadir upselling + dirección + política 48h una sola vez.
             const yaEstabaConfirmada = session.reservaConfirmada;
-            const confirm = resolveSalonConfirmation(session, aiResponse, sanitized);
+            const confirm = resolveSalonConfirmation(session, aiResponse, sanitized, frozenProposed);
             if (confirm) {
                 logger.info('cita_sante_confirmacion', { orgId, telefono: userPhone, motivo: confirm.motivo, fecha: confirm.slot.fecha, hora: confirm.slot.hora });
                 const ok = await finalizarCitaSante(client, session, userPhone, confirm.slot);
@@ -1511,8 +1520,9 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // del LLM dice que reservó, intentamos guardar con el mejor hueco; si no se puede,
             // reemplazamos el mensaje para no mentirle a la clienta.
             if (!session.reservaConfirmada && session.slotsProposed && llmClaimsBooked(aiResponse.respuesta)) {
+                const safetySlots = (frozenProposed && frozenProposed.length) ? frozenProposed : undefined;
                 const slot = (session.selectedService && (session.availableSlots || []).length)
-                    ? pickChosenSlot(session, aiResponse.datos) : null;
+                    ? pickChosenSlot(session, aiResponse.datos, safetySlots) : null;
                 let ok = false;
                 if (slot) {
                     logger.warn('cita_sante_red_seguridad', { orgId, telefono: userPhone, fecha: slot.fecha, hora: slot.hora });
