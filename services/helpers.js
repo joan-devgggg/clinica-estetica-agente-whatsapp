@@ -290,6 +290,7 @@ function extractServiceFromText(text, servicesCatalog) {
         const keywordMap = [
             { keywords: ['corte', 'cortar', 'corto', 'corta', 'haircut', 'cut'], categoria: 'Cortes' },
             { keywords: ['color', 'tinte', 'teñir', 'raiz', 'raíz', 'dye'], categoria: 'Color Premium' },
+            { keywords: ['contouring'], categoria: 'Mechas Contouring' },
             { keywords: ['mecha', 'mechas', 'highlights', 'balayage'], categoria: 'Mechas Airtouch' },
             { keywords: ['manicura', 'manicure', 'uñas', 'nails', 'pedicura', 'pedicure'], categoria: 'Manicura/Pedicura' },
             { keywords: ['masaje', 'massage', 'spa', 'relajante', 'relax'], categoria: 'Masajes y SPA' },
@@ -679,6 +680,36 @@ function detectLargoCategory(text, servicesCatalog) {
     return null;
 }
 
+// Extracts Mechas clásicas type from user response.
+// Returns 1 (delante/puntas/rostro), 2 (media cabeza), 3 (cabeza completa), or null.
+function extractMechasClasicasTipo(text) {
+    if (!text) return null;
+    const t = normalizeText(text);
+    if (/\b(la\s+)?primera\b/.test(t) || /\bdelante\b/.test(t) || /\bpuntas\b/.test(t) || /\brostro\b/.test(t)) return 1;
+    if (/\b(la\s+)?segunda\b/.test(t) || /\bmedia\s*cabeza\b/.test(t)) return 2;
+    if (/\b(la\s+)?tercera\b/.test(t) || /\bcompleta\b/.test(t) || /\btoda\b/.test(t) || /\bentera\b/.test(t) || /\bcabeza\s+completa\b/.test(t)) return 3;
+    const numMatch = t.match(/\b([123])\b/);
+    if (numMatch) return parseInt(numMatch[1], 10);
+    return null;
+}
+
+// Detects services that require manual consultation (no fixed price).
+// Returns { type, message } or null.
+function detectConsultaService(text) {
+    if (!text) return null;
+    const t = normalizeText(text);
+    if (/\b(extension|extensiones)\b/.test(t)) {
+        return { type: 'extensiones' };
+    }
+    if (/\b(permanente|permanent)\b/.test(t)) {
+        return { type: 'permanente' };
+    }
+    if (/salida de negro|arrastre de color|quitar tinte negro|subir tono desde negro|quitar el negro|salir del negro/.test(t)) {
+        return { type: 'salida_negro' };
+    }
+    return null;
+}
+
 // Extracts hair length from user response.
 // Returns 1 (short/hombros), 2 (medium/espalda), 3 (long/cintura), 4 (very long), or null.
 function extractLargoPelo(text) {
@@ -721,4 +752,6 @@ module.exports = {
     buildSanteConfirmationMessage,
     detectLargoCategory,
     extractLargoPelo,
+    extractMechasClasicasTipo,
+    detectConsultaService,
 };

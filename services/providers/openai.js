@@ -3,6 +3,7 @@ require('dotenv').config();
 const config = require('../../config.json');
 const db = require('../db');
 const { getOrgType } = require('../org-registry');
+const { normalizeText } = require('../helpers');
 const logger = require('../../lib/logger');
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -300,6 +301,9 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
         if (!partialData.nombre && !partialData.__clienteRecurrente) return 'Saluda y pregunta cómo se llama.';
         if (partialData.__askLargoFirst) {
             const cat = partialData.__pendingLargoCategory || 'el servicio solicitado';
+            if (normalizeText(cat) === 'mechas clasicas') {
+                return `La clienta quiere mechas clásicas. Hay 3 tipos según la zona de cobertura. Explícale la diferencia (en su idioma) ANTES de confirmar precio:\n- Mechas 1 (60€, 90 min) = solo delante, puntas y rostro\n- Mechas 2 (80€, 180 min) = media cabeza\n- Mechas 3 (100€, 180 min) = cabeza completa\nPregúntale cuál prefiere. NO propongas huecos todavía.`;
+            }
             return `La clienta quiere ${cat}, que tiene variaciones según el largo del pelo. ANTES de confirmar precio o buscar huecos, pregúntale: "¿Cuánto largo tienes aproximadamente? Corto (hasta hombros), medio (hasta la espalda) o largo (hasta la cintura o más)" (en su idioma). Si dice que no sabe, respóndele: "No te preocupes, tu estilista te lo confirmará en el salón" y continúa con el flujo. NO menciones precios todavía (dependen del largo). NO propongas huecos.`;
         }
         if (!selectedService) return 'Pregunta qué servicio necesita. Si no tiene claro, ofrécele las categorías principales.';
@@ -380,6 +384,33 @@ IMPORTANTE: Cada estilista SOLO trabaja los días indicados arriba. Si la client
 # ── CATÁLOGO DE SERVICIOS ──────────────────────────────────────────────────
 
 ${catalogoStr}
+
+# ── SERVICIOS CON INSTRUCCIONES ESPECIALES ────────────────────────────────
+
+MECHAS CLÁSICAS:
+Hay 3 tipos según la zona de cobertura (NO es por largo del pelo):
+  Mechas 1 (60€, 90 min) = solo delante, puntas y rostro
+  Mechas 2 (80€, 180 min) = media cabeza
+  Mechas 3 (100€, 180 min) = cabeza completa
+Si la clienta pide "mechas clásicas" sin especificar tipo, explícale la diferencia y pregunta cuál prefiere ANTES de buscar huecos.
+
+MECHAS CONTOURING:
+Precio fijo 160€ para todos los largos. NO preguntes el largo del pelo.
+
+PEINADO ESPECIAL:
+Descríbelo como: "Incluye levantar la raíz, ondas grandes con fijación y mucha laca. Perfecto para ocasiones especiales."
+
+EXTENSIONES DE CABELLO:
+Se presupuestan según el caso. Responde: "Las extensiones se presupuestan según el caso. Te pongo en contacto con el salón para que te asesoren personalmente 😊" y devuelve accion: "escalar_humano".
+
+PERMANENTE:
+Bajo consulta. Responde: "La permanente se presupuesta según el caso. Te pongo en contacto con el salón para que te asesoren personalmente 😊" y devuelve accion: "escalar_humano".
+
+SALIDA DE NEGRO / ARRASTRE DE COLOR:
+Si la clienta dice "salida de negro", "arrastre de color", "quitar tinte negro", "subir tono desde negro". Responde: "Es un proceso para eliminar el pigmento oscuro antes de aclarar o hacer mechas. El precio varía según el caso, te ponemos en contacto con el salón 😊" y devuelve accion: "escalar_humano".
+
+SI LA CLIENTA DICE SOLO "MECHAS" (sin especificar tipo):
+Pregunta si quiere Mechas Airtouch (premium, más sofisticadas), Mechas clásicas (3 tipos según cobertura) o Mechas Contouring (efecto contorno).
 
 # ── REGLAS DE UPSELLING ────────────────────────────────────────────────────
 

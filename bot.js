@@ -8,7 +8,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, detectGuestBooking, extractGuestName, isValidName, detectLanguage, matchUpsellSuggestion, buildSanteConfirmationMessage, detectLargoCategory, extractLargoPelo } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, detectGuestBooking, extractGuestName, isValidName, detectLanguage, matchUpsellSuggestion, buildSanteConfirmationMessage, detectLargoCategory, extractLargoPelo, extractMechasClasicasTipo, detectConsultaService } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary } = require('./services/memory');
@@ -1222,6 +1222,49 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             return;
         }
 
+        // ─── Salon: servicios bajo consulta → derivar a humano ──────────
+        if (orgType === 'salon' && !session.selectedService && !session.reservaConfirmada) {
+            const consulta = detectConsultaService(sanitized);
+            if (consulta) {
+                const CONSULTA_MSGS = {
+                    extensiones: {
+                        es: 'Las extensiones se presupuestan según el caso. Te pongo en contacto con el salón para que te asesoren personalmente 😊',
+                        en: 'Extensions are quoted on a case-by-case basis. Let me put you in touch with the salon for a personal consultation 😊',
+                        ru: 'Наращивание рассчитывается индивидуально. Связываю тебя с салоном для личной консультации 😊',
+                        uk: 'Нарощування розраховується індивідуально. Зв\'яжу тебе з салоном для особистої консультації 😊',
+                    },
+                    permanente: {
+                        es: 'La permanente se presupuesta según el caso. Te pongo en contacto con el salón para que te asesoren personalmente 😊',
+                        en: 'Perms are quoted on a case-by-case basis. Let me put you in touch with the salon for a personal consultation 😊',
+                        ru: 'Химическая завивка рассчитывается индивидуально. Связываю тебя с салоном для личной консультации 😊',
+                        uk: 'Хімічна завивка розраховується індивідуально. Зв\'яжу тебе з салоном для особистої консультації 😊',
+                    },
+                    salida_negro: {
+                        es: 'Es un proceso para eliminar el pigmento oscuro antes de aclarar o hacer mechas. El precio varía según el caso, te ponemos en contacto con el salón 😊',
+                        en: 'It\'s a process to remove dark pigment before lightening or adding highlights. The price varies by case, let me put you in touch with the salon 😊',
+                        ru: 'Это процесс удаления тёмного пигмента перед осветлением или мелированием. Цена зависит от случая, связываю тебя с салоном 😊',
+                        uk: 'Це процес видалення темного пігменту перед освітленням або мелюванням. Ціна залежить від випадку, зв\'яжу тебе з салоном 😊',
+                    },
+                };
+                const lang = session.language || 'es';
+                const msg = CONSULTA_MSGS[consulta.type]?.[lang] || CONSULTA_MSGS[consulta.type]?.es;
+                session.botActivo = false;
+                try {
+                    await setLeadBotMode(orgId, session.partialData.telefono, 'manual');
+                    const contact = await findByPhone(orgId, session.partialData.telefono);
+                    await createPendingAction(orgId, {
+                        type: 'escalation',
+                        contactId: contact?.id || session.leadId,
+                        payload: { motivo: `consulta_${consulta.type}`, mensaje: sanitized },
+                    });
+                    notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono: session.partialData.telefono }, sanitized).catch(() => {});
+                } catch (e) { logger.error('error_consulta_escalar', { orgId, telefono: userPhone, type: consulta.type, error: e.message }); }
+                await _send(msg);
+                persistSession(orgId, userPhone, session);
+                return;
+            }
+        }
+
         // ─── Salon: detectar servicio/estilista ANTES del LLM ────────────
         // Así los huecos se calculan en el MISMO turno en que la clienta nombra
         // el servicio (ej. "un masaje relajante") y el LLM los propone directamente,
@@ -1229,8 +1272,28 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         if (orgType === 'salon') {
             const agentCfgPre = await getAgentConfig(orgId);
             const stylistsPre = await getStylistsByOrg(orgId);
+            // ── Mechas clásicas resolution: coverage type, not hair length
+            if (session.pendingLargoCategory && normalizeText(session.pendingLargoCategory) === 'mechas clasicas' && !session.selectedService) {
+                const tipo = extractMechasClasicasTipo(sanitized);
+                if (tipo != null) {
+                    const catalog = agentCfgPre?.services || [];
+                    const catNorm = normalizeText(session.pendingLargoCategory);
+                    const candidates = catalog.filter(s =>
+                        normalizeText(s.categoria) === catNorm && /\d+\s*$/.test(normalizeText(s.nombre))
+                    ).sort((a, b) => {
+                        const na = parseInt(normalizeText(a.nombre).match(/(\d+)\s*$/)?.[1] || '0', 10);
+                        const nb = parseInt(normalizeText(b.nombre).match(/(\d+)\s*$/)?.[1] || '0', 10);
+                        return na - nb;
+                    });
+                    const idx = Math.min(tipo - 1, candidates.length - 1);
+                    if (idx >= 0 && candidates[idx]) {
+                        session.selectedService = candidates[idx];
+                        session.pendingLargoCategory = null;
+                    }
+                }
+            }
             // ── Largo resolution: if we're waiting for hair length, try to extract it
-            if (session.pendingLargoCategory && !session.selectedService) {
+            else if (session.pendingLargoCategory && !session.selectedService) {
                 const largo = extractLargoPelo(sanitized);
                 const noSabe = /\b(no se|no lo se|ni idea|no tengo idea|no estoy segur|i don.?t know|i.?m not sure|не знаю|не впевнен)\b/.test(normalizeText(sanitized));
                 if (largo != null || noSabe) {
