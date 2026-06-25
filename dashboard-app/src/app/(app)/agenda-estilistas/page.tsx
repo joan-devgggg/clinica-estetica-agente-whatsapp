@@ -14,7 +14,7 @@ import { toast } from "sonner";
 import { useOrg } from "@/lib/org-context";
 import { API, apiHeaders } from "@/lib/api";
 import { ymd } from "@/lib/date";
-import type { Stylist, Reserva, ScheduleBlock, StylistSchedule } from "@/lib/types";
+import type { Stylist, Reserva, ScheduleBlock, StylistSchedule, BlockedDay } from "@/lib/types";
 
 function getWeekRange(offset: number) {
   const now = new Date();
@@ -37,6 +37,7 @@ export default function AgendaEstilistasPage() {
   const [stylists, setStylists] = useState<Stylist[]>([]);
   const [appointments, setAppointments] = useState<Reserva[]>([]);
   const [blocks, setBlocks] = useState<ScheduleBlock[]>([]);
+  const [blockedDays, setBlockedDays] = useState<BlockedDay[]>([]);
   const [schedule, setSchedule] = useState<StylistSchedule[]>([]);
   const [activeStylistId, setActiveStylistId] = useState<string>("");
   const [weekOffset, setWeekOffset] = useState(0);
@@ -53,16 +54,19 @@ export default function AgendaEstilistasPage() {
   const loadData = useCallback(async () => {
     if (!orgId) return;
     try {
-      const [styRes, apptRes] = await Promise.all([
+      const [styRes, apptRes, bdRes] = await Promise.all([
         fetch(`${API}/api/stylists`, { headers: apiHeaders(orgId) }),
         fetch(`${API}/api/citas?desde=${week.start}&hasta=${week.end}`, { headers: apiHeaders(orgId) }),
+        fetch(`${API}/api/blocked-days?from=${week.start}&to=${week.end}`, { headers: apiHeaders(orgId) }),
       ]);
 
       const styData: Stylist[] = styRes.ok ? await styRes.json() : [];
       const apptData: Reserva[] = apptRes.ok ? await apptRes.json() : [];
+      const bdData: BlockedDay[] = bdRes.ok ? await bdRes.json() : [];
 
       setStylists(styData);
       setAppointments(apptData);
+      setBlockedDays(bdData);
 
       if (!activeStylistId && styData.length > 0) {
         setActiveStylistId(styData[0].id);
@@ -90,8 +94,10 @@ export default function AgendaEstilistasPage() {
 
   useEffect(() => {
     const channel = supabase
-      .channel("agenda-appointments")
+      .channel("agenda-realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, () => { loadData(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "blocked_days" }, () => { loadData(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "schedule_blocks" }, () => { loadData(); })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -99,6 +105,7 @@ export default function AgendaEstilistasPage() {
 
   const activeStylist = stylists.find(s => s.id === activeStylistId);
   const stylistAppointments = appointments.filter(a => a.stylist_id === activeStylistId);
+  const stylistBlockedDays = blockedDays.filter(b => !b.stylist_id || b.stylist_id === activeStylistId);
 
   async function handleDeleteBlock() {
     if (!blockToDelete) return;
@@ -183,6 +190,7 @@ export default function AgendaEstilistasPage() {
               weekStart={week.start}
               appointments={stylistAppointments}
               blocks={blocks}
+              blockedDays={stylistBlockedDays}
               schedule={schedule}
               stylist={activeStylist}
               onBlockClick={setBlockToDelete}

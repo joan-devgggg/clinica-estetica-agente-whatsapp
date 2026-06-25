@@ -1,13 +1,14 @@
 "use client";
 
 import { Card } from "@/components/ui/card";
-import type { Stylist, Reserva, ScheduleBlock, StylistSchedule } from "@/lib/types";
+import type { Stylist, Reserva, ScheduleBlock, StylistSchedule, BlockedDay } from "@/lib/types";
 import { ymd, parseYmd, addDays, madridDateKey } from "@/lib/date";
 
 interface StylistAgendaProps {
   weekStart: string;
   appointments: Reserva[];
   blocks: ScheduleBlock[];
+  blockedDays?: BlockedDay[];
   schedule: StylistSchedule[];
   stylist: Stylist;
   onBlockClick?: (block: ScheduleBlock) => void;
@@ -63,8 +64,20 @@ function getBlockPosition(block: ScheduleBlock, dateStr: string) {
   return { startRow, span: endRow - startRow };
 }
 
-export function StylistAgenda({ weekStart, appointments, blocks, schedule, stylist, onBlockClick }: StylistAgendaProps) {
+const MOTIVO_LABELS: Record<string, string> = {
+  vacaciones: "Vacaciones",
+  festivo: "Festivo",
+  cierre: "Cierre",
+  otro: "Bloqueado",
+};
+
+export function StylistAgenda({ weekStart, appointments, blocks, blockedDays = [], schedule, stylist, onBlockClick }: StylistAgendaProps) {
   const days = getWeekDays(weekStart, schedule);
+  const blockedDateSet = new Set(blockedDays.map(b => b.fecha));
+  const blockedByDate = new Map<string, BlockedDay>();
+  for (const b of blockedDays) {
+    if (!blockedByDate.has(b.fecha)) blockedByDate.set(b.fecha, b);
+  }
 
   return (
     <Card className="border-border/60 shadow-sm overflow-hidden">
@@ -73,22 +86,33 @@ export function StylistAgenda({ weekStart, appointments, blocks, schedule, styli
         <div className="border-b border-r border-border bg-muted/50 px-2 py-2" />
         {days.map(day => {
           const libra = day.worksStartH === null;
+          const blocked = blockedDateSet.has(day.date);
+          const blockedInfo = blockedByDate.get(day.date);
           return (
             <div
               key={day.date}
               className={`border-b border-r border-border px-2 py-2 text-center ${
-                libra ? "bg-muted/30" : day.isToday ? "bg-primary/5 font-semibold" : "bg-muted/50"
+                blocked
+                  ? "bg-destructive/10"
+                  : libra ? "bg-muted/30" : day.isToday ? "bg-primary/5 font-semibold" : "bg-muted/50"
               }`}
             >
               <p className="text-muted-foreground">{day.dayName}</p>
               <p
                 className={`text-lg font-semibold ${
-                  libra ? "text-muted-foreground/50" : day.isToday ? "text-primary" : "text-foreground"
+                  blocked
+                    ? "text-destructive"
+                    : libra ? "text-muted-foreground/50" : day.isToday ? "text-primary" : "text-foreground"
                 }`}
               >
                 {day.dayNum}
               </p>
-              {libra && <p className="text-[9px] uppercase tracking-wider text-muted-foreground/60">Libra</p>}
+              {blocked && (
+                <p className="text-[9px] uppercase tracking-wider text-destructive/80">
+                  {MOTIVO_LABELS[blockedInfo?.motivo ?? ""] ?? blockedInfo?.motivo ?? "Bloqueado"}
+                </p>
+              )}
+              {!blocked && libra && <p className="text-[9px] uppercase tracking-wider text-muted-foreground/60">Libra</p>}
             </div>
           );
         })}
@@ -100,6 +124,8 @@ export function StylistAgenda({ weekStart, appointments, blocks, schedule, styli
               {String(hour).padStart(2, "0")}:00
             </div>
             {days.map(day => {
+              const isBlocked = blockedDateSet.has(day.date);
+              const dayBlockedInfo = blockedByDate.get(day.date);
               const dayAppts = appointments.filter(a => a.fecha_cita === day.date);
               const dayBlocks = blocks.filter(b => {
                 const bStart = madridDateKey(b.starts_at);
@@ -107,7 +133,6 @@ export function StylistAgenda({ weekStart, appointments, blocks, schedule, styli
                 return bStart <= day.date && bEnd >= day.date;
               });
 
-              // Hora fuera de la jornada de la estilista (libra ese día o fuera de su horario).
               const offHour =
                 day.worksStartH === null ||
                 day.worksEndH === null ||
@@ -118,53 +143,65 @@ export function StylistAgenda({ weekStart, appointments, blocks, schedule, styli
                 <div
                   key={day.date}
                   className={`border-r border-b border-border relative h-14 ${
-                    offHour ? "bg-muted/40 bg-[repeating-linear-gradient(45deg,transparent,transparent_6px,rgba(0,0,0,0.03)_6px,rgba(0,0,0,0.03)_12px)]" : ""
+                    isBlocked
+                      ? "bg-destructive/8 bg-[repeating-linear-gradient(45deg,transparent,transparent_6px,rgba(220,38,38,0.06)_6px,rgba(220,38,38,0.06)_12px)]"
+                      : offHour ? "bg-muted/40 bg-[repeating-linear-gradient(45deg,transparent,transparent_6px,rgba(0,0,0,0.03)_6px,rgba(0,0,0,0.03)_12px)]" : ""
                   }`}
                 >
-                  {/* Appointment blocks for this hour */}
-                  {dayAppts
-                    .filter(a => {
-                      if (!a.hora_cita) return false;
-                      const apptHour = parseInt(a.hora_cita.split(":")[0]);
-                      return apptHour === hour;
-                    })
-                    .map(a => {
-                      const pos = getApptPosition(a);
-                      if (!pos) return null;
-                      return (
-                        <div
-                          key={a.appointment_id}
-                          className="absolute inset-x-0.5 bg-primary/15 border border-primary/30 rounded px-1 py-0.5 text-[10px] leading-tight overflow-hidden z-10"
-                          style={{ top: 0, minHeight: "100%" }}
-                        >
-                          <p className="font-medium text-primary truncate">{a.nombre}</p>
-                          <p className="text-muted-foreground truncate">{a.service || "Cita"}</p>
-                        </div>
-                      );
-                    })}
-
-                  {/* Block overlays for this hour */}
-                  {dayBlocks
-                    .filter(b => {
-                      const start = new Date(b.starts_at);
-                      const end = new Date(b.ends_at);
-                      const blockStartH = madridDateKey(b.starts_at) === day.date ? start.getHours() : 0;
-                      const blockEndH = madridDateKey(b.ends_at) === day.date ? end.getHours() : 24;
-                      return hour >= blockStartH && hour < blockEndH;
-                    })
-                    .map(b => (
-                      <button
-                        key={b.id}
-                        type="button"
-                        onClick={() => onBlockClick?.(b)}
-                        title="Eliminar bloqueo"
-                        className="absolute inset-0 bg-muted/60 border border-dashed border-muted-foreground/30 flex items-center justify-center cursor-pointer hover:bg-destructive/15 hover:border-destructive/40 transition-colors z-20"
-                      >
-                        <span className="text-[9px] text-muted-foreground uppercase tracking-wider">
-                          {b.reason || "Bloqueado"}
+                  {isBlocked ? (
+                    <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
+                      {hour === HOURS[0] && (
+                        <span className="text-[10px] text-destructive/60 uppercase tracking-wider font-medium">
+                          {MOTIVO_LABELS[dayBlockedInfo?.motivo ?? ""] ?? dayBlockedInfo?.motivo ?? "Bloqueado"}
                         </span>
-                      </button>
-                    ))}
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      {dayAppts
+                        .filter(a => {
+                          if (!a.hora_cita) return false;
+                          const apptHour = parseInt(a.hora_cita.split(":")[0]);
+                          return apptHour === hour;
+                        })
+                        .map(a => {
+                          const pos = getApptPosition(a);
+                          if (!pos) return null;
+                          return (
+                            <div
+                              key={a.appointment_id}
+                              className="absolute inset-x-0.5 bg-primary/15 border border-primary/30 rounded px-1 py-0.5 text-[10px] leading-tight overflow-hidden z-10"
+                              style={{ top: 0, minHeight: "100%" }}
+                            >
+                              <p className="font-medium text-primary truncate">{a.nombre}</p>
+                              <p className="text-muted-foreground truncate">{a.service || "Cita"}</p>
+                            </div>
+                          );
+                        })}
+
+                      {dayBlocks
+                        .filter(b => {
+                          const start = new Date(b.starts_at);
+                          const end = new Date(b.ends_at);
+                          const blockStartH = madridDateKey(b.starts_at) === day.date ? start.getHours() : 0;
+                          const blockEndH = madridDateKey(b.ends_at) === day.date ? end.getHours() : 24;
+                          return hour >= blockStartH && hour < blockEndH;
+                        })
+                        .map(b => (
+                          <button
+                            key={b.id}
+                            type="button"
+                            onClick={() => onBlockClick?.(b)}
+                            title="Eliminar bloqueo"
+                            className="absolute inset-0 bg-muted/60 border border-dashed border-muted-foreground/30 flex items-center justify-center cursor-pointer hover:bg-destructive/15 hover:border-destructive/40 transition-colors z-20"
+                          >
+                            <span className="text-[9px] text-muted-foreground uppercase tracking-wider">
+                              {b.reason || "Bloqueado"}
+                            </span>
+                          </button>
+                        ))}
+                    </>
+                  )}
                 </div>
               );
             })}
