@@ -401,8 +401,16 @@ function startTelegramBot(options = {}) {
     if (options.getBotActivo) getBotActivoFn = options.getBotActivo;
     if (options.setBotActivo) setBotActivoFn = options.setBotActivo;
 
+    // Parar instancia anterior si existe (PM2 restart, crash recovery)
+    if (_botInstance) {
+        try { _botInstance.stopPolling(); } catch (_) {}
+        _botInstance = null;
+    }
+
     _isPolling = true;
-    const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+    const bot = new TelegramBot(TELEGRAM_TOKEN, {
+        polling: { params: { timeout: 30 } },
+    });
     _botInstance = bot;
 
     // Build user→org map at startup
@@ -473,7 +481,19 @@ function startTelegramBot(options = {}) {
         bot.sendMessage(chatId, resultado || interpretacion.respuesta, { parse_mode: 'Markdown' });
     });
 
-    bot.on('polling_error', (e) => logger.error('telegram_polling_error', { error: e.message }));
+    bot.on('polling_error', (e) => {
+        const msg = e.message || '';
+        if (msg.includes('409') || msg.includes('Conflict')) {
+            logger.error('telegram_409_conflict', { error: msg });
+            bot.stopPolling().then(() => {
+                _isPolling = false;
+                _botInstance = null;
+                logger.info('telegram_polling_detenido_por_409');
+            }).catch(() => { _isPolling = false; _botInstance = null; });
+        } else {
+            logger.error('telegram_polling_error', { error: msg });
+        }
+    });
 }
 
 module.exports = { startTelegramBot, notifyBizumPending, notifyEscalation, notifyVipSuggestion, notifyBlacklistAlert, notifyOrgAdmin };

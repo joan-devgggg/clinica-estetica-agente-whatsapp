@@ -388,10 +388,16 @@ async function getMessages(orgId, telefono, { limit = 100 } = {}) {
 async function deleteConversationMessages(orgId, telefono) {
     const oid = resolveOrg(orgId);
     const phone = sanitizePhone(telefono);
-    if (!phone) return false;
+    if (!phone) {
+        console.log('[deleteConversationMessages] phone vacío, skip');
+        return false;
+    }
 
     const contact = await findByPhone(oid, phone);
-    if (!contact) return false;
+    if (!contact) {
+        console.log('[deleteConversationMessages] contacto no encontrado', { orgId: oid, phone });
+        return false;
+    }
 
     const { data: conv } = await supabase
         .from('conversations')
@@ -399,13 +405,25 @@ async function deleteConversationMessages(orgId, telefono) {
         .eq('organization_id', oid)
         .eq('contact_id', contact.id)
         .maybeSingle();
-    if (!conv) return false;
+    if (!conv) {
+        console.log('[deleteConversationMessages] conversación no encontrada', { orgId: oid, contactId: contact.id });
+        return false;
+    }
 
-    await supabase
+    const { data, error, count } = await supabase
         .from('messages')
         .delete()
         .eq('conversation_id', conv.id)
-        .eq('organization_id', oid);
+        .eq('organization_id', oid)
+        .select('id');
+
+    if (error) {
+        console.error('[deleteConversationMessages] error Supabase', { orgId: oid, convId: conv.id, error: error.message, code: error.code });
+        return false;
+    }
+
+    const deleted = data ? data.length : 0;
+    console.log('[deleteConversationMessages] mensajes borrados', { orgId: oid, convId: conv.id, contactId: contact.id, phone, deletedCount: deleted });
     return true;
 }
 
