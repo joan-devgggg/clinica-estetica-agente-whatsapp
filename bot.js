@@ -34,6 +34,14 @@ const FALLBACK_PATTERNS = [
     'lo siento, ha ocurrido un error tecnico',
     'lo siento, ha habido un error',
     'un momento, por favor',
+    'las extensiones se presupuestan según el caso',
+    'las extensiones se presupuestan segun el caso',
+    'te pongo en contacto con el salón',
+    'te pongo en contacto con el salon',
+    'en breve una de nuestras especialistas se pondrá en contacto',
+    'en breve una de nuestras especialistas se pondra en contacto',
+    '¿quieres que te ponga en contacto con una de nuestras especialistas?',
+    'quieres que te ponga en contacto con una de nuestras especialistas',
 ];
 function isFallbackText(text) {
     if (!text || typeof text !== 'string') return false;
@@ -1045,6 +1053,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                             session.pendingEscalationService = null;
                             logger.info('session_escalation_reset', { orgId, telefono: userPhone, source: 'supabase_auto_reconcile' });
                         }
+                        session.selectedService = null;
+                        session.selectedCategory = null;
                         logger.info('session_botActivo_reset_to_auto', { orgId, telefono: userPhone, contactBotMode: contact.bot_mode || 'auto', previousSource: loadedFromSQLite ? 'sqlite' : 'session_timeout' });
                     }
                     if (contact.is_blacklisted) { session.isBlacklisted = true; logger.info('process_core_blacklisted', { orgId, telefono: userPhone }); }
@@ -1074,10 +1084,26 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         session.pendingEscalationService = null;
                         logger.info('session_escalation_reset', { orgId, telefono: userPhone, source: 'orphan_no_contact' });
                     }
+                    session.selectedService = null;
+                    session.selectedCategory = null;
                     logger.info('session_botActivo_reset_orphan', { orgId, telefono: userPhone, source: 'sqlite_no_contact' });
                 }
             } catch (e) { logger.error('error_check_contact', { orgId, telefono: userPhone, error: e.message }); }
         }
+
+        // DEBUG temporal: estado de escalada en sesión vs Supabase
+        try {
+            const _dbContact = await findByPhone(orgId, session.partialData.telefono);
+            logger.info('DEBUG_escalation_state', {
+                orgId, telefono: userPhone,
+                botActivo: session.botActivo,
+                pendingEscalation: session.pendingEscalation,
+                pendingEscalationService: session.pendingEscalationService,
+                db_bot_mode: _dbContact?.bot_mode || 'no_contact',
+                db_escalation_reason: _dbContact?.escalation_reason || null,
+                isNewSession, loadedFromSQLite,
+            });
+        } catch (_e) { /* ignore */ }
 
         if (messageKey && session.seenMessages.has(messageKey)) { logger.info('process_core_msg_duplicado', { orgId, telefono: userPhone, messageKey }); return; }
         if (messageKey) session.seenMessages.add(messageKey);
