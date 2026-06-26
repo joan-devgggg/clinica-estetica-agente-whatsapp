@@ -374,12 +374,16 @@ app.put('/api/leads/:id/bot-mode', async (req, res) => {
         if (!lead) return res.status(404).json({ error: 'No encontrado' });
         const mode = req.body.mode === 'manual' ? 'manual' : 'auto';
         await db.setLeadBotMode(orgId, lead.telefono, mode);
-        if (_setConvMode) _setConvMode(lead.telefono, mode === 'auto');
+        let isEscalationResolve = false;
         if (mode === 'auto') {
             const escalations = await db.getPendingActions(orgId, 'escalation');
             const match = escalations.find(e => String(e.contact_id) === String(lead.id));
-            if (match) await db.resolvePendingAction(orgId, match.id, 'resuelto_panel');
+            if (match) {
+                await db.resolvePendingAction(orgId, match.id, 'resuelto_panel');
+                isEscalationResolve = true;
+            }
         }
+        if (_setConvMode) _setConvMode(lead.telefono, mode === 'auto', isEscalationResolve);
         res.json({ ok: true, mode });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });

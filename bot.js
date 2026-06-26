@@ -2122,19 +2122,22 @@ setInterval(() => {
     }
 }, 60000);
 
-function setConversationBotMode(phone, active) {
+function setConversationBotMode(phone, active, isEscalationResolve = false) {
     const digits = phone.replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '');
     let found = false;
     for (const [key, session] of userSessions.entries()) {
         const keyPhone = key.includes(':') ? key.split(':')[1] : key;
         if (keyPhone === phone || keyPhone.includes(digits)
             || session.partialData?.telefono === digits) {
-            if (active) {
+            if (active && isEscalationResolve) {
                 const orgId = session.orgId;
                 const sessionPhone = session.partialData?.telefono || digits;
                 userSessions.delete(key);
                 deleteClient(orgId, sessionPhone);
                 logger.info('session_full_reset_post_escalada', { telefono: digits, orgId, source: 'setConversationBotMode_memory' });
+            } else if (active) {
+                session.botActivo = true;
+                persistSession(session.orgId, session.partialData?.telefono || digits, session);
             } else {
                 session.botActivo = false;
                 persistSession(session.orgId, session.partialData?.telefono || digits, session);
@@ -2142,7 +2145,7 @@ function setConversationBotMode(phone, active) {
             found = true;
         }
     }
-    if (!found && active) {
+    if (!found && isEscalationResolve) {
         const { getAllOrgs } = require('./services/org-registry');
         for (const org of getAllOrgs()) {
             const persisted = loadClient(org.orgId, digits);
@@ -2152,9 +2155,7 @@ function setConversationBotMode(phone, active) {
             }
         }
     }
-    // Borrar mensajes de Supabase SIEMPRE al resolver escalada, independientemente
-    // de si había sesión en memoria o SQLite (puede haber expirado).
-    if (active) {
+    if (isEscalationResolve) {
         const { getAllOrgs } = require('./services/org-registry');
         for (const org of getAllOrgs()) {
             deleteConversationMessages(org.orgId, digits).catch(e =>
