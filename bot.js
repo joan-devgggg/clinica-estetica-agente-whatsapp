@@ -1571,6 +1571,9 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         const llmHistory = session.history.slice(-10).filter(m =>
             m.role !== 'assistant' || !isFallbackText(m.content)
         );
+        // DEBUG temporal: ver qué mensajes pasan al LLM
+        const _last3 = llmHistory.slice(-3).map(m => ({ role: m.role, text: (m.content || '').substring(0, 120) }));
+        logger.info('DEBUG_llm_history_tail', { orgId, telefono: userPhone, historyLen: llmHistory.length, last3: _last3 });
         const llmPromise = getChatbotResponse(orgId, llmHistory, partialDataWithCtx, intent, session.reservaConfirmada, session.summary)
             .catch(e => {
                 logger.error('llm_error', { orgId, telefono: userPhone, error: e.message, stack: e.stack?.split('\n').slice(0, 3).join(' | '), latencia_ms: Date.now() - t0 });
@@ -2125,6 +2128,8 @@ function setConversationBotMode(phone, active) {
             if (active) {
                 session.pendingEscalation = false;
                 session.pendingEscalationService = null;
+                session.selectedService = null;
+                session.selectedCategory = null;
             }
             persistSession(session.orgId, session.partialData?.telefono || digits, session);
         }
