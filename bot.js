@@ -1098,19 +1098,22 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             } catch (e) { logger.error('error_check_contact', { orgId, telefono: userPhone, error: e.message }); }
         }
 
-        // DEBUG temporal: estado de escalada en sesión vs Supabase
-        try {
-            const _dbContact = await findByPhone(orgId, session.partialData.telefono);
-            logger.info('DEBUG_escalation_state', {
-                orgId, telefono: userPhone,
-                botActivo: session.botActivo,
-                pendingEscalation: session.pendingEscalation,
-                pendingEscalationService: session.pendingEscalationService,
-                db_bot_mode: _dbContact?.bot_mode || 'no_contact',
-                db_escalation_reason: _dbContact?.escalation_reason || null,
-                isNewSession, loadedFromSQLite,
-            });
-        } catch (_e) { /* ignore */ }
+        // Safety net: sesión existente en memoria con botActivo=false pero Supabase dice auto → reconciliar
+        if (!isNewSession && !session.botActivo) {
+            try {
+                const _reconContact = await findByPhone(orgId, session.partialData.telefono);
+                if (_reconContact && _reconContact.bot_mode !== 'manual') {
+                    session.botActivo = true;
+                    if (session.pendingEscalation) {
+                        session.pendingEscalation = false;
+                        session.pendingEscalationService = null;
+                    }
+                    session.selectedService = null;
+                    session.selectedCategory = null;
+                    logger.info('session_botActivo_reconcile_memory', { orgId, telefono: userPhone, db_bot_mode: _reconContact.bot_mode || 'auto', source: 'existing_session_supabase_reconcile' });
+                }
+            } catch (e) { logger.error('error_reconcile_existing_session', { orgId, telefono: userPhone, error: e.message }); }
+        }
 
         if (messageKey && session.seenMessages.has(messageKey)) { logger.info('process_core_msg_duplicado', { orgId, telefono: userPhone, messageKey }); return; }
         if (messageKey) session.seenMessages.add(messageKey);
@@ -2124,17 +2127,17 @@ setInterval(() => {
 
 function setConversationBotMode(phone, active, isEscalationResolve = false) {
     const digits = phone.replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '');
-    let found = false;
+    let found = 0;
     for (const [key, session] of userSessions.entries()) {
         const keyPhone = key.includes(':') ? key.split(':')[1] : key;
-        if (keyPhone === phone || keyPhone.includes(digits)
-            || session.partialData?.telefono === digits) {
+        const keyDigits = keyPhone.replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '');
+        if (keyDigits === digits || session.partialData?.telefono === digits) {
             if (active && isEscalationResolve) {
                 const orgId = session.orgId;
                 const sessionPhone = session.partialData?.telefono || digits;
                 userSessions.delete(key);
                 deleteClient(orgId, sessionPhone);
-                logger.info('session_full_reset_post_escalada', { telefono: digits, orgId, source: 'setConversationBotMode_memory' });
+                logger.info('session_full_reset_post_escalada', { telefono: digits, orgId, matchedKey: key, source: 'setConversationBotMode_memory' });
             } else if (active) {
                 session.botActivo = true;
                 persistSession(session.orgId, session.partialData?.telefono || digits, session);
@@ -2142,10 +2145,11 @@ function setConversationBotMode(phone, active, isEscalationResolve = false) {
                 session.botActivo = false;
                 persistSession(session.orgId, session.partialData?.telefono || digits, session);
             }
-            found = true;
+            found++;
         }
     }
-    if (!found && isEscalationResolve) {
+    logger.info('setConversationBotMode_result', { telefono: digits, active, isEscalationResolve, sessionsFound: found });
+    if (found === 0 && isEscalationResolve) {
         const { getAllOrgs } = require('./services/org-registry');
         for (const org of getAllOrgs()) {
             const persisted = loadClient(org.orgId, digits);
