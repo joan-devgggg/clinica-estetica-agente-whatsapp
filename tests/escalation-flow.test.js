@@ -120,28 +120,20 @@ async function cleanup() {
     });
 
     // ─── Paso 4: Simular resolución desde panel ─────────────────────────────
-    await test('4. Resolución desde panel → selectedService=null, pendingEscalation=false en SQLite y memoria', async () => {
+    await test('4. Resolución desde panel → sesión completa borrada de memoria y SQLite', async () => {
         // Panel llama a setLeadBotMode para poner auto + limpiar escalation_reason
         await db.setLeadBotMode(ORG, PHONE_DIGITS, 'auto');
 
         // Panel llama a setConversationBotMode(phone, true) para reactivar bot
         setConversationBotMode(PHONE_DIGITS, true);
 
-        // Verificar sesión en memoria
+        // Sesión debe haber sido eliminada de memoria
         const session = getSession(ORG, TEST_PHONE);
-        assert(session, 'sesión debe existir en memoria');
-        assert.strictEqual(session.botActivo, true, 'botActivo debe ser true tras resolución');
-        assert.strictEqual(session.selectedService, null, 'selectedService debe ser null tras resolución');
-        assert.strictEqual(session.selectedCategory || null, null, 'selectedCategory debe ser null');
-        assert.strictEqual(session.pendingEscalation, false, 'pendingEscalation debe ser false');
+        assert.strictEqual(session, undefined, 'sesión NO debe existir en memoria tras resolución');
 
-        // Verificar SQLite
+        // Sesión debe haber sido eliminada de SQLite
         const persisted = loadClient(ORG, PHONE_DIGITS);
-        if (persisted && persisted.extra) {
-            assert.strictEqual(persisted.extra.selectedService, null, 'selectedService debe ser null en SQLite.extra');
-            assert.strictEqual(persisted.extra.pendingEscalation, false, 'pendingEscalation debe ser false en SQLite.extra');
-            assert.strictEqual(persisted.extra.pendingEscalationService || null, null, 'pendingEscalationService debe ser null en SQLite.extra');
-        }
+        assert.strictEqual(persisted, null, 'sesión NO debe existir en SQLite tras resolución');
     });
 
     // ─── Paso 5: Verificar Supabase post-resolución ─────────────────────────

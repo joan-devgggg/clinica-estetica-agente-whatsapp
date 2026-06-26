@@ -11,7 +11,7 @@ const calendarSante = require('./services/calendar-sante');
 const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, detectGuestBooking, extractGuestName, isValidName, detectLanguage, matchUpsellSuggestion, buildSanteConfirmationMessage, detectLargoCategory, extractLargoPelo, extractMechasClasicasTipo, detectConsultaService } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
-const { loadClient, saveClient, saveSummary } = require('./services/memory');
+const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
 const { summarizeHistory } = require('./services/providers/openai');
 const { notifyBizumPending, notifyEscalation, notifyBlacklistAlert } = require('./services/telegram');
 const { getOrgType } = require('./services/org-registry');
@@ -2128,15 +2128,16 @@ function setConversationBotMode(phone, active) {
         const keyPhone = key.includes(':') ? key.split(':')[1] : key;
         if (keyPhone === phone || keyPhone.includes(digits)
             || session.partialData?.telefono === digits) {
-            session.botActivo = active;
             if (active) {
-                session.pendingEscalation = false;
-                session.pendingEscalationService = null;
-                session.selectedService = null;
-                session.selectedCategory = null;
-                logger.info('session_service_reset_post_escalada', { telefono: digits, source: 'setConversationBotMode_memory' });
+                const orgId = session.orgId;
+                const sessionPhone = session.partialData?.telefono || digits;
+                userSessions.delete(key);
+                deleteClient(orgId, sessionPhone);
+                logger.info('session_full_reset_post_escalada', { telefono: digits, orgId, source: 'setConversationBotMode_memory' });
+            } else {
+                session.botActivo = false;
+                persistSession(session.orgId, session.partialData?.telefono || digits, session);
             }
-            persistSession(session.orgId, session.partialData?.telefono || digits, session);
             found = true;
         }
     }
@@ -2144,13 +2145,9 @@ function setConversationBotMode(phone, active) {
         const { getAllOrgs } = require('./services/org-registry');
         for (const org of getAllOrgs()) {
             const persisted = loadClient(org.orgId, digits);
-            if (persisted && persisted.extra) {
-                persisted.extra.selectedService = null;
-                persisted.extra.pendingEscalation = false;
-                persisted.extra.pendingEscalationService = null;
-                persisted.botActivo = true;
-                saveClient(org.orgId, digits, persisted);
-                logger.info('session_service_reset_post_escalada', { orgId: org.orgId, telefono: digits, source: 'setConversationBotMode_sqlite_direct' });
+            if (persisted) {
+                deleteClient(org.orgId, digits);
+                logger.info('session_full_reset_post_escalada', { orgId: org.orgId, telefono: digits, source: 'setConversationBotMode_sqlite_direct' });
             }
         }
     }
