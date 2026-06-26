@@ -1040,6 +1040,11 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     } else if (!session.botActivo) {
                         // Estado sucio: SQLite o sesión anterior tenía botActivo=false pero Supabase dice auto → limpiar
                         session.botActivo = true;
+                        if (session.pendingEscalation) {
+                            session.pendingEscalation = false;
+                            session.pendingEscalationService = null;
+                            logger.info('session_escalation_reset', { orgId, telefono: userPhone, source: 'supabase_auto_reconcile' });
+                        }
                         logger.info('session_botActivo_reset_to_auto', { orgId, telefono: userPhone, contactBotMode: contact.bot_mode || 'auto', previousSource: loadedFromSQLite ? 'sqlite' : 'session_timeout' });
                     }
                     if (contact.is_blacklisted) { session.isBlacklisted = true; logger.info('process_core_blacklisted', { orgId, telefono: userPhone }); }
@@ -1064,6 +1069,11 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 } else if (!session.botActivo && loadedFromSQLite) {
                     // Contacto no existe en DB pero SQLite tenía botActivo=false → estado huérfano, limpiar
                     session.botActivo = true;
+                    if (session.pendingEscalation) {
+                        session.pendingEscalation = false;
+                        session.pendingEscalationService = null;
+                        logger.info('session_escalation_reset', { orgId, telefono: userPhone, source: 'orphan_no_contact' });
+                    }
                     logger.info('session_botActivo_reset_orphan', { orgId, telefono: userPhone, source: 'sqlite_no_contact' });
                 }
             } catch (e) { logger.error('error_check_contact', { orgId, telefono: userPhone, error: e.message }); }
