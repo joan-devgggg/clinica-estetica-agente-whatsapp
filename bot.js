@@ -1057,6 +1057,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         session.selectedCategory = null;
                         logger.info('session_botActivo_reset_to_auto', { orgId, telefono: userPhone, contactBotMode: contact.bot_mode || 'auto', previousSource: loadedFromSQLite ? 'sqlite' : 'session_timeout' });
                     }
+                    if (contact.bot_mode !== 'manual' && !contact.escalation_reason && loadedFromSQLite
+                        && (session.selectedService || session.selectedCategory)) {
+                        session.selectedService = null;
+                        session.selectedCategory = null;
+                        logger.info('session_service_reset_post_escalada', { orgId, telefono: userPhone, source: 'sqlite_load_supabase_auto' });
+                    }
                     if (contact.is_blacklisted) { session.isBlacklisted = true; logger.info('process_core_blacklisted', { orgId, telefono: userPhone }); }
                     session.leadId = session.leadId || contact.id;
                     session.language = contact.language || null;
@@ -2117,6 +2123,7 @@ setInterval(() => {
 
 function setConversationBotMode(phone, active) {
     const digits = phone.replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '');
+    let found = false;
     for (const [key, session] of userSessions.entries()) {
         const keyPhone = key.includes(':') ? key.split(':')[1] : key;
         if (keyPhone === phone || keyPhone.includes(digits)
@@ -2127,8 +2134,24 @@ function setConversationBotMode(phone, active) {
                 session.pendingEscalationService = null;
                 session.selectedService = null;
                 session.selectedCategory = null;
+                logger.info('session_service_reset_post_escalada', { telefono: digits, source: 'setConversationBotMode_memory' });
             }
             persistSession(session.orgId, session.partialData?.telefono || digits, session);
+            found = true;
+        }
+    }
+    if (!found && active) {
+        const { getAllOrgs } = require('./services/org-registry');
+        for (const org of getAllOrgs()) {
+            const persisted = loadClient(org.orgId, digits);
+            if (persisted && persisted.extra) {
+                persisted.extra.selectedService = null;
+                persisted.extra.pendingEscalation = false;
+                persisted.extra.pendingEscalationService = null;
+                persisted.botActivo = true;
+                saveClient(org.orgId, digits, persisted);
+                logger.info('session_service_reset_post_escalada', { orgId: org.orgId, telefono: digits, source: 'setConversationBotMode_sqlite_direct' });
+            }
         }
     }
 }
