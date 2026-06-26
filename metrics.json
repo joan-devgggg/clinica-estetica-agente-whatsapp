@@ -3,10 +3,10 @@
   "leadsSaved": 1,
   "fallbacksUsed": 1,
   "fieldMisses": {},
-  "conversationStarted": 19,
-  "userReplied": 76,
+  "conversationStarted": 20,
+  "userReplied": 77,
   "botQuestion": 0,
-  "conversationDropped": 0,
+  "conversationDropped": 7,
   "leadCompleted": 0,
   "objecionesDetectadas": 0,
   "step_tipo_reforma": 0,
@@ -34,7 +34,7 @@
   "conversionTimes": [],
   "keyMessages": [],
   "conversionRate": "0.00",
-  "dropOffRate": "0.00",
+  "dropOffRate": "35.00",
   "averageTimeToConvert": 0,
-  "totalConversations": 19
+  "totalConversations": 20
 }

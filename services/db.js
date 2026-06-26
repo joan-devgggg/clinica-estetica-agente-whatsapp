@@ -385,6 +385,30 @@ async function getMessages(orgId, telefono, { limit = 100 } = {}) {
     }));
 }
 
+async function deleteConversationMessages(orgId, telefono) {
+    const oid = resolveOrg(orgId);
+    const phone = sanitizePhone(telefono);
+    if (!phone) return false;
+
+    const contact = await findByPhone(oid, phone);
+    if (!contact) return false;
+
+    const { data: conv } = await supabase
+        .from('conversations')
+        .select('id')
+        .eq('organization_id', oid)
+        .eq('contact_id', contact.id)
+        .maybeSingle();
+    if (!conv) return false;
+
+    await supabase
+        .from('messages')
+        .delete()
+        .eq('conversation_id', conv.id)
+        .eq('organization_id', oid);
+    return true;
+}
+
 async function setLeadBotMode(orgId, telefono, mode) {
     const oid = resolveOrg(orgId);
     const phone = sanitizePhone(telefono);
@@ -1057,6 +1081,7 @@ module.exports = {
     getMessages,
     setLeadBotMode,
     setEscalationReason,
+    deleteConversationMessages,
     saveAppointment,
     updateAppointment,
     getAppointmentsByLead,

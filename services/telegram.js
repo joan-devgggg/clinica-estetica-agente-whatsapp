@@ -26,6 +26,7 @@ let _userToOrg = new Map(); // telegramUserId → orgId
 let getBotActivoFn = () => true;
 let setBotActivoFn = () => {};
 let _botInstance = null;
+let _isPolling = false;
 
 async function buildUserToOrgMap() {
     const orgs = getAllOrgs();
@@ -392,9 +393,15 @@ function startTelegramBot(options = {}) {
         return;
     }
 
+    if (_isPolling) {
+        logger.warn('telegram_polling_ya_activo');
+        return;
+    }
+
     if (options.getBotActivo) getBotActivoFn = options.getBotActivo;
     if (options.setBotActivo) setBotActivoFn = options.setBotActivo;
 
+    _isPolling = true;
     const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
     _botInstance = bot;
 

@@ -5,6 +5,7 @@ const {
     updateAppointment, setLeadBotMode, setEscalationReason, setBlacklist, createPendingAction,
     getAgentConfig, updateContactLanguage, updateContactPreferredStylist,
     getStylistsByOrg, getAllStylistSchedules, getLastCompletedAppointment,
+    deleteConversationMessages,
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
@@ -2133,6 +2134,8 @@ function setConversationBotMode(phone, active) {
                 const sessionPhone = session.partialData?.telefono || digits;
                 userSessions.delete(key);
                 deleteClient(orgId, sessionPhone);
+                deleteConversationMessages(orgId, sessionPhone).catch(e =>
+                    logger.error('error_borrar_mensajes_escalada', { orgId, telefono: sessionPhone, error: e.message }));
                 logger.info('session_full_reset_post_escalada', { telefono: digits, orgId, source: 'setConversationBotMode_memory' });
             } else {
                 session.botActivo = false;
@@ -2147,6 +2150,8 @@ function setConversationBotMode(phone, active) {
             const persisted = loadClient(org.orgId, digits);
             if (persisted) {
                 deleteClient(org.orgId, digits);
+                deleteConversationMessages(org.orgId, digits).catch(e =>
+                    logger.error('error_borrar_mensajes_escalada', { orgId: org.orgId, telefono: digits, error: e.message }));
                 logger.info('session_full_reset_post_escalada', { orgId: org.orgId, telefono: digits, source: 'setConversationBotMode_sqlite_direct' });
             }
         }
