@@ -30,6 +30,7 @@ export default function WhatsAppPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const [botActivo, setBotActivo] = useState(true);
   const [loadingBot, setLoadingBot] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
@@ -51,16 +52,24 @@ export default function WhatsAppPage() {
     });
   }, [orgId]);
 
-  // Cargar mensajes al seleccionar conversación
+  // Cargar mensajes al seleccionar conversación + resolver conversation_id para realtime
   useEffect(() => {
     if (!selectedConv) {
       setMessages([]);
+      setActiveConvId(null);
       return;
     }
     if (orgId) {
       getMessages(orgId, selectedConv.telefono).then(setMessages);
+      supabase
+        .from("conversations")
+        .select("id")
+        .eq("organization_id", orgId)
+        .eq("contact_id", selectedConv.id)
+        .maybeSingle()
+        .then(({ data }) => setActiveConvId(data?.id ?? null));
     }
-  }, [orgId, selectedConv?.telefono]);
+  }, [orgId, selectedConv?.id, selectedConv?.telefono]);
 
   // Realtime: conversaciones (filtrado por org activa)
   useEffect(() => {
@@ -82,19 +91,18 @@ export default function WhatsAppPage() {
   }, [orgId]);
 
   // Realtime: mensajes del chat activo — refetch completo al recibir INSERT
-  // (no usamos payload.new porque requeriría política anon de lectura en messages)
   useEffect(() => {
-    if (!selectedConv) return;
+    if (!activeConvId || !selectedConv) return;
     const phone = selectedConv.telefono;
     const channel = supabase
-      .channel(`messages-${phone}`)
+      .channel(`messages-${activeConvId}`)
       .on(
         "postgres_changes",
         {
           event: "INSERT",
           schema: "public",
           table: "messages",
-          filter: `telefono=eq.${phone}`,
+          filter: `conversation_id=eq.${activeConvId}`,
         },
         () => {
           if (orgId) getMessages(orgId, phone).then(setMessages);
@@ -105,7 +113,7 @@ export default function WhatsAppPage() {
       supabase.removeChannel(channel);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedConv?.telefono]);
+  }, [activeConvId]);
 
   const handleBotToggleRequest = (next: boolean) => {
     setConfirmDialog({ open: true, nextValue: next });
@@ -135,7 +143,11 @@ export default function WhatsAppPage() {
       try {
         await toggleLeadBotMode(orgId, leadId, mode);
         setConversations((prev) =>
-          prev.map((c) => (c.id === leadId ? { ...c, bot_mode: mode } : c))
+          prev.map((c) =>
+            c.id === leadId
+              ? { ...c, bot_mode: mode, ...(mode === "auto" ? { escalation_reason: null } : {}) }
+              : c
+          )
         );
         toast(
           mode === "manual"

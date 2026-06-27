@@ -3,8 +3,8 @@
   "leadsSaved": 1,
   "fallbacksUsed": 1,
   "fieldMisses": {},
-  "conversationStarted": 25,
-  "userReplied": 85,
+  "conversationStarted": 26,
+  "userReplied": 93,
   "botQuestion": 0,
   "conversationDropped": 7,
   "leadCompleted": 0,
@@ -34,7 +34,7 @@
   "conversionTimes": [],
   "keyMessages": [],
   "conversionRate": "0.00",
-  "dropOffRate": "28.00",
+  "dropOffRate": "26.92",
   "averageTimeToConvert": 0,
-  "totalConversations": 25
+  "totalConversations": 26
 }

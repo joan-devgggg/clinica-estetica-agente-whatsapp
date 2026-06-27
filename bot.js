@@ -5,7 +5,6 @@ const {
     updateAppointment, setLeadBotMode, setEscalationReason, setBlacklist, createPendingAction,
     getAgentConfig, updateContactLanguage, updateContactPreferredStylist,
     getStylistsByOrg, getAllStylistSchedules, getLastCompletedAppointment,
-    deleteConversationMessages,
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
@@ -438,13 +437,19 @@ async function handleAppointmentAction(client, session, userPhone, accion, respu
         session.botActivo = false;
         const reason = motivoEscalado || 'escalado_bot';
         try {
+            let contact = await findByPhone(orgId, session.partialData.telefono);
+            if (!contact && !session.leadId) {
+                const newId = await saveLead(orgId, { ...session.partialData, leadId: session.leadId });
+                if (newId) { session.leadId = newId; session.leadGuardado = true; }
+                contact = await findByPhone(orgId, session.partialData.telefono);
+            }
+            const contactId = contact?.id || session.leadId;
             await setLeadBotMode(orgId, session.partialData.telefono, 'manual');
             await setEscalationReason(orgId, session.partialData.telefono, reason);
-            const contact = await findByPhone(orgId, session.partialData.telefono);
             const ultimoMensaje = session.history[session.history.length - 1]?.content || '';
             await createPendingAction(orgId, {
                 type: 'escalation',
-                contactId: contact?.id || session.leadId,
+                contactId,
                 payload: { motivo: reason, mensaje: ultimoMensaje },
             });
             notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono: session.partialData.telefono }, ultimoMensaje, reason).catch(() => {});
@@ -2157,13 +2162,6 @@ function setConversationBotMode(phone, active, isEscalationResolve = false) {
                 deleteClient(org.orgId, digits);
                 logger.info('session_full_reset_post_escalada', { orgId: org.orgId, telefono: digits, source: 'setConversationBotMode_sqlite_direct' });
             }
-        }
-    }
-    if (isEscalationResolve) {
-        const { getAllOrgs } = require('./services/org-registry');
-        for (const org of getAllOrgs()) {
-            deleteConversationMessages(org.orgId, digits).catch(e =>
-                logger.error('error_borrar_mensajes_escalada', { orgId: org.orgId, telefono: digits, error: e.message }));
         }
     }
 }
