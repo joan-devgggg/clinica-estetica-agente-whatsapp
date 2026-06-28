@@ -46,8 +46,12 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
         headers: apiHeaders(orgId),
         body: JSON.stringify({ nombre: form.nombre, telefono: form.telefono }),
       });
-      if (!leadRes.ok) throw new Error();
+      if (!leadRes.ok) {
+        const err = await leadRes.json().catch(() => ({}));
+        throw new Error((err as { error?: string }).error || "Error al crear el contacto");
+      }
       const lead = await leadRes.json();
+      if (!lead?.id) throw new Error("Respuesta inválida al crear contacto");
 
       // Then create appointment
       const apptRes = await fetch(`${API}/api/appointments`, {
@@ -62,11 +66,14 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
           stylistId: form.stylistId || undefined,
         }),
       });
-      if (!apptRes.ok) throw new Error();
+      if (!apptRes.ok) {
+        const err = await apptRes.json().catch(() => ({}));
+        throw new Error((err as { error?: string }).error || "Error al crear la cita");
+      }
       toast.success("Cita creada");
       onCreated();
-    } catch {
-      toast.error("Error al crear la cita");
+    } catch (e) {
+      toast.error((e as Error).message || "Error al crear la cita");
     } finally {
       setSaving(false);
     }

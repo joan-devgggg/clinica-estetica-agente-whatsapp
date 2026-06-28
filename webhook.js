@@ -119,8 +119,11 @@ app.get('/api/leads/:id', async (req, res) => {
 app.post('/api/leads', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
+        if (!req.body.telefono) return res.status(400).json({ error: 'El teléfono es obligatorio' });
         const id = await db.saveLead(orgId, req.body);
+        if (!id) return res.status(400).json({ error: 'No se pudo crear el contacto — verifica el teléfono' });
         const lead = await db.findById(orgId, id);
+        if (!lead) return res.status(500).json({ error: 'Contacto creado pero no encontrado al releer' });
         res.status(201).json(lead);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -191,7 +194,11 @@ app.post('/api/appointments', async (req, res) => {
         const { contactId, servicio, fecha, hora, duracionMin, stylistId, notas, personas, ocasion } = req.body;
         if (!contactId || !fecha) return res.status(400).json({ error: 'contactId y fecha requeridos' });
         const apt = await db.saveAppointment(orgId, contactId, { servicio, fecha, hora, duracionMin, notas, personas, ocasion, stylistId, source: 'manual' });
-        if (!apt) return res.status(500).json({ error: 'Error al crear la cita' });
+        if (!apt) {
+            const contact = await db.findById(orgId, contactId);
+            if (!contact) return res.status(400).json({ error: `Contacto con id ${contactId} no encontrado` });
+            return res.status(500).json({ error: 'No se pudo crear la cita — revisa los datos o inténtalo de nuevo' });
+        }
 
         await db.updateLeadById(orgId, contactId, {
             estado_cita: 'confirmado',

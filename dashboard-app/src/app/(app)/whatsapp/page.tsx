@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { toast } from "sonner";
 import { useOrg } from "@/lib/org-context";
@@ -42,6 +42,8 @@ export default function WhatsAppPage() {
   const { orgId, orgName } = useOrg();
   const selectedConv = conversations.find((c) => c.id === selectedId) ?? null;
   const supabase = createClient();
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   // Carga inicial — solo datos reales de la org activa
   useEffect(() => {
@@ -125,6 +127,7 @@ export default function WhatsAppPage() {
     setLoadingBot(true);
     try {
       await toggleGlobalBot(orgId, next);
+      if (!mountedRef.current) return;
       setBotActivo(next);
       toast(
         next
@@ -132,9 +135,10 @@ export default function WhatsAppPage() {
           : "Bot desactivado — modo manual activado"
       );
     } catch {
+      if (!mountedRef.current) return;
       toast.error("Error al cambiar el estado del bot");
     } finally {
-      setLoadingBot(false);
+      if (mountedRef.current) setLoadingBot(false);
     }
   };
 
@@ -142,6 +146,7 @@ export default function WhatsAppPage() {
     async (leadId: number, mode: "auto" | "manual") => {
       try {
         await toggleLeadBotMode(orgId, leadId, mode);
+        if (!mountedRef.current) return;
         setConversations((prev) =>
           prev.map((c) =>
             c.id === leadId
@@ -155,6 +160,7 @@ export default function WhatsAppPage() {
             : "Bot reactivado en esta conversación"
         );
       } catch {
+        if (!mountedRef.current) return;
         toast.error("Error al cambiar el modo de la conversación");
       }
     },
@@ -167,9 +173,10 @@ export default function WhatsAppPage() {
       try {
         await sendManualMessage(orgId, telefono, mensaje);
       } catch (e) {
+        if (!mountedRef.current) return;
         toast.error((e as Error).message || "Error enviando mensaje");
       } finally {
-        setSendingMessage(false);
+        if (mountedRef.current) setSendingMessage(false);
       }
     },
     [orgId]

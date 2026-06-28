@@ -360,6 +360,7 @@ function buildSessionExtra(session) {
         lastUpsellSuggestion: session._lastUpsellSuggestion || null,
         pendingEscalation: !!session.pendingEscalation,
         pendingEscalationService: session.pendingEscalationService || null,
+        proposedSlots: Array.isArray(session.proposedSlots) ? session.proposedSlots : [],
     };
 }
 
@@ -963,6 +964,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession._lastUpsellSuggestion = ex.lastUpsellSuggestion || null;
                     newSession.pendingEscalation     = !!ex.pendingEscalation;
                     newSession.pendingEscalationService = ex.pendingEscalationService || null;
+                    newSession.proposedSlots         = Array.isArray(ex.proposedSlots) ? ex.proposedSlots : [];
 
                     const assistantTurns = newSession.history.filter(m => m.role === 'assistant').length;
                     const extraIncoherente =
@@ -979,6 +981,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         newSession.selectedService    = null;
                         newSession.selectedStylist    = null;
                         newSession.availableSlots     = [];
+                        newSession.proposedSlots     = [];
                         newSession.currentSlotIndex   = 0;
                         newSession.slotsProposed      = false;
                         newSession.upsellingAccepted  = [];
