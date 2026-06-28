@@ -219,6 +219,8 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         // Segunda reserva en la misma conversación (para un acompañante)
         guestBooking: false,
         guestName: null,
+        // Marca el inicio de la conversación activa — el LLM solo ve mensajes posteriores
+        conversationStartedAt: Date.now(),
     };
 }
 
@@ -342,8 +344,10 @@ async function loadAvailableSlots(session) {
 // partialData y se pierde al recargar la sesión tras un reinicio/timeout. Lo volcamos
 // en session.extra para que memory.js lo persista; los huecos se recalculan al volver.
 function buildSessionExtra(session) {
-    if (session.orgType !== 'salon') return null;
+    const base = { conversationStartedAt: session.conversationStartedAt || null };
+    if (session.orgType !== 'salon') return base;
     return {
+        ...base,
         selectedService:   session.selectedService || null,
         selectedStylist:   session.selectedStylist || null,
         language:          session.language || null,
@@ -524,7 +528,7 @@ async function finalizarReservaConBizum(client, session, userPhone) {
     session.leadStatus = 'completed';
 
     const respuesta = '¡Gracias! 🙏 En cuanto verifiquemos el Bizum te confirmamos la reserva por aquí.';
-    session.history.push({ role: 'assistant', content: respuesta });
+    session.history.push({ role: 'assistant', content: respuesta, ts: Date.now() });
     await sendWithDelay(client, userPhone, respuesta, orgId, session.partialData.telefono);
 }
 
@@ -943,6 +947,20 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     logger.info('session_botActivo_from_sqlite', { orgId, telefono: userPhone, botActivo: false, source: 'sqlite' });
                 }
 
+                // Restaurar conversationStartedAt; si han pasado >24h desde el
+                // último mensaje, tratar como conversación nueva (el LLM no verá
+                // el historial antiguo).
+                const CONVERSATION_GAP_MS = 24 * 60 * 60 * 1000;
+                if (persisted.extra?.conversationStartedAt) {
+                    const lastSeen = persisted.lastSeen || 0;
+                    if (Date.now() - lastSeen > CONVERSATION_GAP_MS) {
+                        newSession.conversationStartedAt = Date.now();
+                        logger.info('conversation_gap_new_session', { orgId, telefono: userPhone, lastSeen: new Date(lastSeen).toISOString(), gapHours: ((Date.now() - lastSeen) / 3600000).toFixed(1) });
+                    } else {
+                        newSession.conversationStartedAt = persisted.extra.conversationStartedAt;
+                    }
+                }
+
                 // Restaurar estado del salón (servicio/estilista/idioma...) para no perder
                 // el flujo tras un reinicio o timeout. Los huecos se recalculan más abajo
                 // (loadAvailableSlots) en cuanto haya selectedService.
@@ -1215,7 +1233,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             partialData:         JSON.parse(JSON.stringify(session.partialData)),
         };
 
-        session.history.push({ role: 'user', content: sanitized });
+        session.history.push({ role: 'user', content: sanitized, ts: Date.now() });
         incrementMetric('userReplied');
 
         try { await (await client.getChatById(userPhone)).sendStateTyping(); } catch {}
@@ -1586,9 +1604,22 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         const t0 = Date.now();
         const LLM_TIMEOUT_MS = 45000;
 
-        const llmHistory = session.history.slice(-10).filter(m =>
-            m.role !== 'assistant' || !isFallbackText(m.content)
-        );
+        let llmHistory;
+        if (session.conversationStartedAt) {
+            llmHistory = session.history.filter(m =>
+                m.ts >= session.conversationStartedAt &&
+                (m.role !== 'assistant' || !isFallbackText(m.content))
+            );
+            if (llmHistory.length === 0) {
+                llmHistory = session.history.slice(-10).filter(m =>
+                    m.role !== 'assistant' || !isFallbackText(m.content)
+                );
+            }
+        } else {
+            llmHistory = session.history.slice(-10).filter(m =>
+                m.role !== 'assistant' || !isFallbackText(m.content)
+            );
+        }
         const llmPromise = getChatbotResponse(orgId, llmHistory, partialDataWithCtx, intent, session.reservaConfirmada, session.summary)
             .catch(e => {
                 logger.error('llm_error', { orgId, telefono: userPhone, error: e.message, stack: e.stack?.split('\n').slice(0, 3).join(' | '), latencia_ms: Date.now() - t0 });
@@ -1684,7 +1715,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         if (aiResponse.accion && !(aiResponse.accion === 'cambiar' && session.modoReagendamiento)) {
             const handled = await handleAppointmentAction(client, session, userPhone, aiResponse.accion, aiResponse.respuesta, aiResponse.motivo_escalado);
             if (handled) {
-                if (aiResponse.accion !== 'escalar_humano') session.history.push({ role: 'assistant', content: aiResponse.respuesta });
+                if (aiResponse.accion !== 'escalar_humano') session.history.push({ role: 'assistant', content: aiResponse.respuesta, ts: Date.now() });
                 persistSession(orgId, userPhone, session);
                 return;
             }
@@ -1901,7 +1932,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             }
         }
 
-        session.history.push({ role: 'assistant', content: aiResponse.respuesta });
+        session.history.push({ role: 'assistant', content: aiResponse.respuesta, ts: Date.now() });
 
         // Send response: salon sends as a single message, restaurant splits if long
         if (orgType === 'restaurant' && aiResponse.respuesta.length > 300) {
