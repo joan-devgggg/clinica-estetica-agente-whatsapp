@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { TimePickerSelect } from "@/components/ui/time-picker-select";
 import { toast } from "sonner";
 import { API, apiHeaders } from "@/lib/api";
 import { ymd } from "@/lib/date";
@@ -107,7 +108,7 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
             </div>
             <div>
               <Label>Hora *</Label>
-              <Input type="time" value={form.hora} onChange={e => setForm(f => ({ ...f, hora: e.target.value }))} />
+              <TimePickerSelect value={form.hora} onChange={v => setForm(f => ({ ...f, hora: v }))} />
             </div>
             <div>
               <Label>Duración (min)</Label>
@@ -117,7 +118,11 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
           <div>
             <Label>Estilista</Label>
             <Select value={form.stylistId} onValueChange={v => setForm(f => ({ ...f, stylistId: v ?? "" }))}>
-              <SelectTrigger><SelectValue placeholder="Seleccionar..." /></SelectTrigger>
+              <SelectTrigger>
+                <SelectValue placeholder="Seleccionar...">
+                  {(() => { const s = stylists.find(x => x.id === form.stylistId); return s ? `${s.name} — ${s.role}` : null; })()}
+                </SelectValue>
+              </SelectTrigger>
               <SelectContent>
                 {stylists.map(s => (
                   <SelectItem key={s.id} value={s.id}>{s.name} — {s.role}</SelectItem>

@@ -15,6 +15,7 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { TimePickerSelect } from "@/components/ui/time-picker-select";
 import { API, apiHeaders } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
 
@@ -436,18 +437,16 @@ export default function ConfiguracionPage() {
                     </span>
                     {dia.abierto ? (
                       <>
-                        <input
-                          type="time"
+                        <TimePickerSelect
                           value={dia.apertura}
-                          onChange={(e) => updateHorario(key, "apertura", e.target.value)}
-                          className="h-8 w-32 rounded-md border border-input bg-transparent px-2.5 text-[12.5px] outline-none focus:border-ring focus:ring-3 focus:ring-ring/50"
+                          onChange={(v) => updateHorario(key, "apertura", v)}
+                          minuteStep={15}
                         />
                         <span className="text-[12px] text-muted-foreground">–</span>
-                        <input
-                          type="time"
+                        <TimePickerSelect
                           value={dia.cierre}
-                          onChange={(e) => updateHorario(key, "cierre", e.target.value)}
-                          className="h-8 w-32 rounded-md border border-input bg-transparent px-2.5 text-[12.5px] outline-none focus:border-ring focus:ring-3 focus:ring-ring/50"
+                          onChange={(v) => updateHorario(key, "cierre", v)}
+                          minuteStep={15}
                         />
                       </>
                     ) : (

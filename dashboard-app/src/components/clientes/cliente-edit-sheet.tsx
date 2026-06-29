@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { TimePickerSelect } from "@/components/ui/time-picker-select";
 import {
   Select,
   SelectContent,
@@ -41,6 +42,7 @@ export function ClienteEditSheet({
 }: ClienteEditSheetProps) {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [horaCita, setHoraCita] = useState(cliente?.hora_cita || "");
   const isSalon = orgType === "salon";
 
   if (!cliente) return null;
@@ -56,7 +58,7 @@ export function ClienteEditSheet({
       ...(!isSalon && { ocasion: form.get("ocasion") as string }),
       estado_cita: form.get("estado_cita") as import("@/lib/types").EstadoCita,
       fecha_cita: form.get("fecha_cita") as string,
-      hora_cita: form.get("hora_cita") as string,
+      hora_cita: horaCita,
       allergies: form.get("allergies") as string,
       preferences: form.get("preferences") as string,
       notas: form.get("notas") as string,
@@ -171,11 +173,9 @@ export function ClienteEditSheet({
               <Label className="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground">
                 Hora
               </Label>
-              <Input
-                name="hora_cita"
-                type="time"
-                defaultValue={cliente.hora_cita}
-                className="h-9"
+              <TimePickerSelect
+                value={horaCita}
+                onChange={setHoraCita}
               />
             </div>
           </div>

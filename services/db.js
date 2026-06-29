@@ -42,6 +42,7 @@ function rowToPublic(row) {
         allergies:             row.allergies,
         preferences:           row.preferences,
         preferred_stylist_id:  row.preferred_stylist_id || null,
+        last_stylist:          row.last_stylist || null,
         language:              row.language || 'es',
         created_at:            row.created_at,
         updated_at:            row.updated_at,
@@ -296,20 +297,26 @@ async function getAllConfig(orgId) {
 
 async function findOrCreateConversation(orgId, contactId) {
     const oid = resolveOrg(orgId);
-    const { data: existing } = await supabase
+    const { data, error } = await supabase
         .from('conversations')
-        .select('id')
-        .eq('organization_id', oid)
-        .eq('contact_id', contactId)
-        .maybeSingle();
-    if (existing) return existing.id;
-
-    const { data: created } = await supabase
-        .from('conversations')
-        .insert({ organization_id: oid, contact_id: contactId })
+        .upsert(
+            { organization_id: oid, contact_id: contactId, last_message_at: new Date().toISOString() },
+            { onConflict: 'organization_id,contact_id', ignoreDuplicates: false }
+        )
         .select('id')
         .single();
-    return created?.id ?? null;
+    if (data) return data.id;
+    if (error) {
+        const { data: existing } = await supabase
+            .from('conversations')
+            .select('id')
+            .eq('organization_id', oid)
+            .eq('contact_id', contactId)
+            .limit(1)
+            .single();
+        return existing?.id ?? null;
+    }
+    return null;
 }
 
 async function saveMessage(orgId, { telefono, contenido, direccion, esManual = false }) {
@@ -587,6 +594,16 @@ async function updateAppointment(orgId, appointmentId, campos) {
         .select()
         .single();
     return data || null;
+}
+
+async function deleteAppointment(orgId, appointmentId) {
+    const oid = resolveOrg(orgId);
+    const { error } = await supabase
+        .from('appointments')
+        .delete()
+        .eq('id', appointmentId)
+        .eq('organization_id', oid);
+    return !error;
 }
 
 async function getAppointmentsByDateRange(orgId, desde, hasta) {
@@ -1023,6 +1040,16 @@ async function updateContactPreferredStylist(orgId, contactId, stylistId) {
     return true;
 }
 
+async function updateContactLastStylist(orgId, contactId, stylistName) {
+    const oid = resolveOrg(orgId);
+    await supabase
+        .from('contacts')
+        .update({ last_stylist: stylistName, updated_at: now() })
+        .eq('id', contactId)
+        .eq('organization_id', oid);
+    return true;
+}
+
 // ─── Last completed appointment (agent memory) ──────────────────────────────
 
 async function getLastCompletedAppointment(orgId, contactId) {
@@ -1102,6 +1129,7 @@ module.exports = {
     deleteConversationMessages,
     saveAppointment,
     updateAppointment,
+    deleteAppointment,
     getAppointmentsByLead,
     getAppointmentsByDateRange,
     getAppointmentsPendientesRecordatorio,
@@ -1137,6 +1165,7 @@ module.exports = {
     // Contact extensions
     updateContactLanguage,
     updateContactPreferredStylist,
+    updateContactLastStylist,
     getContactStats,
     // Review worker
     getCompletedAppointmentsForReview,

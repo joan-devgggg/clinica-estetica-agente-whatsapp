@@ -243,6 +243,15 @@ app.put('/api/citas/:id', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.delete('/api/citas/:id', async (req, res) => {
+    try {
+        const orgId = extractOrgId(req);
+        const ok = await db.deleteAppointment(orgId, req.params.id);
+        if (!ok) return res.status(404).json({ error: 'No encontrada' });
+        res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ─── API: Bizums ─────────────────────────────────────────────────────────────
 app.get('/api/bizums', async (req, res) => {
     try {

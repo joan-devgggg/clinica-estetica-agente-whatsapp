@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { StylistAgenda } from "@/components/agenda/stylist-agenda";
 import { CreateAppointmentDialog } from "@/components/agenda/create-appointment-dialog";
 import { CreateBlockDialog } from "@/components/agenda/create-block-dialog";
+import { AppointmentEditSheet } from "@/components/reservas/appointment-edit-sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -46,6 +47,7 @@ export default function AgendaEstilistasPage() {
   const [showNewBlock, setShowNewBlock] = useState(false);
   const [blockToDelete, setBlockToDelete] = useState<ScheduleBlock | null>(null);
   const [deletingBlock, setDeletingBlock] = useState(false);
+  const [editReserva, setEditReserva] = useState<Reserva | null>(null);
 
   const { orgId } = useOrg();
   const supabase = createClient();
@@ -194,6 +196,7 @@ export default function AgendaEstilistasPage() {
               schedule={schedule}
               stylist={activeStylist}
               onBlockClick={setBlockToDelete}
+              onAppointmentClick={setEditReserva}
             />
           ) : (
             <p className="text-center text-muted-foreground py-12">No hay estilistas configuradas</p>
@@ -220,6 +223,16 @@ export default function AgendaEstilistasPage() {
           onCreated={() => { setShowNewBlock(false); loadData(); }}
         />
       )}
+
+      <AppointmentEditSheet
+        reserva={editReserva}
+        open={!!editReserva}
+        onClose={() => setEditReserva(null)}
+        onUpdated={loadData}
+        orgId={orgId}
+        orgType="salon"
+        stylists={stylists}
+      />
 
       <Dialog open={!!blockToDelete} onOpenChange={(open) => { if (!open) setBlockToDelete(null); }}>
         <DialogContent className="sm:max-w-md">

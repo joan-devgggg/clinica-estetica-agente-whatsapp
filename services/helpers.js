@@ -159,6 +159,20 @@ function isValidName(name) {
     return /[aeiouáéíóú]/i.test(cleaned);
 }
 
+function isServiceName(name, servicesCatalog) {
+    if (!name || !servicesCatalog?.length) return false;
+    const norm = normalizeText(name);
+    if (norm.length < 3) return false;
+    for (const svc of servicesCatalog) {
+        const svcName = normalizeText(svc.nombre);
+        const svcCat = normalizeText(svc.categoria);
+        if (norm === svcName || norm === svcCat) return true;
+        if (svcName.split(/\s+/).some(w => w === norm && w.length >= 3)) return true;
+        if (svcCat.split(/\s+/).some(w => w === norm && w.length >= 3)) return true;
+    }
+    return false;
+}
+
 // ─── Campos faltantes ─────────────────────────────────────────────────────────
 
 function getMissingFields(partialData) {
@@ -740,6 +754,7 @@ module.exports = {
     isAffirmative,
     isNegative,
     isValidName,
+    isServiceName,
     // Salon-specific
     extractServiceFromText,
     extractStylistFromText,

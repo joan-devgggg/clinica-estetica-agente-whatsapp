@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { TimePickerSelect } from "@/components/ui/time-picker-select";
 import { toast } from "sonner";
 import { API, apiHeaders } from "@/lib/api";
 import type { Stylist } from "@/lib/types";
@@ -70,7 +71,11 @@ export function CreateBlockDialog({ stylists, orgId, defaultStylistId, onClose, 
           <div>
             <Label>Estilista *</Label>
             <Select value={form.stylistId} onValueChange={v => setForm(f => ({ ...f, stylistId: v ?? "" }))}>
-              <SelectTrigger><SelectValue placeholder="Seleccionar..." /></SelectTrigger>
+              <SelectTrigger>
+                <SelectValue placeholder="Seleccionar...">
+                  {(() => { const s = stylists.find(x => x.id === form.stylistId); return s ? s.name : null; })()}
+                </SelectValue>
+              </SelectTrigger>
               <SelectContent>
                 {stylists.map(s => (
                   <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
@@ -85,11 +90,11 @@ export function CreateBlockDialog({ stylists, orgId, defaultStylistId, onClose, 
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Hora inicio *</Label>
-              <Input type="time" value={form.horaInicio} onChange={e => setForm(f => ({ ...f, horaInicio: e.target.value }))} />
+              <TimePickerSelect value={form.horaInicio} onChange={v => setForm(f => ({ ...f, horaInicio: v }))} />
             </div>
             <div>
               <Label>Hora fin *</Label>
-              <Input type="time" value={form.horaFin} onChange={e => setForm(f => ({ ...f, horaFin: e.target.value }))} />
+              <TimePickerSelect value={form.horaFin} onChange={v => setForm(f => ({ ...f, horaFin: v }))} />
             </div>
           </div>
           <div>

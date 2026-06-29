@@ -12,6 +12,7 @@ interface StylistAgendaProps {
   schedule: StylistSchedule[];
   stylist: Stylist;
   onBlockClick?: (block: ScheduleBlock) => void;
+  onAppointmentClick?: (appointment: Reserva) => void;
 }
 
 const HOURS = Array.from({ length: 10 }, (_, i) => i + 10); // 10:00 to 19:00
@@ -71,7 +72,7 @@ const MOTIVO_LABELS: Record<string, string> = {
   otro: "Bloqueado",
 };
 
-export function StylistAgenda({ weekStart, appointments, blocks, blockedDays = [], schedule, stylist, onBlockClick }: StylistAgendaProps) {
+export function StylistAgenda({ weekStart, appointments, blocks, blockedDays = [], schedule, stylist, onBlockClick, onAppointmentClick }: StylistAgendaProps) {
   const days = getWeekDays(weekStart, schedule);
   const blockedDateSet = new Set(blockedDays.map(b => b.fecha));
   const blockedByDate = new Map<string, BlockedDay>();
@@ -94,15 +95,15 @@ export function StylistAgenda({ weekStart, appointments, blocks, blockedDays = [
               className={`border-b border-r border-border px-2 py-2 text-center ${
                 blocked
                   ? "bg-destructive/10"
-                  : libra ? "bg-muted/30" : day.isToday ? "bg-primary/5 font-semibold" : "bg-muted/50"
+                  : libra ? "bg-muted/30" : day.isToday ? "bg-primary/90 font-semibold" : "bg-muted/50"
               }`}
             >
-              <p className="text-muted-foreground">{day.dayName}</p>
+              <p className={day.isToday && !blocked && !libra ? "text-primary-foreground/80" : "text-muted-foreground"}>{day.dayName}</p>
               <p
                 className={`text-lg font-semibold ${
                   blocked
                     ? "text-destructive"
-                    : libra ? "text-muted-foreground/50" : day.isToday ? "text-primary" : "text-foreground"
+                    : libra ? "text-muted-foreground/50" : day.isToday ? "text-primary-foreground" : "text-foreground"
                 }`}
               >
                 {day.dayNum}
@@ -168,14 +169,16 @@ export function StylistAgenda({ weekStart, appointments, blocks, blockedDays = [
                           const pos = getApptPosition(a);
                           if (!pos) return null;
                           return (
-                            <div
+                            <button
+                              type="button"
                               key={a.appointment_id}
-                              className="absolute inset-x-0.5 bg-primary/15 border border-primary/30 rounded px-1 py-0.5 text-[10px] leading-tight overflow-hidden z-10"
+                              onClick={() => onAppointmentClick?.(a)}
+                              className="absolute inset-x-0.5 bg-primary/15 border border-primary/30 rounded px-1 py-0.5 text-[10px] leading-tight overflow-hidden z-10 text-left cursor-pointer hover:bg-primary/25 hover:border-primary/50 transition-colors"
                               style={{ top: 0, minHeight: "100%" }}
                             >
                               <p className="font-medium text-primary truncate">{a.nombre}</p>
                               <p className="text-muted-foreground truncate">{a.service || "Cita"}</p>
-                            </div>
+                            </button>
                           );
                         })}
 

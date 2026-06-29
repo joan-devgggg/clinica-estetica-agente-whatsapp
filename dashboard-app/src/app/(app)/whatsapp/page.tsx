@@ -43,6 +43,8 @@ export default function WhatsAppPage() {
   const selectedConv = conversations.find((c) => c.id === selectedId) ?? null;
   const supabase = createClient();
   const mountedRef = useRef(true);
+  const sendingRef = useRef(false);
+  const pendingConvRefresh = useRef(false);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
   // Carga inicial — solo datos reales de la org activa
@@ -68,12 +70,22 @@ export default function WhatsAppPage() {
         .select("id")
         .eq("organization_id", orgId)
         .eq("contact_id", selectedConv.id)
-        .maybeSingle()
-        .then(({ data }) => setActiveConvId(data?.id ?? null));
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .then(({ data }) => setActiveConvId(data?.[0]?.id ?? null));
     }
   }, [orgId, selectedConv?.id, selectedConv?.telefono]);
 
-  // Realtime: conversaciones (filtrado por org activa)
+  const refreshConversations = useCallback(() => {
+    if (!orgId) return;
+    if (sendingRef.current) {
+      pendingConvRefresh.current = true;
+      return;
+    }
+    getConversations(orgId).then(setConversations);
+  }, [orgId]);
+
+  // Realtime: refrescar lista de conversaciones cuando cambian contacts, conversations o llegan mensajes nuevos
   useEffect(() => {
     if (!orgId) return;
     const channel = supabase
@@ -81,33 +93,41 @@ export default function WhatsAppPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "contacts", filter: `organization_id=eq.${orgId}` },
-        () => {
-          getConversations(orgId).then(setConversations);
-        }
+        () => { refreshConversations(); }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "conversations", filter: `organization_id=eq.${orgId}` },
+        () => { refreshConversations(); }
+      )
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "messages" },
+        () => { refreshConversations(); }
       )
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orgId]);
+  }, [orgId, refreshConversations]);
 
-  // Realtime: mensajes del chat activo — refetch completo al recibir INSERT
+  // Realtime: mensajes del chat activo
   useEffect(() => {
-    if (!activeConvId || !selectedConv) return;
+    if (!selectedConv || !orgId) return;
     const phone = selectedConv.telefono;
     const channel = supabase
-      .channel(`messages-${activeConvId}`)
+      .channel(`messages-${activeConvId ?? "pending"}`)
       .on(
         "postgres_changes",
         {
           event: "INSERT",
           schema: "public",
           table: "messages",
-          filter: `conversation_id=eq.${activeConvId}`,
+          ...(activeConvId ? { filter: `conversation_id=eq.${activeConvId}` } : {}),
         },
         () => {
-          if (orgId) getMessages(orgId, phone).then(setMessages);
+          getMessages(orgId, phone).then(setMessages);
         }
       )
       .subscribe();
@@ -115,7 +135,7 @@ export default function WhatsAppPage() {
       supabase.removeChannel(channel);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeConvId]);
+  }, [activeConvId, selectedConv?.id]);
 
   const handleBotToggleRequest = (next: boolean) => {
     setConfirmDialog({ open: true, nextValue: next });
@@ -169,6 +189,7 @@ export default function WhatsAppPage() {
 
   const handleSendMessage = useCallback(
     async (telefono: string, mensaje: string) => {
+      sendingRef.current = true;
       setSendingMessage(true);
       try {
         await sendManualMessage(orgId, telefono, mensaje);
@@ -176,7 +197,14 @@ export default function WhatsAppPage() {
         if (!mountedRef.current) return;
         toast.error((e as Error).message || "Error enviando mensaje");
       } finally {
-        if (mountedRef.current) setSendingMessage(false);
+        sendingRef.current = false;
+        if (mountedRef.current) {
+          setSendingMessage(false);
+          if (pendingConvRefresh.current) {
+            pendingConvRefresh.current = false;
+            getConversations(orgId).then(setConversations);
+          }
+        }
       }
     },
     [orgId]

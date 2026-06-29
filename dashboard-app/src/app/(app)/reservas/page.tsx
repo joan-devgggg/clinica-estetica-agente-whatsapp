@@ -6,8 +6,9 @@ import { CalendarX } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { WeekStrip } from "@/components/reservas/week-strip";
 import { ReservaCard } from "@/components/reservas/reserva-card";
+import { AppointmentEditSheet } from "@/components/reservas/appointment-edit-sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Reserva } from "@/lib/types";
+import type { Reserva, Stylist } from "@/lib/types";
 import { useOrg } from "@/lib/org-context";
 import { ymd as toKey, addDays, getMondayOf } from "@/lib/date";
 
@@ -28,6 +29,8 @@ export default function ReservasPage() {
   });
   const [allReservas, setAllReservas] = useState<Reserva[]>([]);
   const [loading, setLoading] = useState(true);
+  const [editReserva, setEditReserva] = useState<Reserva | null>(null);
+  const [stylists, setStylists] = useState<Stylist[]>([]);
   const supabase = createClient();
   const { orgId, orgType } = useOrg();
 
@@ -50,6 +53,14 @@ export default function ReservasPage() {
   useEffect(() => {
     fetchReservas();
   }, [fetchReservas]);
+
+  useEffect(() => {
+    if (!orgId || orgType !== "salon") return;
+    fetch(`${API}/api/stylists`, { headers: apiHeaders(orgId) })
+      .then(r => r.ok ? r.json() : [])
+      .then(setStylists)
+      .catch(() => {});
+  }, [orgId, orgType]);
 
   // Realtime: actualizar agenda cuando el bot confirma o cambia una reserva
   useEffect(() => {
@@ -141,13 +152,23 @@ export default function ReservasPage() {
             ) : (
               <div className="space-y-3">
                 {reservasDelDia.map((reserva) => (
-                  <ReservaCard key={reserva.appointment_id ?? reserva.id} reserva={reserva} orgType={orgType} />
+                  <ReservaCard key={reserva.appointment_id ?? reserva.id} reserva={reserva} orgType={orgType} onClick={() => setEditReserva(reserva)} />
                 ))}
               </div>
             )}
           </div>
         </div>
       </div>
+
+      <AppointmentEditSheet
+        reserva={editReserva}
+        open={!!editReserva}
+        onClose={() => setEditReserva(null)}
+        onUpdated={fetchReservas}
+        orgId={orgId}
+        orgType={orgType}
+        stylists={stylists}
+      />
     </>
   );
 }

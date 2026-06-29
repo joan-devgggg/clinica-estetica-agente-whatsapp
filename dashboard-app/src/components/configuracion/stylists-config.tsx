@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { TimePickerSelect } from "@/components/ui/time-picker-select";
 import { API, apiHeaders } from "@/lib/api";
 
 // Esquema: day_of_week 0 = Lunes … 6 = Domingo (igual que stylist_schedules en Supabase).
@@ -279,18 +280,16 @@ export function StylistsConfig({ orgId }: { orgId: string }) {
                         </span>
                         {d.abierto ? (
                           <>
-                            <input
-                              type="time"
+                            <TimePickerSelect
                               value={d.apertura}
-                              onChange={(e) => updateDay(stylist.id, idx, { apertura: e.target.value })}
-                              className="h-8 w-28 rounded-md border border-input bg-transparent px-2 text-[12.5px] outline-none focus:border-ring focus:ring-3 focus:ring-ring/50"
+                              onChange={(v) => updateDay(stylist.id, idx, { apertura: v })}
+                              minuteStep={15}
                             />
                             <span className="text-[12px] text-muted-foreground">–</span>
-                            <input
-                              type="time"
+                            <TimePickerSelect
                               value={d.cierre}
-                              onChange={(e) => updateDay(stylist.id, idx, { cierre: e.target.value })}
-                              className="h-8 w-28 rounded-md border border-input bg-transparent px-2 text-[12.5px] outline-none focus:border-ring focus:ring-3 focus:ring-ring/50"
+                              onChange={(v) => updateDay(stylist.id, idx, { cierre: v })}
+                              minuteStep={15}
                             />
                           </>
                         ) : (
