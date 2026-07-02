@@ -30,7 +30,6 @@ export default function WhatsAppPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const [botActivo, setBotActivo] = useState(true);
   const [loadingBot, setLoadingBot] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
@@ -41,11 +40,20 @@ export default function WhatsAppPage() {
 
   const { orgId, orgName } = useOrg();
   const selectedConv = conversations.find((c) => c.id === selectedId) ?? null;
-  const supabase = createClient();
+  // Bug 9: memoizamos el cliente. Antes se llamaba createClient() en CADA render, creando
+  // una instancia nueva de Supabase (y un socket realtime nuevo) cada vez → los canales
+  // realtime quedaban huérfanos y los mensajes no llegaban sin recargar la página.
+  const [supabase] = useState(() => createClient());
   const mountedRef = useRef(true);
   const sendingRef = useRef(false);
   const pendingConvRefresh = useRef(false);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  // Reseteamos a true en CADA montaje. Con solo el cleanup, React StrictMode (dev) deja
+  // mountedRef.current=false tras su desmontaje/remontaje simulado, y entonces los guards
+  // `mountedRef.current && setMessages(...)` no se ejecutaban nunca → no aparecían mensajes.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   // Carga inicial — solo datos reales de la org activa
   useEffect(() => {
@@ -56,24 +64,15 @@ export default function WhatsAppPage() {
     });
   }, [orgId]);
 
-  // Cargar mensajes al seleccionar conversación + resolver conversation_id para realtime
+  // Cargar mensajes al seleccionar conversación
   useEffect(() => {
-    if (!selectedConv) {
+    if (!selectedConv || !orgId) {
       setMessages([]);
-      setActiveConvId(null);
       return;
     }
-    if (orgId) {
-      getMessages(orgId, selectedConv.telefono).then(setMessages);
-      supabase
-        .from("conversations")
-        .select("id")
-        .eq("organization_id", orgId)
-        .eq("contact_id", selectedConv.id)
-        .order("created_at", { ascending: true })
-        .limit(1)
-        .then(({ data }) => setActiveConvId(data?.[0]?.id ?? null));
-    }
+    getMessages(orgId, selectedConv.telefono).then((m) => {
+      if (mountedRef.current) setMessages(m);
+    });
   }, [orgId, selectedConv?.id, selectedConv?.telefono]);
 
   const refreshConversations = useCallback(() => {
@@ -112,22 +111,27 @@ export default function WhatsAppPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgId, refreshConversations]);
 
-  // Realtime: mensajes del chat activo
+  // Realtime: mensajes del chat activo. Filtramos por organization_id (siempre presente y
+  // estable) en vez de por conversation_id (que requería una resolución async frágil y dejaba
+  // la suscripción sin filtro mientras se resolvía). Al llegar un mensaje nuevo de la org,
+  // recargamos los del chat abierto.
   useEffect(() => {
     if (!selectedConv || !orgId) return;
     const phone = selectedConv.telefono;
     const channel = supabase
-      .channel(`messages-${activeConvId ?? "pending"}`)
+      .channel(`messages-${orgId}-${selectedConv.id}`)
       .on(
         "postgres_changes",
         {
           event: "INSERT",
           schema: "public",
           table: "messages",
-          ...(activeConvId ? { filter: `conversation_id=eq.${activeConvId}` } : {}),
+          filter: `organization_id=eq.${orgId}`,
         },
         () => {
-          getMessages(orgId, phone).then(setMessages);
+          getMessages(orgId, phone).then((m) => {
+            if (mountedRef.current) setMessages(m);
+          });
         }
       )
       .subscribe();
@@ -135,7 +139,7 @@ export default function WhatsAppPage() {
       supabase.removeChannel(channel);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeConvId, selectedConv?.id]);
+  }, [orgId, selectedConv?.id, selectedConv?.telefono]);
 
   const handleBotToggleRequest = (next: boolean) => {
     setConfirmDialog({ open: true, nextValue: next });

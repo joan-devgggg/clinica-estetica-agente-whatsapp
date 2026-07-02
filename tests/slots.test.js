@@ -58,9 +58,35 @@ test('"el primero" devuelve el primer hueco', () => {
     assert.strictEqual(slot.hora, '14:00');
 });
 
-test('normalizeHora normaliza "2" a "02:00"', () => {
-    assert.strictEqual(normalizeHora('2'), '02:00');
+test('normalizeHora interpreta "2" como las 14:00 (salón trabaja de tarde)', () => {
+    assert.strictEqual(normalizeHora('2'), '14:00');
     assert.strictEqual(normalizeHora('14:30'), '14:30');
+});
+
+// ─── Bug 1: una FECHA sin hora ("1 de julio") no es selección de hueco ─────────
+
+test('parseSlotSelection: "el 1 de julio" (fecha sin hora) → null, no opción/hora', () => {
+    const slots = [
+        { fecha: '2026-07-01', hora: '13:00', stylistId: 'a', stylistName: 'Veronika' },
+        { fecha: '2026-07-01', hora: '14:00', stylistId: 'a', stylistName: 'Veronika' },
+    ];
+    assert.strictEqual(parseSlotSelection('el 1 de julio', slots), null);
+});
+
+test('resolveSalonConfirmation: "1 de julio" no autoconfirma (día, no hora elegida)', () => {
+    const slots = [
+        { fecha: '2026-07-01', hora: '13:00', stylistId: 'a', stylistName: 'Veronika' },
+        { fecha: '2026-07-01', hora: '14:00', stylistId: 'a', stylistName: 'Veronika' },
+    ];
+    const session = {
+        reservaConfirmada: false, selectedService: { nombre: 'Corte' },
+        availableSlots: slots, slotsProposed: true, proposedSlots: slots, currentSlotIndex: 0,
+    };
+    // El LLM extrae hora_cita "1" desde "1 de julio"; sin la guarda, normalizeHora lo
+    // volvería 13:00 y reservaría ese hueco sin que la clienta eligiera hora.
+    const ai = { respuesta: 'te he reservado', reserva_confirmada: false, datos: { hora_cita: '1' } };
+    const res = quiet(() => resolveSalonConfirmation(session, ai, '1 de julio', slots));
+    assert.strictEqual(res, null);
 });
 
 // ─── Fix 1: red de seguridad anti-fallo-silencioso ─────────────────────────────
@@ -83,7 +109,8 @@ test('resolveSalonConfirmation guarda cuando el texto confirma pero falta el fla
     };
     const aiResponse = { respuesta: '¡Te he reservado tu cita! 😊', reserva_confirmada: false, datos: {} };
     // sanitized neutral (no afirmativo, no posicional) para forzar la rama (4) de texto.
-    const res = quiet(() => resolveSalonConfirmation(session, aiResponse, 'muchas gracias'));
+    // frozenProposed con UN solo hueco → pickChosenSlot lo resuelve sin ambigüedad.
+    const res = quiet(() => resolveSalonConfirmation(session, aiResponse, 'muchas gracias', [slotsTarde[0]]));
     assert.ok(res, 'debería devolver un slot');
     assert.strictEqual(res.motivo, 'texto_llm_confirma');
     assert.strictEqual(res.slot.hora, '14:00');

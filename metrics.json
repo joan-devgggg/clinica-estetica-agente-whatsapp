@@ -1,12 +1,12 @@
 {
   "leadsDetected": 0,
-  "leadsSaved": 4,
+  "leadsSaved": 1,
   "fallbacksUsed": 0,
   "fieldMisses": {},
-  "conversationStarted": 10,
-  "userReplied": 62,
+  "conversationStarted": 6,
+  "userReplied": 30,
   "botQuestion": 0,
-  "conversationDropped": 255,
+  "conversationDropped": 0,
   "leadCompleted": 0,
   "objecionesDetectadas": 0,
   "step_tipo_reforma": 0,
@@ -34,7 +34,7 @@
   "conversionTimes": [],
   "keyMessages": [],
   "conversionRate": "0.00",
-  "dropOffRate": "2550.00",
+  "dropOffRate": "0.00",
   "averageTimeToConvert": 0,
-  "totalConversations": 10
+  "totalConversations": 6
 }

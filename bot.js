@@ -1,7 +1,7 @@
 require('dotenv').config();
 const { getChatbotResponse } = require('./services/ai');
 const {
-    saveLead, updateLead, findByPhone, saveMessage, saveAppointment,
+    saveLead, updateLead, findByPhone, saveMessage, saveAppointment, setContactJid,
     updateAppointment, setLeadBotMode, setEscalationReason, setBlacklist, createPendingAction,
     getAgentConfig, updateContactLanguage, updateContactPreferredStylist, updateContactLastStylist,
     getStylistsByOrg, getAllStylistSchedules, getLastCompletedAppointment,
@@ -269,16 +269,44 @@ function isUpsellingAcceptance(text) {
     return patterns.some(p => p.test(t));
 }
 
+// Errores transitorios de Puppeteer/whatsapp-web.js: el frame del navegador de WhatsApp Web
+// se "desadjunta" momentáneamente (re-render de la sesión) y el siguiente intento suele
+// funcionar. NO incluimos "protocol error" / "not connected" aquí: esos indican desconexión
+// real y se tratan aparte (no tiene sentido reintentar).
+const TRANSIENT_WA_ERRORS = ['detached frame', 'execution context was destroyed', 'target closed', 'session closed', 'most likely the page has been closed'];
+function isTransientWAError(err) {
+    const m = String(err?.message || err || '').toLowerCase();
+    return TRANSIENT_WA_ERRORS.some(p => m.includes(p));
+}
+
+// Envía un mensaje reintentando ante errores transitorios de frame (bug 7). El frame de
+// puppeteer puede tardar varios SEGUNDOS en re-adjuntarse (recarga/reconexión de WA Web),
+// así que usamos backoff creciente (0.8s, 1.6s, 2.4s) y, antes de cada reintento, "calentamos"
+// el chat con getChatById para forzar que el frame del chat esté cargado (igual que el path
+// del bot, que no sufre este error porque envía justo tras recibir un mensaje de ese chat).
+async function waSendMessage(client, jid, text, { retries = 3, baseDelayMs = 800 } = {}) {
+    let lastErr;
+    for (let i = 0; i <= retries; i++) {
+        try {
+            if (i > 0) { try { await client.getChatById(jid); } catch { /* warm-up best-effort */ } }
+            return await client.sendMessage(jid, text);
+        } catch (e) {
+            lastErr = e;
+            if (!isTransientWAError(e) || i === retries) throw e;
+            await new Promise(r => setTimeout(r, baseDelayMs * (i + 1)));
+        }
+    }
+    throw lastErr;
+}
+
 async function sendWithDelay(client, phone, text, orgId, dbPhone) {
     if (!text?.trim()) return;
     const delay = Math.min(text.length * MESSAGE_DELAY_MS_PER_CHAR, MESSAGE_DELAY_MAX_MS);
     try {
         await (await client.getChatById(phone)).sendStateTyping();
         if (delay > 100) await new Promise(r => setTimeout(r, delay));
-        await client.sendMessage(phone, text);
-    } catch {
-        await client.sendMessage(phone, text);
-    }
+    } catch { /* sendStateTyping es best-effort: si el frame falla, seguimos al envío */ }
+    await waSendMessage(client, phone, text);
     const phoneForDb = dbPhone || extractPhoneFromJid(phone);
     if (phoneForDb) saveMessage(orgId, { telefono: phoneForDb, contenido: text, direccion: 'saliente' }).catch(() => {});
 }
@@ -307,8 +335,17 @@ async function loadAvailableSlots(session) {
     try {
         if (session.orgType === 'salon') {
             const service = session.selectedService;
+            let upsellingDuration = 0;
+            if (session.upsellingAccepted?.length) {
+                const cfgSlots = await getAgentConfig(orgId);
+                const catalogSlots = cfgSlots?.services || [];
+                upsellingDuration = session.upsellingAccepted.reduce((sum, name) => {
+                    const svc = catalogSlots.find(s => normalizeText(s.nombre) === normalizeText(name));
+                    return sum + (svc?.duracion || 30);
+                }, 0);
+            }
             const slots = await calendarSante.getAvailableSlots(orgId, {
-                serviceDuration: service?.duracion || 60,
+                serviceDuration: (service?.duracion || 60) + upsellingDuration,
                 serviceCategory: service?.categoria,
                 preferredStylistId: session.selectedStylist?.id || session.preferredStylistId,
                 preferencia: session.partialData.preferencia_horaria || {},
@@ -442,6 +479,12 @@ async function handleAppointmentAction(client, session, userPhone, accion, respu
     if (accion === 'escalar_humano') {
         session.botActivo = false;
         const reason = motivoEscalado || 'escalado_bot';
+        session.selectedService = null;
+        session.selectedCategory = null;
+        session.partialData.servicio = null;
+        session.partialData.estilista_preferida = null;
+        session.slotsProposed = false;
+        session.proposedSlots = [];
         try {
             let contact = await findByPhone(orgId, session.partialData.telefono);
             if (!contact && !session.leadId) {
@@ -538,9 +581,40 @@ async function finalizarReservaConBizum(client, session, userPhone) {
 // en la lista para no reservar siempre el primero. Fallback: el hueco actual.
 function normalizeHora(h) {
     if (!h) return null;
-    const m = String(h).match(/(\d{1,2})\s*[:h.]?\s*(\d{2})?/);
+    const s = String(h).toLowerCase().trim();
+
+    if (/mediodia|mediodía/.test(s)) return '13:00';
+
+    const esTarde = /tarde|noche|pm/.test(s);
+    const esMañana = /ma[ñn]ana|morning|am/.test(s);
+
+    const m = s.match(/(\d{1,2})(?:[:.h](\d{2}))?/);
     if (!m) return null;
-    return `${String(m[1]).padStart(2, '0')}:${(m[2] || '00').padStart(2, '0')}`;
+
+    let hh = parseInt(m[1], 10);
+    let mm = m[2] ? parseInt(m[2], 10) : (/y\s*media/.test(s) ? 30 : 0);
+
+    // Convertir 12h/coloquial a 24h
+    if (esTarde && hh < 12) hh += 12;
+    else if (!esMañana && hh >= 1 && hh <= 8) hh += 12; // "las 4" → 16:00, "las 7" → 19:00
+
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+// Bug 1: detecta que el mensaje expresa una FECHA (mes explícito, "1 de julio") sin
+// una hora concreta. En ese caso NO es una selección de hueco: es preferencia de día.
+// Sin esta guarda, normalizeHora convierte el día ("1") en hora ("13:00") y la
+// confirmación reserva un hueco que la clienta no eligió (solo pidió ver ese día).
+// "a la 1", "el 1 de julio a las 14h" → false (hay hora explícita → sí es selección).
+const _FECHA_CON_MES_RE = /\b(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/;
+function messageHasDateWithoutTime(text) {
+    const t = normalizeText(text);
+    if (!t || !_FECHA_CON_MES_RE.test(t)) return false;
+    const hasExplicitTime = /\b\d{1,2}[:.h]\d{2}\b/.test(t)          // 14:30, 14h30, 14.30
+        || /\b\d{1,2}\s*h\b/.test(t)                                // 14h
+        || /\ba\s+las?\s+\d{1,2}\b/.test(t)                         // "a las 14", "a la 1"
+        || /\b(y\s*media|y\s*cuarto|menos\s*cuarto|mediod[ií]a)\b/.test(t);
+    return !hasExplicitTime;
 }
 
 // Resuelve el hueco que la clienta acepta contra la lista EXACTA que se le propuso
@@ -582,6 +656,27 @@ function pickChosenSlot(session, datos, overrideSlots) {
             logger.info('pickChosenSlot_ambiguo', { branch: 'hora_multiple', count: byHora.length, matches: byHora.map(s => ({ fecha: s.fecha, hora: s.hora })) });
         }
     }
+    // (b.5) hora exacta no en el grid de 30 min (p.ej. "10:15", "10:45"):
+    // si AMBOS huecos contiguos de 30 min existen en el día pedido, la franja
+    // entre ellos es libre con seguridad → sintetizamos el hueco a la hora exacta.
+    if (horaSel) {
+        const [rh, rm] = horaSel.split(':').map(Number);
+        if (!isNaN(rh) && !isNaN(rm) && rm % 30 !== 0) {
+            const reqMin = rh * 60 + rm;
+            const prevMin = reqMin - (reqMin % 30);
+            const nextMin = prevMin + 30;
+            const fmt = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+            const daySlots = fechaSel ? slots.filter(s => s.fecha === fechaSel) : slots;
+            const prevSlot = daySlots.find(s => normalizeHora(s.hora) === fmt(prevMin));
+            const nextSlot = daySlots.find(s => normalizeHora(s.hora) === fmt(nextMin));
+            if (prevSlot && nextSlot) {
+                const synth = { ...prevSlot, hora: horaSel };
+                logger.info('pickChosenSlot_match', { branch: 'hora_sintetizada', horaOriginal: prevSlot.hora, horaSolicitada: horaSel, fecha: prevSlot.fecha });
+                return synth;
+            }
+        }
+    }
+
     // (c) un único hueco propuesto → no hay nada que confundir.
     if (slots.length === 1) {
         logger.info('pickChosenSlot_match', { branch: 'slot_unico', fecha: slots[0].fecha, hora: slots[0].hora, stylist: slots[0].stylistName });
@@ -601,6 +696,11 @@ function parseSlotSelection(text, slots) {
     if (!slots || !slots.length) return null;
     const t = normalizeText(text);
     if (!t) return null;
+
+    // Bug 1: si el texto es una FECHA con mes y sin hora ("el 1 de julio"), el número es
+    // el día, NO una opción ni una hora → no es selección de hueco. Sin esta guarda, la
+    // extracción de hora de abajo leería "1" como las 13:00 y elegiría un hueco erróneo.
+    if (messageHasDateWithoutTime(text)) return null;
 
     // 1) Por hora explícita ("el de las 14", "a las 15:30", "14h"). Extracción
     //    permisiva + match estricto contra los huecos reales evita falsos positivos.
@@ -708,6 +808,9 @@ function resetForSecondBooking(session, sanitized) {
     session.pendingLargoCategory = null;
     session.largoPelo = null;
     session.leadStatus = 'in_progress';
+    session.partialData.servicio = null;
+    session.partialData.categoria_servicio = null;
+    session.partialData.estilista_preferida = null;
     delete session.partialData.preferencia_horaria;
     delete session.partialData.fecha_cita;
     delete session.partialData.hora_cita;
@@ -743,6 +846,14 @@ function resolveSalonConfirmation(session, aiResponse, sanitized, frozenProposed
         return null;
     }
 
+    // Bug 1: la clienta expresó una FECHA ("1 de julio") sin hora concreta → es
+    // preferencia de día, no selección de hueco. No confirmamos: los slots ya se
+    // recargan filtrados por esa fecha en la lógica pre-LLM y se le re-proponen.
+    if (messageHasDateWithoutTime(sanitized)) {
+        logger.info('resolveSalonConfirmation_skip', { reason: 'fecha_sin_hora' });
+        return null;
+    }
+
     // Usamos los huecos que la clienta VIO (frozenProposed, capturados antes de cualquier
     // recarga de huecos en este turno).
     const proposed = frozenProposed;
@@ -758,12 +869,6 @@ function resolveSalonConfirmation(session, aiResponse, sanitized, frozenProposed
     if (horaSel) {
         const slot = pickChosenSlot(session, aiResponse.datos, proposed);
         if (slot) return { slot, motivo: 'match_hora' };
-    }
-
-    // Selección posicional/ordinal: "el primero", "la segunda", "el de las 14"...
-    if (session.slotsProposed) {
-        const bySel = parseSlotSelection(sanitized, proposed);
-        if (bySel) return { slot: bySel, motivo: 'seleccion_posicional' };
     }
 
     if (session.slotsProposed && isAffirmative(sanitized)) {
@@ -1075,7 +1180,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         } else if (Date.now() - existingSession.lastUpdate > SESSION_TIMEOUT) {
             persistSession(orgId, userPhone, existingSession);
             const prev = existingSession;
-            userSessions.set(sKey, createEmptySession(userPhone, orgId));
+            // Pasamos dbPhone (resuelto) para que el identificador de la sesión sea ESTABLE
+            // entre timeouts. Sin él, el telefono se derivaba del JID y podía divergir del
+            // wa_phone del contacto → rompía el matching de bot_mode (bug 10) y el guardado.
+            userSessions.set(sKey, createEmptySession(userPhone, orgId, dbPhone));
             userSessions.get(sKey).botActivo = prev.botActivo;
             if (!prev.botActivo) {
                 logger.info('session_botActivo_inherited_timeout', { orgId, telefono: userPhone, botActivo: false, source: 'session_timeout_inherit' });
@@ -1097,6 +1205,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     } else if (!session.botActivo) {
                         // Estado sucio: SQLite o sesión anterior tenía botActivo=false pero Supabase dice auto → limpiar
                         session.botActivo = true;
+                        session.escalationJustResolved = true;
+                        session.conversationStartedAt = Date.now();
                         if (session.pendingEscalation) {
                             session.pendingEscalation = false;
                             session.pendingEscalationService = null;
@@ -1147,19 +1257,31 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             } catch (e) { logger.error('error_check_contact', { orgId, telefono: userPhone, error: e.message }); }
         }
 
-        // Safety net: sesión existente en memoria con botActivo=false pero Supabase dice auto → reconciliar
-        if (!isNewSession && !session.botActivo) {
+        // Reconciliación con la DB para sesiones EXISTENTES, en AMBAS direcciones. El panel
+        // ("tomar control") escribe bot_mode en Supabase, pero no puede tocar la sesión viva
+        // de este proceso (puede correr en un proceso separado del webhook). Así que en cada
+        // mensaje honramos el bot_mode de la DB — igual que hace la escalada, pero vía DB:
+        //   • bot_mode='manual' + sesión activa → pausar SOLO esta conversación (bug 10, caso 2).
+        //   • bot_mode!='manual' + sesión pausada → reactivar (soltar control / resolver escalada).
+        if (!isNewSession) {
             try {
                 const _reconContact = await findByPhone(orgId, session.partialData.telefono);
-                if (_reconContact && _reconContact.bot_mode !== 'manual') {
-                    session.botActivo = true;
-                    if (session.pendingEscalation) {
-                        session.pendingEscalation = false;
-                        session.pendingEscalationService = null;
+                if (_reconContact) {
+                    if (_reconContact.bot_mode === 'manual' && session.botActivo) {
+                        session.botActivo = false;
+                        logger.info('session_botActivo_pause_from_db', { orgId, telefono: userPhone, source: 'panel_manual_reconcile' });
+                    } else if (_reconContact.bot_mode !== 'manual' && !session.botActivo) {
+                        session.botActivo = true;
+                        session.escalationJustResolved = true;
+                        session.conversationStartedAt = Date.now();
+                        if (session.pendingEscalation) {
+                            session.pendingEscalation = false;
+                            session.pendingEscalationService = null;
+                        }
+                        session.selectedService = null;
+                        session.selectedCategory = null;
+                        logger.info('session_botActivo_reconcile_memory', { orgId, telefono: userPhone, db_bot_mode: _reconContact.bot_mode || 'auto', source: 'existing_session_supabase_reconcile' });
                     }
-                    session.selectedService = null;
-                    session.selectedCategory = null;
-                    logger.info('session_botActivo_reconcile_memory', { orgId, telefono: userPhone, db_bot_mode: _reconContact.bot_mode || 'auto', source: 'existing_session_supabase_reconcile' });
                 }
             } catch (e) { logger.error('error_reconcile_existing_session', { orgId, telefono: userPhone, error: e.message }); }
         }
@@ -1267,6 +1389,27 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         if (orgType === 'salon') {
             // Salon: extract name, preference, detect service/stylist from LLM
             session.partialData = extractQuickDataSante(sanitized, session.partialData);
+            // Persist week preference: save when message explicitly references a week; restore
+            // it on turns where only a day is mentioned (avoids "por la mañana" false-positive
+            // where extractPreferenciaHoraria matches "manana" and resets semana:'siguiente').
+            {
+                let _pref = session.partialData.preferencia_horaria;
+                const _tNorm = normalizeText(sanitized);
+                const _hasWeekWord = /\b(semana|siguiente|proxim[ao])\b/.test(_tNorm);
+                if (_pref?.asap) {
+                    // "Lo antes posible": olvidar cualquier preferencia de semana previa.
+                    session.weekPreference = null;
+                } else if (_hasWeekWord && _pref?.semana) {
+                    // El turno expresa la semana explícitamente → es la verdad y la recordamos.
+                    session.weekPreference = _pref.semana;
+                } else if (!_hasWeekWord && session.weekPreference) {
+                    // Bug 3: sin palabra de semana este turno (p.ej. "el jueves"), mantenemos la
+                    // semana recordada AUNQUE extractPreferenciaHoraria no devuelva nada (_pref
+                    // null) o la haya puesto en 'esta' por el falso positivo de "mañana".
+                    if (!_pref) { _pref = {}; session.partialData.preferencia_horaria = _pref; }
+                    _pref.semana = session.weekPreference;
+                }
+            }
             // Bug 1: si el nombre extraído coincide con un servicio del catálogo, descartarlo
             if (session.partialData.nombre && session.partialData.nombre !== prevData.nombre) {
                 const agentCfgNameCheck = await getAgentConfig(orgId);
@@ -1473,6 +1616,16 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     if (largoCat) session.pendingLargoCategory = largoCat;
                 }
             }
+            // Recuperar el servicio desde partialData.servicio (capturado por el LLM en
+            // un turno previo) ANTES del filtro de estilistas, para que la asignación de
+            // la estilista correcta y el descarte de una obsoleta ocurran en ESTE turno.
+            if (!session.selectedService && session.partialData.servicio) {
+                const recovered = extractServiceFromText(session.partialData.servicio, agentCfgPre?.services || []);
+                if (recovered) {
+                    session.selectedService = recovered;
+                    logger.info('selectedService_recovered_from_partialData', { orgId, telefono: userPhone, servicio: recovered.nombre });
+                }
+            }
             if (!session.selectedStylist) {
                 const matchedSty = extractStylistFromText(sanitized, stylistsPre);
                 if (matchedSty && stylistCanDoService(matchedSty, session.selectedService)) {
@@ -1528,7 +1681,6 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // Resetearlos para que la puerta de fecha funcione limpiamente.
             if (session.availableSlots.length === 0 && !session.reservaConfirmada) {
                 session.slotsProposed = false;
-                session.datePreferenceAsked = false;
             }
 
             const prefFecha = session.partialData.preferencia_horaria || {};
@@ -1593,6 +1745,11 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 
         if (orgType === 'salon') {
             partialDataWithCtx.__selectedService = session.selectedService;
+            // Bug 4: si el match contra el catálogo falló pero la clienta ya mencionó un
+            // servicio (capturado por el LLM en partialData.servicio), pasamos el texto crudo
+            // como hint para que el LLM lo confirme en vez de volver a preguntarlo.
+            partialDataWithCtx.__servicioMencionado = (!session.selectedService && session.partialData.servicio)
+                ? session.partialData.servicio : null;
             partialDataWithCtx.__selectedStylist = session.selectedStylist;
             partialDataWithCtx.__upsellingSuggested = session.upsellingSuggested;
             partialDataWithCtx.__stylistAutoAssigned = !!session.selectedStylist;
@@ -1654,6 +1811,14 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             llmHistory = session.history.slice(-10).filter(m =>
                 m.role !== 'assistant' || !isFallbackText(m.content)
             );
+        }
+        if (session.escalationJustResolved) {
+            session.escalationJustResolved = false;
+            llmHistory = [
+                { role: 'system', content: 'La escalada anterior ha sido resuelta por el equipo. El cliente empieza una conversación nueva. Saluda normalmente y pregunta en qué puedes ayudar. NO vuelvas a escalar a no ser que el cliente lo pida explícitamente.' },
+                ...llmHistory
+            ];
+            logger.info('escalation_resolved_context_injected', { orgId, telefono: userPhone, llmMsgs: llmHistory.length });
         }
         const llmPromise = getChatbotResponse(orgId, llmHistory, partialDataWithCtx, intent, session.reservaConfirmada, session.summary)
             .catch(e => {
@@ -1862,7 +2027,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // sin haberla persistido. Si ninguna rama anterior guardó la cita pero el texto
             // del LLM dice que reservó, intentamos guardar con el mejor hueco; si no se puede,
             // reemplazamos el mensaje para no mentirle a la clienta.
-            if (!session.reservaConfirmada && session.slotsProposed && llmClaimsBooked(aiResponse.respuesta)) {
+            if (!session.reservaConfirmada && session.slotsProposed && llmClaimsBooked(aiResponse.respuesta)
+                && !messageHasDateWithoutTime(sanitized)) {
                 const safetySlots = (frozenProposed && frozenProposed.length) ? frozenProposed : undefined;
                 const slot = (session.selectedService && (session.availableSlots || []).length)
                     ? pickChosenSlot(session, aiResponse.datos, safetySlots) : null;
@@ -1884,9 +2050,37 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 const cfgConf = await getAgentConfig(orgId);
                 const infoConf = cfgConf?.business_info || {};
                 const svc = session.selectedService || {};
-                const upsellSug = (session.upsellingAccepted || []).length
+                let upsellSug = (session.upsellingAccepted || []).length
                     ? null
                     : matchUpsellSuggestion(session.selectedService, infoConf.upselling || []);
+
+                // Comprobar que el upselling cabe dentro del horario de cierre de la estilista.
+                // Si hora_inicio + duración_servicio + duración_upselling >= hora_cierre → no ofrecer.
+                if (upsellSug && session.selectedStylist?.id && session.partialData.hora_cita && session.partialData.fecha_cita) {
+                    const upsellSvcDef = (cfgConf?.services || []).find(s => normalizeText(s.nombre) === normalizeText(upsellSug));
+                    const upsellDurMin = upsellSvcDef?.duracion || 30;
+                    try {
+                        const allSched = await getAllStylistSchedules(orgId);
+                        // Mismo cálculo de dayOfWeek que calendar-sante.js (0=Lunes … 6=Domingo)
+                        const apptDate = new Date(`${session.partialData.fecha_cita}T12:00:00`);
+                        const jsDay = apptDate.getDay();
+                        const dayOfWeek = jsDay === 0 ? 6 : jsDay - 1;
+                        const stylistSched = allSched.find(sc => sc.stylist_id === session.selectedStylist.id && sc.day_of_week === dayOfWeek);
+                        if (stylistSched) {
+                            const [closeH, closeM] = stylistSched.end_time.split(':').map(Number);
+                            const workEnd = closeH * 60 + closeM;
+                            const [startH, startM] = session.partialData.hora_cita.split(':').map(Number);
+                            const apptEnd = startH * 60 + startM + (svc.duracion || 60) + upsellDurMin;
+                            if (apptEnd >= workEnd) {
+                                logger.info('upselling_descartado_horario_cierre', { orgId, telefono: userPhone, apptEnd, workEnd, upsellSug });
+                                upsellSug = null;
+                            }
+                        }
+                    } catch (e) {
+                        logger.error('error_check_upselling_cierre', { orgId, error: e.message });
+                    }
+                }
+
                 const upsellingDur = (session.upsellingAccepted || []).reduce((sum, name) => {
                     const s = (cfgConf?.services || []).find(x => normalizeText(x.nombre) === normalizeText(name));
                     return sum + (s?.duracion || 30);
@@ -1992,8 +2186,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         }
 
         // Marca que ya hemos propuesto huecos a la clienta: a partir de aquí un "sí/vale"
-        // o una selección posicional se interpreta como aceptación del hueco.
-        // Usamos availableSlots (no slotsParaLLM, que se calcula ANTES de la llamada al
+        // se interpreta como aceptación del hueco (match exacto de fecha+hora, nunca por
+        // posición en la lista). Usamos availableSlots (no slotsParaLLM, que se calcula ANTES de la llamada al
         // LLM): en el turno en que se identifica el servicio los huecos se cargan DESPUÉS,
         // así que slotsParaLLM iba vacío y slotsProposed se quedaba un turno por detrás.
         if (orgType === 'salon' && session.availableSlots.length > 0 && !session.reservaConfirmada) {
@@ -2132,6 +2326,10 @@ async function handleIncomingMessage(client, message, orgId) {
         }
 
         saveMessage(orgId, { telefono: dbPhone, contenido: userText, direccion: 'entrante' }).catch(() => {});
+        // Persistimos el JID canónico del chat (message.from, p.ej. "<lid>@lid") para poder
+        // enviar mensajes manuales desde el panel al chat correcto, sin construir "<lid>@c.us"
+        // (chat inexistente que desadjunta el frame de puppeteer). Best-effort, no bloquea.
+        if (message.from) setContactJid(orgId, dbPhone, message.from).catch(() => {});
 
         let buffer = messageBuffers.get(sKey);
         if (!buffer) {
@@ -2267,6 +2465,8 @@ module.exports = {
     setWAClient,
     resolveBizumResult,
     findOriginalJid,
+    waSendMessage,
+    isTransientWAError,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
         // Solo para introspección en tests (no usar en producción):

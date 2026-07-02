@@ -31,7 +31,9 @@ export default function ReservasPage() {
   const [loading, setLoading] = useState(true);
   const [editReserva, setEditReserva] = useState<Reserva | null>(null);
   const [stylists, setStylists] = useState<Stylist[]>([]);
-  const supabase = createClient();
+  // Memoizado: createClient() en cada render creaba un socket realtime nuevo cada vez y los
+  // canales quedaban huérfanos → el panel no refrescaba en tiempo real al borrar/cambiar citas.
+  const [supabase] = useState(() => createClient());
   const { orgId, orgType } = useOrg();
 
   const fetchReservas = useCallback(async () => {

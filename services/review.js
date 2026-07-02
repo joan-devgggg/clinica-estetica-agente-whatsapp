@@ -26,18 +26,32 @@ function buildReviewMessage(nombre, salon, link, language) {
     return template(nombre, salon, link);
 }
 
-async function sendReviewMessage(orgId, telefono, mensaje) {
+// Resuelve el chatId de WhatsApp. Prioriza el JID canónico persistido (contacts.metadata.wa_jid,
+// p.ej. "<lid>@lid"); si no, para un LID (~15 dígitos) usa @lid y para un número real @c.us.
+// Construir "<lid>@c.us" apunta a un chat inexistente y el envío falla ("No LID for user").
+function resolveChatId(telefono, waJid) {
+    if (waJid && typeof waJid === 'string' && waJid.includes('@')) return waJid;
+    const digits = String(telefono || '').replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '');
+    if (!digits) return null;
+    return digits.length >= 14 ? `${digits}@lid` : `${digits}@c.us`;
+}
+
+async function sendReviewMessage(orgId, telefono, mensaje, waJid) {
     const entry = waClients?.get(orgId);
     if (!entry?.client) {
         logger.warn('review_wa_no_disponible', { orgId });
         return false;
     }
+    const chatId = resolveChatId(telefono, waJid);
+    if (!chatId) {
+        logger.warn('review_sin_chatid', { orgId, telefono });
+        return false;
+    }
     try {
-        const chatId = telefono.includes('@c.us') ? telefono : `${telefono}@c.us`;
         await entry.client.sendMessage(chatId, mensaje);
         return true;
     } catch (e) {
-        logger.error('review_error_envio', { orgId, telefono, error: e.message });
+        logger.error('review_error_envio', { orgId, telefono, chatId, error: e.message });
         return false;
     }
 }
@@ -63,10 +77,11 @@ async function checkAndSendReviews() {
                 const phone = apt.contacts?.wa_phone || apt.phone;
                 const nombre = apt.contacts?.full_name || apt.full_name;
                 const language = apt.contacts?.language || 'es';
+                const waJid = apt.contacts?.metadata?.wa_jid || null;
                 if (!phone) continue;
 
                 const mensaje = buildReviewMessage(nombre, companyName, googleLink, language);
-                const sent = await sendReviewMessage(orgId, phone, mensaje);
+                const sent = await sendReviewMessage(orgId, phone, mensaje, waJid);
 
                 if (sent) {
                     await updateAppointment(orgId, apt.id, { resenaEnviada: true });

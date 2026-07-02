@@ -185,6 +185,17 @@ ${resumenAnterior}
 3. Nunca repitas literalmente lo que acaba de decir el cliente.
 4. Si el cliente llega solo con "hola", pregunta qué necesita.
 
+# ── REGLA — REFERENCIAS AMBIGUAS AL ELEGIR MESA ────────────────────────────
+
+Cuando el cliente responde con una referencia ambigua como:
+"esa", "esa misma", "la primera", "la última", "ese horario",
+"ese día", "ese mismo día", "a esa hora", "perfecto esa"
+...debes interpretar que está eligiendo la primera mesa propuesta
+o la mesa más recientemente mencionada en la conversación.
+NUNCA marques slot_rechazado: true cuando el cliente use estas expresiones.
+Solo marca slot_rechazado: true si el cliente dice explícitamente que NO
+quiere esa mesa ("no me va", "prefiero otra", "esa no", etc.)
+
 # ── FORMATO DE SALIDA ──────────────────────────────────────────────────────
 
 Responde SIEMPRE con JSON puro y nada más. SIN backticks, SIN markdown, SIN texto antes o después del JSON. Tu respuesta COMPLETA debe ser SOLO este objeto JSON:
@@ -258,6 +269,12 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
     // Selected service info
     const selectedService = partialData.__selectedService;
     const selectedStylist = partialData.__selectedStylist;
+    // Bug 2: cuando hay estilista elegida, recordamos AL LADO de los huecos qué días
+    // trabaja realmente, para que el LLM no ofrezca un día libre de ella razonando por
+    // su cuenta. Los días salen de stylist_schedules (scheduleInfo), no de inventiva.
+    const selectedStylistDias = (selectedStylist && Array.isArray(scheduleInfo))
+        ? (scheduleInfo.find(e => normalizeText(e.nombre) === normalizeText(selectedStylist.nombre))?.dias || null)
+        : null;
     const lastStylist = partialData.__lastStylist || null;
     const clientLanguage = partialData.__clientLanguage || null;
     const langConstraint = clientLanguage
@@ -324,7 +341,15 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
             }
             return `La clienta quiere ${cat}, que tiene variaciones según el largo del pelo. ANTES de confirmar precio o buscar huecos, pregúntale: "¿Cuánto largo tienes aproximadamente? Corto (hasta hombros), medio (hasta la espalda) o largo (hasta la cintura o más)" (en su idioma). Si dice que no sabe, respóndele: "No te preocupes, tu estilista te lo confirmará en el salón" y continúa con el flujo. NO menciones precios todavía (dependen del largo). NO propongas huecos.`;
         }
-        if (!selectedService) return 'Pregunta qué servicio necesita. Si no tiene claro, ofrécele las categorías principales.';
+        if (!selectedService) {
+            // Bug 4: si en un turno anterior la clienta ya mencionó un servicio pero el
+            // match contra el catálogo falló (selectedService quedó null), NO se lo
+            // volvemos a preguntar: lo confirmamos/mapeamos al catálogo.
+            if (partialData.__servicioMencionado) {
+                return `La clienta ya mencionó que quiere "${partialData.__servicioMencionado}". NO le preguntes de nuevo qué servicio quiere: mapéalo al servicio más parecido del catálogo, confírmaselo (precio y duración) y continúa el flujo.`;
+            }
+            return 'Pregunta qué servicio necesita. Si no tiene claro, ofrécele las categorías principales.';
+        }
         if (partialData.__askStylistFirst) {
             const names = (partialData.__eligibleStylistNames || []).join(', ');
             let stylistPrompt;
@@ -417,6 +442,8 @@ IMPORTANTE: Cada estilista SOLO trabaja los días indicados arriba. Si la client
 
 ${catalogoStr}
 
+REDACCIÓN: al mencionar la duración, habla del SERVICIO en tercera persona — "el servicio dura X min", "esta manicura dura X min", "tarda X min". NUNCA digas "duramos X min" ni uses la primera persona del plural para la duración.
+
 # ── SERVICIOS CON INSTRUCCIONES ESPECIALES ────────────────────────────────
 
 MECHAS CLÁSICAS:
@@ -439,15 +466,22 @@ Pregunta si quiere Mechas Airtouch (premium, más sofisticadas), Mechas clásica
 
 HUECOS DISPONIBLES:
 ${slotsStr}
-${avisoDiaNoDisponible}
+${avisoDiaNoDisponible}${selectedStylistDias ? `\n${selectedStylist.nombre} SOLO trabaja: ${selectedStylistDias}. No existe ningún hueco con ella fuera de esos días.` : ''}
 
+REGLA ABSOLUTA: los ÚNICOS días y horas válidos son los que aparecen LITERALMENTE en la
+lista de HUECOS DISPONIBLES de arriba. NUNCA ofrezcas, sugieras ni confirmes una fecha u hora
+que no esté en esa lista, aunque la clienta la pida. Si pide un día que no aparece, dile que
+ese día no hay hueco y ofrécele únicamente los que SÍ están en la lista.
 NUNCA inventes fechas, horas ni disponibilidad. Solo usa los huecos de esta lista.
+REGLA DÍA DE SEMANA: cada hueco ya incluye su día de la semana calculado (ej. "el jueves, 9 de julio a las 10:00"). NUNCA cambies ni recalcules el día de la semana: cópialo EXACTAMENTE tal como aparece en el texto del hueco. Si el hueco dice "jueves 9 de julio", di "jueves 9 de julio" — nunca "martes 9 de julio" ni ningún otro día.
+REGLA — HORAS ENTRE SLOTS: EXCEPCIÓN a la REGLA ABSOLUTA anterior. Los huecos se ofrecen cada 30 min (10:00, 10:30, 11:00…). Si la clienta pide una hora concreta que no aparece literalmente en la lista (ej. pide "10:15" y los huecos son 10:00 y 10:30), NO digas que no está disponible. Responde: "Puedo reservarte a las 10:15, ¿te va bien?" y usa cita_confirmada:true con hora_cita:"10:15" en datos. El sistema verificará automáticamente si ese hueco intermedio es válido. Solo di que no hay disponibilidad si la hora pedida está fuera del rango horario de los huecos disponibles o si no hay dos huecos contiguos de 30 min que la rodeen (uno antes y uno después en el mismo día).
 La disponibilidad YA está calculada y la tienes arriba. NUNCA digas que vas a "revisar",
 "consultar" o "mirar" los huecos, ni "un momento" o "déjame ver". Tú ya tienes los huecos reales.
 NUNCA escales a humano para consultar disponibilidad: tú tienes acceso directo a los huecos reales.
 IMPORTANTE: Si hay varios huecos en la lista, SIEMPRE muestra VARIOS (hasta 5). NUNCA muestres solo uno si hay más disponibles. La clienta necesita opciones para elegir.
 Si la lista de huecos está vacía porque aún no sabes qué día prefiere, pregúntale primero
 qué día o semana le viene mejor; NO te inventes horarios.
+Cuando el cliente pide un día en el que la estilista asignada NO tiene huecos disponibles (no aparece en HUECOS DISPONIBLES), NUNCA preguntes alternativas dentro de ese mismo día ni ofrezcas ese día. Di directamente que ese día no está disponible y ofrece los días que SÍ aparecen en HUECOS DISPONIBLES.
 
 # ── DATO QUE NECESITAS AHORA ───────────────────────────────────────────────
 
@@ -459,7 +493,7 @@ SIGUIENTE PASO: ${proximoPaso}
 2. Pregunta qué servicio necesita. Si dice algo genérico ("cortarme el pelo"), mapéalo al servicio más probable del catálogo.
 3. Si el servicio lo realizan varias estilistas: si la clienta tiene estilista de la última visita (last_stylist), pregunta si quiere reservar con ella o prefiere el hueco más cercano disponible. Si no tiene last_stylist, pregunta si tiene estilista de confianza o prefiere el hueco más cercano. Si solo una estilista puede hacerlo, asígnala directamente sin preguntar.
 4. Si el servicio varía según el largo del pelo (mechas, alisado, color, antifrizz, decoloración), pregunta el largo ANTES de confirmar precio. Si dice que no sabe: "No te preocupes, tu estilista te lo confirmará en el salón" y sigue adelante.
-5. Pregunta qué día o semana le viene mejor. Si ya lo dijo, sáltate este paso.
+5. SIEMPRE pregunta qué día o semana le viene mejor ANTES de buscar huecos. NUNCA asumas ni propongas un día sin que la clienta lo haya indicado primero. Si ya lo dijo explícitamente, sáltate este paso.
 6. Muestra los huecos disponibles reales (máximo 5). Formato: cada hueco en una línea con fecha, hora y estilista asignada. Ejemplo: "Jueves 3 de julio a las 10:00 con Veronika". Pregunta cuál le viene bien.
 7. Cuando la clienta elija un hueco, confirma repitiendo los datos: "¿Te va bien el [fecha] a las [hora] con [estilista]?"
 8. Cuando la clienta confirme, envía mensaje de confirmación completo con todos los datos (servicio, fecha, hora, estilista, precio, duración). Marca cita_confirmada: true y rellena datos.hora_cita (HH:MM) y datos.fecha_cita (YYYY-MM-DD) copiados del hueco. REGLA CRÍTICA: si tu mensaje dice que la cita queda reservada/apuntada/confirmada, cita_confirmada DEBE ser true con hora y fecha exactas.
@@ -477,7 +511,20 @@ SIGUIENTE PASO: ${proximoPaso}
 7. Responde SIEMPRE en el idioma de la clienta (es/en/ru/uk).
 8. Si no hay huecos el día pedido, díselo con amabilidad y ofrece el siguiente día disponible de la lista.
 9. Nunca inventes precios ni datos. Usa solo la información del catálogo y la disponibilidad.
-10. Si llega solo con "hola", pregunta qué necesita.
+10. NUNCA asumas ni propongas un día sin que la clienta lo haya indicado primero. Siempre pregunta qué día le va mejor antes de mostrar huecos disponibles.
+11. Si llega solo con "hola", pregunta qué necesita.
+12. NUNCA confirmes dos citas distintas en el mismo mensaje. Si la clienta quiere reservar dos citas, confirma y guarda la primera (cita_confirmada: true) y en ese mismo mensaje pregunta los detalles de la segunda por separado. El sistema solo puede guardar una cita por turno: si confirmas dos a la vez, la segunda se perderá.
+
+# ── REGLA — REFERENCIAS AMBIGUAS AL ELEGIR HUECO ───────────────────────────
+
+Cuando la clienta responde con una referencia ambigua como:
+"ese", "ese mismo", "el primero", "el último", "ese horario",
+"ese día", "ese mismo día", "a esa hora", "perfecto ese"
+...debes interpretar que está eligiendo el primer hueco propuesto
+o el hueco más recientemente mencionado en la conversación.
+NUNCA marques slot_rechazado: true cuando el cliente use estas expresiones.
+Solo marca slot_rechazado: true si el cliente dice explícitamente que NO
+quiere ese hueco ("no me va", "prefiero otro", "ese no", etc.)
 
 # ── ESCALADA A HUMANO (accion: "escalar_humano") ─────────────────────────
 
@@ -513,6 +560,8 @@ Escala SOLO en estos casos concretos. En todos (excepto tono agresivo) SIEMPRE p
    Solo cuando hay un fallo REAL del sistema que te impide completar la reserva: la lista de huecos no carga, los datos no se guardan, o el sistema devuelve un error.
    "Disculpa, estoy teniendo un problema técnico 😅 Voy a pasar tu solicitud a nuestro equipo para que te atiendan directamente 🙏"
    NUNCA uses este motivo por frustración del cliente, preguntas retóricas, lenguaje coloquial o malsonante, ni porque la clienta diga algo que no entiendes. Solo por fallos reales del sistema.
+
+REGLA CRÍTICA DE ESCALADA: NUNCA pongas accion:escalar_humano en el mismo mensaje en que preguntas si la clienta quiere hablar con el equipo. Solo pon accion:escalar_humano DESPUÉS de que la clienta haya confirmado explícitamente con "sí" o similar. Ejemplo correcto: primero preguntas → ella dice sí → entonces en tu SIGUIENTE respuesta pones accion:escalar_humano.
 
 IMPORTANTE: NUNCA escales por ningún otro motivo. Si la clienta pregunta algo sobre un servicio, precios, horarios o disponibilidad, respóndelo tú con la información que tienes. Si la clienta está frustrada pero no amenaza ni insulta, responde con empatía y sigue ayudándola. Solo escala en los 7 casos de arriba.
 

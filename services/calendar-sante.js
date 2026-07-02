@@ -7,7 +7,7 @@ const db = require('./db');
 const logger = require('../lib/logger');
 
 const DIAS_SEMANA = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
-const SLOT_OFFER_STEP_MIN = 60; // intervalo entre huecos ofrecidos dentro de una ventana libre (10:00, 11:00, 12:00...)
+const SLOT_OFFER_STEP_MIN = 30; // intervalo entre huecos ofrecidos dentro de una ventana libre (10:00, 10:30, 11:00...)
 
 /**
  * Devuelve huecos disponibles para un servicio en los próximos 14 días.
@@ -52,9 +52,15 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     }
 
     const now = new Date();
+    const todayStr = toLocalDateStr(now);
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
     const from = new Date(now);
     from.setHours(0, 0, 0, 0);
-    from.setDate(from.getDate() + 1); // start from tomorrow
+    if (!preferencia.asap) {
+        from.setDate(from.getDate() + 1); // start from tomorrow (default)
+    }
+    // asap: start from today so we find the nearest real slots
 
     const to = new Date(from);
     to.setDate(to.getDate() + 14);
@@ -91,6 +97,21 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     // bloqueos. `pref` puede traer filtros de día/semana/franja. NUNCA inventa huecos:
     // si la estilista no trabaja ese día (no hay daySchedule), simplemente no se generan.
     function buildSlots(pref) {
+        // Pre-compute week bounds once before the loops
+        let startOfNextWeek = null, endOfNextWeek = null, endOfThisWeek = null;
+        if (pref.semana === 'siguiente') {
+            const daysToSunday = 7 - (now.getDay() || 7);
+            startOfNextWeek = new Date(now);
+            startOfNextWeek.setHours(0, 0, 0, 0);
+            startOfNextWeek.setDate(now.getDate() + daysToSunday + 1); // lunes próxima semana
+            endOfNextWeek = new Date(startOfNextWeek);
+            endOfNextWeek.setDate(startOfNextWeek.getDate() + 6); // domingo próxima semana
+            console.log('rango semana siguiente:', toLocalDateStr(startOfNextWeek), toLocalDateStr(endOfNextWeek));
+        } else if (pref.semana === 'esta') {
+            endOfThisWeek = new Date(now);
+            endOfThisWeek.setDate(now.getDate() + (7 - (now.getDay() || 7)));
+        }
+
         const out = [];
         for (const { stylist, scheduleByDay, blocks, appointments } of stylistData) {
             for (let d = 0; d < 14; d++) {
@@ -119,14 +140,11 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
                     if (dayOfWeek !== pref.diaSemana) continue;
                 }
 
-                // Filter by preference
+                // Filter by week preference: 'siguiente' → solo lunes-domingo de la próxima
+                // semana (rango explícito, no open-ended). 'esta' → hasta el domingo actual.
                 if (pref.semana === 'siguiente') {
-                    const endOfThisWeek = new Date(now);
-                    endOfThisWeek.setDate(now.getDate() + (7 - (now.getDay() || 7)));
-                    if (date <= endOfThisWeek) continue;
+                    if (date < startOfNextWeek || date > endOfNextWeek) continue;
                 } else if (pref.semana === 'esta') {
-                    const endOfThisWeek = new Date(now);
-                    endOfThisWeek.setDate(now.getDate() + (7 - (now.getDay() || 7)));
                     if (date > endOfThisWeek) continue;
                 }
 
@@ -173,8 +191,14 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
 
                 // Recorrer cada ventana en pasos de SLOT_OFFER_STEP_MIN para ofrecer varios
                 // huecos (10:00, 11:00, 12:00...), no solo el inicio de la ventana.
+                // ASAP + hoy: saltar huecos que ya han pasado (buffer de 60 min).
+                const minStart = (pref.asap && dateStr === todayStr) ? nowMinutes + 60 : 0;
                 for (const [winStart, winEnd] of freeWindows) {
-                    for (let t = winStart; t + serviceDuration <= winEnd; t += SLOT_OFFER_STEP_MIN) {
+                    // t + serviceDuration <= winEnd: no solapar la siguiente cita ni salir de
+                    // la ventana libre. Además t + serviceDuration < workEnd: nunca ofrecer un
+                    // hueco cuya cita terminaría exactamente al cierre o después (sin margen).
+                    for (let t = winStart; t + serviceDuration <= winEnd && t + serviceDuration < workEnd; t += SLOT_OFFER_STEP_MIN) {
+                        if (t < minStart) continue;
                         addSlot(out, dateStr, t, diaNombre, stylist, serviceDuration, pref);
                     }
                 }
@@ -212,7 +236,7 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     // Cuando hay un día concreto CON huecos reales devolvemos TODOS los de ese día;
     // sin día concreto (o en fallback de día sin hueco), cap generoso para no saturar.
     const diaConcreto = !pedidoDiaSinHueco && !!(preferencia.fecha || Number.isInteger(preferencia.diaSemana));
-    const MAX_TOTAL = diaConcreto ? Infinity : 20;
+    const MAX_TOTAL = diaConcreto ? Infinity : (preferencia.asap ? 5 : 20);
     const seen = new Set();
     const unique = [];
     for (const s of slots) {

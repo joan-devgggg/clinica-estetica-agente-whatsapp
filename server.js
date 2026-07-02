@@ -73,20 +73,26 @@ for (const org of orgs) {
 
 // ─── Estado del bot por organización (cargado desde config) ──────────────────
 // Cada org arranca con su propio bot_activo. Pausar una NO afecta a las demás.
-(async () => {
+// Refrescamos desde config.bot_activo periódicamente para que el toggle global del panel
+// surta efecto en vivo (el panel escribe en Supabase; si el webhook corre en otro proceso,
+// la memoria de ESTE proceso no se enteraría sin este refresco). Solo memoria (persist=false).
+async function refreshBotActivoFromConfig({ logOnPause = false } = {}) {
     for (const org of orgs) {
         try {
             const v = await getConfigValue(org.orgId, 'bot_activo');
             if (v !== null && v !== undefined) {
                 const activo = v === true || v === 'true' || v === 1;
+                const previo = isBotActivo(org.orgId);
                 setBotActivo(org.orgId, activo, false); // solo memoria; ya está en config
-                if (!activo) logger.info('bot_pausado_al_arrancar', { org: org.slug });
+                if (!activo && (logOnPause || previo)) logger.info('bot_pausado_desde_config', { org: org.slug });
             }
         } catch (e) {
             logger.error('error_cargar_bot_activo', { org: org.slug, error: e.message });
         }
     }
-})();
+}
+refreshBotActivoFromConfig({ logOnPause: true });
+setInterval(refreshBotActivoFromConfig, 15 * 1000);
 
 // ─── Webhook / API REST ──────────────────────────────────────────────────────
 setWAClient(waClients, setConversationBotMode, setBotActivo);

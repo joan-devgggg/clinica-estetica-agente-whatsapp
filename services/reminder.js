@@ -20,18 +20,32 @@ function minutosHastaCita(fechaStr, horaStr) {
     }
 }
 
-async function sendReminderMessage(orgId, telefono, mensaje) {
+// Resuelve el chatId de WhatsApp. Prioriza el JID canónico persistido (contacts.metadata.wa_jid);
+// para un LID (~15 dígitos) usa @lid y para un número real @c.us. Evita "<lid>@c.us" (chat
+// inexistente que hace fallar el envío).
+function resolveChatId(telefono, waJid) {
+    if (waJid && typeof waJid === 'string' && waJid.includes('@')) return waJid;
+    const digits = String(telefono || '').replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '');
+    if (!digits) return null;
+    return digits.length >= 14 ? `${digits}@lid` : `${digits}@c.us`;
+}
+
+async function sendReminderMessage(orgId, telefono, mensaje, waJid) {
     const entry = waClients?.get(orgId);
     if (!entry?.client) {
         logger.warn('reminder_wa_no_disponible', { orgId });
         return false;
     }
+    const chatId = resolveChatId(telefono, waJid);
+    if (!chatId) {
+        logger.warn('reminder_sin_chatid', { orgId, telefono });
+        return false;
+    }
     try {
-        const chatId = telefono.includes('@c.us') ? telefono : `${telefono}@c.us`;
         await entry.client.sendMessage(chatId, mensaje);
         return true;
     } catch (e) {
-        logger.error('reminder_error_envio', { orgId, telefono, error: e.message });
+        logger.error('reminder_error_envio', { orgId, telefono, chatId, error: e.message });
         return false;
     }
 }
@@ -62,7 +76,7 @@ async function checkAndSendReminders() {
                 if (minutosRestantes < 0 || minutosRestantes > minutosAntes) continue;
 
                 const mensaje = `Hola ${record.nombre || ''} 😊 Te recordamos tu cita en ${companyName} a las ${record.hora_cita || ''}. ¡Te esperamos!`;
-                const sent = await sendReminderMessage(orgId, record.telefono, mensaje);
+                const sent = await sendReminderMessage(orgId, record.telefono, mensaje, record.wa_jid);
 
                 if (sent) {
                     await marcarRecordatorioSent(orgId, record.id);

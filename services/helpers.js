@@ -73,7 +73,8 @@ function extractPreferenciaHoraria(text) {
     if (t.includes('cenar') || t.includes('cena') || t.includes('noche')) pref.periodo = 'cena';
 
     if (t.includes('esta semana') || t.includes('hoy') || t.includes('esta misma semana')) pref.semana = 'esta';
-    if (t.includes('semana que viene') || t.includes('la semana siguiente') || t.includes('proxima semana') ||
+    if (t.includes('semana que viene') || t.includes('semana q viene') || t.includes('la semana que viene') ||
+        t.includes('la semana siguiente') || t.includes('proxima semana') || t.includes('la proxima semana') ||
         t.includes('semana proxima') || t.includes('siguiente semana') || t.includes('la proxima') ||
         t.includes('la siguiente') || t.match(/\bsiguiente\b/)) pref.semana = 'siguiente';
     if (t.includes('manana') && !pref.semana) pref.semana = 'esta'; // "mañana" como día siguiente
@@ -173,6 +174,24 @@ function isServiceName(name, servicesCatalog) {
     return false;
 }
 
+const SERVICE_NAME_KEYWORDS = [
+    'mechas', 'contouring', 'balayage', 'keratina', 'tinte', 'corte', 'peinado',
+    'dyson', 'brushing', 'manicura', 'pedicura', 'masaje', 'spa', 'extensiones',
+    'permanente', 'decapado', 'diagnostico', 'dermapen', 'highlights', 'babylights', 'ombre'
+];
+
+function filterServiceKeyword(name) {
+    if (!name) return null;
+    const words = normalizeText(name).split(/\s+/);
+    for (const word of words) {
+        for (const kw of SERVICE_NAME_KEYWORDS) {
+            if (word === kw) return null;
+            if (kw.length >= 4 && (word.includes(kw) || kw.includes(word))) return null;
+        }
+    }
+    return name;
+}
+
 // ─── Campos faltantes ─────────────────────────────────────────────────────────
 
 function getMissingFields(partialData) {
@@ -236,9 +255,27 @@ const SERVICE_MATCH_STOPWORDS = new Set([
     'sus', 'tus', 'mis', 'este', 'esta', 'esto', 'esa', 'ese',
 ]);
 
+// Equivalencias ortográficas EN/ES de nombres de servicio. El catálogo guarda
+// "Manicure + gel" (inglés) pero el LLM/clienta escriben "Manicura + gel": sin
+// igualarlos, el match exacto falla y el fuzzy empata "gel" con "Fortalecimiento
+// gel", devolviendo null (causa de selectedService=null para manicuras).
+// Clave→valor canónico, ambos ya normalizados (sin acentos, minúsculas).
+const SERVICE_SYNONYMS = [
+    [/\bmanicure\b/g, 'manicura'],
+];
+
+// normalizeText + canonicalización de sinónimos de servicio. Se aplica por igual
+// al texto de consulta y a los nombres del catálogo dentro de extractServiceFromText
+// para que ambos lados converjan a la misma forma.
+function normalizeService(value) {
+    let s = normalizeText(value);
+    for (const [re, canon] of SERVICE_SYNONYMS) s = s.replace(re, canon);
+    return s;
+}
+
 function extractServiceFromText(text, servicesCatalog) {
     if (!text || !servicesCatalog?.length) return null;
-    const t = normalizeText(text);
+    const t = normalizeService(text);
 
     let bestMatch = null;
     let bestLen = 0;
@@ -246,7 +283,7 @@ function extractServiceFromText(text, servicesCatalog) {
     // Pre-compute: services sharing the same normalized name (for disambiguation)
     const nameGroups = {};
     for (const svc of servicesCatalog) {
-        const key = normalizeText(svc.nombre);
+        const key = normalizeService(svc.nombre);
         if (!nameGroups[key]) nameGroups[key] = [];
         nameGroups[key].push(svc);
     }
@@ -260,7 +297,7 @@ function extractServiceFromText(text, servicesCatalog) {
 
     // Pass 1a: exact service name match
     for (const svc of servicesCatalog) {
-        const svcName = normalizeText(svc.nombre);
+        const svcName = normalizeService(svc.nombre);
         if (!t.includes(svcName) || svcName.length <= bestLen) continue;
 
         if (nameGroups[svcName].length === 1) {
@@ -333,7 +370,7 @@ function extractServiceFromText(text, servicesCatalog) {
                 let bestScore = 0;
                 let tiedCount = 0;
                 for (const svc of inCat) {
-                    const nameWords = normalizeText(svc.nombre).split(/\s+/);
+                    const nameWords = normalizeService(svc.nombre).split(/\s+/);
                     const score = nameWords.filter(w =>
                         w.length > 2 && !SERVICE_MATCH_STOPWORDS.has(w) && !/^\d+$/.test(w) && t.includes(w)
                     ).length;
@@ -468,6 +505,9 @@ function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], tea
             const word = text.trim();
             if (isValidName(word) && word.length >= 3) result.nombre = word;
         }
+        if (result.nombre && result.nombre !== 'desconocido') {
+            result.nombre = filterServiceKeyword(result.nombre) || undefined;
+        }
     }
 
     // Time preference (semana: esta/siguiente). El periodo comida/cena del restaurante no
@@ -492,6 +532,17 @@ function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], tea
     const datePref = extractDatePreferenceSante(t);
     if (datePref) {
         result.preferencia_horaria = { ...(result.preferencia_horaria || {}), ...datePref };
+    }
+
+    // "Lo antes posible" / "cuanto antes" / "el hueco más cercano": buscar desde ahora mismo,
+    // sin restricción de semana. Limpia cualquier semana previa para no heredar filtros.
+    // Incluye las frases de respuesta cuando el bot pregunta "¿estilista concreta o el hueco
+    // más cercano?" → el cliente responde "el más cercano", "cualquiera", etc.
+    const asapRe = /\b(lo antes posible|cuanto antes|cu[aá]nto antes|el primer hueco|primer hueco|primera disponibilidad|lo m[aá]s pronto|lo mas pronto|lo m[aá]s r[aá]pido|lo mas rapido|cuando antes|cuanto antes puedas|lo antes que puedas|antes posible|el m[aá]s cercano|mas cercano disponible|hueco m[aá]s cercano|el primero disponible|primer disponible|cualquier hueco|lo m[aá]s pronto posible|lo antes posible que puedas)\b/;
+    if (asapRe.test(t)) {
+        const pref = result.preferencia_horaria || {};
+        delete pref.semana;
+        result.preferencia_horaria = { ...pref, asap: true };
     }
 
     return result;

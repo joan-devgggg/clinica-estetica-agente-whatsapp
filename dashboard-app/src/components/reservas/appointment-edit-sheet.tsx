@@ -116,19 +116,31 @@ export function AppointmentEditSheet({
       setConfirmDelete(true);
       return;
     }
+    if (!appointmentId) {
+      toast.error("Esta reserva no tiene una cita asociada que eliminar");
+      setConfirmDelete(false);
+      return;
+    }
     setDeleting(true);
     try {
+      // Unificado con "Cancelar → Cancelada": marcamos la cita como cancelada (soft-delete)
+      // vía la MISMA operación que ya funciona. El listado del panel filtra las canceladas,
+      // así que la cita desaparece igual. Antes el botón usaba un DELETE distinto y, con el
+      // 404-tratado-como-éxito, mostraba "eliminada" sin borrar nada.
       const res = await fetch(`${API}/api/citas/${appointmentId}`, {
-        method: "DELETE",
+        method: "PUT",
         headers: apiHeaders(orgId),
-        body: "{}",
+        body: JSON.stringify({ estado: "cancelled" }),
       });
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Error al eliminar la cita");
+      }
       toast.success("Cita eliminada");
       onUpdated();
       onClose();
-    } catch {
-      toast.error("Error al eliminar la cita");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Error al eliminar la cita");
     } finally {
       setDeleting(false);
       setConfirmDelete(false);

@@ -193,6 +193,9 @@ app.post('/api/appointments', async (req, res) => {
         const orgId = extractOrgId(req);
         const { contactId, servicio, fecha, hora, duracionMin, stylistId, notas, personas, ocasion } = req.body;
         if (!contactId || !fecha) return res.status(400).json({ error: 'contactId y fecha requeridos' });
+        if (hora != null && hora !== '' && !/^\d{1,2}:\d{2}$/.test(String(hora).trim())) {
+            return res.status(400).json({ error: `Hora inválida ("${hora}"). Usa el formato HH:MM` });
+        }
         const apt = await db.saveAppointment(orgId, contactId, { servicio, fecha, hora, duracionMin, notas, personas, ocasion, stylistId, source: 'manual' });
         if (!apt) {
             const contact = await db.findById(orgId, contactId);
@@ -246,8 +249,9 @@ app.put('/api/citas/:id', async (req, res) => {
 app.delete('/api/citas/:id', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
-        const ok = await db.deleteAppointment(orgId, req.params.id);
-        if (!ok) return res.status(404).json({ error: 'No encontrada' });
+        const result = await db.deleteAppointment(orgId, req.params.id);
+        if (!result.ok) return res.status(400).json({ error: result.error || 'No se pudo eliminar la cita' });
+        if (result.deleted === 0) return res.status(404).json({ error: 'No encontrada' });
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -411,22 +415,37 @@ app.post('/api/send', async (req, res) => {
         if (!telefono || !mensaje) return res.status(400).json({ error: 'telefono y mensaje requeridos' });
         const client = getWAClient(orgId);
         if (!client) return res.status(503).json({ error: 'WhatsApp no conectado — reconecta el bot e inténtalo de nuevo' });
+        const { findOriginalJid, waSendMessage, isTransientWAError } = require('./bot');
         const digits = telefono.replace(/\D/g, '');
-        let userPhone = `${digits}@c.us`;
+        // Resolvemos el JID REAL del chat. Para contactos LID, construir "<lid>@c.us" apunta a
+        // un chat inexistente y desadjunta el frame de puppeteer ("detached Frame"). Prioridad:
+        // 1) JID persistido en BD (contacts.metadata.wa_jid), 2) sesión en memoria,
+        // 3) heurística: un LID (~15 dígitos) no es un número @c.us válido → usar @lid.
+        const persistedJid = await db.getContactWaJid(orgId, digits).catch(() => null);
+        const looksLikeLid = digits.length >= 14;
+        const userPhone = persistedJid
+            || findOriginalJid(orgId, digits)
+            || (looksLikeLid ? `${digits}@lid` : `${digits}@c.us`);
+        // Warm-up del chat YA resuelto (best-effort), como el path del bot.
+        try { await client.getChatById(userPhone); } catch { /* best-effort */ }
         try {
-            await client.sendMessage(userPhone, mensaje);
+            // waSendMessage reintenta con backoff ante errores transitorios de frame (bug 7).
+            await waSendMessage(client, userPhone, mensaje);
         } catch (waErr) {
             const msg = String(waErr?.message || waErr || '');
             if (msg.includes('LID')) {
-                const { findOriginalJid } = require('./bot');
-                const lidJid = findOriginalJid(orgId, digits);
-                if (lidJid) {
-                    logger.info('wa_send_lid_retry', { orgId, telefono, lidJid });
-                    await client.sendMessage(lidJid, mensaje);
+                const altJid = findOriginalJid(orgId, digits) || `${digits}@lid`;
+                if (altJid && altJid !== userPhone) {
+                    logger.info('wa_send_lid_retry', { orgId, telefono, altJid });
+                    await waSendMessage(client, altJid, mensaje);
                 } else {
-                    logger.warn('wa_send_lid_no_session', { orgId, telefono });
-                    return res.status(503).json({ error: 'No se puede enviar: el contacto usa LID y no hay sesión activa' });
+                    logger.warn('wa_send_lid_no_jid', { orgId, telefono });
+                    return res.status(503).json({ error: 'No se puede enviar: el contacto usa LID y no hay chat conocido' });
                 }
+            } else if (isTransientWAError(waErr)) {
+                // El frame seguía desadjuntado tras los reintentos: pedimos reintentar.
+                logger.warn('wa_send_frame_detached', { orgId, telefono, error: msg });
+                return res.status(503).json({ error: 'WhatsApp estaba ocupado un momento — vuelve a intentarlo' });
             } else if (msg.includes('not connected') || msg.includes('ECONNREFUSED') || msg.includes('Protocol error')) {
                 logger.warn('wa_send_desconectado', { orgId, telefono, error: msg });
                 return res.status(503).json({ error: 'WhatsApp no conectado — reconecta el bot e inténtalo de nuevo' });

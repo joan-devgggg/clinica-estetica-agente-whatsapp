@@ -44,6 +44,7 @@ function rowToPublic(row) {
         preferred_stylist_id:  row.preferred_stylist_id || null,
         last_stylist:          row.last_stylist || null,
         language:              row.language || 'es',
+        wa_jid:                (row.metadata && typeof row.metadata === 'object') ? (row.metadata.wa_jid || null) : null,
         created_at:            row.created_at,
         updated_at:            row.updated_at,
     };
@@ -64,6 +65,49 @@ async function findByPhone(orgId, telefono) {
         .limit(1)
         .maybeSingle();
     return rowToPublic(data);
+}
+
+// Persiste el JID de WhatsApp canónico del contacto (p.ej. "<lid>@lid" o "<num>@c.us") en
+// metadata.wa_jid. Necesario para enviar mensajes manuales al chat correcto cuando el wa_phone
+// es un LID: construir "<lid>@c.us" apunta a un chat inexistente y desadjunta el frame de
+// puppeteer. Solo escribe si el valor cambia, para no actualizar en cada mensaje entrante.
+async function setContactJid(orgId, telefono, jid) {
+    const oid = resolveOrg(orgId);
+    const phone = sanitizePhone(telefono);
+    if (!phone || !jid) return;
+    const { data: row } = await supabase
+        .from('contacts')
+        .select('id, metadata')
+        .eq('organization_id', oid)
+        .eq('wa_phone', phone)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+    if (!row) return;
+    const meta = (row.metadata && typeof row.metadata === 'object') ? row.metadata : {};
+    if (meta.wa_jid === jid) return; // sin cambios → no escribimos
+    await supabase
+        .from('contacts')
+        .update({ metadata: { ...meta, wa_jid: jid }, updated_at: now() })
+        .eq('id', row.id)
+        .eq('organization_id', oid);
+}
+
+// Devuelve el JID canónico persistido (metadata.wa_jid) del contacto, o null.
+async function getContactWaJid(orgId, telefono) {
+    const oid = resolveOrg(orgId);
+    const phone = sanitizePhone(telefono);
+    if (!phone) return null;
+    const { data: row } = await supabase
+        .from('contacts')
+        .select('metadata')
+        .eq('organization_id', oid)
+        .eq('wa_phone', phone)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+    const meta = row?.metadata;
+    return (meta && typeof meta === 'object' && typeof meta.wa_jid === 'string') ? meta.wa_jid : null;
 }
 
 async function findById(orgId, id) {
@@ -358,7 +402,7 @@ async function saveMessage(orgId, { telefono, contenido, direccion, esManual = f
     return data?.id ?? null;
 }
 
-async function getMessages(orgId, telefono, { limit = 100 } = {}) {
+async function getMessages(orgId, telefono, { limit = 200 } = {}) {
     const oid = resolveOrg(orgId);
     const phone = sanitizePhone(telefono);
     if (!phone) return [];
@@ -374,14 +418,18 @@ async function getMessages(orgId, telefono, { limit = 100 } = {}) {
         .maybeSingle();
     if (!conv) return [];
 
+    // Traemos los N mensajes MÁS RECIENTES (no los más antiguos). Antes se ordenaba
+    // ascending + limit, que devolvía los primeros N y nunca los nuevos en conversaciones
+    // largas (>N mensajes) — ni recargando. Pedimos descending y revertimos a orden
+    // cronológico para mostrar.
     const { data } = await supabase
         .from('messages')
         .select('*')
         .eq('conversation_id', conv.id)
-        .order('created_at', { ascending: true })
+        .order('created_at', { ascending: false })
         .limit(limit);
 
-    return (data || []).map(m => ({
+    return (data || []).reverse().map(m => ({
         id:         m.id,
         lead_id:    contact.id,
         telefono:   phone,
@@ -495,6 +543,26 @@ async function updateAgentConfig(orgId, campos) {
 
 // ─── Appointments ─────────────────────────────────────────────────────────────
 
+// Construye el Date de inicio a partir de fecha (YYYY-MM-DD) y hora. Devuelve null si el
+// resultado no es válido. Normaliza horas sin zero-pad ("9:00" → "09:00"): sin esto,
+// new Date('2026-07-01T9:00:00') daba Invalid Date y toISOString() lanzaba un error que
+// rompía la creación de citas desde el panel (bug 8). Sin hora usa 20:00 (cena San Remo).
+function buildStartsAt(fecha, hora, defaultTime = '20:00') {
+    if (!fecha) return null;
+    let h = hora;
+    if (h !== undefined && h !== null && String(h).trim() !== '') {
+        const m = String(h).trim().match(/^(\d{1,2}):(\d{2})$/);
+        if (!m) return null;
+        const hh = parseInt(m[1], 10), mm = parseInt(m[2], 10);
+        if (hh > 23 || mm > 59) return null;
+        h = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+    } else {
+        h = defaultTime;
+    }
+    const d = new Date(`${fecha}T${h}:00`);
+    return isNaN(d.getTime()) ? null : d;
+}
+
 async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duracionMin, estado = 'confirmed', notas, personas, ocasion, bizumStatus = 'not_required', bizumAmount, stylistId, source = 'bot' } = {}) {
     const oid = resolveOrg(orgId);
     if (!contactId) {
@@ -512,8 +580,13 @@ async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duraci
         return null;
     }
 
-    const startsAt = hora ? new Date(`${fecha}T${hora}:00`) : new Date(`${fecha}T20:00:00`);
-    const durationMs = (duracionMin || 120) * 60 * 1000;
+    const startsAt = buildStartsAt(fecha, hora);
+    if (!startsAt) {
+        console.error('[saveAppointment] fecha/hora inválida — reserva no guardada', { contactId, fecha, hora });
+        return null;
+    }
+    const durMin = Number(duracionMin);
+    const durationMs = (Number.isFinite(durMin) && durMin > 0 ? durMin : 120) * 60 * 1000;
     const endsAt = new Date(startsAt.getTime() + durationMs);
 
     // Idempotencia: nunca crear DOS veces la misma cita. Si ya existe una cita activa
@@ -580,8 +653,13 @@ async function updateAppointment(orgId, appointmentId, campos) {
     if (campos.recordatorioEnviado !== undefined) updates.recordatorio_enviado = campos.recordatorioEnviado;
     if (campos.endsAt !== undefined) updates.ends_at = campos.endsAt;
     if (campos.fecha !== undefined && campos.hora !== undefined) {
-        const startsAt = new Date(`${campos.fecha}T${campos.hora}:00`);
-        const durationMs = (campos.duracionMin || 120) * 60 * 1000;
+        const startsAt = buildStartsAt(campos.fecha, campos.hora);
+        if (!startsAt) {
+            console.error('[updateAppointment] fecha/hora inválida — no se actualiza el horario', { appointmentId, fecha: campos.fecha, hora: campos.hora });
+            return null;
+        }
+        const durMin = Number(campos.duracionMin);
+        const durationMs = (Number.isFinite(durMin) && durMin > 0 ? durMin : 120) * 60 * 1000;
         updates.starts_at = startsAt.toISOString();
         updates.ends_at   = new Date(startsAt.getTime() + durationMs).toISOString();
     }
@@ -596,14 +674,24 @@ async function updateAppointment(orgId, appointmentId, campos) {
     return data || null;
 }
 
+// Devuelve { ok, deleted, error }. `deleted` es el nº de filas borradas (0 = no existía).
+// Antes devolvía solo un booleano `!error`, que era `true` incluso cuando no se borraba
+// nada (id inexistente) y ocultaba el error real de Supabase (p.ej. id malformado),
+// dejando al panel sin saber por qué "fallaba" el borrado.
 async function deleteAppointment(orgId, appointmentId) {
     const oid = resolveOrg(orgId);
-    const { error } = await supabase
+    if (!appointmentId) return { ok: false, deleted: 0, error: 'appointmentId requerido' };
+    const { data, error } = await supabase
         .from('appointments')
         .delete()
         .eq('id', appointmentId)
-        .eq('organization_id', oid);
-    return !error;
+        .eq('organization_id', oid)
+        .select('id');
+    if (error) {
+        console.error('[deleteAppointment] error Supabase', { appointmentId, error: error.message });
+        return { ok: false, deleted: 0, error: error.message };
+    }
+    return { ok: true, deleted: (data || []).length };
 }
 
 async function getAppointmentsByDateRange(orgId, desde, hasta) {
@@ -1077,7 +1165,7 @@ async function getCompletedAppointmentsForReview(orgId, horasAfter) {
     const cutoff = new Date(Date.now() - horasAfter * 60 * 60 * 1000).toISOString();
     const { data } = await supabase
         .from('appointments')
-        .select('*, contacts!contact_id(id, full_name, wa_phone, language)')
+        .select('*, contacts!contact_id(id, full_name, wa_phone, language, metadata)')
         .eq('organization_id', oid)
         .eq('status', 'completed')
         .eq('resena_enviada', false)
@@ -1110,6 +1198,8 @@ module.exports = {
     saveLead,
     updateLead,
     findByPhone,
+    setContactJid,
+    getContactWaJid,
     findById,
     marcarCitaCompletada,
     marcarRecordatorioSent,
