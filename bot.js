@@ -4,7 +4,7 @@ const {
     saveLead, updateLead, findByPhone, saveMessage, saveAppointment, setContactJid,
     updateAppointment, setLeadBotMode, setEscalationReason, setBlacklist, createPendingAction,
     getAgentConfig, updateContactLanguage, updateContactPreferredStylist, updateContactLastStylist,
-    getStylistsByOrg, getAllStylistSchedules, getLastCompletedAppointment,
+    getStylistsByOrg, getAllStylistSchedules, getLastCompletedAppointment, hasActiveAppointmentForSlot,
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
@@ -842,6 +842,35 @@ function resolveSalonConfirmation(session, aiResponse, sanitized, frozenProposed
     // Bug 3: si la clienta no ha visto huecos propuestos en un turno anterior,
     // no confirmar — esperar a que los vea y responda explícitamente.
     if (!frozenProposed || !frozenProposed.length) {
+        // Excepción (slot directo): la clienta pidió un hueco concreto ("mañana a las 11
+        // con Irina") sin pasar por la lista de huecos propuestos. Si el LLM confirma la
+        // cita Y ese hueco EXACTO (fecha + hora + estilista) existe en los huecos reales
+        // disponibles, permitimos la confirmación aunque no haya propuesta previa.
+        if (aiResponse.reserva_confirmada) {
+            const horaReq = normalizeHora(aiResponse.datos?.hora_cita);
+            const fechaReq = aiResponse.datos?.fecha_cita || null;
+            if (horaReq && fechaReq) {
+                let matches = (session.availableSlots || []).filter(
+                    s => s.fecha === fechaReq && normalizeHora(s.hora) === horaReq
+                );
+                // Desambiguar por estilista si la clienta indicó una (o ya está fijada).
+                if (session.selectedStylist?.id) {
+                    matches = matches.filter(s => s.stylistId === session.selectedStylist.id);
+                } else if (aiResponse.datos?.estilista_preferida) {
+                    const wanted = normalizeText(aiResponse.datos.estilista_preferida);
+                    matches = matches.filter(s => {
+                        const sn = normalizeText(s.stylistName || '');
+                        return sn && (sn.includes(wanted) || wanted.includes(sn));
+                    });
+                }
+                if (matches.length === 1) {
+                    logger.info('resolveSalonConfirmation_slot_directo', {
+                        fecha: matches[0].fecha, hora: matches[0].hora, stylist: matches[0].stylistName,
+                    });
+                    return { slot: matches[0], motivo: 'slot_directo_sin_propuesta' };
+                }
+            }
+        }
         logger.info('resolveSalonConfirmation_skip', { reason: 'clienta_no_ha_visto_huecos' });
         return null;
     }
@@ -896,6 +925,17 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
     const hora = slot.hora;
     const stylistId = slot.stylistId;
 
+    // DIAG: log completo de entrada para slot_directo_sin_propuesta
+    logger.info('DIAG_finalizarCitaSante_entrada', {
+        orgId, telefono: userPhone,
+        slot: JSON.stringify(slot),
+        leadId: session.leadId,
+        selectedService: session.selectedService?.nombre || null,
+        partialData: JSON.stringify(session.partialData),
+        reservaConfirmada: session.reservaConfirmada,
+        bookedSlots: session.bookedSlots,
+    });
+
     // Guarda de idempotencia por sesión: no reservar dos veces el MISMO hueco
     // (fecha+hora+estilista) en una conversación. Evita que la resolución de confirmación
     // y la red de seguridad (o un reset/segunda reserva mal disparado) creen citas
@@ -903,9 +943,18 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
     const slotSig = `${fecha}|${hora}|${stylistId || ''}`;
     if (!Array.isArray(session.bookedSlots)) session.bookedSlots = [];
     if (session.bookedSlots.includes(slotSig)) {
-        logger.warn('cita_sante_duplicada_evitada', { orgId, telefono: userPhone, slotSig });
-        session.reservaConfirmada = true;
-        return true; // ya reservada en esta sesión: no creamos otra
+        const alreadySaved = session.leadId
+            ? await hasActiveAppointmentForSlot(orgId, session.leadId, fecha, hora)
+            : false;
+        if (alreadySaved) {
+            logger.warn('cita_sante_duplicada_evitada', { orgId, telefono: userPhone, slotSig });
+            session.reservaConfirmada = true;
+            return true; // cita confirmada en Supabase — no creamos otra
+        }
+        // slotSig en bookedSlots pero sin cita activa en Supabase: turno anterior falló.
+        // Eliminamos la marca obsoleta y procedemos con el guardado real.
+        logger.warn('cita_sante_bookedSlot_sin_cita_activa', { orgId, telefono: userPhone, slotSig });
+        session.bookedSlots = session.bookedSlots.filter(s => s !== slotSig);
     }
 
     session.partialData.fecha_cita = fecha;
@@ -917,7 +966,12 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
     });
 
     try {
+        logger.info('DIAG_finalizarCitaSante_saveLead_antes', {
+            orgId, telefono: userPhone,
+            partialData: JSON.stringify({ ...session.partialData, leadId: session.leadId, language: session.language }),
+        });
         const rid = await saveLead(orgId, { ...session.partialData, leadId: session.leadId, language: session.language });
+        logger.info('DIAG_finalizarCitaSante_saveLead_despues', { orgId, telefono: userPhone, rid, leadIdAntes: session.leadId });
         if (rid) session.leadId = rid;
         session.leadGuardado = true;
         incrementMetric('leadsSaved');
@@ -941,11 +995,21 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
         const guestNote = session.guestBooking && session.guestName ? `Cita para: ${session.guestName}` : null;
         const notasCita = [guestNote, session.partialData.notas].filter(Boolean).join(' · ') || null;
 
+        logger.info('DIAG_finalizarCitaSante_bookAppointment_antes', {
+            orgId, telefono: userPhone, leadId: session.leadId,
+            allServices, totalDuration, stylistId, notasCita,
+            slot: JSON.stringify(slot),
+        });
+
         const result = await calendarSante.bookAppointment(orgId, slot, session.leadId, {
             servicio: allServices || session.selectedService?.nombre || 'Cita',
             duracionMin: totalDuration,
             stylistId,
             notas: notasCita,
+        });
+
+        logger.info('DIAG_finalizarCitaSante_bookAppointment_resultado', {
+            orgId, telefono: userPhone, result: JSON.stringify(result),
         });
 
         if (!result.success) {
@@ -978,7 +1042,7 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
         session.guestName = null;
         return true;
     } catch (e) {
-        logger.error('error_finalizar_cita_sante', { telefono: userPhone, error: e.message });
+        logger.error('error_finalizar_cita_sante', { telefono: userPhone, error: e.message, stack: e.stack });
         return false;
     }
 }
@@ -1626,9 +1690,19 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     logger.info('selectedService_recovered_from_partialData', { orgId, telefono: userPhone, servicio: recovered.nombre });
                 }
             }
-            if (!session.selectedStylist) {
+            // Estilista nombrada en el mensaje actual. Si aún no hay ninguna
+            // seleccionada, la asignamos. Si el cliente CAMBIA a otra estilista en
+            // pleno flujo (ej. tenía Veronika y ahora pide Irina), actualizamos
+            // selectedStylist ANTES de loadAvailableSlots e invalidamos los huecos
+            // de la estilista anterior para no proponer disponibilidad equivocada.
+            {
                 const matchedSty = extractStylistFromText(sanitized, stylistsPre);
-                if (matchedSty && stylistCanDoService(matchedSty, session.selectedService)) {
+                if (matchedSty && stylistCanDoService(matchedSty, session.selectedService) &&
+                    matchedSty.id !== session.selectedStylist?.id) {
+                    if (session.selectedStylist) {
+                        session.availableSlots = [];
+                        session.currentSlotIndex = 0;
+                    }
                     session.selectedStylist = { id: matchedSty.id, nombre: matchedSty.name };
                 }
             }
@@ -1938,10 +2012,18 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 
             // Service selection from LLM — don't load slots here; let the next
             // turn's pre-LLM logic check if we need to ask date preference first.
-            if (aiResponse.datos?.servicio && !session.selectedService) {
+            // El LLM a veces devuelve el servicio en el campo de contexto __selectedService
+            // (el hint que le pasamos) en lugar de en datos.servicio. Aceptamos ambos y,
+            // como __selectedService puede venir como string o como objeto, extraemos el nombre.
+            const servicioLLM = aiResponse.datos?.servicio
+                || (typeof aiResponse.datos?.__selectedService === 'string'
+                    ? aiResponse.datos.__selectedService
+                    : aiResponse.datos?.__selectedService?.nombre)
+                || null;
+            if (servicioLLM && !session.selectedService) {
                 const agentCfg = await getAgentConfig(orgId);
                 const servicesCatalog = agentCfg?.services || [];
-                const matched = extractServiceFromText(aiResponse.datos.servicio, servicesCatalog);
+                const matched = extractServiceFromText(servicioLLM, servicesCatalog);
                 if (matched) {
                     session.selectedService = matched;
                     if (session.selectedStylist) {

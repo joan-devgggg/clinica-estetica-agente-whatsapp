@@ -28,7 +28,7 @@ export interface Message {
   timestamp: string;
 }
 
-const ACTIVE_ESTADOS: EstadoCita[] = ["pendiente", "en_conversacion", "pendiente_bizum", "confirmado", "completado"];
+const ACTIVE_ESTADOS: EstadoCita[] = ["pendiente", "en_conversacion", "pendiente_bizum", "confirmado", "completado", "cancelado"];
 
 export async function getConversations(orgId: string): Promise<Conversation[]> {
   try {

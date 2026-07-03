@@ -513,7 +513,8 @@ SIGUIENTE PASO: ${proximoPaso}
 9. Nunca inventes precios ni datos. Usa solo la información del catálogo y la disponibilidad.
 10. NUNCA asumas ni propongas un día sin que la clienta lo haya indicado primero. Siempre pregunta qué día le va mejor antes de mostrar huecos disponibles.
 11. Si llega solo con "hola", pregunta qué necesita.
-12. NUNCA confirmes dos citas distintas en el mismo mensaje. Si la clienta quiere reservar dos citas, confirma y guarda la primera (cita_confirmada: true) y en ese mismo mensaje pregunta los detalles de la segunda por separado. El sistema solo puede guardar una cita por turno: si confirmas dos a la vez, la segunda se perderá.
+12. NUNCA inventes ni asumas el nombre del cliente. Solo usa el nombre en datos.nombre si el cliente lo ha dicho explícitamente en esta conversación. Si no lo ha dicho, deja datos.nombre como null y saluda sin usar nombre.
+13. NUNCA confirmes dos citas distintas en el mismo mensaje. Si la clienta quiere reservar dos citas, confirma y guarda la primera (cita_confirmada: true) y en ese mismo mensaje pregunta los detalles de la segunda por separado. El sistema solo puede guardar una cita por turno: si confirmas dos a la vez, la segunda se perderá.
 
 # ── REGLA — REFERENCIAS AMBIGUAS AL ELEGIR HUECO ───────────────────────────
 
@@ -750,10 +751,12 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
         const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
         if (fenced) raw = fenced[1].trim();
 
+        const cleaned = raw.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
+
         try {
-            parsed = JSON.parse(raw);
+            parsed = JSON.parse(cleaned);
         } catch {
-            const jsonMatch = raw.match(/\{[\s\S]*\}/);
+            const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
                 try { parsed = JSON.parse(jsonMatch[0]); } catch {}
             }

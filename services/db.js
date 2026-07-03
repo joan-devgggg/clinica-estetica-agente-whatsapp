@@ -1194,6 +1194,22 @@ async function autoCompleteAppointments(orgId) {
     return data || [];
 }
 
+async function hasActiveAppointmentForSlot(orgId, contactId, fecha, hora) {
+    if (!contactId || !fecha) return false;
+    const oid = resolveOrg(orgId);
+    const startsAt = buildStartsAt(fecha, hora);
+    if (!startsAt) return false;
+    const { data } = await supabase
+        .from('appointments')
+        .select('id')
+        .eq('organization_id', oid)
+        .eq('contact_id', contactId)
+        .eq('starts_at', startsAt.toISOString())
+        .neq('status', 'cancelled')
+        .maybeSingle();
+    return !!data;
+}
+
 module.exports = {
     saveLead,
     updateLead,
@@ -1218,6 +1234,7 @@ module.exports = {
     setEscalationReason,
     deleteConversationMessages,
     saveAppointment,
+    hasActiveAppointmentForSlot,
     updateAppointment,
     deleteAppointment,
     getAppointmentsByLead,
