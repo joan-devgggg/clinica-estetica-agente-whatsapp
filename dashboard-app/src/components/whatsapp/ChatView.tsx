@@ -15,6 +15,7 @@ interface ChatViewProps {
   messages: Message[];
   onBotModeToggle: (leadId: number, mode: "auto" | "manual") => Promise<void>;
   onSendMessage: (telefono: string, mensaje: string) => Promise<void>;
+  onRemoveBlacklist?: (leadId: number, telefono: string) => Promise<void>;
   sendingMessage?: boolean;
   globalBotPaused?: boolean;
 }
@@ -24,6 +25,7 @@ export function ChatView({
   messages,
   onBotModeToggle,
   onSendMessage,
+  onRemoveBlacklist,
   sendingMessage,
   globalBotPaused,
 }: ChatViewProps) {
@@ -157,6 +159,16 @@ export function ChatView({
           <p className="text-[12px] text-[oklch(0.35_0.08_25)] font-medium flex-1">
             ⚠️ Requiere atención — {ESCALATION_LABELS[conversation.escalation_reason || ""] || conversation.escalation_reason}
           </p>
+          {conversation.escalation_reason === "lista_negra" && onRemoveBlacklist && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 text-[10.5px] gap-1 shrink-0 border-[oklch(0.75_0.08_145)] text-[oklch(0.35_0.10_145)] hover:bg-[oklch(0.94_0.03_145)]"
+              onClick={() => onRemoveBlacklist(conversation.id, conversation.telefono)}
+            >
+              ✅ Quitar de lista negra
+            </Button>
+          )}
         </div>
       )}
 

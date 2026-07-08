@@ -7,7 +7,7 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
-const { getConfigValue, setConfigValue, getAgentConfig, updateAgentConfig, getAllLeads, setBlacklist, removeBlacklist, setVip, getPendingActions, resolvePendingAction } = require('./db');
+const { getConfigValue, setConfigValue, getAgentConfig, updateAgentConfig, getAllLeads, setBlacklist, removeBlacklist, setVip, getPendingActions, resolvePendingAction, findByPhone, setLeadBotMode } = require('./db');
 const { getAllOrgs } = require('./org-registry');
 const logger = require('../lib/logger');
 
@@ -27,6 +27,15 @@ let getBotActivoFn = () => true;
 let setBotActivoFn = () => {};
 let _botInstance = null;
 let _isPolling = false;
+
+// Escapa caracteres especiales de HTML para usar con parse_mode: 'HTML'
+function esc(text) {
+    if (text == null) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
 
 async function buildUserToOrgMap() {
     const orgs = getAllOrgs();
@@ -77,19 +86,19 @@ function notifyOrgAdmin(orgId, mensaje) {
     }
     const admins = getAdminIdsForOrg(orgId);
     for (const userId of admins) {
-        _botInstance.sendMessage(userId, mensaje, { parse_mode: 'Markdown' })
+        _botInstance.sendMessage(userId, mensaje, { parse_mode: 'HTML' })
             .catch(e => logger.error('telegram_notify_error', { error: e.message, userId, orgId }));
     }
 }
 
 async function notifyBizumPending(orgId, reserva) {
-    const msg = `💰 *Bizum pendiente de revisar*\n\n` +
-        `👤 ${reserva.nombre || 'Sin nombre'}\n` +
-        `📞 ${reserva.telefono}\n` +
-        `📅 ${reserva.fecha} a las ${reserva.hora}\n` +
-        `👥 ${reserva.personas || '?'} personas` +
-        (reserva.ocasion ? `\n🎉 ${reserva.ocasion}` : '') +
-        `\n\nResponde *confirmar* o *rechazar*.`;
+    const msg = `💰 <b>Bizum pendiente de revisar</b>\n\n` +
+        `👤 ${esc(reserva.nombre || 'Sin nombre')}\n` +
+        `📞 ${esc(reserva.telefono)}\n` +
+        `📅 ${esc(reserva.fecha)} a las ${esc(reserva.hora)}\n` +
+        `👥 ${esc(reserva.personas || '?')} personas` +
+        (reserva.ocasion ? `\n🎉 ${esc(reserva.ocasion)}` : '') +
+        `\n\nResponde <b>confirmar</b> o <b>rechazar</b>.`;
     notifyOrgAdmin(orgId, msg);
 }
 
@@ -108,29 +117,42 @@ const ESCALATION_LABELS = {
 async function notifyEscalation(orgId, contacto, mensaje, reason) {
     const motivoLabel = ESCALATION_LABELS[reason] || reason || 'Requiere atención humana';
     const hora = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' });
-    const msg = `⚠️ *ATENCIÓN REQUERIDA — Santé*\n\n` +
-        `👤 Cliente: ${contacto?.nombre || 'Sin nombre'}\n` +
-        `📱 Teléfono: ${contacto?.telefono || 'Sin teléfono'}\n` +
-        `💬 Motivo: ${motivoLabel}\n` +
-        `🕐 Hora: ${hora}\n\n` +
-        (mensaje ? `📝 Último mensaje: "${mensaje.slice(0, 200)}"\n\n` : '') +
+    const msg = `⚠️ <b>ATENCIÓN REQUERIDA — Santé</b>\n\n` +
+        `👤 Cliente: ${esc(contacto?.nombre || 'Sin nombre')}\n` +
+        `📱 Teléfono: ${esc(contacto?.telefono || 'Sin teléfono')}\n` +
+        `💬 Motivo: ${esc(motivoLabel)}\n` +
+        `🕐 Hora: ${esc(hora)}\n\n` +
+        (mensaje ? `📝 Último mensaje: "${esc(mensaje.slice(0, 200))}"\n\n` : '') +
         `👉 Entra al panel para responderle`;
     notifyOrgAdmin(orgId, msg);
 }
 
 async function notifyVipSuggestion(orgId, contacto) {
-    const msg = `⭐ *Sugerencia VIP*\n\n` +
-        `${contacto.nombre || 'Este cliente'} (${contacto.telefono}) ha venido ya ${contacto.visit_count} veces.\n` +
-        `¿Lo añadimos a la lista VIP? Responde *si* o *no*.`;
+    const msg = `⭐ <b>Sugerencia VIP</b>\n\n` +
+        `${esc(contacto.nombre || 'Este cliente')} (${esc(contacto.telefono)}) ha venido ya ${esc(contacto.visit_count)} veces.\n` +
+        `¿Lo añadimos a la lista VIP? Responde <b>si</b> o <b>no</b>.`;
     notifyOrgAdmin(orgId, msg);
 }
 
 async function notifyBlacklistAlert(orgId, contacto) {
-    const msg = `🚫 *Cliente en lista negra*\n\n` +
-        `${contacto.nombre || 'Cliente'} (${contacto.telefono}) está en la lista negra.\n` +
-        `Motivo: ${contacto.blacklist_reason || 'sin motivo'}\n\n` +
-        `Ha escrito por WhatsApp. ¿Quieres que el bot continúe? Responde desde el panel.`;
-    notifyOrgAdmin(orgId, msg);
+    if (!_botInstance) { logger.warn('telegram_no_iniciado_notify'); return; }
+    const msg = `🚫 <b>Cliente en lista negra</b>\n\n` +
+        `${esc(contacto.nombre || 'Cliente')} (${esc(contacto.telefono)}) está en la lista negra.\n` +
+        `Motivo: ${esc(contacto.blacklist_reason || 'sin motivo')}\n\n` +
+        `¿Qué hacemos?`;
+    const phoneKey = String(contacto.telefono).replace(/\D/g, '');
+    const admins = getAdminIdsForOrg(orgId);
+    for (const userId of admins) {
+        _botInstance.sendMessage(userId, msg, {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [[
+                    { text: '✅ Sí, continuar',    callback_data: `bl_ok|${orgId}|${phoneKey}` },
+                    { text: '🚫 No, mantener',     callback_data: `bl_no|${orgId}|${phoneKey}` },
+                ]]
+            }
+        }).catch(e => logger.error('telegram_notify_error', { error: e.message, userId, orgId }));
+    }
 }
 
 // ─── Resolución de pending_actions ──────────────────────────────────────────
@@ -156,9 +178,9 @@ async function resolveBizumAction(orgId, pendingAction, confirmed, bot, chatId) 
     await resolvePendingAction(orgId, pendingAction.id, confirmed ? 'confirmado' : 'rechazado');
     const nombre = pendingAction.contacts?.full_name || pendingAction.payload?.nombre || 'el cliente';
     bot.sendMessage(chatId, confirmed
-        ? `✅ Reserva de *${nombre}* confirmada. Se le ha avisado por WhatsApp.`
-        : `❌ Bizum de *${nombre}* rechazado. Reserva cancelada y cliente añadido a la lista negra.`,
-        { parse_mode: 'Markdown' });
+        ? `✅ Reserva de <b>${esc(nombre)}</b> confirmada. Se le ha avisado por WhatsApp.`
+        : `❌ Bizum de <b>${esc(nombre)}</b> rechazado. Reserva cancelada y cliente añadido a la lista negra.`,
+        { parse_mode: 'HTML' });
 }
 
 async function resolveVipAction(orgId, pendingAction, accept, bot, chatId) {
@@ -168,9 +190,9 @@ async function resolveVipAction(orgId, pendingAction, accept, bot, chatId) {
     }
     await resolvePendingAction(orgId, pendingAction.id, accept ? 'aceptado' : 'rechazado');
     bot.sendMessage(chatId, accept
-        ? `⭐ *${nombre}* añadido a la lista VIP.`
-        : `Vale, *${nombre}* no se añade a la lista VIP.`,
-        { parse_mode: 'Markdown' });
+        ? `⭐ <b>${esc(nombre)}</b> añadido a la lista VIP.`
+        : `Vale, <b>${esc(nombre)}</b> no se añade a la lista VIP.`,
+        { parse_mode: 'HTML' });
 }
 
 async function tryResolvePendingReply(orgId, bot, chatId, userId, texto) {
@@ -296,7 +318,7 @@ async function ejecutarAccion(orgId, accion, datos, bot, chatId) {
             const businessInfo = { ...(agentCfg?.business_info || {}) };
             businessInfo.faqs = { ...(businessInfo.faqs || {}), [campo]: datos.valor };
             await updateAgentConfig(orgId, { business_info: businessInfo });
-            return `✅ FAQ actualizada: *${campo}* → ${datos.valor}`;
+            return `✅ FAQ actualizada: <b>${esc(campo)}</b> → ${esc(datos.valor)}`;
         }
 
         case 'set_bizum': {
@@ -306,7 +328,7 @@ async function ejecutarAccion(orgId, accion, datos, bot, chatId) {
             if (datos.numero) businessInfo.bizum.numero = String(datos.numero);
             if (datos.importe !== undefined && datos.importe !== null) businessInfo.bizum.importe = Number(datos.importe);
             await updateAgentConfig(orgId, { business_info: businessInfo });
-            return `✅ Datos de Bizum actualizados: ${businessInfo.bizum.importe}€ al ${businessInfo.bizum.numero}`;
+            return `✅ Datos de Bizum actualizados: ${esc(businessInfo.bizum.importe)}€ al ${esc(businessInfo.bizum.numero)}`;
         }
 
         case 'set_vip_umbral': {
@@ -316,68 +338,68 @@ async function ejecutarAccion(orgId, accion, datos, bot, chatId) {
             const businessInfo = { ...(agentCfg?.business_info || {}) };
             businessInfo.vip = { ...(businessInfo.vip || {}), visitasParaSugerir: umbral };
             await updateAgentConfig(orgId, { business_info: businessInfo });
-            return `✅ Ahora se sugerirá VIP a partir de *${umbral}* visitas.`;
+            return `✅ Ahora se sugerirá VIP a partir de <b>${esc(umbral)}</b> visitas.`;
         }
 
         case 'add_blacklist': {
             const contacto = await buscarContacto(orgId, datos.nombre || datos.telefono);
-            if (!contacto) return `❌ No encontré a "${datos.nombre || datos.telefono}" en los clientes.`;
+            if (!contacto) return `❌ No encontré a "${esc(datos.nombre || datos.telefono)}" en los clientes.`;
             await setBlacklist(orgId, contacto.id, datos.motivo || 'Añadido manualmente desde Telegram');
-            return `🚫 *${contacto.nombre || contacto.telefono}* añadido a la lista negra.`;
+            return `🚫 <b>${esc(contacto.nombre || contacto.telefono)}</b> añadido a la lista negra.`;
         }
 
         case 'remove_blacklist': {
             const contacto = await buscarContacto(orgId, datos.nombre || datos.telefono);
-            if (!contacto) return `❌ No encontré a "${datos.nombre || datos.telefono}" en los clientes.`;
+            if (!contacto) return `❌ No encontré a "${esc(datos.nombre || datos.telefono)}" en los clientes.`;
             await removeBlacklist(orgId, contacto.id);
-            return `✅ *${contacto.nombre || contacto.telefono}* eliminado de la lista negra.`;
+            return `✅ <b>${esc(contacto.nombre || contacto.telefono)}</b> eliminado de la lista negra.`;
         }
 
         case 'add_vip': {
             const contacto = await buscarContacto(orgId, datos.nombre || datos.telefono);
-            if (!contacto) return `❌ No encontré a "${datos.nombre || datos.telefono}" en los clientes.`;
+            if (!contacto) return `❌ No encontré a "${esc(datos.nombre || datos.telefono)}" en los clientes.`;
             await setVip(orgId, contacto.id, true);
-            return `⭐ *${contacto.nombre || contacto.telefono}* añadido a la lista VIP.`;
+            return `⭐ <b>${esc(contacto.nombre || contacto.telefono)}</b> añadido a la lista VIP.`;
         }
 
         case 'remove_vip': {
             const contacto = await buscarContacto(orgId, datos.nombre || datos.telefono);
-            if (!contacto) return `❌ No encontré a "${datos.nombre || datos.telefono}" en los clientes.`;
+            if (!contacto) return `❌ No encontré a "${esc(datos.nombre || datos.telefono)}" en los clientes.`;
             await setVip(orgId, contacto.id, false);
-            return `✅ *${contacto.nombre || contacto.telefono}* eliminado de la lista VIP.`;
+            return `✅ <b>${esc(contacto.nombre || contacto.telefono)}</b> eliminado de la lista VIP.`;
         }
 
         case 'list_blacklist': {
             const { getBlacklist } = require('./db');
             const lista = await getBlacklist(orgId);
             if (!lista.length) return 'La lista negra está vacía.';
-            return `🚫 *Lista negra:*\n` + lista.map(c => `• ${c.nombre || c.telefono} — ${c.blacklist_reason || 'sin motivo'}`).join('\n');
+            return `🚫 <b>Lista negra:</b>\n` + lista.map(c => `• ${esc(c.nombre || c.telefono)} — ${esc(c.blacklist_reason || 'sin motivo')}`).join('\n');
         }
 
         case 'list_vip': {
             const { getVipList } = require('./db');
             const lista = await getVipList(orgId);
             if (!lista.length) return 'No hay clientes VIP todavía.';
-            return `⭐ *Lista VIP:*\n` + lista.map(c => `• ${c.nombre || c.telefono} (${c.visit_count} visitas)`).join('\n');
+            return `⭐ <b>Lista VIP:</b>\n` + lista.map(c => `• ${esc(c.nombre || c.telefono)} (${esc(c.visit_count)} visitas)`).join('\n');
         }
 
         case 'get_config': {
             const agentCfg = await getAgentConfig(orgId);
             const info = agentCfg?.business_info || {};
-            return `⚙️ *Configuración actual:*\n` +
+            return `⚙️ <b>Configuración actual:</b>\n` +
                 `• Bot WhatsApp: ${getBotActivoFn(orgId) ? '🟢 Activo' : '🔴 Pausado'}\n` +
-                (info.bizum ? `• Bizum: ${info.bizum.importe ?? '?'}€ al ${info.bizum.numero ?? '?'}\n` : '') +
-                `• Umbral VIP: ${info.vip?.visitasParaSugerir ?? '?'} visitas`;
+                (info.bizum ? `• Bizum: ${esc(info.bizum.importe ?? '?')}€ al ${esc(info.bizum.numero ?? '?')}\n` : '') +
+                `• Umbral VIP: ${esc(info.vip?.visitasParaSugerir ?? '?')} visitas`;
         }
 
         case 'pause_bot': {
             setBotActivoFn(orgId, false); // pausa SOLO la org de este admin
-            return '⏸️ Bot de WhatsApp *pausado* para tu negocio.';
+            return '⏸️ Bot de WhatsApp <b>pausado</b> para tu negocio.';
         }
 
         case 'resume_bot': {
             setBotActivoFn(orgId, true);
-            return '▶️ Bot de WhatsApp *reactivado* para tu negocio.';
+            return '▶️ Bot de WhatsApp <b>reactivado</b> para tu negocio.';
         }
 
         default:
@@ -443,7 +465,7 @@ function startTelegramBot(options = {}) {
             if (['si', 'sí', 'confirmo', 'ok', 'vale'].includes(texto.toLowerCase().trim())) {
                 const resultado = await ejecutarAccion(orgId, session.pendingAction.accion, session.pendingAction.datos, bot, chatId);
                 telegramSessions.delete(userId);
-                bot.sendMessage(chatId, resultado || '✅ Hecho.', { parse_mode: 'Markdown' });
+                bot.sendMessage(chatId, resultado || '✅ Hecho.', { parse_mode: 'HTML' });
             } else {
                 telegramSessions.delete(userId);
                 bot.sendMessage(chatId, '❌ Cancelado.');
@@ -473,12 +495,43 @@ function startTelegramBot(options = {}) {
 
         if (interpretacion.requiere_confirmacion) {
             telegramSessions.set(userId, { pendingAction: interpretacion });
-            bot.sendMessage(chatId, `${interpretacion.respuesta}\n\n¿Confirmas? (sí / no)`, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, `${interpretacion.respuesta}\n\n¿Confirmas? (sí / no)`, { parse_mode: 'HTML' });
             return;
         }
 
         const resultado = await ejecutarAccion(orgId, interpretacion.accion, interpretacion.datos || {}, bot, chatId);
-        bot.sendMessage(chatId, resultado || interpretacion.respuesta, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, resultado || interpretacion.respuesta, { parse_mode: 'HTML' });
+    });
+
+    bot.on('callback_query', async (query) => {
+        const chatId = query.message.chat.id;
+        const userId = query.from.id;
+        const data = query.data || '';
+        bot.answerCallbackQuery(query.id).catch(() => {});
+
+        if (!data.startsWith('bl_ok|') && !data.startsWith('bl_no|')) return;
+        if (!isAuthorized(userId)) return;
+
+        const [action, orgId, phone] = data.split('|');
+        if (action === 'bl_ok') {
+            try {
+                const contact = await findByPhone(orgId, phone);
+                if (contact) {
+                    await removeBlacklist(orgId, contact.id);
+                    await setLeadBotMode(orgId, phone, 'auto');
+                    await sendDirectMessage(orgId, phone, 'Hola 😊 Hemos revisado tu caso. ¿En qué puedo ayudarte?');
+                }
+                bot.sendMessage(chatId, '✅ Cliente reactivado y mensaje enviado.');
+            } catch (e) {
+                logger.error('blacklist_reactivate_error', { orgId, phone, error: e.message });
+                bot.sendMessage(chatId, '❌ Error al reactivar el cliente.');
+            }
+        } else {
+            bot.sendMessage(chatId, '🚫 Cliente mantiene en lista negra.');
+        }
+        bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+            chat_id: chatId, message_id: query.message.message_id,
+        }).catch(() => {});
     });
 
     bot.on('polling_error', (e) => {

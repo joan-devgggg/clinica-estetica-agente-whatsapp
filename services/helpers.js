@@ -339,7 +339,7 @@ function extractServiceFromText(text, servicesCatalog) {
     // Fuzzy: common keywords
     if (!bestMatch) {
         const keywordMap = [
-            { keywords: ['corte', 'cortar', 'corto', 'corta', 'haircut', 'cut'], categoria: 'Cortes' },
+            { keywords: ['corte', 'cortar', 'corto', 'corta', 'degradado', 'haircut', 'cut'], categoria: 'Cortes' },
             { keywords: ['color', 'tinte', 'teñir', 'raiz', 'raíz', 'dye'], categoria: 'Color Premium' },
             { keywords: ['contouring'], categoria: 'Mechas Contouring' },
             { keywords: ['mecha', 'mechas', 'highlights', 'balayage'], categoria: 'Mechas Airtouch' },
@@ -402,6 +402,25 @@ function extractServiceFromText(text, servicesCatalog) {
     return bestMatch;
 }
 
+// Nombre COMPLETO del servicio para guardar en appointments.service y mostrar.
+// En el catálogo las variantes por largo de pelo se guardan con un `nombre`
+// genérico ("Largo 1") y la categoría real ("Mechas Airtouch") aparte. Ese nombre
+// suelto es ambiguo —se comparte entre varias categorías— así que lo prefijamos
+// con la categoría para obtener el nombre real: "Mechas Airtouch Largo 1".
+// Los servicios con nombre propio (ej. "Color completo largo 1", "K18") se
+// devuelven tal cual.
+function buildFullServiceName(svc, servicesCatalog = []) {
+    if (!svc || !svc.nombre) return svc?.nombre || null;
+    if (!svc.categoria) return svc.nombre;
+    const norm = normalizeText(svc.nombre);
+    // Ya contiene la categoría → nombre propio completo, no duplicar.
+    if (norm.includes(normalizeText(svc.categoria))) return svc.nombre;
+    const esVarianteGenerica =
+        /^largo\s*\d+$/.test(norm) ||
+        (servicesCatalog || []).filter(s => normalizeText(s.nombre) === norm).length > 1;
+    return esVarianteGenerica ? `${svc.categoria} ${svc.nombre}` : svc.nombre;
+}
+
 function extractStylistFromText(text, teamList) {
     if (!text || !teamList?.length) return null;
     const t = normalizeText(text);
@@ -455,6 +474,22 @@ function wantsAnotherBooking(text) {
         'another appointment', 'another booking', 'book another', 'one more appointment',
         'also book', 'second appointment', 'second booking',
         'еще одну запись', 'ещё одну запись', 'ще один запис',
+    ];
+    return phrases.some(p => t.includes(normalizeText(p)));
+}
+
+// La clienta quiere reiniciar el flujo desde el principio ("empecemos desde 0",
+// "empezar de nuevo", "start over"). Distinto de wantsAnotherBooking (segunda cita):
+// aquí NO hay una nueva cita, sino que se descarta el servicio/estado a medio elegir.
+// Coincidencia por frases explícitas de reinicio (NO "otra vez" a secas, que es ambiguo).
+function wantsRestart(text) {
+    const t = normalizeText(text);
+    const phrases = [
+        'desde cero', 'desde 0', 'empezar de nuevo', 'empecemos de nuevo',
+        'empecemos desde', 'empezamos de nuevo', 'empieza de nuevo', 'empezemos de nuevo',
+        'volver a empezar', 'volvamos a empezar', 'comenzar de nuevo', 'reiniciar',
+        'start over', 'start again', 'from scratch', 'from the beginning',
+        'заново', 'начнём заново', 'начнем заново', 'спочатку', 'почати заново',
     ];
     return phrases.some(p => t.includes(normalizeText(p)));
 }
@@ -758,6 +793,53 @@ function extractMechasClasicasTipo(text) {
     return null;
 }
 
+// ─── Cortes: árbol de género/tipo (Sante) ───────────────────────────────────
+// El corte se pregunta en varios pasos (género → tipo) y cada respuesta suelta
+// ("mujer", "con Dyson") no casa contra el catálogo por sí sola. Estos detectores
+// deterministas permiten a bot.js resolver el servicio en el MISMO turno, sin el
+// desfase de depender de que el LLM devuelva datos.servicio. Espejo de detectLargoCategory.
+
+// "un corte" genérico SIN tipo especificado → dispara el árbol hombre/niño/mujer.
+function detectCorteGenerico(text) {
+    if (!text) return false;
+    const t = normalizeText(text);
+    const mencionaCorte = /\b(corte|cortar|cortarme|cortarte|cortarse|cortarlo|cortame|haircut|cut)\b/.test(t);
+    if (!mencionaCorte) return false;
+    // Si ya especifica el tipo, NO es genérico: lo resuelve extractServiceFromText.
+    const tipoEspecificado = /\b(hombre|caballero|mujer|femenin|ni[ñn]o|ni[ñn]a|infantil|secado|dyson)\b/.test(t);
+    return !tipoEspecificado;
+}
+
+// Paso 1 del árbol: ¿hombre, niño o mujer? Devuelve 'hombre' | 'nino' | 'mujer' | null.
+// Se evalúa niño primero para que "para mi niño"/"para mi hijo" no caiga en la rama
+// mujer por el marcador "para mi".
+function detectCorteGenero(text) {
+    if (!text) return null;
+    const t = normalizeText(text);
+    if (/\b(ni[ñn]o|ni[ñn]a|nino|nina|infantil|peque|hijo|hija)\b/.test(t)) return 'nino';
+    if (/\b(hombre|caballero|chico|masculin|senor|varon)\b/.test(t)) return 'hombre';
+    if (/\b(mujer|femenin|chica|soy yo|yo misma|para mi|es para mi|para mi misma)\b/.test(t)) return 'mujer';
+    return null;
+}
+
+// Paso 2 (mujer): ¿secado o Dyson? Devuelve 'dyson' | 'secado' | null.
+function detectCorteMujerTipo(text) {
+    if (!text) return null;
+    const t = normalizeText(text);
+    if (/\bdyson\b/.test(t)) return 'dyson';
+    if (/\b(secado|secar|secador|brushing)\b/.test(t)) return 'secado';
+    return null;
+}
+
+// Paso 2 (niño): ¿infantil hasta 8 años o corte de niño normal? Devuelve 'infantil' | 'normal' | null.
+function detectCorteNinoTipo(text) {
+    if (!text) return null;
+    const t = normalizeText(text);
+    if (/\b(infantil|hasta 8|menor de 8|mas peque|el pequeno|el primero|primero|primera)\b/.test(t)) return 'infantil';
+    if (/\b(normal|mayor|el otro|el segundo|segundo|segunda)\b/.test(t)) return 'normal';
+    return null;
+}
+
 // Detects services that require manual consultation (no fixed price).
 // Returns { type, message } or null.
 function detectConsultaService(text) {
@@ -785,7 +867,7 @@ function extractLargoPelo(text) {
     if (/(очень длинн|дуже довг)/.test(t)) return 4;
     if (/\b(largo|long|cintura)\b/.test(t)) return 3;
     if (/(до пояса|до талі|длинн|довг[іе])/.test(t)) return 3;
-    if (/\b(medio|medium|espalda|escapula|mid)\b/.test(t)) return 2;
+    if (/\b(medio|media|normal|medium|espalda|escapula|mid)\b/.test(t)) return 2;
     if (/(до лопаток|средн|середн)/.test(t)) return 2;
     if (/\b(corto|short|hombros)\b/.test(t)) return 1;
     if (/(до плечей|коротк)/.test(t)) return 1;
@@ -808,10 +890,12 @@ module.exports = {
     isServiceName,
     // Salon-specific
     extractServiceFromText,
+    buildFullServiceName,
     extractStylistFromText,
     getMissingFieldsSante,
     extractQuickDataSante,
     wantsAnotherBooking,
+    wantsRestart,
     detectGuestBooking,
     extractGuestName,
     matchUpsellSuggestion,
@@ -819,5 +903,9 @@ module.exports = {
     detectLargoCategory,
     extractLargoPelo,
     extractMechasClasicasTipo,
+    detectCorteGenerico,
+    detectCorteGenero,
+    detectCorteMujerTipo,
+    detectCorteNinoTipo,
     detectConsultaService,
 };

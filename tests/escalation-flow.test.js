@@ -124,8 +124,9 @@ async function cleanup() {
         // Panel llama a setLeadBotMode para poner auto + limpiar escalation_reason
         await db.setLeadBotMode(ORG, PHONE_DIGITS, 'auto');
 
-        // Panel llama a setConversationBotMode(phone, true) para reactivar bot
-        setConversationBotMode(PHONE_DIGITS, true);
+        // Panel resuelve la escalada: webhook.js llama _setConvMode(telefono, true, isEscalationResolve=true).
+        // El tercer argumento (true) es el que dispara el borrado completo de la sesión.
+        setConversationBotMode(PHONE_DIGITS, true, true);
 
         // Sesión debe haber sido eliminada de memoria
         const session = getSession(ORG, TEST_PHONE);

@@ -1,6 +1,7 @@
 const assert = require('assert');
 const { _internals } = require('../bot');
-const { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked } = _internals;
+const { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
+    respondsWithInventedSlots, salonNoSlotsMsg } = _internals;
 
 function test(name, fn) {
     try {
@@ -140,6 +141,75 @@ test('resolveSalonConfirmation respeta los guardias (sin huecos → null)', () =
     const aiResponse = { respuesta: 'Te he reservado tu cita', reserva_confirmada: true, datos: {} };
     const res = quiet(() => resolveSalonConfirmation(session, aiResponse, 'si'));
     assert.strictEqual(res, null);
+});
+
+// ─── Fix: red anti-invención de disponibilidad ────────────────────────────────
+// respondsWithInventedSlots(respuesta, availableSlots) → true = bloquear
+
+test('anti-invención: bloquea cuando availableSlots está vacío y hay horas en el mensaje', () => {
+    // Caso crítico del reporte: totalSlots:0, LLM alucina "10:00, 10:30, 11:00"
+    assert.strictEqual(
+        respondsWithInventedSlots('El viernes 17 con Irina tengo las 10:00, 10:30, 11:00', []),
+        true,
+    );
+});
+
+test('anti-invención: NO bloquea cuando las horas mencionadas existen en los huecos reales', () => {
+    const slots = [
+        { hora: '10:00', fecha: '2026-07-10', stylistId: 'a', stylistName: 'Irina' },
+        { hora: '11:30', fecha: '2026-07-10', stylistId: 'a', stylistName: 'Irina' },
+    ];
+    assert.strictEqual(
+        respondsWithInventedSlots('Tengo el jueves a las 10:00 o las 11:30, ¿cuál te viene mejor?', slots),
+        false,
+    );
+});
+
+test('anti-invención: NO bloquea para hora intermedia dentro del rango real (excepción 30 min)', () => {
+    const slots = [
+        { hora: '10:00', fecha: '2026-07-10', stylistId: 'a', stylistName: 'Irina' },
+        { hora: '10:30', fecha: '2026-07-10', stylistId: 'a', stylistName: 'Irina' },
+    ];
+    // 10:15 está dentro del rango [10:00, 10:30] → se permite
+    assert.strictEqual(
+        respondsWithInventedSlots('Puedo reservarte a las 10:15, ¿te va bien?', slots),
+        false,
+    );
+});
+
+test('anti-invención: bloquea cuando la hora está fuera del rango de huecos reales', () => {
+    const slots = [
+        { hora: '10:00', fecha: '2026-07-10', stylistId: 'a', stylistName: 'Veronika' },
+        { hora: '13:00', fecha: '2026-07-10', stylistId: 'a', stylistName: 'Veronika' },
+    ];
+    // 09:00 está por debajo del mínimo real (10:00) → inventado
+    assert.strictEqual(
+        respondsWithInventedSlots('Te pongo a las 09:00 con Veronika', slots),
+        true,
+    );
+});
+
+test('anti-invención: NO bloquea cuando el mensaje no contiene ninguna hora', () => {
+    assert.strictEqual(
+        respondsWithInventedSlots('¿Qué día o semana te viene mejor? 😊', []),
+        false,
+    );
+});
+
+test('salonNoSlotsMsg: sin servicio → pide servicio (español)', () => {
+    const session = { language: null, selectedService: null };
+    const msg = salonNoSlotsMsg(session);
+    assert.ok(typeof msg === 'string' && msg.length > 0);
+    // debe mencionar "servicio" o "quieres" — no debe mencionar días
+    assert.ok(msg.includes('servicio') || msg.includes('quieres'));
+});
+
+test('salonNoSlotsMsg: con servicio → pide día (inglés)', () => {
+    const session = { language: 'en', selectedService: { nombre: 'Haircut' } };
+    const msg = salonNoSlotsMsg(session);
+    assert.ok(typeof msg === 'string' && msg.length > 0);
+    // en inglés debe mencionar "day" o "week"
+    assert.ok(msg.toLowerCase().includes('day') || msg.toLowerCase().includes('week'));
 });
 
 // bot.js deja un setInterval (GC) que mantiene vivo el event loop: forzamos la salida.

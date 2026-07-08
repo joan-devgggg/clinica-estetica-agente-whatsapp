@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node tests/slots.test.js"
+    "test": "node tests/slots.test.js && node tests/service-state.test.js"
   },
   "type": "commonjs",
   "dependencies": {

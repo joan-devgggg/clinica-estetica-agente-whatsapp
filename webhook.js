@@ -9,7 +9,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const db = require('./services/db');
 const config = require('./config.json');
-const { notifyVipSuggestion } = require('./services/telegram');
+const { notifyBlacklistAlert } = require('./services/telegram');
 const logger = require('./lib/logger');
 
 const DASHBOARD_API_SECRET = process.env.DASHBOARD_API_SECRET || '';
@@ -218,11 +218,16 @@ app.post('/api/appointments', async (req, res) => {
 app.put('/api/citas/:id', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
+        console.log('[DEBUG PUT /api/citas/:id] llegó petición', { id: req.params.id, orgId, body: req.body });
         const apt = await db.updateAppointment(orgId, req.params.id, req.body);
+        console.log('[DEBUG apt]', apt);
         if (!apt) return res.status(404).json({ error: 'No encontrada' });
 
-        if (req.body.noShow === true && apt.contact_id) {
+        if ((req.body.noShow === true || req.body.estado === 'no_show') && apt.contact_id) {
+            console.log('[DEBUG no-show] ejecutando setBlacklist', { orgId, contact_id: apt.contact_id, noShow: req.body.noShow, estado: req.body.estado });
+            const noShowContact = await db.findById(orgId, apt.contact_id);
             await db.setBlacklist(orgId, apt.contact_id, 'No-show');
+            notifyBlacklistAlert(orgId, { nombre: noShowContact?.nombre, telefono: noShowContact?.telefono, blacklist_reason: 'No-show' }).catch(() => {});
         }
 
         if (req.body.estado === 'completed' && apt.contact_id) {
@@ -237,7 +242,6 @@ app.put('/api/citas/:id', async (req, res) => {
                         contactId: contact.id,
                         payload: { nombre: contact.nombre, telefono: contact.telefono, visit_count: visitCount }
                     });
-                    notifyVipSuggestion(orgId, { ...contact, visit_count: visitCount }).catch(() => {});
                 }
             }
         }
@@ -309,6 +313,63 @@ app.post('/api/lista-vip/:id', async (req, res) => {
 app.delete('/api/lista-vip/:id', async (req, res) => {
     try { await db.setVip(extractOrgId(req), req.params.id, false); res.json({ ok: true }); }
     catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/vip/generate-message', async (req, res) => {
+    try {
+        const { idea } = req.body;
+        if (!idea) return res.status(400).json({ error: 'idea requerida' });
+        const OpenAI = require('openai');
+        const openrouter = new OpenAI({ baseURL: 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY });
+        const completion = await openrouter.chat.completions.create({
+            model: 'anthropic/claude-haiku-4.5',
+            messages: [
+                {
+                    role: 'system',
+                    content: 'Eres el asistente de Santé Healthy Hair Salon, un salón premium en Alicante. Genera mensajes de WhatsApp para clientas VIP: cortos (máximo 2-3 líneas), cercanos, con 1-2 emojis, en español informal (tuteo). Termina siempre con una llamada a la acción como \'¿Te apuntas?\' o \'¿Reservamos?\' o similar. NUNCA uses asteriscos, negritas ni markdown. Solo texto plano.',
+                },
+                { role: 'user', content: `Genera un mensaje promocional para enviar a nuestras clientas VIP basado en esta idea: ${idea}` },
+            ],
+            max_tokens: 200,
+        });
+        const mensaje = completion.choices[0]?.message?.content?.trim() || '';
+        res.json({ mensaje });
+    } catch (e) {
+        console.error('[vip/generate-message] ERROR:', {
+            message: e.message,
+            status: e.status,
+            code: e.code,
+            type: e.type,
+            cause: e.cause,
+            responseBody: e.response?.data || e.error,
+            OPENROUTER_KEY_SET: !!process.env.OPENROUTER_API_KEY,
+            OPENROUTER_KEY_PREFIX: process.env.OPENROUTER_API_KEY?.slice(0, 8),
+        });
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/vip/broadcast', async (req, res) => {
+    try {
+        const orgId = extractOrgId(req);
+        const { mensaje } = req.body;
+        if (!mensaje) return res.status(400).json({ error: 'mensaje requerido' });
+        const client = getWAClient(orgId);
+        if (!client) return res.status(503).json({ error: 'WhatsApp no conectado' });
+        const vips = await db.getVipList(orgId);
+        if (!vips.length) return res.json({ enviados: 0 });
+        const { waSendMessage } = require('./bot');
+        let enviados = 0;
+        for (const vip of vips) {
+            try {
+                const digits = vip.telefono.replace(/\D/g, '');
+                const chatId = `${digits}@c.us`;
+                await waSendMessage(client, chatId, mensaje);
+                enviados++;
+            } catch { /* continuar con el siguiente */ }
+        }
+        res.json({ enviados });
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/pending-actions', async (req, res) => {

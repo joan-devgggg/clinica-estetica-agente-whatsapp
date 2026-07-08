@@ -551,7 +551,7 @@ function buildStartsAt(fecha, hora, defaultTime = '20:00') {
     if (!fecha) return null;
     let h = hora;
     if (h !== undefined && h !== null && String(h).trim() !== '') {
-        const m = String(h).trim().match(/^(\d{1,2}):(\d{2})$/);
+        const m = String(h).trim().replace(/\s*h$/i, '').trim().match(/^(\d{1,2}):(\d{2})$/);
         if (!m) return null;
         const hh = parseInt(m[1], 10), mm = parseInt(m[2], 10);
         if (hh > 23 || mm > 59) return null;
@@ -642,6 +642,7 @@ async function updateAppointment(orgId, appointmentId, campos) {
     const updates = {};
     if (campos.servicio    !== undefined) updates.service      = campos.servicio;
     if (campos.estado      !== undefined) updates.status       = campos.estado;
+    if (campos.estado === 'no_show')     updates.no_show      = true;
     if (campos.notas       !== undefined) updates.notes        = campos.notas;
     if (campos.personas    !== undefined) updates.party_size   = campos.personas;
     if (campos.ocasion     !== undefined) updates.occasion     = campos.ocasion;
@@ -664,13 +665,14 @@ async function updateAppointment(orgId, appointmentId, campos) {
         updates.ends_at   = new Date(startsAt.getTime() + durationMs).toISOString();
     }
     if (!Object.keys(updates).length) return null;
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from('appointments')
         .update(updates)
         .eq('id', appointmentId)
         .eq('organization_id', oid)
         .select()
         .single();
+    if (error) throw new Error(error.message);
     return data || null;
 }
 

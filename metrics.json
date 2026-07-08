@@ -1,10 +1,10 @@
 {
   "leadsDetected": 0,
-  "leadsSaved": 2,
+  "leadsSaved": 1,
   "fallbacksUsed": 0,
   "fieldMisses": {},
-  "conversationStarted": 14,
-  "userReplied": 61,
+  "conversationStarted": 4,
+  "userReplied": 26,
   "botQuestion": 0,
   "conversationDropped": 0,
   "leadCompleted": 0,
@@ -36,5 +36,5 @@
   "conversionRate": "0.00",
   "dropOffRate": "0.00",
   "averageTimeToConvert": 0,
-  "totalConversations": 14
+  "totalConversations": 4
 }

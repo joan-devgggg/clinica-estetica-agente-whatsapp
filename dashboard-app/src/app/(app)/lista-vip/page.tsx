@@ -3,12 +3,13 @@
 import { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { toast } from "sonner";
-import { Star, Search, Trash2, Plus, Check, X, Sparkles } from "lucide-react";
+import { Star, Search, Trash2, Plus, Check, X, Sparkles, Send } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Cliente } from "@/lib/types";
 import { API, apiHeaders } from "@/lib/api";
@@ -36,6 +37,10 @@ export default function ListaVipPage() {
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<Cliente[]>([]);
   const [searching, setSearching] = useState(false);
+  const [promoIdea, setPromoIdea] = useState("");
+  const [promoMensaje, setPromoMensaje] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [sending, setSending] = useState(false);
   const supabase = createClient();
   const { orgId } = useOrg();
 
@@ -108,6 +113,44 @@ export default function ListaVipPage() {
     await fetchAll();
   }
 
+  async function generateMessage() {
+    if (!promoIdea.trim()) return;
+    setGenerating(true);
+    try {
+      const res = await fetch(`${API}/api/vip/generate-message`, {
+        method: "POST",
+        headers: { ...apiHeaders(orgId), "Content-Type": "application/json" },
+        body: JSON.stringify({ idea: promoIdea }),
+      });
+      if (!res.ok) throw new Error("Error generando mensaje");
+      const data = await res.json();
+      setPromoMensaje(data.mensaje || "");
+    } catch {
+      toast.error("No se pudo generar el mensaje");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function broadcastVip() {
+    if (!promoMensaje.trim()) return;
+    setSending(true);
+    try {
+      const res = await fetch(`${API}/api/vip/broadcast`, {
+        method: "POST",
+        headers: { ...apiHeaders(orgId), "Content-Type": "application/json" },
+        body: JSON.stringify({ mensaje: promoMensaje }),
+      });
+      if (!res.ok) throw new Error("Error enviando mensajes");
+      const data = await res.json();
+      toast.success(`Mensaje enviado a ${data.enviados} cliente${data.enviados !== 1 ? "s" : ""} VIP`);
+    } catch {
+      toast.error("No se pudo enviar el mensaje");
+    } finally {
+      setSending(false);
+    }
+  }
+
   return (
     <>
       <PageHeader title="Lista VIP" subtitle="Clientes destacados" />
@@ -177,6 +220,44 @@ export default function ListaVipPage() {
                       </Button>
                     </div>
                   ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Mensaje promocional a VIPs */}
+          <Card className="border-border/60 shadow-sm">
+            <CardContent className="p-4 space-y-3">
+              <p className="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-muted-foreground flex items-center gap-1.5">
+                <Send size={12} /> Mensaje promocional a VIPs
+              </p>
+              <div className="space-y-2">
+                <p className="text-[11.5px] text-muted-foreground">¿Cuál es tu idea o promoción?</p>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="Ej: 20% de descuento en coloración este mes..."
+                    value={promoIdea}
+                    onChange={(e) => setPromoIdea(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && generateMessage()}
+                    className="h-9 text-[13px]"
+                  />
+                  <Button size="sm" onClick={generateMessage} disabled={generating || !promoIdea.trim()}>
+                    <Sparkles size={13} className="mr-1" />
+                    {generating ? "Generando..." : "Generar con IA"}
+                  </Button>
+                </div>
+              </div>
+              {promoMensaje && (
+                <div className="space-y-2 pt-1">
+                  <Textarea
+                    value={promoMensaje}
+                    onChange={(e) => setPromoMensaje(e.target.value)}
+                    className="text-[13px] min-h-[80px] resize-none"
+                  />
+                  <Button size="sm" onClick={broadcastVip} disabled={sending || !promoMensaje.trim()} className="w-full">
+                    <Send size={13} className="mr-1" />
+                    {sending ? "Enviando..." : "Enviar a todos los VIPs"}
+                  </Button>
                 </div>
               )}
             </CardContent>

@@ -25,6 +25,7 @@ import {
   sendManualMessage,
 } from "@/lib/whatsapp";
 import type { Conversation, Message } from "@/lib/whatsapp";
+import { API, apiHeaders } from "@/lib/api";
 
 export default function WhatsAppPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -214,6 +215,34 @@ export default function WhatsAppPage() {
     [orgId]
   );
 
+  const handleRemoveBlacklist = useCallback(
+    async (leadId: number, telefono: string) => {
+      try {
+        await fetch(`${API}/api/lista-negra/${leadId}`, {
+          method: "DELETE",
+          headers: apiHeaders(orgId),
+        });
+        await toggleLeadBotMode(orgId, leadId, "auto");
+        await sendManualMessage(
+          orgId,
+          telefono,
+          "Hola 😊 Hemos revisado tu caso. ¿En qué puedo ayudarte?"
+        );
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === leadId
+              ? { ...c, is_blacklisted: false, bot_mode: "auto", escalation_reason: null }
+              : c
+          )
+        );
+        toast("Cliente reactivado");
+      } catch {
+        toast.error("Error al reactivar el cliente");
+      }
+    },
+    [orgId]
+  );
+
   return (
     <div className="flex flex-col" style={{ height: "100svh" }}>
       {/* Page header */}
@@ -252,6 +281,7 @@ export default function WhatsAppPage() {
             messages={messages}
             onBotModeToggle={handleConvBotModeToggle}
             onSendMessage={handleSendMessage}
+            onRemoveBlacklist={handleRemoveBlacklist}
             sendingMessage={sendingMessage}
             globalBotPaused={!botActivo}
           />
