@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node tests/slots.test.js && node tests/service-state.test.js"
+    "test": "node tests/slots.test.js && node tests/service-state.test.js && node tests/stylist-assignment.test.js && node tests/calendar-sante-slots.test.js && node tests/largo-presentation.test.js && node tests/sante-helpers.test.js",
+    "verify:sante": "node tests/verify-sante-catalog.js"
   },
   "type": "commonjs",
   "dependencies": {

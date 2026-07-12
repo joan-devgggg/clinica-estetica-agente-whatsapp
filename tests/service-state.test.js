@@ -90,6 +90,7 @@ test('clearServiceState NO toca identidad ni ciclo de vida de reserva', () => {
 test('la fuente de verdad coincide con la lista esperada (candado anti-drift)', () => {
     const EXPECTED_TOP_LEVEL = [
         'selectedService', 'selectedStylist', 'selectedCategory',
+        'anyStylists', 'prefiereMasCercano',
         'availableSlots', 'proposedSlots', 'currentSlotIndex', 'slotsProposed',
         'datePreferenceAsked', 'upsellingSuggested', 'upsellingAccepted',
         '_lastUpsellSuggestion', 'pendingLargoCategory', 'largoPelo',
@@ -117,3 +118,6 @@ test('cada campo de servicio existe en una sesión nueva con su valor default', 
             `createEmptySession inicializa "${k}" con un valor distinto al default de la fuente de verdad`);
     }
 });
+
+// bot.js deja un setInterval (GC) que mantiene vivo el event loop: forzamos la salida.
+process.exit(process.exitCode || 0);

@@ -2,7 +2,7 @@
 // Covers the extraction gaps fixed in the anti-regression pass.
 
 const assert = require('assert');
-const { extractServiceFromText, extractLargoPelo } = require('../services/helpers');
+const { extractServiceFromText, extractLargoPelo, extractQuickDataSante } = require('../services/helpers');
 
 function test(name, fn) {
     try {
@@ -104,4 +104,38 @@ test('extractLargoPelo: "largo 2" → null (número de variante, no longitud fí
 
 test('extractLargoPelo: preserva Ruso "средн" → 2', () => {
     assert.strictEqual(extractLargoPelo('средней длины'), 2);
+});
+
+// ─── extractQuickDataSante — Fix: 'semana' no se fija con día/fecha concreto ──────────
+// Bug real: "mañana" (día siguiente) ponía semana:'esta'; combinado con un día explícito
+// ("lunes") en el mismo mensaje, calendar-sante acotaba el rango de búsqueda a
+// [hoy, hoy] en domingo (todayDow=6) y descartaba el lunes pedido → totalSlots:0 falso
+// pese a que la estilista tenía la skill, el horario y el día libres.
+
+test('extractQuickDataSante: "mañana lunes" NO fija semana (ya hay diaSemana explícito)', () => {
+    const result = extractQuickDataSante('¿Mañana lunes tienes hueco para Balayage?');
+    assert.strictEqual(result.preferencia_horaria.diaSemana, 0, 'debe reconocer lunes como diaSemana=0');
+    assert.strictEqual(result.preferencia_horaria.semana, undefined, 'NO debe fijar semana cuando ya hay un día concreto');
+});
+
+test('extractQuickDataSante: "mañana" + fecha explícita ("24 de julio") tampoco fija semana', () => {
+    const result = extractQuickDataSante('¿mañana el 24 de julio tienes hueco?');
+    assert.ok(result.preferencia_horaria.fecha, 'debe extraer la fecha explícita');
+    assert.strictEqual(result.preferencia_horaria.semana, undefined, 'NO debe fijar semana cuando ya hay fecha concreta');
+});
+
+test('extractQuickDataSante: "mañana" a secas (sin día/fecha) sigue fijando semana:"esta"', () => {
+    const result = extractQuickDataSante('¿Tienes hueco mañana?');
+    assert.strictEqual(result.preferencia_horaria.semana, 'esta', 'sin día concreto, "mañana" debe seguir acotando a esta semana (comportamiento previo intacto)');
+});
+
+test('extractQuickDataSante: "esta semana" explícita sin día concreto sigue funcionando', () => {
+    const result = extractQuickDataSante('¿Tienes hueco esta semana?');
+    assert.strictEqual(result.preferencia_horaria.semana, 'esta');
+});
+
+test('extractQuickDataSante: un diaSemana ya guardado en un turno anterior también bloquea "semana" en el turno siguiente', () => {
+    const result = extractQuickDataSante('¿Y mañana tienes algo?', { preferencia_horaria: { diaSemana: 3 } });
+    assert.strictEqual(result.preferencia_horaria.diaSemana, 3, 'conserva el día ya fijado');
+    assert.strictEqual(result.preferencia_horaria.semana, undefined, 'no debe añadir semana sobre un día ya concreto de un turno previo');
 });

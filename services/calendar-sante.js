@@ -9,6 +9,17 @@ const logger = require('../lib/logger');
 const DIAS_SEMANA = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
 const SLOT_OFFER_STEP_MIN = 30; // intervalo entre huecos ofrecidos dentro de una ventana libre (10:00, 10:30, 11:00...)
 
+// Zona horaria del NEGOCIO. Los horarios (`stylist_schedules`) se guardan como texto de
+// pared local ("10:00"), pero las citas/bloqueos son timestamps UTC. Para que ambos se
+// comparen en el MISMO reloj hay que interpretarlos siempre en esta TZ — nunca en la del
+// proceso. Si no, un servidor en UTC (o cualquier otra TZ) calcularía huecos desplazados y
+// podría ofrecer horas ocupadas o hasta sobre-reservar el día entero. Antes esto solo
+// funcionaba porque server.js fija process.env.TZ='Europe/Madrid'; ahora es correcto por
+// construcción en cualquier entorno (tests, scripts, workers) sin depender de ese pin.
+const BUSINESS_TZ = process.env.SALON_TZ || 'Europe/Madrid';
+const _dateFmt = new Intl.DateTimeFormat('en-CA', { timeZone: BUSINESS_TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
+const _timeFmt = new Intl.DateTimeFormat('en-GB', { timeZone: BUSINESS_TZ, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+
 /**
  * Devuelve huecos disponibles para un servicio en los próximos 14 días.
  * @param {string} orgId
@@ -52,25 +63,20 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     }
 
     const now = new Date();
-    const todayStr = toLocalDateStr(now);
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const todayStr = toLocalDateStr(now);   // fecha de HOY en TZ de negocio
+    const nowMinutes = toMinutes(now);      // minuto-del-día de AHORA en TZ de negocio
 
-    const from = new Date(now);
-    from.setHours(0, 0, 0, 0);
-    if (!preferencia.asap) {
-        from.setDate(from.getDate() + 1); // start from tomorrow (default)
-    }
-    // asap: start from today so we find the nearest real slots
+    // Fecha-calendario de inicio (TZ de negocio): hoy si asap, mañana por defecto. Todo el
+    // recorrido de 14 días se hace sobre strings YYYY-MM-DD, independiente de la TZ del proceso.
+    const startDateStr = preferencia.asap ? todayStr : addDaysStr(todayStr, 1);
+    const endDateStr = addDaysStr(startDateStr, 14);
+    const fromDateStr = startDateStr;
+    const toDateStr = endDateStr;
 
-    const to = new Date(from);
-    to.setDate(to.getDate() + 14);
-
-    const fromStr = from.toISOString();
-    const toStr = to.toISOString();
-
-    // Prefetch blocked days (whole-day closures per stylist or salon-wide)
-    const fromDateStr = from.toISOString().slice(0, 10);
-    const toDateStr = to.toISOString().slice(0, 10);
+    // Rango para las consultas a BD: cubre los 14 días de negocio con ±1 día de holgura
+    // (el filtrado fino se hace luego re-agrupando cada cita/bloqueo por su fecha de negocio).
+    const fromStr = new Date(new Date(startDateStr + 'T00:00:00Z').getTime() - 24 * 3600 * 1000).toISOString();
+    const toStr = new Date(new Date(endDateStr + 'T00:00:00Z').getTime() + 24 * 3600 * 1000).toISOString();
     const allBlockedDays = await db.getBlockedDays(orgId, { from: fromDateStr, to: toDateStr });
     const salonBlockedDates = new Set(allBlockedDays.filter(b => !b.stylist_id).map(b => b.fecha));
     const stylistBlockedDates = new Map();
@@ -96,36 +102,39 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     // Recorre los próximos 14 días y construye los huecos reales según horario, citas y
     // bloqueos. `pref` puede traer filtros de día/semana/franja. NUNCA inventa huecos:
     // si la estilista no trabaja ese día (no hay daySchedule), simplemente no se generan.
+    // Los 14 días de calendario a recorrer, en TZ de negocio, con su día de la semana
+    // (0=lunes). Aritmética pura de fechas → idéntico en cualquier TZ del proceso.
+    const calendarDays = [];
+    for (let d = 0; d < 14; d++) {
+        const dateStr = addDaysStr(startDateStr, d);
+        calendarDays.push({ dateStr, dayOfWeek: mondayDow(dateStr) });
+    }
+    const todayDow = mondayDow(todayStr);
+
     function buildSlots(pref) {
-        // Pre-compute week bounds once before the loops
-        let startOfNextWeek = null, endOfNextWeek = null, endOfThisWeek = null;
+        // Límites de semana como strings YYYY-MM-DD (comparables con < y >).
+        let startOfNextWeekStr = null, endOfNextWeekStr = null, endOfThisWeekStr = null;
         if (pref.semana === 'siguiente') {
-            const daysToSunday = 7 - (now.getDay() || 7);
-            startOfNextWeek = new Date(now);
-            startOfNextWeek.setHours(0, 0, 0, 0);
-            startOfNextWeek.setDate(now.getDate() + daysToSunday + 1); // lunes próxima semana
-            endOfNextWeek = new Date(startOfNextWeek);
-            endOfNextWeek.setDate(startOfNextWeek.getDate() + 6); // domingo próxima semana
-            console.log('rango semana siguiente:', toLocalDateStr(startOfNextWeek), toLocalDateStr(endOfNextWeek));
+            const daysToSunday = 6 - todayDow;              // días hasta el domingo de esta semana
+            startOfNextWeekStr = addDaysStr(todayStr, daysToSunday + 1); // lunes próxima semana
+            endOfNextWeekStr = addDaysStr(startOfNextWeekStr, 6);        // domingo próxima semana
+            console.log('rango semana siguiente:', startOfNextWeekStr, endOfNextWeekStr);
         } else if (pref.semana === 'esta') {
-            endOfThisWeek = new Date(now);
-            endOfThisWeek.setDate(now.getDate() + (7 - (now.getDay() || 7)));
+            // Se ancla a la semana de INICIO de la búsqueda (startDateStr = mañana, o
+            // hoy si asap), no a la de HOY. Si hoy es domingo, todayDow=6 y "6-6=0"
+            // daba endOfThisWeekStr = hoy mismo → un rango [hoy,hoy] que dejaba fuera
+            // TODO el calendario futuro, incluido el lunes que la clienta pedía
+            // (root cause del bug totalSlots:0 con Veronika/Balayage). Anclarlo al
+            // inicio real de la búsqueda cubre siempre la semana que corresponde.
+            const startDow = mondayDow(startDateStr);
+            endOfThisWeekStr = addDaysStr(startDateStr, 6 - startDow); // domingo de la semana de inicio
         }
 
         const out = [];
         for (const { stylist, scheduleByDay, blocks, appointments } of stylistData) {
-            for (let d = 0; d < 14; d++) {
-                const date = new Date(from);
-                date.setDate(from.getDate() + d);
-
-                // JS getDay: 0=Sunday, our schema: 0=Monday
-                const jsDay = date.getDay();
-                const dayOfWeek = jsDay === 0 ? 6 : jsDay - 1; // convert to 0=Monday
-
+            for (const { dateStr, dayOfWeek } of calendarDays) {
                 const daySchedule = scheduleByDay.get(dayOfWeek);
                 if (!daySchedule) continue; // la estilista NO trabaja este día → sin huecos
-
-                const dateStr = toLocalDateStr(date);
 
                 // Skip entire day if blocked (salon-wide or stylist-specific)
                 if (salonBlockedDates.has(dateStr)) continue;
@@ -143,9 +152,9 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
                 // Filter by week preference: 'siguiente' → solo lunes-domingo de la próxima
                 // semana (rango explícito, no open-ended). 'esta' → hasta el domingo actual.
                 if (pref.semana === 'siguiente') {
-                    if (date < startOfNextWeek || date > endOfNextWeek) continue;
+                    if (dateStr < startOfNextWeekStr || dateStr > endOfNextWeekStr) continue;
                 } else if (pref.semana === 'esta') {
-                    if (date > endOfThisWeek) continue;
+                    if (dateStr > endOfThisWeekStr) continue;
                 }
 
                 // Working hours for this day
@@ -178,30 +187,16 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
                     end: toMinutes(new Date(b.ends_at)),
                 }));
 
-                const occupied = [...dayAppts, ...dayBlocks].sort((a, b) => a.start - b.start);
-
-                // Construir las ventanas libres (huecos entre citas/bloqueos y hasta el cierre).
-                const freeWindows = [];
-                let cursor = workStart;
-                for (const occ of occupied) {
-                    if (occ.start > cursor) freeWindows.push([cursor, Math.min(occ.start, workEnd)]);
-                    cursor = Math.max(cursor, occ.end);
-                }
-                if (cursor < workEnd) freeWindows.push([cursor, workEnd]);
-
-                // Recorrer cada ventana en pasos de SLOT_OFFER_STEP_MIN para ofrecer varios
-                // huecos (10:00, 11:00, 12:00...), no solo el inicio de la ventana.
                 // ASAP + hoy: saltar huecos que ya han pasado (buffer de 60 min).
                 const minStart = (pref.asap && dateStr === todayStr) ? nowMinutes + 60 : 0;
-                for (const [winStart, winEnd] of freeWindows) {
-                    // t + serviceDuration <= winEnd: no solapar la siguiente cita ni salir de
-                    // la ventana libre. Además t + serviceDuration < workEnd: nunca ofrecer un
-                    // hueco cuya cita terminaría exactamente al cierre o después (sin margen).
-                    for (let t = winStart; t + serviceDuration <= winEnd && t + serviceDuration < workEnd; t += SLOT_OFFER_STEP_MIN) {
-                        if (t < minStart) continue;
-                        addSlot(out, dateStr, t, diaNombre, stylist, serviceDuration, pref);
-                    }
-                }
+                // Ventanas libres + barrido en pasos → varios huecos (12:00, 12:30...), no
+                // solo el inicio. Lógica pura en computeFreeSlots (fijada por tests).
+                const starts = computeFreeSlots({
+                    workStart, workEnd,
+                    occupied: [...dayAppts, ...dayBlocks],
+                    serviceDuration, minStart,
+                });
+                for (const t of starts) addSlot(out, dateStr, t, diaNombre, stylist, serviceDuration, pref);
             }
         }
         return out;
@@ -216,7 +211,10 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     // para proponer alternativas verídicas y próximas, nunca inventadas.
     let pedidoDiaSinHueco = false;
     if (!slots.length && (preferencia.fecha || Number.isInteger(preferencia.diaSemana))) {
-        const { fecha, diaSemana, ...resto } = preferencia;
+        // 'semana' también se despoja: si se quedara, seguiría acotando el rango (p.ej.
+        // 'esta' un domingo) y este reintento fallaría en falso igual que el primero,
+        // dejando pedidoDiaSinHueco en false para siempre y sin alternativas reales.
+        const { fecha, diaSemana, semana, ...resto } = preferencia;
         slots = buildSlots(resto);
         pedidoDiaSinHueco = slots.length > 0;
     }
@@ -276,18 +274,65 @@ function addSlot(slots, dateStr, minuteOfDay, diaNombre, stylist, serviceDuratio
     });
 }
 
+// Minuto-del-día (0..1439) de un instante, medido en la TZ de negocio (no la del proceso).
+// Así una cita guardada como 08:00 UTC se lee como 600 (10:00 Madrid) en cualquier servidor.
 function toMinutes(date) {
-    return date.getHours() * 60 + date.getMinutes();
+    const p = Object.fromEntries(_timeFmt.formatToParts(date).map(x => [x.type, x.value]));
+    return Number(p.hour) * 60 + Number(p.minute);
 }
 
-// Formatea una fecha como YYYY-MM-DD en hora LOCAL (no UTC).
-// Imprescindible: date.toISOString() convierte a UTC y, en zonas adelantadas
-// (España, UTC+1/+2), la medianoche local cae el día anterior → desfase de un día.
+// Formatea un instante como YYYY-MM-DD en la TZ de negocio (no UTC ni la del proceso).
+// Imprescindible: toISOString() da UTC y, en zonas adelantadas (España, UTC+1/+2), la
+// medianoche local cae el día anterior → desfase de un día. Y getFullYear/getDate usan la
+// TZ del proceso, que en un servidor no-Madrid también desfasa.
 function toLocalDateStr(date) {
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const d = String(date.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
+    const p = Object.fromEntries(_dateFmt.formatToParts(date).map(x => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}`;
+}
+
+// Suma n días de CALENDARIO a un 'YYYY-MM-DD' con aritmética pura en UTC (sin TZ, sin DST).
+// Devuelve otro 'YYYY-MM-DD'. Como YYYY-MM-DD ordena lexicográficamente igual que
+// cronológicamente, los strings resultantes se pueden comparar con < y >.
+function addDaysStr(dateStr, n) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d + n));
+    return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+}
+
+// Día de la semana (0=lunes … 6=domingo) de un 'YYYY-MM-DD', TZ-free.
+function mondayDow(dateStr) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const jsDay = new Date(Date.UTC(y, m - 1, d)).getUTCDay(); // 0=domingo
+    return jsDay === 0 ? 6 : jsDay - 1;
+}
+
+// Cálculo puro de huecos: resta los intervalos `occupied` del horario [workStart,workEnd] y
+// barre cada ventana libre en pasos de `step`, devolviendo los minutos-de-día de inicio
+// válidos para un servicio de `serviceDuration`. Sin dependencias de BD ni de reloj — esta
+// es la lógica que los tests de regresión fijan para SIEMPRE (citas parciales, huecos entre
+// varias citas, bordes del turno). El estado de la cita (confirmed/no_show) no interviene
+// aquí: quien construye `occupied` decide qué bloquea (la capa db excluye solo 'cancelled').
+function computeFreeSlots({ workStart, workEnd, occupied = [], serviceDuration, step = SLOT_OFFER_STEP_MIN, minStart = 0 }) {
+    const sorted = [...occupied].sort((a, b) => a.start - b.start);
+    const freeWindows = [];
+    let cursor = workStart;
+    for (const occ of sorted) {
+        if (occ.start > cursor) freeWindows.push([cursor, Math.min(occ.start, workEnd)]);
+        cursor = Math.max(cursor, occ.end);
+    }
+    if (cursor < workEnd) freeWindows.push([cursor, workEnd]);
+
+    // t + serviceDuration <= winEnd: no solapar la siguiente cita ni salir de la ventana.
+    // Además t + serviceDuration < workEnd: nunca ofrecer un hueco cuya cita terminaría
+    // exactamente al cierre o después (sin margen).
+    const starts = [];
+    for (const [winStart, winEnd] of freeWindows) {
+        for (let t = winStart; t + serviceDuration <= winEnd && t + serviceDuration < workEnd; t += step) {
+            if (t < minStart) continue;
+            starts.push(t);
+        }
+    }
+    return starts;
 }
 
 function formatSlotForMessage(slot) {
@@ -313,3 +358,5 @@ async function cancelAppointment(orgId, appointmentId) {
 }
 
 module.exports = { getAvailableSlots, bookAppointment, cancelAppointment, formatSlotForMessage };
+// Expuesto para tests de regresión (huecos + TZ-independencia), no para uso en producción.
+module.exports._internals = { computeFreeSlots, toLocalDateStr, toMinutes, addDaysStr, mondayDow, BUSINESS_TZ };

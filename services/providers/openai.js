@@ -3,7 +3,7 @@ require('dotenv').config();
 const config = require('../../config.json');
 const db = require('../db');
 const { getOrgType } = require('../org-registry');
-const { normalizeText } = require('../helpers');
+const { normalizeText, classifyLargoVariant } = require('../helpers');
 const logger = require('../../lib/logger');
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -339,7 +339,26 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
             if (normalizeText(cat) === 'mechas clasicas') {
                 return `La clienta quiere mechas clásicas. Hay 3 tipos según la zona de cobertura. Explícale la diferencia (en su idioma) ANTES de confirmar precio:\n- Mechas 1 (60€, 90 min) = solo delante, puntas y rostro\n- Mechas 2 (80€, 180 min) = media cabeza\n- Mechas 3 (100€, 180 min) = cabeza completa\nPregúntale cuál prefiere. NO propongas huecos todavía.`;
             }
-            return `La clienta quiere ${cat}, que tiene variaciones según el largo del pelo. ANTES de confirmar precio o buscar huecos, pregúntale: "¿Cuánto largo tienes aproximadamente? Corto (hasta hombros), medio (hasta la espalda) o largo (hasta la cintura o más)" (en su idioma). Si dice que no sabe, respóndele: "No te preocupes, tu estilista te lo confirmará en el salón" y continúa con el flujo. NO menciones precios todavía (dependen del largo). NO propongas huecos.`;
+            // ¿La categoría pendiente tiene una 4ª variante? Usamos classifyLargoVariant
+            // (misma clasificación que el catálogo) para cubrir tanto las categorías con
+            // sufijo numérico ("Largo 4") como las de nombres descriptivos (Balayage:
+            // "Cabello corto/medio/largo", "XL / cambio importante").
+            const catNorm = normalizeText(cat);
+            const catServices = services.filter(s => normalizeText(s.categoria) === catNorm);
+            const nivel4 = catServices.find(s => classifyLargoVariant(s.nombre) === 4);
+            // La 4ª variante de Balayage NO es por longitud sino por cambio de color
+            // importante (XL). En ese caso hay que aclararlo para que la clienta sepa
+            // cuándo aplica en vez del "largo" normal.
+            const nivel4EsCambioColor = nivel4 && /\b(xl|cambio)\b/.test(normalizeText(nivel4.nombre));
+            let largoPregunta;
+            if (nivel4EsCambioColor) {
+                largoPregunta = 'pregúntale el largo aproximado: "¿Cuánto largo tienes? Corto (hasta hombros), medio (hasta la espalda) o largo (hasta la cintura)". Y aclárale que además existe una variante especial (XL) para cambios de color importantes —por ejemplo pasar de moreno a rubio—, no por la longitud del pelo: si ese es su caso, que te lo diga y reservamos esa opción en vez de la de largo normal';
+            } else if (nivel4) {
+                largoPregunta = 'pregúntale: "¿Cuánto largo tienes aproximadamente? Corto (hasta hombros), medio (hasta la espalda), largo (hasta la cintura) o muy largo (por debajo de la cintura)"';
+            } else {
+                largoPregunta = 'pregúntale: "¿Cuánto largo tienes aproximadamente? Corto (hasta hombros), medio (hasta la espalda) o largo (hasta la cintura o más)"';
+            }
+            return `La clienta quiere ${cat}, que tiene variaciones según el largo del pelo. ANTES de confirmar precio o buscar huecos, ${largoPregunta} (en su idioma). Si dice que no sabe, respóndele: "No te preocupes, tu estilista te lo confirmará en el salón" y continúa con el flujo. NO menciones precios todavía (dependen del largo). NO propongas huecos.`;
         }
         if (!selectedService) {
             // Bug 4: si en un turno anterior la clienta ya mencionó un servicio pero el
@@ -407,7 +426,7 @@ ASÍ NO / ASÍ SÍ (ejemplos reales):
 ✗ "Las Mechas Airtouch las hacen Irina, Veronika o Yulia. Irina trabaja martes, jueves y sábado. Yulia trabaja lunes, miércoles y viernes. ¿Prefieres probar con alguna de ellas o mantienes la preferencia por Veronika?"
 ✓ "Ese día Veronika no trabaja, pero puedo ponerte con Irina o Yulia. ¿Te va bien alguna?"
 
-✗ "Larisa es especialista en masajes y spa, no en mechas de cabello. Para las Mechas Airtouch Largo 4 que quieres, las estilistas disponibles son Irina, Veronika o Yulia."
+✗ "Larisa es especialista en masajes y spa, no en mechas de cabello. Para las Mechas Airtouch (cabello muy largo) que quieres, las estilistas disponibles son Irina, Veronika o Yulia."
 ✓ "Esas mechas las hacen Irina, Veronika o Yulia. ¿Con cuál te apetece?"
 
 MINI-DIÁLOGOS DE REFERENCIA (ilustran el TONO; los datos reales —huecos, precios, días— salen SIEMPRE de las secciones de abajo, nunca de estos ejemplos):
@@ -494,6 +513,10 @@ ${catalogoStr}
 
 REDACCIÓN: al mencionar la duración, habla del SERVICIO en tercera persona — "el servicio dura X min", "esta manicura dura X min", "tarda X min". NUNCA digas "duramos X min" ni uses la primera persona del plural para la duración.
 
+# ── PRODUCTOS PARA LLEVAR A CASA (TIENDA ONLINE) ───────────────────────────
+
+Si la clienta pregunta por productos para comprar (champú, mascarilla, tratamientos u otros productos para llevar a casa), eso NO es un servicio del salón: dile que puede comprarlos en la tienda online y comparte este enlace: https://shhssalon.com/tienda-online-sante-healthy-hair-salon
+
 # ── SERVICIOS CON INSTRUCCIONES ESPECIALES ────────────────────────────────
 
 MECHAS CLÁSICAS:
@@ -510,7 +533,7 @@ PEINADO ESPECIAL:
 Descríbelo como: "Incluye levantar la raíz, ondas grandes con fijación y mucha laca. Perfecto para ocasiones especiales."
 
 SI LA CLIENTA DICE SOLO "MECHAS" (sin especificar tipo):
-Pregunta si quiere Mechas Airtouch (premium, más sofisticadas), Mechas clásicas (3 tipos según cobertura) o Mechas Contouring (efecto contorno).
+Pregunta si quiere Mechas Airtouch (premium, más sofisticadas), Mechas clásicas (3 tipos según cobertura), Mechas Contouring (efecto contorno) o Mechas Balayage (degradado natural).
 
 # ── DISPONIBILIDAD ─────────────────────────────────────────────────────────
 
@@ -543,6 +566,7 @@ SIGUIENTE PASO: ${proximoPaso}
    No saltes ningún paso del árbol aunque creas conocer el tipo.
 3. Si el servicio lo realizan varias estilistas: si la clienta tiene estilista de la última visita (last_stylist), pregunta si quiere reservar con ella o prefiere el hueco más cercano disponible. Si no tiene last_stylist, pregunta si tiene estilista de confianza o prefiere el hueco más cercano. Si solo una estilista puede hacerlo, asígnala directamente sin preguntar.
 4. Si el servicio varía según el largo del pelo (mechas, alisado, color, antifrizz, decoloración), pregunta el largo ANTES de confirmar precio. Si dice que no sabe: "No te preocupes, tu estilista te lo confirmará en el salón" y sigue adelante.
+   PRESENTACIÓN DEL LARGO (solo en el texto que ve la clienta, campo "respuesta"): NUNCA escribas "Largo 1/2/3/4". Traduce SIEMPRE: Largo 1 = "cabello corto", Largo 2 = "cabello medio", Largo 3 = "cabello largo", Largo 4 = "cabello muy largo". Ejemplo: di "Mechas Airtouch (cabello medio)", nunca "Mechas Airtouch Largo 2". IMPORTANTE: en el campo JSON datos.servicio SÍ usa el nombre del catálogo tal cual ("Largo 2"), sin traducir — solo cambia el texto visible para la clienta, no el dato interno.
 5. SIEMPRE pregunta qué día o semana le viene mejor ANTES de buscar huecos. NUNCA asumas ni propongas un día sin que la clienta lo haya indicado primero. Si ya lo dijo explícitamente, sáltate este paso.
 6. Muestra los huecos disponibles reales (máximo 5). Formato: cada hueco en una línea con fecha, hora y estilista asignada. Ejemplo: "Jueves 3 de julio a las 10:00 con Veronika". Pregunta cuál le viene bien.
 7. Cuando la clienta elija un hueco, confirma repitiendo los datos: "¿Te va bien el [fecha] a las [hora] con [estilista]?"

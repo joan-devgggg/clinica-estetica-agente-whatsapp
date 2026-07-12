@@ -342,7 +342,8 @@ function extractServiceFromText(text, servicesCatalog) {
             { keywords: ['corte', 'cortar', 'corto', 'corta', 'degradado', 'haircut', 'cut'], categoria: 'Cortes' },
             { keywords: ['color', 'tinte', 'teñir', 'raiz', 'raíz', 'dye'], categoria: 'Color Premium' },
             { keywords: ['contouring'], categoria: 'Mechas Contouring' },
-            { keywords: ['mecha', 'mechas', 'highlights', 'balayage'], categoria: 'Mechas Airtouch' },
+            { keywords: ['balayage'], categoria: 'Mechas Balayage' },
+            { keywords: ['mecha', 'mechas', 'highlights'], categoria: 'Mechas Airtouch' },
             { keywords: ['manicura', 'manicure', 'uñas', 'nails', 'pedicura', 'pedicure'], categoria: 'Manicura/Pedicura' },
             { keywords: ['masaje', 'massage', 'spa', 'relajante', 'relax'], categoria: 'Masajes y SPA' },
             { keywords: ['alisado', 'alisar', 'straighten', 'keratin'], categoria: 'Alisado vegano' },
@@ -419,6 +420,19 @@ function buildFullServiceName(svc, servicesCatalog = []) {
         /^largo\s*\d+$/.test(norm) ||
         (servicesCatalog || []).filter(s => normalizeText(s.nombre) === norm).length > 1;
     return esVarianteGenerica ? `${svc.categoria} ${svc.nombre}` : svc.nombre;
+}
+
+// Capa de PRESENTACIÓN (solo texto al cliente). Traduce la nomenclatura interna
+// "Largo N" al lenguaje natural que prefiere Yulia: "Mechas Airtouch Largo 2" →
+// "Mechas Airtouch (cabello medio)". NO altera ningún valor guardado ni
+// session.selectedService — llamar únicamente sobre strings mostrados a la clienta.
+// Se auto-selecciona: los servicios sin token "Largo N" (Mechas clásicas "Mechas 2",
+// Mechas Contouring, cortes…) se devuelven intactos.
+const LARGO_LABELS = { '1': 'corto', '2': 'medio', '3': 'largo', '4': 'muy largo' };
+
+function humanizeLargoLabel(text) {
+    if (!text) return text;
+    return text.replace(/\blargo\s*([1-4])\b/gi, (m, n) => `(cabello ${LARGO_LABELS[n]})`);
 }
 
 function extractStylistFromText(text, teamList) {
@@ -545,26 +559,35 @@ function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], tea
         }
     }
 
+    // Día de la semana ("el miércoles") y fecha concreta ("el 24", "24 de junio"). Se
+    // calcula ANTES de decidir 'semana' porque un día/fecha concreto hace innecesaria
+    // (y arriesgada) la acotación por semana — ver más abajo.
+    const t = normalizeText(text);
+    const datePref = extractDatePreferenceSante(t);
+
     // Time preference (semana: esta/siguiente). El periodo comida/cena del restaurante no
     // aplica al salón, así que lo descartamos y detectamos mañana/tarde, que es lo que el
     // motor de huecos (calendar-sante) sabe filtrar.
     const pref = extractPreferenciaHoraria(text);
     if (pref) {
-        const { periodo, ...rest } = pref; // periodo de restaurante (comida/cena) no se usa aquí
+        const { periodo, semana, ...rest } = pref; // periodo (comida/cena) no se usa aquí
+        // Si ya hay un día/fecha concreto (de este mensaje o de un turno anterior), NO
+        // fijamos 'semana': es redundante y puede sobre-acotar el rango (p.ej. "mañana"
+        // dicho en domingo pone semana:'esta', que en calendar-sante excluye el lunes
+        // que la clienta acaba de pedir — bug real que causaba totalSlots:0 falsos).
+        const yaTieneDiaConcreto = datePref?.diaSemana !== undefined || !!datePref?.fecha ||
+            result.preferencia_horaria?.diaSemana !== undefined || !!result.preferencia_horaria?.fecha;
+        if (semana && !yaTieneDiaConcreto) rest.semana = semana;
         if (Object.keys(rest).length) result.preferencia_horaria = { ...(result.preferencia_horaria || {}), ...rest };
     }
 
     // Periodo del día (solo expresiones inequívocas; "mañana" a secas = día siguiente, no franja).
-    const t = normalizeText(text);
     if (/\b(por la mañana|por la manana|en la mañana|en la manana|de mañana|de manana|la mañana|la manana|morning|утром|вранці)\b/.test(t)) {
         result.preferencia_horaria = { ...(result.preferencia_horaria || {}), periodo: 'mañana' };
     } else if (/\b(por la tarde|en la tarde|de tarde|la tarde|afternoon|evening|днем|днём|вдень|ввечері)\b/.test(t)) {
         result.preferencia_horaria = { ...(result.preferencia_horaria || {}), periodo: 'tarde' };
     }
 
-    // Día de la semana ("el miércoles") y fecha concreta ("el 24", "24 de junio").
-    // El motor (calendar-sante) filtra por diaSemana (0=Lunes) o por fecha (YYYY-MM-DD).
-    const datePref = extractDatePreferenceSante(t);
     if (datePref) {
         result.preferencia_horaria = { ...(result.preferencia_horaria || {}), ...datePref };
     }
@@ -739,7 +762,32 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
     return lines.join('\n');
 }
 
-// Detects if text mentions a service category with hair-length variants (Largo 1/2/3/4).
+// Clasifica una variante de largo de pelo a partir del NOMBRE del servicio.
+// Vía 1 (idéntica a la de siempre): sufijo numérico — "Largo 3", "Mechas 2",
+// "Color completo largo 1" → nivel = el dígito final. Cero cambio de comportamiento
+// para las categorías que ya usan esta convención (Airtouch, Alisado, Deco, Mechas
+// clásicas, Color Premium).
+// Vía 2 (solo si NO hay dígito): palabras descriptivas de longitud, mismo vocabulario
+// que extractLargoPelo — cubre categorías como "Mechas Balayage" que en catálogo usan
+// nombres humanos ("Cabello corto/medio/largo", "XL / cambio importante") en vez de
+// "Largo N". Devuelve 1-4 o null si el nombre no clasifica en ningún nivel.
+function classifyLargoVariant(nombre) {
+    if (!nombre) return null;
+    const norm = normalizeText(nombre);
+    // El dígito debe ir separado por espacio (token propio: "Largo 3", "Mechas 2"),
+    // no embebido en un código alfanumérico ("K18") — si no, "K18" clasificaría como
+    // nivel 18.
+    const digitMatch = norm.match(/(?:^|\s)(\d+)\s*$/);
+    if (digitMatch) return parseInt(digitMatch[1], 10);
+    if (/\b(muy largo|xl|cambio importante)\b/.test(norm)) return 4;
+    if (/\blargo\b/.test(norm)) return 3;
+    if (/\b(medio|media)\b/.test(norm)) return 2;
+    if (/\bcorto\b/.test(norm)) return 1;
+    return null;
+}
+
+// Detects if text mentions a service category with hair-length variants (Largo 1/2/3/4,
+// o nombres descriptivos equivalentes como "Cabello corto/medio/largo").
 // Returns the original category name or null.
 function detectLargoCategory(text, servicesCatalog) {
     if (!text || !servicesCatalog?.length) return null;
@@ -753,7 +801,7 @@ function detectLargoCategory(text, servicesCatalog) {
     }
 
     const largoCats = Object.values(catMap).filter(({ services }) =>
-        services.filter(s => /\d+\s*$/.test(normalizeText(s.nombre))).length >= 2
+        services.filter(s => classifyLargoVariant(s.nombre) != null).length >= 2
     );
     if (!largoCats.length) return null;
 
@@ -891,6 +939,7 @@ module.exports = {
     // Salon-specific
     extractServiceFromText,
     buildFullServiceName,
+    humanizeLargoLabel,
     extractStylistFromText,
     getMissingFieldsSante,
     extractQuickDataSante,
@@ -902,6 +951,7 @@ module.exports = {
     buildSanteConfirmationMessage,
     detectLargoCategory,
     extractLargoPelo,
+    classifyLargoVariant,
     extractMechasClasicasTipo,
     detectCorteGenerico,
     detectCorteGenero,

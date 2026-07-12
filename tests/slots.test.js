@@ -212,5 +212,32 @@ test('salonNoSlotsMsg: con servicio → pide día (inglés)', () => {
     assert.ok(msg.toLowerCase().includes('day') || msg.toLowerCase().includes('week'));
 });
 
+// ─── Fix 4: día pedido sin hueco pero con alternativas reales → se ofrecen, no se repregunta ──
+// Antes, la red anti-invención siempre caía en el genérico "¿qué día te viene mejor?" aunque
+// calendar-sante ya hubiera calculado y devuelto huecos reales cercanos (el fallback
+// anti-invención de calendar-sante.js), dejando a la clienta en bucle repitiendo el día que
+// ya había dado.
+
+test('salonNoSlotsMsg: slotsRequestedDayUnavailable + huecos reales → los ofrece en vez de repreguntar', () => {
+    const session = {
+        language: null,
+        selectedService: { nombre: 'Mechas Balayage' },
+        slotsRequestedDayUnavailable: true,
+        availableSlots: [
+            { fecha: '2026-07-16', hora: '10:00', stylistId: 'x', stylistName: 'Veronika', texto: 'el jueves 16 de julio a las 10:00 con Veronika' },
+            { fecha: '2026-07-16', hora: '10:30', stylistId: 'x', stylistName: 'Veronika', texto: 'el jueves 16 de julio a las 10:30 con Veronika' },
+        ],
+    };
+    const msg = salonNoSlotsMsg(session);
+    assert.ok(msg.includes('jueves 16 de julio'), 'debe ofrecer la alternativa real calculada, no repreguntar el día');
+    assert.ok(!/qué día|que dia/i.test(msg), 'no debe repetir la pregunta genérica de día cuando ya hay alternativas reales');
+});
+
+test('salonNoSlotsMsg: slotsRequestedDayUnavailable sin huecos cargados → cae al genérico (no revienta)', () => {
+    const session = { language: null, selectedService: { nombre: 'Corte' }, slotsRequestedDayUnavailable: true, availableSlots: [] };
+    const msg = salonNoSlotsMsg(session);
+    assert.ok(/día|semana/i.test(msg), 'sin alternativas reales que ofrecer, debe volver a preguntar el día');
+});
+
 // bot.js deja un setInterval (GC) que mantiene vivo el event loop: forzamos la salida.
 process.exit(process.exitCode || 0);

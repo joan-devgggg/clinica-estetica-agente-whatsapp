@@ -9,7 +9,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellSuggestion, buildSanteConfirmationMessage, detectLargoCategory, extractLargoPelo, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellSuggestion, buildSanteConfirmationMessage, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -204,6 +204,8 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         selectedService: null,
         selectedStylist: null,
         selectedCategory: null,
+        anyStylists: false,
+        prefiereMasCercano: false,
         slotsProposed: false,
         proposedSlots: [],
         askDatePreferenceFirst: false,
@@ -412,6 +414,22 @@ async function loadAvailableSlots(session) {
                 preferencia: session.partialData.preferencia_horaria || {},
             });
             session.availableSlots = slots;
+
+            // Diagnóstico: 0 huecos con servicio ya resuelto. El motor de huecos es correcto
+            // y TZ-independiente, así que un 0 aquí casi siempre viene de los PARÁMETROS
+            // (categoría/duración/estilista/preferencia extraída por el LLM), no del cálculo.
+            // Registramos las entradas exactas para poder cerrar el disparador si reaparece.
+            if (slots.length === 0 && service) {
+                logger.warn('sante_cero_huecos', {
+                    orgId,
+                    servicio: service.nombre || null,
+                    serviceCategory: service.categoria || null,
+                    serviceDuration: (service.duracion || 60) + upsellingDuration,
+                    preferredStylistId: session.anyStylists ? null : (session.selectedStylist?.id || session.preferredStylistId || null),
+                    anyStylists: !!session.anyStylists,
+                    preferencia: session.partialData.preferencia_horaria || {},
+                });
+            }
             // Si el día concreto pedido no tenía disponibilidad real, calendar-sante
             // devuelve los huecos más cercanos y marca esta bandera para que el LLM
             // avise a la clienta en vez de afirmar que el día pedido está libre.
@@ -420,10 +438,12 @@ async function loadAvailableSlots(session) {
             // Si solo hay una estilista posible para el servicio (p.ej. masajes → Larisa),
             // asígnala automáticamente y sáltate la pregunta de preferencia. Así el flujo
             // avanza directo a proponer huecos en vez de quedarse atascado pidiendo estilista.
+            // La asignación pasa por la única autoridad (assignStylistIfAppropriate): con
+            // anyStylists activo no colapsamos a una, respetando la búsqueda combinada.
             if (!session.selectedStylist && !session.anyStylists && slots.length > 0) {
                 const distinctStylists = [...new Set(slots.map(s => s.stylistId))];
                 if (distinctStylists.length === 1) {
-                    session.selectedStylist = { id: slots[0].stylistId, nombre: slots[0].stylistName };
+                    assignStylistIfAppropriate(session, [{ id: slots[0].stylistId, name: slots[0].stylistName }]);
                 }
             }
         } else {
@@ -937,6 +957,21 @@ function salonNoSlotsMsg(session) {
         };
         return (language && askService[language]) || 'Para mirarte los huecos primero necesito saber qué servicio quieres 😊 ¿Qué te apetece hacerte?';
     }
+
+    // El día/fecha que pidió la clienta no tenía hueco real, pero calendar-sante ya
+    // buscó y devolvió (en session.availableSlots) los huecos reales más cercanos —
+    // ofrecerlos aquí en vez de repreguntar "¿qué día?", que la clienta ya contestó.
+    if (session.slotsRequestedDayUnavailable && session.availableSlots?.length) {
+        const alternativas = session.availableSlots.slice(0, 3).map(s => calendarSante.formatSlotForMessage(s));
+        const lista = alternativas.join(', ');
+        const noDayMsg = {
+            en: `I don't have anything free that day, but I do have ${lista}. Would any of those work for you?`,
+            ru: `На этот день свободного времени нет, но есть ${lista}. Подойдёт что-нибудь из этого?`,
+            uk: `На цей день вільного часу немає, але є ${lista}. Підійде щось із цього?`,
+        };
+        return (language && noDayMsg[language]) || `Ese día no tengo hueco libre, pero sí tengo ${lista}. ¿Te viene bien alguno?`;
+    }
+
     const askDay = {
         en: 'What day or week works best for you? I\'ll check the real availability for that 😊',
         ru: 'Какой день или неделя тебе удобнее? Посмотрю реальные свободные окошки 😊',
@@ -953,6 +988,12 @@ const SERVICE_STATE_DEFAULTS = {
     selectedService: null,
     selectedStylist: null,
     selectedCategory: null,
+    // Búsqueda combinada entre todas las elegibles (no fijar estilista concreta).
+    anyStylists: false,
+    // Intención sticky "me da igual / el más cercano": sobrevive al recorrido
+    // multi-turno del árbol de cortes para no perderse cuando el servicio se
+    // resuelve turnos después de que la clienta pidiera el hueco más cercano.
+    prefiereMasCercano: false,
     availableSlots: () => [],
     proposedSlots: () => [],
     currentSlotIndex: 0,
@@ -986,6 +1027,30 @@ function clearServiceState(session) {
     if (session.partialData) {
         for (const f of SERVICE_PARTIAL_FIELDS) delete session.partialData[f];
     }
+}
+
+// ─── Asignación de estilista: ÚNICA autoridad ───────────────────────────────
+// Todos los flujos de resolución de servicio (árbol de cortes, mechas/largo y
+// cualquiera futuro) resuelven session.selectedService y llaman AQUÍ para decidir
+// la estilista. Ningún flujo debe escribir session.selectedStylist a mano (salvo
+// los dos puntos de preferencia EXPLÍCITA: nombre en el mensaje / sugerencia LLM).
+// Así garantizamos que la señal "el más cercano / me da igual" nunca se salte:
+// con varias elegibles NUNCA fijamos una — se deja null para búsqueda combinada.
+//   - selectedStylist ya elegida y sigue elegible → se conserva
+//   - dejó de ser elegible (cambió el servicio)   → se limpia
+//   - exactamente una elegible                     → se asigna
+//   - varias sin preferencia clara                 → null (preguntar o combinada)
+function assignStylistIfAppropriate(session, eligibleStylists) {
+    const eligibles = Array.isArray(eligibleStylists) ? eligibleStylists : [];
+    if (session.selectedStylist) {
+        if (eligibles.some(s => s.id === session.selectedStylist.id)) return;
+        session.selectedStylist = null; // ya no válida → seguir evaluando
+    }
+    if (eligibles.length === 1) {
+        session.selectedStylist = { id: eligibles[0].id, nombre: eligibles[0].name };
+        return;
+    }
+    session.selectedStylist = null;
 }
 
 // ─── Segunda reserva en la misma conversación (Sante) ───────────────────────
@@ -1222,6 +1287,7 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
 
         session.reservaConfirmada = true;
         session.anyStylists = false;
+        session.prefiereMasCercano = false;
         session.leadStatus = 'completed';
         // Registramos el hueco reservado para que la guarda de idempotencia bloquee
         // cualquier intento de volver a crear esta misma cita en la conversación.
@@ -1948,12 +2014,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     const catalog = agentCfgPre?.services || [];
                     const catNorm = normalizeText(session.pendingLargoCategory);
                     const candidates = catalog.filter(s =>
-                        normalizeText(s.categoria) === catNorm && /\d+\s*$/.test(normalizeText(s.nombre))
-                    ).sort((a, b) => {
-                        const na = parseInt(normalizeText(a.nombre).match(/(\d+)\s*$/)?.[1] || '0', 10);
-                        const nb = parseInt(normalizeText(b.nombre).match(/(\d+)\s*$/)?.[1] || '0', 10);
-                        return na - nb;
-                    });
+                        normalizeText(s.categoria) === catNorm && classifyLargoVariant(s.nombre) != null
+                    ).sort((a, b) => classifyLargoVariant(a.nombre) - classifyLargoVariant(b.nombre));
                     const idx = variantNum > 0
                         ? Math.min(variantNum - 1, candidates.length - 1)
                         : largo != null
@@ -1963,6 +2025,46 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         session.selectedService = candidates[idx];
                         session.largoPelo = largo;
                         session.pendingLargoCategory = null;
+                    }
+                }
+            }
+            // ── Largo CORRECTION: la clienta ya tiene un servicio de largo asignado
+            // (turno anterior) pero menciona explícitamente un largo DISTINTO antes de
+            // pasar a fecha/estilista (ej. "me equivoqué, cabello corto" → luego "perdón,
+            // muy largo"). Solo se activa dentro de la MISMA categoría ya elegida — nunca
+            // reabre selección de servicio libre (eso sigue bloqueado en los bloques de
+            // abajo, gateados por !session.selectedService). Excluimos "Mechas clásicas":
+            // sus variantes numeradas (Mechas 1/2/3) codifican TIPO DE COBERTURA
+            // (delante/media cabeza/completa), no longitud de pelo — esa categoría ya
+            // tiene su propia resolución arriba con extractMechasClasicasTipo.
+            else if (session.selectedService && !session.pendingLargoCategory
+                && normalizeText(session.selectedService.categoria || '') !== 'mechas clasicas') {
+                const catalog = agentCfgPre?.services || [];
+                const catNorm = normalizeText(session.selectedService.categoria || '');
+                const sorted = catalog
+                    .filter(s => normalizeText(s.categoria) === catNorm && classifyLargoVariant(s.nombre) != null)
+                    .sort((a, b) => classifyLargoVariant(a.nombre) - classifyLargoVariant(b.nombre));
+                if (sorted.length >= 2) {
+                    const largo = extractLargoPelo(sanitized);
+                    const variantNum = parseInt(normalizeText(sanitized).match(/\blargo\s+(\d)\b/)?.[1] || '0', 10);
+                    const newLevel = variantNum > 0 ? variantNum : largo;
+                    const currentLevel = classifyLargoVariant(session.selectedService.nombre);
+                    if (newLevel != null && newLevel !== currentLevel) {
+                        const idx = Math.min(newLevel - 1, sorted.length - 1);
+                        if (idx >= 0 && sorted[idx] && sorted[idx].nombre !== session.selectedService.nombre) {
+                            logger.info('largo_correccion_aplicada', {
+                                orgId, telefono: userPhone, categoria: session.selectedService.categoria,
+                                antes: session.selectedService.nombre, despues: sorted[idx].nombre,
+                            });
+                            session.selectedService = sorted[idx];
+                            session.largoPelo = largo;
+                            if (session.selectedStylist) {
+                                const styRec = stylistsPre.find(s => s.id === session.selectedStylist.id);
+                                if (styRec && !stylistCanDoService(styRec, sorted[idx])) {
+                                    session.selectedStylist = null;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2075,6 +2177,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     }
                     session.selectedStylist = { id: matchedSty.id, nombre: matchedSty.name };
                     session.anyStylists = false;
+                    session.prefiereMasCercano = false; // preferencia explícita anula "el más cercano"
                 }
             }
 
@@ -2101,39 +2204,29 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         if (orgType === 'salon') {
             const meDaIgual = /\b(me da igual|cualquiera|la que sea|el que sea|no tengo preferencia|me es igual|sin preferencia|whoever|anyone|любой|любую|lo antes posible|cuanto antes|lo más pronto|primera disponibilidad|primer hueco|hueco más cercano|el más cercano|as soon as possible|asap|earliest|любое время|как можно скорее|ближайшее время|ближайший)\b/i.test(sanitized);
 
-            // Estilistas que pueden hacer el servicio (por skills). Si solo hay una,
-            // la asignamos y no preguntamos. Si hay varias, preguntamos preferencia ANTES
-            // de proponer huecos (decisión de producto).
+            // Estilistas que pueden hacer el servicio (por skills). La decisión de FIJAR
+            // (o no) una estilista está centralizada en assignStylistIfAppropriate: si solo
+            // hay una elegible la asigna; si hay varias deja null (preguntar o combinada).
             let eligibleStylists = [];
             if (session.selectedService) {
                 const allStylists = await getStylistsByOrg(orgId);
                 eligibleStylists = allStylists.filter(s => stylistCanDoService(s, session.selectedService));
-
-                // Validar estilista seleccionada: si fue elegida ANTES de conocer el
-                // servicio (ej. "cita con Larisa" → luego "manicura") o viene de una
-                // sesión anterior, puede no tener la skill. Limpiarla para asignar bien.
-                if (session.selectedStylist) {
-                    const sigueElegible = eligibleStylists.some(s => s.id === session.selectedStylist.id);
-                    if (!sigueElegible) session.selectedStylist = null;
-                }
-
-                if (!session.selectedStylist && eligibleStylists.length === 1) {
-                    session.selectedStylist = { id: eligibleStylists[0].id, nombre: eligibleStylists[0].name };
-                }
+                assignStylistIfAppropriate(session, eligibleStylists);
             }
             session._eligibleStylistNames = eligibleStylists.map(s => s.name);
 
+            // Intención sticky "me da igual / el más cercano": la recordamos en cuanto
+            // aparece, aunque el servicio aún no esté resuelto, para que sobreviva al
+            // recorrido multi-turno del árbol de cortes (root cause del bug de Irina fija).
+            if (meDaIgual) session.prefiereMasCercano = true;
+
             const variasEstilistas = !!session.selectedService && !session.selectedStylist && eligibleStylists.length > 1;
-            // "me da igual / hueco más cercano" → NO asignamos estilista concreta;
-            // dejamos selectedStylist null para que loadAvailableSlots busque en TODAS
-            // las elegibles y devuelva la disponibilidad combinada ordenada por fecha.
-            session.askStylistFirst = variasEstilistas && !meDaIgual;
-            // anyStylists: persiste hasta que la clienta nombre una estilista o cambie/pierda el servicio.
-            if (variasEstilistas && meDaIgual) {
-                session.anyStylists = true;
-            } else if (session.selectedStylist || !session.selectedService) {
-                session.anyStylists = false;
-            }
+            // anyStylists (búsqueda combinada, sin fijar estilista) se DERIVA de la intención
+            // sticky, no del mensaje actual: así "el más cercano" dicho un turno antes de que
+            // el servicio se resuelva no se pierde. loadAvailableSlots ignora preferredStylistId
+            // cuando es true → propone huecos de TODAS las elegibles ordenados por fecha.
+            session.anyStylists = variasEstilistas && session.prefiereMasCercano;
+            session.askStylistFirst = variasEstilistas && !session.anyStylists;
 
             // Si es una reserva para un acompañante y aún no sabemos su nombre, lo pedimos primero.
             const esperandoNombreInvitado = session.guestBooking && !session.guestName;
@@ -2147,7 +2240,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 
             const prefFecha = session.partialData.preferencia_horaria || {};
             const tienePistaFecha = !!(prefFecha.semana || prefFecha.periodo || prefFecha.fecha ||
-                Number.isInteger(prefFecha.diaSemana)) || meDaIgual;
+                Number.isInteger(prefFecha.diaSemana)) || session.prefiereMasCercano;
             session.askDatePreferenceFirst =
                 !!session.selectedService && !session.askStylistFirst && !esperandoNombreInvitado &&
                 !tienePistaFecha && !session.datePreferenceAsked && !session.reservaConfirmada &&
@@ -2333,7 +2426,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // directamente (la detección de servicio fue en un turno anterior válido).
             const preSlots = _snapshot.availableSlots.slice(_snapshot.currentSlotIndex);
             if (orgType === 'salon' && preSlots.length > 0 && _snapshot.selectedService) {
-                const svcName = _snapshot.selectedService.nombre || 'tu servicio';
+                const svcName = humanizeLargoLabel(buildFullServiceName(_snapshot.selectedService, [])) || 'tu servicio';
                 const svcPrecio = _snapshot.selectedService.precio;
                 const svcDur = _snapshot.selectedService.duracion;
                 const grouped = {};
@@ -2411,7 +2504,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     ? aiResponse.datos.__selectedService
                     : aiResponse.datos?.__selectedService?.nombre)
                 || null;
-            if (servicioLLM && !session.selectedService) {
+            if (servicioLLM) {
                 const agentCfg = await getAgentConfig(orgId);
                 const servicesCatalog = agentCfg?.services || [];
                 // Desambiguar usando categoria_servicio que el LLM puede haber devuelto,
@@ -2427,7 +2520,17 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     matched = matchesLLM.find(s => normalizeText(s.categoria) === llmCatNorm) || null;
                 }
                 if (!matched) matched = extractServiceFromText(servicioLLM, servicesCatalog);
-                if (matched) {
+                // Nueva selección (aún sin servicio) O corrección de largo dentro de la
+                // MISMA categoría ya elegida — nunca un salto libre a otra categoría.
+                // "Mechas clásicas" excluida: sus variantes numeradas son tipo de
+                // cobertura, no longitud (ver misma exclusión en la resolución pre-LLM).
+                const isNewSelection = matched && !session.selectedService;
+                const isSameCategoryLargoCorrection = matched && session.selectedService
+                    && normalizeText(matched.categoria || '') === normalizeText(session.selectedService.categoria || '')
+                    && normalizeText(session.selectedService.categoria || '') !== 'mechas clasicas'
+                    && classifyLargoVariant(matched.nombre) != null
+                    && classifyLargoVariant(matched.nombre) !== classifyLargoVariant(session.selectedService.nombre);
+                if (isNewSelection || isSameCategoryLargoCorrection) {
                     session.selectedService = matched;
                     if (session.selectedStylist) {
                         const stylistsPost = await getStylistsByOrg(orgId);
@@ -2446,6 +2549,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 if (matched && stylistCanDoService(matched, session.selectedService)) {
                     session.selectedStylist = { id: matched.id, nombre: matched.name };
                     session.anyStylists = false;
+                    session.prefiereMasCercano = false; // preferencia explícita anula "el más cercano"
                 }
             }
 
@@ -2677,7 +2781,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     nombre: session.partialData.nombre,
                     fecha: session.partialData.fecha_cita,
                     hora: session.partialData.hora_cita,
-                    servicio: allServices || svc.nombre || 'Cita',
+                    servicio: humanizeLargoLabel(allServices) || svc.nombre || 'Cita',
                     stylistNombre: session.selectedStylist?.nombre,
                     precio: totalPrice || svc.precio,
                     duracion: totalDur,
@@ -3074,7 +3178,7 @@ module.exports = {
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
         respondsWithInventedSlots, salonNoSlotsMsg,
         // Estado de servicio centralizado (fuente de verdad + limpieza):
-        clearServiceState, SERVICE_STATE_DEFAULTS, SERVICE_PARTIAL_FIELDS, createEmptySession,
+        clearServiceState, assignStylistIfAppropriate, SERVICE_STATE_DEFAULTS, SERVICE_PARTIAL_FIELDS, createEmptySession,
         // Solo para introspección en tests (no usar en producción):
         getSession: (orgId, userPhone) => userSessions.get(sessionKey(orgId, userPhone)),
         getBuffer: (orgId, userPhone) => messageBuffers.get(sessionKey(orgId, userPhone)),
