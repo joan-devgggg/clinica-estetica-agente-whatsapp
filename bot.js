@@ -9,7 +9,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellSuggestion, buildSanteConfirmationMessage, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellSuggestion, buildSanteConfirmationMessage, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -189,6 +189,7 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         leadId: null,
         leadStatus: 'in_progress',
         modoReagendamiento: false,
+        reagendarAppointmentId: null,
         clienteRecurrente: false,
         ultimaVisita: null,
         startTime: Date.now(),
@@ -288,6 +289,13 @@ function matchesServiceName(a, b) {
     const nb = normalizeText(b || '').replace(/-/g, ' ');
     if (!na || !nb) return false;
     if (na === nb || na.includes(nb) || nb.includes(na)) return true;
+    // Comparación SIN separadores internos (guion o espacio): "k-18"/"k 18" ≡ "k18". Cubre
+    // los códigos cortos del catálogo (K18) que la clienta escribe con guion/espacio y que
+    // normalizeText no unifica. Se exige nombre de referencia ≥3 chars sin separadores para
+    // no casar por fragmentos triviales.
+    const sa = na.replace(/[\s-]/g, '');
+    const sb = nb.replace(/[\s-]/g, '');
+    if (sb.length >= 3 && (sa === sb || sa.includes(sb) || sb.includes(sa))) return true;
     // Token-level: any distinctive word (≥5 chars) from one side found in the other
     const tokensB = nb.split(/\s+/).filter(w => w.length >= 5);
     if (tokensB.some(w => na.includes(w))) return true;
@@ -579,6 +587,11 @@ async function handleAppointmentAction(client, session, userPhone, accion, respu
         session.reservaConfirmada = false;
         session.bizumAsked = false;
         session.bizumPendiente = false;
+        // Guardamos el id de la cita existente ANTES de anular appointmentId. Así, al confirmar
+        // el nuevo hueco, finalizarCitaSante la MUEVE (UPDATE in-place) en vez de crear otra
+        // dejando la vieja huérfana. Se anula appointmentId para que los guards de "cita
+        // confirmada" (2ª reserva, etc.) no se disparen durante el reagendado.
+        session.reagendarAppointmentId = session.appointmentId || null;
         session.appointmentId = null;
         session.availableSlots = [];
         session.proposedSlots = [];
@@ -1008,6 +1021,9 @@ const SERVICE_STATE_DEFAULTS = {
     pendingCorteMujerTipo: false,
     pendingCorteNinoTipo: false,
     modoReagendamiento: false,
+    // Id de la cita que se está reagendando (UPDATE in-place al confirmar el nuevo hueco).
+    // Se limpia con el estado de servicio para no arrastrar un reagendado abandonado.
+    reagendarAppointmentId: null,
     guestBooking: false,
     guestName: null,
 };
@@ -1026,6 +1042,34 @@ function clearServiceState(session) {
     }
     if (session.partialData) {
         for (const f of SERVICE_PARTIAL_FIELDS) delete session.partialData[f];
+    }
+}
+
+// ─── Semana "sticky" entre turnos (solo salón): ÚNICA autoridad ─────────────────
+// La preferencia de semana se recuerda en session.weekPreference y se restaura en los
+// turnos que solo mencionan un día (evita el falso positivo de "por la mañana", donde
+// extractPreferenciaHoraria pone semana:'esta'). Reglas por prioridad:
+//   - asap                 → olvidar la semana (buscar desde ya)
+//   - fecha ABSOLUTA        → olvidar la semana y NO re-inyectarla: una fecha concreta
+//                             ("14 de julio") determina la semana por sí sola; conservar
+//                             un 'siguiente' viejo re-acotaba el rango y excluía la fecha
+//                             pedida (falso totalSlots:0 / "ese día no está disponible").
+//   - palabra de semana + semana detectada → es la verdad del turno, recordarla
+//   - sin palabra de semana pero hay recordada → restaurarla
+function resolveStickyWeek(session, text) {
+    let pref = session.partialData.preferencia_horaria;
+    const tNorm = normalizeText(text);
+    const hasWeekWord = /\b(semana|siguiente|proxim[ao])\b/.test(tNorm);
+    if (pref?.asap) {
+        session.weekPreference = null;
+    } else if (pref?.fecha) {
+        session.weekPreference = null;
+        delete pref.semana; // defensivo: Fix A ya lo borra en el extractor
+    } else if (hasWeekWord && pref?.semana) {
+        session.weekPreference = pref.semana;
+    } else if (!hasWeekWord && session.weekPreference) {
+        if (!pref) { pref = {}; session.partialData.preferencia_horaria = pref; }
+        pref.semana = session.weekPreference;
     }
 }
 
@@ -1255,15 +1299,26 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
             slot: JSON.stringify(slot),
         });
 
-        const result = await calendarSante.bookAppointment(orgId, slot, session.leadId, {
+        const bookOpts = {
             servicio: allServices || session.selectedService?.nombre || 'Cita',
             duracionMin: totalDuration,
             stylistId,
             notas: notasCita,
-        });
+        };
+        // Reagendado: MOVER la cita existente (UPDATE in-place) en vez de crear una nueva y
+        // dejar la vieja huérfana. Si el update falla (cita borrada/no existe), fallback a
+        // INSERT para no dejar a la clienta sin reserva.
+        const reagendando = session.modoReagendamiento && session.reagendarAppointmentId;
+        let result = reagendando
+            ? await calendarSante.rescheduleAppointment(orgId, session.reagendarAppointmentId, slot, bookOpts)
+            : await calendarSante.bookAppointment(orgId, slot, session.leadId, bookOpts);
+        if (reagendando && !result.success) {
+            logger.warn('reagendar_update_fallido_fallback_insert', { orgId, telefono: userPhone, reagendarAppointmentId: session.reagendarAppointmentId });
+            result = await calendarSante.bookAppointment(orgId, slot, session.leadId, bookOpts);
+        }
 
         logger.info('DIAG_finalizarCitaSante_bookAppointment_resultado', {
-            orgId, telefono: userPhone, result: JSON.stringify(result),
+            orgId, telefono: userPhone, result: JSON.stringify(result), reagendando: !!reagendando,
         });
 
         if (!result.success) {
@@ -1271,8 +1326,11 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
             return false;
         }
 
-        logger.info('cita_sante_guardada', { orgId, telefono: userPhone, appointmentId: result.appointmentId, fecha, hora, stylistId, contactId: session.leadId });
+        logger.info('cita_sante_guardada', { orgId, telefono: userPhone, appointmentId: result.appointmentId, fecha, hora, stylistId, contactId: session.leadId, reagendada: !!reagendando });
         session.appointmentId = result.appointmentId;
+        // Reagendado completado: limpiar el estado para que no se re-mueva ni afecte a flujos siguientes.
+        session.modoReagendamiento = false;
+        session.reagendarAppointmentId = null;
         session.partialData.estado_cita = 'confirmado';
         await updateLead(orgId, { leadId: session.leadId, appointment_id: result.appointmentId, estado_cita: 'confirmado' });
         // Update preferred stylist for returning visits
@@ -1790,27 +1848,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         if (orgType === 'salon') {
             // Salon: extract name, preference, detect service/stylist from LLM
             session.partialData = extractQuickDataSante(sanitized, session.partialData);
-            // Persist week preference: save when message explicitly references a week; restore
-            // it on turns where only a day is mentioned (avoids "por la mañana" false-positive
-            // where extractPreferenciaHoraria matches "manana" and resets semana:'siguiente').
-            {
-                let _pref = session.partialData.preferencia_horaria;
-                const _tNorm = normalizeText(sanitized);
-                const _hasWeekWord = /\b(semana|siguiente|proxim[ao])\b/.test(_tNorm);
-                if (_pref?.asap) {
-                    // "Lo antes posible": olvidar cualquier preferencia de semana previa.
-                    session.weekPreference = null;
-                } else if (_hasWeekWord && _pref?.semana) {
-                    // El turno expresa la semana explícitamente → es la verdad y la recordamos.
-                    session.weekPreference = _pref.semana;
-                } else if (!_hasWeekWord && session.weekPreference) {
-                    // Bug 3: sin palabra de semana este turno (p.ej. "el jueves"), mantenemos la
-                    // semana recordada AUNQUE extractPreferenciaHoraria no devuelva nada (_pref
-                    // null) o la haya puesto en 'esta' por el falso positivo de "mañana".
-                    if (!_pref) { _pref = {}; session.partialData.preferencia_horaria = _pref; }
-                    _pref.semana = session.weekPreference;
-                }
-            }
+            resolveStickyWeek(session, sanitized);
             // Bug 1: si el nombre extraído coincide con un servicio del catálogo, descartarlo
             if (session.partialData.nombre && session.partialData.nombre !== prevData.nombre) {
                 const agentCfgNameCheck = await getAgentConfig(orgId);
@@ -2139,6 +2177,17 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     if (largoCat) session.pendingLargoCategory = largoCat;
                     else if (detectCorteGenerico(sanitized)) session.pendingCorteGenero = true;
                 }
+            }
+            // Consulta de valoración (REACTIVA): la clienta pide asesoramiento sin nombrar
+            // un servicio concreto. Solo si no hay servicio ya resuelto ni flujo de
+            // largo/corte pendiente — así "no sé si prefiero corto o largo" dentro de otro
+            // servicio nunca cae aquí. Se agenda como bloque "Consulta" (300 min).
+            if (!session.selectedService && !session.pendingLargoCategory &&
+                !session.pendingCorteGenero && !session.pendingCorteMujerTipo &&
+                !session.pendingCorteNinoTipo && detectConsultaValoracion(sanitized)) {
+                const consultaSvc = (agentCfgPre?.services || [])
+                    .find(s => normalizeText(s.categoria) === 'consulta');
+                if (consultaSvc) session.selectedService = consultaSvc;
             }
             // Recuperar el servicio desde partialData.servicio (capturado por el LLM en
             // un turno previo) ANTES del filtro de estilistas, para que la asignación de
@@ -2564,7 +2613,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 && (!aiResponse.datos?.upselling_aceptado?.length)) {
                 const cfgDet = await getAgentConfig(orgId);
                 const svcNombrado = extractServiceFromText(sanitized, cfgDet?.services || [])?.nombre;
-                if (isUpsellingAcceptance(sanitized) || matchesServiceName(svcNombrado, session._lastUpsellSuggestion)) {
+                // Tercer brazo: casar el TEXTO CRUDO contra el upsell pendiente. Cubre "k-18"/
+                // "k 18" (con separador), que extractServiceFromText no resuelve pero que
+                // matchesServiceName sí reconoce al ignorar separadores internos.
+                if (isUpsellingAcceptance(sanitized)
+                    || matchesServiceName(svcNombrado, session._lastUpsellSuggestion)
+                    || matchesServiceName(sanitized, session._lastUpsellSuggestion)) {
                     aiResponse.datos = aiResponse.datos || {};
                     aiResponse.datos.upselling_aceptado = [session._lastUpsellSuggestion];
                     logger.info('upselling_detectado_deterministico', { orgId, telefono: userPhone, servicio: session._lastUpsellSuggestion });
@@ -3179,6 +3233,10 @@ module.exports = {
         respondsWithInventedSlots, salonNoSlotsMsg,
         // Estado de servicio centralizado (fuente de verdad + limpieza):
         clearServiceState, assignStylistIfAppropriate, SERVICE_STATE_DEFAULTS, SERVICE_PARTIAL_FIELDS, createEmptySession,
+        // Semana "sticky" entre turnos (salón):
+        resolveStickyWeek,
+        // Flujos de reserva (aceptación de upsell, 2ª reserva, skill de estilista):
+        isUpsellingAcceptance, matchesServiceName, resetForSecondBooking, stylistCanDoService,
         // Solo para introspección en tests (no usar en producción):
         getSession: (orgId, userPhone) => userSessions.get(sessionKey(orgId, userPhone)),
         getBuffer: (orgId, userPhone) => messageBuffers.get(sessionKey(orgId, userPhone)),

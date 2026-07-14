@@ -151,10 +151,16 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
 
                 // Filter by week preference: 'siguiente' → solo lunes-domingo de la próxima
                 // semana (rango explícito, no open-ended). 'esta' → hasta el domingo actual.
-                if (pref.semana === 'siguiente') {
-                    if (dateStr < startOfNextWeekStr || dateStr > endOfNextWeekStr) continue;
-                } else if (pref.semana === 'esta') {
-                    if (dateStr > endOfThisWeekStr) continue;
+                // BLINDAJE: una `fecha` absoluta ya filtró a un único día arriba y determina la
+                // semana por sí sola; el filtro de semana NO debe re-acotar y excluirla (un
+                // 'semana' heredado de un turno anterior daría un falso totalSlots:0 para la
+                // fecha pedida). La limpieza en origen vive en resolveStickyWeek/extractQuickDataSante.
+                if (!pref.fecha) {
+                    if (pref.semana === 'siguiente') {
+                        if (dateStr < startOfNextWeekStr || dateStr > endOfNextWeekStr) continue;
+                    } else if (pref.semana === 'esta') {
+                        if (dateStr > endOfThisWeekStr) continue;
+                    }
                 }
 
                 // Working hours for this day
@@ -357,6 +363,22 @@ async function cancelAppointment(orgId, appointmentId) {
     return { success: !!result };
 }
 
-module.exports = { getAvailableSlots, bookAppointment, cancelAppointment, formatSlotForMessage };
+// Reagenda una cita EXISTENTE moviéndola al nuevo hueco (UPDATE in-place vía la rama
+// {fecha,hora,duracionMin} de db.updateAppointment, que recalcula starts_at/ends_at). No crea
+// una fila nueva: evita la cita huérfana/duplicada que dejaba el flujo anterior (creaba con
+// bookAppointment y no cancelaba la vieja). Simétrica con book/cancel para poder mockearla.
+async function rescheduleAppointment(orgId, appointmentId, slot, { servicio, duracionMin, stylistId, notas } = {}) {
+    const result = await db.updateAppointment(orgId, appointmentId, {
+        servicio,
+        fecha: slot.fecha,
+        hora: slot.hora,
+        duracionMin: duracionMin || 60,
+        stylistId: stylistId || slot.stylistId,
+        notas,
+    });
+    return result ? { success: true, appointmentId: result.id, appointment: result } : { success: false };
+}
+
+module.exports = { getAvailableSlots, bookAppointment, cancelAppointment, rescheduleAppointment, formatSlotForMessage };
 // Expuesto para tests de regresión (huecos + TZ-independencia), no para uso en producción.
 module.exports._internals = { computeFreeSlots, toLocalDateStr, toMinutes, addDaysStr, mondayDow, BUSINESS_TZ };

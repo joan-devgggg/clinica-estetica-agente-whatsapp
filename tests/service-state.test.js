@@ -95,7 +95,7 @@ test('la fuente de verdad coincide con la lista esperada (candado anti-drift)', 
         'datePreferenceAsked', 'upsellingSuggested', 'upsellingAccepted',
         '_lastUpsellSuggestion', 'pendingLargoCategory', 'largoPelo',
         'pendingCorteGenero', 'pendingCorteMujerTipo', 'pendingCorteNinoTipo',
-        'modoReagendamiento', 'guestBooking', 'guestName',
+        'modoReagendamiento', 'reagendarAppointmentId', 'guestBooking', 'guestName',
     ];
     const EXPECTED_PARTIAL = [
         'servicio', 'categoria_servicio', 'estilista_preferida',

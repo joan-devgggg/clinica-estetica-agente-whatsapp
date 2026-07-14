@@ -1,6 +1,7 @@
 const assert = require('assert');
 const { _internals } = require('../bot');
-const { assignStylistIfAppropriate } = _internals;
+const { assignStylistIfAppropriate, stylistCanDoService } = _internals;
+const { extractStylistFromText } = require('../services/helpers');
 
 function test(name, fn) {
     try {
@@ -100,6 +101,41 @@ test('lista de elegibles vacía → null (no revienta)', () => {
     const session = { selectedStylist: null, anyStylists: false };
     assignStylistIfAppropriate(session, []);
     assert.strictEqual(session.selectedStylist, null);
+});
+
+// ─── Roster: distinción de nombre Yulia vs Yulia-Tricóloga (extractStylistFromText) ───
+// Guarda el orden por longitud de nombre: un nombre compuesto no debe confundirse por
+// inclusión de substring con el nombre corto que lo prefija.
+const YULIA = { id: 'yulia', name: 'Yulia' };
+const YULIA_TRI = { id: 'yulia-tri', name: 'Yulia-Tricóloga' };
+const TEAM_YULIAS = [YULIA, YULIA_TRI];
+
+test('nombre: "con yulia" → la Yulia de pelo (no la tricóloga)', () => {
+    assert.strictEqual(extractStylistFromText('quiero con yulia', TEAM_YULIAS)?.id, 'yulia');
+});
+test('nombre: "yulia tricologa" (sin acento/guion) → Yulia-Tricóloga', () => {
+    assert.strictEqual(extractStylistFromText('me atiende yulia tricologa', TEAM_YULIAS)?.id, 'yulia-tri');
+});
+test('nombre: "con yulia-tricóloga" → Yulia-Tricóloga', () => {
+    assert.strictEqual(extractStylistFromText('con yulia-tricóloga porfa', TEAM_YULIAS)?.id, 'yulia-tri');
+});
+
+// ─── Roster: filtro por skill (stylistCanDoService) ───────────────────────────
+const TETIANA = { id: 'tetiana', name: 'Tetiana', skills: ['Extensiones de cabello'] };
+const NATALIA = { id: 'natalia', name: 'Natalia', skills: ['Cortes', 'Mechas Balayage', 'Color Premium'] };
+const YULIA_TRI_SK = { id: 'yulia-tri', name: 'Yulia-Tricóloga', skills: ['Dermapen Hair Loss', 'Diagnóstico Capilar'] };
+
+test('skill: Tetiana (solo extensiones) NO puede hacer Cortes ni pelo general', () => {
+    assert.ok(!stylistCanDoService(TETIANA, { categoria: 'Cortes' }));
+    assert.ok(!stylistCanDoService(TETIANA, { categoria: 'Mechas Balayage' }));
+});
+test('skill: Yulia-Tricóloga NO hace Cortes pero SÍ Diagnóstico Capilar', () => {
+    assert.ok(!stylistCanDoService(YULIA_TRI_SK, { categoria: 'Cortes' }));
+    assert.ok(stylistCanDoService(YULIA_TRI_SK, { categoria: 'Diagnóstico Capilar' }));
+});
+test('skill: Natalia hace Mechas Balayage y Cortes', () => {
+    assert.ok(stylistCanDoService(NATALIA, { categoria: 'Mechas Balayage' }));
+    assert.ok(stylistCanDoService(NATALIA, { categoria: 'Cortes' }));
 });
 
 // bot.js deja un setInterval (GC) que mantiene vivo el event loop: forzamos la salida.

@@ -628,4 +628,6 @@ function startWebhookServer(port) {
     });
 }
 
-module.exports = { startWebhookServer, setWAClient };
+// `app` se exporta para tests de integración de rutas (no se usa en producción; el arranque
+// real pasa por startWebhookServer). Exponerlo no cambia ningún comportamiento.
+module.exports = { startWebhookServer, setWAClient, app };

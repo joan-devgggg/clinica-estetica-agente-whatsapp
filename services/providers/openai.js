@@ -236,7 +236,15 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
     const categorias = [...new Set(services.map(s => s.categoria))];
     const catalogoStr = categorias.map(cat => {
         const items = services.filter(s => s.categoria === cat);
-        return `${cat}:\n` + items.map(s => `  • ${s.nombre} — ${s.precio}€ (${s.duracion} min)`).join('\n');
+        // Consulta / servicios sin precio fijo: nunca mostrar un número ni la duración
+        // interna del bloque; el precio se confirma en el salón.
+        if (String(cat).toLowerCase() === 'consulta') {
+            return `${cat}:\n  • Consulta de valoración — 20 min de asesoramiento; precio a confirmar en el salón`;
+        }
+        return `${cat}:\n` + items.map(s => {
+            const precioStr = (s.precio == null) ? 'precio a confirmar en el salón' : `${s.precio}€`;
+            return `  • ${s.nombre} — ${precioStr} (${s.duracion} min)`;
+        }).join('\n');
     }).join('\n\n');
 
     // Team — usa horarios reales de stylist_schedules cuando están disponibles
@@ -601,6 +609,22 @@ o el hueco más recientemente mencionado en la conversación.
 NUNCA marques slot_rechazado: true cuando el cliente use estas expresiones.
 Solo marca slot_rechazado: true si el cliente dice explícitamente que NO
 quiere ese hueco ("no me va", "prefiero otro", "ese no", etc.)
+
+# ── CONSULTA DE VALORACIÓN (servicio reservable, NO es escalada) ─────────
+
+Si la clienta NO sabe qué servicio quiere y pide que la asesores o le recomienden algo
+("no sé qué hacerme", "¿me podéis aconsejar?", "quiero que me recomienden", "quiero una consulta"),
+ofrécele una CONSULTA DE VALORACIÓN. Se reserva como cualquier servicio (categoria "Consulta"):
+- La consulta dura 20 minutos; en ella la estilista valora y te recomienda el servicio adecuado.
+- Internamente queda tiempo reservado por si haces el servicio recomendado justo después, pero a
+  la clienta SOLO le dices "consulta de 20 minutos" y que, si tras la consulta decide el servicio,
+  ya tendrá tiempo reservado a continuación sin esperar. NUNCA digas "5 horas" ni "300 minutos".
+- El precio se confirma en el salón tras la consulta. NUNCA des un número de precio.
+- Para reservarla pon datos.servicio: "Consulta" y datos.categoria_servicio: "Consulta", y sigue
+  el flujo normal de proponer huecos y estilista.
+IMPORTANTE: ofrécela SOLO si la clienta pide asesoramiento o dice no saber qué quiere. Si nombra un
+servicio concreto (aunque dude del largo, ej. "no sé si corto o medio"), NO es una consulta: sigue
+con ese servicio.
 
 # ── ESCALADA A HUMANO (accion: "escalar_humano") ─────────────────────────
 

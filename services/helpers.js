@@ -437,10 +437,19 @@ function humanizeLargoLabel(text) {
 
 function extractStylistFromText(text, teamList) {
     if (!text || !teamList?.length) return null;
-    const t = normalizeText(text);
+    const t = normalizeText(text).replace(/-/g, ' ');
 
-    for (const member of teamList) {
-        if (t.includes(normalizeText(member.nombre || member.name))) {
+    // Nombres más largos/específicos primero (p.ej. "Yulia-Tricóloga" antes que
+    // "Yulia") para que un nombre compuesto no se confunda por inclusión de
+    // substring con el nombre corto que lo prefija. También se ignoran guiones
+    // en ambos lados, porque la clienta rara vez los escribe.
+    const sorted = [...teamList].sort((a, b) =>
+        normalizeText(b.nombre || b.name).length - normalizeText(a.nombre || a.name).length
+    );
+
+    for (const member of sorted) {
+        const name = normalizeText(member.nombre || member.name).replace(/-/g, ' ');
+        if (t.includes(name)) {
             return member;
         }
     }
@@ -590,6 +599,12 @@ function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], tea
 
     if (datePref) {
         result.preferencia_horaria = { ...(result.preferencia_horaria || {}), ...datePref };
+        // Una fecha ABSOLUTA ("14 de julio") determina la semana por sí sola: limpiar cualquier
+        // 'semana' heredada de turnos anteriores. Si no, un 'siguiente' viejo re-acota el rango y
+        // excluye la fecha pedida (falso totalSlots:0 / "ese día no está disponible"). El caso de
+        // solo 'diaSemana' sin fecha ("el martes que viene") NO se toca: ahí diaSemana+semana es
+        // una combinación legítima ("el martes de la semana que viene").
+        if (datePref.fecha) delete result.preferencia_horaria.semana;
     }
 
     // "Lo antes posible" / "cuanto antes" / "el hueco más cercano": buscar desde ahora mismo,
@@ -712,10 +727,7 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
     const dir = (direccion || '').trim();
     const emoji = _serviceEmoji(categoria);
     const fechaStr = _formatFechaHora(fecha, hora, lang);
-    const svcLine = stylistNombre ? `${servicio} con ${stylistNombre}` : servicio;
-    const priceLine = (precio != null && duracion != null)
-        ? `${precio}€ · ${duracion} minutos`
-        : precio != null ? `${precio}€` : duracion != null ? `${duracion} minutos` : null;
+    const isConsulta = normalizeText(categoria || '') === 'consulta';
 
     const T = {
         es: {
@@ -723,33 +735,57 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
             cancel: '🙏 Si necesitas cancelar o cambiar, avísanos con 48h de antelación.',
             more: '¿Algo más en lo que pueda ayudarte?',
             upsell: s => `Por cierto, mientras estás aquí podrías aprovechar para ${s.toLowerCase()}. ¿Te lo añado?`,
+            consultaSvc: 'Consulta de valoración (20 min)',
+            consultaPrice: 'El precio se confirma en el salón según lo que decidas',
+            consultaNote: 'Si tras la consulta decides hacerte el servicio que te recomiende, ya tendrás tiempo reservado a continuación sin esperar.',
         },
         en: {
             header: n => `✅ Perfect, ${n}. Appointment booked:`,
             cancel: '🙏 If you need to cancel or change, please let us know 48h in advance.',
             more: 'Anything else I can help you with?',
             upsell: s => `By the way, while you're here you could also add ${s.toLowerCase()}. Want me to include it?`,
+            consultaSvc: 'Assessment consultation (20 min)',
+            consultaPrice: 'The price is confirmed at the salon based on what you decide',
+            consultaNote: "If after the consultation you decide to get the recommended service, you'll already have time reserved right after, no waiting.",
         },
         ru: {
             header: n => `✅ Отлично, ${n}. Запись подтверждена:`,
             cancel: '🙏 Если нужно отменить или изменить, предупредите нас за 48ч.',
             more: 'Могу ещё чем-то помочь?',
             upsell: s => `Кстати, пока вы у нас, можно добавить ${s.toLowerCase()}. Добавить?`,
+            consultaSvc: 'Консультация-оценка (20 мин)',
+            consultaPrice: 'Цена подтверждается в салоне в зависимости от вашего решения',
+            consultaNote: 'Если после консультации вы решите сделать рекомендованную услугу, у вас уже будет зарезервировано время сразу после, без ожидания.',
         },
         uk: {
             header: n => `✅ Чудово, ${n}. Запис підтверджено:`,
             cancel: '🙏 Якщо потрібно скасувати або змінити, попередьте нас за 48год.',
             more: 'Чим ще можу допомогти?',
             upsell: s => `До речі, поки ви у нас, можна додати ${s.toLowerCase()}. Додати?`,
+            consultaSvc: 'Консультація-оцінка (20 хв)',
+            consultaPrice: 'Ціна підтверджується в салоні залежно від вашого рішення',
+            consultaNote: 'Якщо після консультації ви вирішите зробити рекомендовану послугу, у вас вже буде зарезервовано час одразу після, без очікування.',
         },
     };
     const t = T[lang] || T.es;
+
+    const svcBase = isConsulta ? t.consultaSvc : servicio;
+    const svcLine = stylistNombre ? `${svcBase} con ${stylistNombre}` : svcBase;
+    const priceLine = isConsulta
+        ? t.consultaPrice
+        : (precio != null && duracion != null)
+            ? `${precio}€ · ${duracion} minutos`
+            : precio != null ? `${precio}€` : duracion != null ? `${duracion} minutos` : null;
 
     const lines = [t.header(nombre || ''), ''];
     lines.push(`📅 ${fechaStr}`);
     lines.push(`${emoji} ${svcLine}`);
     if (priceLine) lines.push(`💰 ${priceLine}`);
     if (dir) lines.push(`📍 ${dir}`);
+    if (isConsulta) {
+        lines.push('');
+        lines.push(t.consultaNote);
+    }
     lines.push('');
     lines.push(t.cancel);
     if (upsellSuggestion) {
@@ -905,6 +941,46 @@ function detectConsultaService(text) {
     return null;
 }
 
+// Detecta la intención REACTIVA de "quiero que me asesoren / no sé qué servicio quiero".
+// Solo intención de ELECCIÓN DE SERVICIO — NUNCA de largo de pelo. El gating (que solo
+// se llame cuando no hay servicio concreto detectado ni flujo de largo/corte pendiente)
+// vive en bot.js; aquí no se incluye ningún patrón basado solo en "corto/largo" ni en
+// "no sé" a secas, para que "no sé si prefiero corto o largo" NO dispare.
+function detectConsultaValoracion(text) {
+    if (!text) return false;
+    const t = normalizeText(text);
+    const patterns = [
+        // ES — no sé qué servicio / qué hacerme
+        /no se (que|q) (hacerme|me hago|me pongo|ponerme|quiero|necesito|servicio|elegir|pedir)/,
+        /no se (que|q) me (queda|favorece|sienta|va) (mejor|bien)/,
+        /no tengo ni idea de (que|q)/,
+        // ES — pedir recomendación / asesoramiento
+        /que me (recom|asesor|aconsej)/,
+        /me (podeis|podrian|pueden|podriais) (recom|asesor|aconsej)/,
+        /(quiero|queria|necesito|busco|me gustaria) (que me )?(recom|asesor|aconsej|una consulta|la consulta|consulta|asesoramiento|valoracion)/,
+        /\basesoramiento\b/,
+        /me aconsej(en|eis|ais)\b/,
+        /me ayud(en|eis|ais|e|as) a (decidir|elegir|escoger)/,
+        /consulta de valoracion/,
+        /pedir (una |la )?consulta/,
+        // ES — que lo valoren en persona
+        /ver(lo)? en persona/,
+        /que lo ve(ais|an)/,
+        // EN
+        /don.?t know what to (do|get)/,
+        /not sure what i (want|need)/,
+        /can you (recommend|advise|suggest)/,
+        /\b(recommend me|need advice|a consultation)\b/,
+        // RU
+        /не знаю что (мне )?(сделать|выбрать|хочу)/,
+        /(посоветуйте|консультаци|порекоменд)/,
+        // UK
+        /не знаю що (мені )?(зробити|вибрати|хочу)/,
+        /(порадьте|консультаці|порекоменд)/,
+    ];
+    return patterns.some(re => re.test(t));
+}
+
 // Extracts hair length from user response.
 // Returns 1 (short/hombros), 2 (medium/espalda), 3 (long/cintura), 4 (very long), or null.
 function extractLargoPelo(text) {
@@ -958,4 +1034,5 @@ module.exports = {
     detectCorteMujerTipo,
     detectCorteNinoTipo,
     detectConsultaService,
+    detectConsultaValoracion,
 };

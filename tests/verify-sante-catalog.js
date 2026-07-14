@@ -37,6 +37,7 @@ const {
     extractLargoPelo,
     matchUpsellSuggestion,
     normalizeText,
+    extractStylistFromText,
 } = require('../services/helpers');
 const calendarSante = require('../services/calendar-sante');
 
@@ -181,6 +182,13 @@ const addDays = (dateStr, n) => {
             'ninguna estilista activa tiene esa skill');
     }
 
+    // Centinela: Consulta debe seguir en el catálogo y con sus 4 estilistas, para que la
+    // matriz de Fase 4 (abajo) la ejerza de verdad y no la salte por falta de elegibles.
+    check('4-huecos', categories.includes('Consulta'), 'Consulta en catálogo',
+        'la categoría Consulta desapareció del catálogo');
+    check('4-huecos', (eligibleByCat['Consulta'] || []).length === 4, 'Consulta con 4 estilistas',
+        `elegibles=${(eligibleByCat['Consulta'] || []).length} (esperado 4)`);
+
     // ─── Fase 4: matriz de huecos (offline, horario sintético abierto) ────────────────
     const realFns = {
         getStylistsByOrg: db.getStylistsByOrg,
@@ -233,6 +241,13 @@ const addDays = (dateStr, n) => {
                     ['esta semana', { semana: 'esta' }],
                     ['semana que viene', { semana: 'siguiente' }],
                     ['fecha concreta', { fecha: addDays(anchorDate, 3) }],
+                    // Combinaciones asap + semana (cliente dice "el más cercano" y luego una
+                    // semana). asap NO puede vaciar el rango de la semana (su buffer solo toca
+                    // HOY, que "siguiente" excluye), así que sobre horario abierto deben dar ≥1
+                    // igual que las versiones sueltas. Candado contra regresiones en el
+                    // anclaje del rango de semana cuando asap está presente.
+                    ['asap + esta semana', { asap: true, semana: 'esta' }],
+                    ['asap + semana que viene', { asap: true, semana: 'siguiente' }],
                 ];
                 await withMockedNow(`${anchorDate}T06:00:00Z`, async () => {
                     for (const [prefN, preferencia] of prefs) {
@@ -269,6 +284,79 @@ const addDays = (dateStr, n) => {
         const hhmm = `${Math.floor(minEnd / 60)}:${String(minEnd % 60).padStart(2, '0')}`;
         check('5-upsell', minEnd <= HARD_CUTOFF, `${svc.categoria} / ${svc.nombre} → upsell "${sug}"`,
             `ni empezando a las 10:00 cabe: ${svcDur}min + ${upsellDur}min terminaría a las ${hhmm} (>19:00)`);
+    }
+
+    // ─── Fase 6: roster de estilistas (datos reales de Supabase) ──────────────────────
+    // db real ya restaurada (finally de Fase 4). Verifica horarios, skills exactas,
+    // elegibilidad y la distinción de nombre de las estilistas añadidas hoy.
+    const skillSet = (skills) => new Set((Array.isArray(skills) ? skills : []).map(x => normalizeText(x)));
+    const setsEqual = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
+    const findStylist = (name) => realStylists.find(s => normalizeText(s.name) === normalizeText(name));
+
+    // Especificación declarativa. `skillsIguales` compara el set con el de otra estilista.
+    const ROSTER = [
+        { name: 'Tetiana', dias: [1, 2, 3, 5], skills: ['Extensiones de cabello'] },
+        { name: 'Natalia', dias: [2, 3, 4, 5], skillsIguales: 'Irina', incluye: ['Mechas Balayage'] },
+        { name: 'Yulia-Tricóloga', dias: [0, 2], skills: ['Dermapen Hair Loss', 'Diagnóstico Capilar'] },
+    ];
+
+    for (const spec of ROSTER) {
+        const sty = findStylist(spec.name);
+        if (!check('6-roster', !!sty, `${spec.name} existe`, 'no está en stylists activas')) continue;
+
+        // Skills: exactas, o iguales a las de otra estilista (Natalia == Irina).
+        const got = skillSet(sty.skills);
+        if (spec.skillsIguales) {
+            const ref = findStylist(spec.skillsIguales);
+            if (check('6-roster', !!ref, `${spec.name}: referencia ${spec.skillsIguales}`, 'no encontrada') && ref) {
+                check('6-roster', setsEqual(got, skillSet(ref.skills)), `${spec.name}: skills == ${spec.skillsIguales}`,
+                    `[${[...got]}] vs ${spec.skillsIguales} [${[...skillSet(ref.skills)]}]`);
+            }
+        } else {
+            check('6-roster', setsEqual(got, skillSet(spec.skills)), `${spec.name}: skills exactas`,
+                `[${[...got]}] esperado [${spec.skills.map(normalizeText)}]`);
+        }
+        for (const must of (spec.incluye || [])) {
+            check('6-roster', got.has(normalizeText(must)), `${spec.name}: incluye "${must}"`, 'skill ausente');
+        }
+
+        // Horario: set de días exacto + franja 10:00–19:00.
+        const sched = await db.getStylistSchedule(SANTE_ORG_ID, sty.id);
+        const days = [...new Set(sched.map(r => r.day_of_week))].sort((a, b) => a - b);
+        check('6-roster', JSON.stringify(days) === JSON.stringify(spec.dias), `${spec.name}: días de horario`,
+            `[${days}] esperado [${spec.dias}]`);
+        check('6-roster', sched.length > 0 && sched.every(r =>
+            String(r.start_time).startsWith('10:00') && String(r.end_time).startsWith('19:00')),
+            `${spec.name}: franja 10:00–19:00`, 'alguna franja no es 10–19');
+    }
+
+    // Tetiana: extensiones escala a humano → nunca candidata en getAvailableSlots.
+    const tetiana = findStylist('Tetiana');
+    if (tetiana) {
+        check('6-roster', categories.every(cat => !skillMatches(tetiana.skills, cat)),
+            'Tetiana nunca elegible', 'su skill casa con alguna categoría del catálogo');
+    }
+    check('6-roster', !catalog.some(s => normalizeText(s.categoria) === normalizeText('Extensiones de cabello')),
+        'Extensiones no es servicio reservable', 'hay un servicio con categoría Extensiones de cabello');
+
+    // Natalia: elegible en pelo general.
+    for (const cat of ['Cortes', 'Mechas Balayage']) {
+        check('6-roster', (eligibleByCat[cat] || []).some(s => normalizeText(s.name) === 'natalia'),
+            `Natalia elegible en ${cat}`, 'no aparece como elegible');
+    }
+
+    // Yulia-Tricóloga: distinta de Yulia, no elegible para generales, y sin confusión de nombre.
+    const yulia = findStylist('Yulia');
+    const yuliaTri = findStylist('Yulia-Tricóloga');
+    if (yulia && yuliaTri) {
+        check('6-roster', yulia.id !== yuliaTri.id, 'Yulia ≠ Yulia-Tricóloga', 'comparten id');
+        for (const cat of ['Cortes', 'Color Premium', 'Mechas Balayage']) {
+            check('6-roster', !skillMatches(yuliaTri.skills, cat), `Yulia-Tricóloga NO hace "${cat}"`, 'casa la skill');
+        }
+        check('6-roster', extractStylistFromText('quiero con yulia tricologa', realStylists)?.id === yuliaTri.id,
+            'nombre real: "yulia tricologa" → tricóloga', 'resolvió a otra estilista');
+        check('6-roster', extractStylistFromText('quiero con yulia', realStylists)?.id === yulia.id,
+            'nombre real: "yulia" → Yulia de pelo', 'resolvió a otra estilista');
     }
 
     // ─── Reporte final ────────────────────────────────────────────────────────────────
