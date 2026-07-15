@@ -2,7 +2,7 @@
 
 import { Card } from "@/components/ui/card";
 import type { Stylist, Reserva, ScheduleBlock, StylistSchedule, BlockedDay } from "@/lib/types";
-import { ymd, parseYmd, addDays, madridDateKey } from "@/lib/date";
+import { ymd, parseYmd, addDays, madridDateKey, madridTime } from "@/lib/date";
 
 interface StylistAgendaProps {
   weekStart: string;
@@ -282,6 +282,11 @@ export function StylistAgenda({
                 >
                   <p className="font-medium text-primary truncate">{a.nombre}</p>
                   <p className="text-muted-foreground truncate">{a.service || "Cita"}</p>
+                  {a.starts_at && a.ends_at && (
+                    <p className="text-[9px] text-muted-foreground/60 truncate">
+                      {madridTime(a.starts_at)} – {madridTime(a.ends_at)}
+                    </p>
+                  )}
                 </button>
               );
             })

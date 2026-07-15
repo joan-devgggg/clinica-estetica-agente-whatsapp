@@ -331,7 +331,7 @@ MODO REAGENDAMIENTO:
         modoClienteRecurrente = `
 CLIENTA RECURRENTE:
 ${historialStr}
-${stylistHabitual ? `Su estilista habitual es ${stylistHabitual}. Sugiere primero esa estilista.` : ''}
+${stylistHabitual && !partialData.__askStylistFirst ? `Su estilista habitual es ${stylistHabitual}. Sugiere primero esa estilista.` : ''}
 Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a su último servicio de forma natural.`;
     }
 
@@ -385,7 +385,7 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
             const names = (partialData.__eligibleStylistNames || []).join(', ');
             let stylistPrompt;
             if (lastStylist) {
-                stylistPrompt = `Confirma el servicio (precio y duración) y pregunta: "La última vez te atendió ${lastStylist}, ¿quieres reservar con ella o prefieres que te busque el hueco más cercano disponible?" (o equivalente en su idioma). Si confirma con ${lastStylist}, filtra huecos por esa estilista. Si dice "el más cercano" o similar, muestra huecos de cualquier estilista.`;
+                stylistPrompt = `Confirma el servicio (precio y duración) y pregunta: "La última vez te atendió ${lastStylist}, ¿quieres reservar con ella o prefieres que te busque el hueco más cercano disponible?" (o equivalente en su idioma). NO des por hecho que quiere repetir con ${lastStylist} ni la asignes todavía: espera su respuesta. Si confirma con ${lastStylist}, filtra huecos por esa estilista. Si dice "el más cercano" o similar, muestra huecos de cualquier estilista.`;
             } else {
                 stylistPrompt = `Confirma el servicio (precio y duración) y pregunta: "¿Tienes estilista de confianza o prefieres que te busque el hueco más cercano disponible?" (o equivalente en su idioma)${names ? ` (disponibles: ${names})` : ''}. Si da un nombre, filtra huecos por esa estilista. Si dice "el más cercano" o similar, muestra huecos de cualquier estilista.`;
             }

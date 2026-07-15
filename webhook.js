@@ -357,18 +357,104 @@ app.post('/api/vip/broadcast', async (req, res) => {
         const client = getWAClient(orgId);
         if (!client) return res.status(503).json({ error: 'WhatsApp no conectado' });
         const vips = await db.getVipList(orgId);
-        if (!vips.length) return res.json({ enviados: 0 });
+        if (!vips.length) return res.json({ enviados: 0, omitidos: 0, fallos: [] });
         const { waSendMessage } = require('./bot');
         let enviados = 0;
+        const fallos = [];
         for (const vip of vips) {
+            // Preferir el JID canónico guardado (metadata.wa_jid, p.ej. @lid); solo si
+            // no existe, reconstruir el WID clásico a partir del teléfono.
+            const digits = (vip.telefono || '').replace(/\D/g, '');
+            const chatId = vip.wa_jid || (digits ? `${digits}@c.us` : null);
+            if (!chatId) { fallos.push({ telefono: vip.telefono, jid: null, error: 'sin teléfono ni JID' }); continue; }
             try {
-                const digits = vip.telefono.replace(/\D/g, '');
-                const chatId = `${digits}@c.us`;
                 await waSendMessage(client, chatId, mensaje);
                 enviados++;
-            } catch { /* continuar con el siguiente */ }
+            } catch (e) {
+                console.error('[vip/broadcast] fallo envío', { telefono: vip.telefono, jid: chatId, error: e.message });
+                fallos.push({ telefono: vip.telefono, jid: chatId, error: e.message });
+            }
         }
-        res.json({ enviados });
+        res.json({ enviados, omitidos: fallos.length, fallos });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── API: Campañas (mensaje masivo con IA + filtros de audiencia) ─────────────
+app.post('/api/campaigns/generate-message', async (req, res) => {
+    try {
+        const { idea } = req.body;
+        if (!idea) return res.status(400).json({ error: 'idea requerida' });
+        const OpenAI = require('openai');
+        const openrouter = new OpenAI({ baseURL: 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY });
+        const completion = await openrouter.chat.completions.create({
+            model: 'anthropic/claude-haiku-4.5',
+            messages: [
+                {
+                    role: 'system',
+                    content: 'Eres el asistente de Santé Healthy Hair Salon, un salón premium en Alicante. Genera mensajes de WhatsApp para enviar a la base de clientas del salón: cortos (máximo 2-3 líneas), cercanos, con 1-2 emojis, en español informal (tuteo). Termina siempre con una llamada a la acción como \'¿Te apuntas?\' o \'¿Reservamos?\' o similar. NUNCA uses asteriscos, negritas ni markdown. Solo texto plano.',
+                },
+                { role: 'user', content: `Genera un mensaje promocional para enviar a nuestras clientas basado en esta idea: ${idea}` },
+            ],
+            max_tokens: 200,
+        });
+        const mensaje = completion.choices[0]?.message?.content?.trim() || '';
+        res.json({ mensaje });
+    } catch (e) {
+        console.error('[campaigns/generate-message] ERROR:', {
+            message: e.message,
+            status: e.status,
+            code: e.code,
+            OPENROUTER_KEY_SET: !!process.env.OPENROUTER_API_KEY,
+        });
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/campaigns/broadcast', async (req, res) => {
+    try {
+        const orgId = extractOrgId(req);
+        const { mensaje, audience = 'todos', templateName, templateParams, phones } = req.body;
+
+        // phones: allowlist explícito de teléfonos (prueba segura). Si viene, apunta
+        // SOLO a esos números e ignora la audiencia.
+        const destinatarios = await db.getBroadcastRecipients(orgId, { audience, phones });
+        const total = destinatarios.length;
+
+        // Ruta plantilla aprobada (360dialog) — estructura lista, aún no operativa.
+        if (templateName) {
+            return res.json({
+                enviados: 0,
+                total,
+                omitidos: total,
+                pendiente_plantilla: true,
+                nota: 'El envío por plantilla aprobada requiere 360dialog (aún no conectado).',
+            });
+        }
+
+        // Ruta mensaje libre — mismo patrón que /api/vip/broadcast.
+        if (!mensaje) return res.status(400).json({ error: 'mensaje requerido' });
+        const client = getWAClient(orgId);
+        if (!client) return res.status(503).json({ error: 'WhatsApp no conectado' });
+        if (!total) return res.json({ enviados: 0, total: 0, omitidos: 0 });
+
+        const { waSendMessage } = require('./bot');
+        let enviados = 0;
+        const fallos = [];
+        for (const c of destinatarios) {
+            // Preferir el JID canónico guardado (metadata.wa_jid, p.ej. @lid); solo si
+            // no existe, reconstruir el WID clásico a partir del teléfono.
+            const digits = (c.telefono || '').replace(/\D/g, '');
+            const chatId = c.wa_jid || (digits ? `${digits}@c.us` : null);
+            if (!chatId) { fallos.push({ telefono: c.telefono, jid: null, error: 'sin teléfono ni JID' }); continue; }
+            try {
+                await waSendMessage(client, chatId, mensaje);
+                enviados++;
+            } catch (e) {
+                console.error('[campaigns/broadcast] fallo envío', { telefono: c.telefono, jid: chatId, error: e.message });
+                fallos.push({ telefono: c.telefono, jid: chatId, error: e.message });
+            }
+        }
+        res.json({ enviados, total, omitidos: total - enviados, fallos });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

@@ -832,6 +832,35 @@ async function getVipList(orgId) {
     return (data || []).map(rowToPublic);
 }
 
+// Destinatarios para campañas masivas. SIEMPRE excluye lista negra.
+// audience: 'todos' | 'no_vip' | 'nunca_reservado'
+// phones: array opcional de teléfonos → allowlist explícito (para pruebas seguras);
+//         si se pasa, IGNORA audience y apunta SOLO a esos números.
+async function getBroadcastRecipients(orgId, { audience = 'todos', phones } = {}) {
+    const oid = resolveOrg(orgId);
+    let query = supabase
+        .from('contacts')
+        .select('*')
+        .eq('organization_id', oid)
+        .or('is_blacklisted.is.null,is_blacklisted.eq.false');
+
+    const allowlist = Array.isArray(phones)
+        ? phones.map(sanitizePhone).filter(Boolean)
+        : null;
+
+    if (allowlist) {
+        if (allowlist.length === 0) return [];
+        query = query.in('wa_phone', allowlist);
+    } else if (audience === 'no_vip') {
+        query = query.or('is_vip.is.null,is_vip.eq.false');
+    } else if (audience === 'nunca_reservado') {
+        query = query.eq('origen', 'importado_shortcuts');
+    }
+
+    const { data } = await query.order('updated_at', { ascending: false });
+    return (data || []).map(rowToPublic);
+}
+
 // ─── Pending actions ─────────────────────────────────────────────────────────
 
 async function createPendingAction(orgId, { type, contactId, appointmentId, payload }) {
@@ -1251,6 +1280,7 @@ module.exports = {
     incrementVisitCount,
     getBlacklist,
     getVipList,
+    getBroadcastRecipients,
     createPendingAction,
     getPendingActions,
     resolvePendingAction,

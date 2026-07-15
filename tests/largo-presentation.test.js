@@ -57,7 +57,13 @@ const catalog = [
     { nombre: 'Mechas 3',           categoria: 'Mechas clásicas',   precio: 95,  duracion: 210 },
     // Sin variante de largo → deben quedar intactos
     { nombre: 'Mechas Contouring', categoria: 'Mechas Contouring', precio: 160, duracion: 200 },
-    { nombre: 'Hombre',            categoria: 'Cortes',            precio: 25,  duracion: 30 },
+    // Cortes: catálogo real (003_sante.sql). Nombres genéricos SIN la palabra "Corte" →
+    // buildFullServiceName debe prefijarlos para que el panel muestre "Corte hombre" etc.
+    { nombre: 'Mujer y peinado Dyson', categoria: 'Cortes', precio: 50, duracion: 60 },
+    { nombre: 'Mujer y secado',        categoria: 'Cortes', precio: 40, duracion: 45 },
+    { nombre: 'Hombre',                categoria: 'Cortes', precio: 25, duracion: 30 },
+    { nombre: 'Niño',                  categoria: 'Cortes', precio: 25, duracion: 60 },
+    { nombre: 'Infantil hasta 8 años', categoria: 'Cortes', precio: 15, duracion: 60 },
     { nombre: 'K18',               categoria: 'Reconstrucción',    precio: 35,  duracion: 30 },
 ];
 
@@ -119,6 +125,55 @@ test('INVARIANTE: buildFullServiceName sigue produciendo "Mechas Airtouch Largo 
 test('INVARIANTE: buildFullServiceName 4ª variante → "Mechas Airtouch Largo 4"', () => {
     const saved = buildFullServiceName({ nombre: 'Largo 4', categoria: 'Mechas Airtouch' }, catalog);
     assert.strictEqual(saved, 'Mechas Airtouch Largo 4');
+});
+
+// ─── REGRESIÓN Cortes: el nombre completo prefija "Corte" (mismo patrón que largo) ──
+// Bug 2026-07-15: el árbol determinista de cortes fija selectedService al servicio del
+// catálogo, cuyo `nombre` es genérico ("Niño"/"Hombre"). Sin prefijo el panel guardaba
+// "Niño"/"Hombre" en vez de "Corte niño"/"Corte hombre". buildFullServiceName debe cubrir
+// los 5 servicios de la categoría Cortes.
+
+test('Cortes: "Hombre" → "Corte hombre"', () => {
+    assert.strictEqual(buildFullServiceName({ nombre: 'Hombre', categoria: 'Cortes' }, catalog), 'Corte hombre');
+});
+
+test('Cortes: "Niño" → "Corte niño"', () => {
+    assert.strictEqual(buildFullServiceName({ nombre: 'Niño', categoria: 'Cortes' }, catalog), 'Corte niño');
+});
+
+test('Cortes: "Infantil hasta 8 años" → "Corte infantil hasta 8 años"', () => {
+    assert.strictEqual(
+        buildFullServiceName({ nombre: 'Infantil hasta 8 años', categoria: 'Cortes' }, catalog),
+        'Corte infantil hasta 8 años'
+    );
+});
+
+test('Cortes: "Mujer y peinado Dyson" → "Corte mujer y peinado Dyson"', () => {
+    assert.strictEqual(
+        buildFullServiceName({ nombre: 'Mujer y peinado Dyson', categoria: 'Cortes' }, catalog),
+        'Corte mujer y peinado Dyson'
+    );
+});
+
+test('Cortes: "Mujer y secado" → "Corte mujer y secado"', () => {
+    assert.strictEqual(
+        buildFullServiceName({ nombre: 'Mujer y secado', categoria: 'Cortes' }, catalog),
+        'Corte mujer y secado'
+    );
+});
+
+test('Cortes: el nombre completo resuelve de vuelta a la categoría Cortes', () => {
+    for (const nombre of ['Hombre', 'Niño', 'Infantil hasta 8 años', 'Mujer y peinado Dyson', 'Mujer y secado']) {
+        const full = buildFullServiceName({ nombre, categoria: 'Cortes' }, catalog);
+        const res = extractServiceFromText(full, catalog);
+        assert.ok(res, `esperaba resolver "${full}"`);
+        assert.strictEqual(res.categoria, 'Cortes', `"${full}" resolvió a ${res.categoria}`);
+        assert.strictEqual(res.nombre, nombre, `"${full}" resolvió a nombre ${res.nombre}`);
+    }
+});
+
+test('Cortes: no se duplica el prefijo si el nombre ya empieza por "Corte"', () => {
+    assert.strictEqual(buildFullServiceName({ nombre: 'Corte hombre', categoria: 'Cortes' }, catalog), 'Corte hombre');
 });
 
 // ─── La clienta escribe "Largo 2" directamente → resuelve igual que antes ─────

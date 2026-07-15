@@ -32,6 +32,15 @@ export function madridDateKey(iso: string): string {
   return new Date(iso).toLocaleDateString("en-CA", { timeZone: MADRID_TZ });
 }
 
+/** Para un timestamp ISO (instante), su hora `HH:mm` en Europe/Madrid. */
+export function madridTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString("es-ES", {
+    timeZone: MADRID_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 /** Devuelve un nuevo Date desplazado `n` días. */
 export function addDays(d: Date, n: number): Date {
   const r = new Date(d);

@@ -9,7 +9,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellSuggestion, buildSanteConfirmationMessage, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellSuggestion, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -410,10 +410,8 @@ async function loadAvailableSlots(session) {
             if (session.upsellingAccepted?.length) {
                 const cfgSlots = await getAgentConfig(orgId);
                 const catalogSlots = cfgSlots?.services || [];
-                upsellingDuration = session.upsellingAccepted.reduce((sum, name) => {
-                    const svc = catalogSlots.find(s => normalizeText(s.nombre) === normalizeText(name));
-                    return sum + (svc?.duracion || 30);
-                }, 0);
+                upsellingDuration = session.upsellingAccepted.reduce(
+                    (sum, name) => sum + resolveServiceDurationMin(name, catalogSlots), 0);
             }
             const slots = await calendarSante.getAvailableSlots(orgId, {
                 serviceDuration: (service?.duracion || 60) + upsellingDuration,
@@ -480,10 +478,8 @@ async function reloadSlotsForConfirmation(session, { fecha, stylistId }) {
         if (session.upsellingAccepted?.length) {
             const cfgSlots = await getAgentConfig(orgId);
             const catalogSlots = cfgSlots?.services || [];
-            upsellingDuration = session.upsellingAccepted.reduce((sum, name) => {
-                const svc = catalogSlots.find(s => normalizeText(s.nombre) === normalizeText(name));
-                return sum + (svc?.duracion || 30);
-            }, 0);
+            upsellingDuration = session.upsellingAccepted.reduce(
+                (sum, name) => sum + resolveServiceDurationMin(name, catalogSlots), 0);
         }
         // Preservamos `asap` (reserva mismo día): sin él, getAvailableSlots arranca
         // mañana y no encontraría un hueco de hoy, dando un falso "ocupado".
@@ -1097,6 +1093,31 @@ function assignStylistIfAppropriate(session, eligibleStylists) {
     session.selectedStylist = null;
 }
 
+// Decide, según el nº de estilistas elegibles, si toca PREGUNTAR la estilista o
+// buscar en modo combinado. Con varias elegibles y ninguna fijada:
+//   - la clienta pidió "el más cercano" (prefiereMasCercano) → búsqueda combinada
+//     (anyStylists): huecos de todas ordenados por fecha.
+//   - si no                                                  → askStylistFirst:
+//     preguntar la preferencia ANTES de proponer huecos.
+// Con una sola elegible (o una ya fijada) → ninguna de las dos: el flujo avanza.
+// Pura y sin efectos: la fuente de verdad del gating vive aquí para poder testearla.
+function computeStylistGating(session, eligibleCount) {
+    const varias = !!session.selectedService && !session.selectedStylist && eligibleCount > 1;
+    const anyStylists = varias && !!session.prefiereMasCercano;
+    return { anyStylists, askStylistFirst: varias && !anyStylists };
+}
+
+// ¿Aceptamos la estilista que INFIRIÓ el LLM (datos.estilista_preferida)?
+// NO si en este mismo turno seguimos preguntando la elección (askStylistFirst):
+// ahí la clienta todavía no ha respondido, así que una estilista devuelta por el
+// LLM proviene del historial (su habitual / última visita), no de una respuesta
+// real. Fijarla se saltaría la pregunta — el bug de clienta recurrente + varias
+// elegibles. (Si la clienta SÍ nombró una estilista en su mensaje, la resolución
+// determinista previa ya la fijó y askStylistFirst habría quedado en false.)
+function shouldFixStylistFromLlm(session) {
+    return !session.selectedStylist && !session.askStylistFirst;
+}
+
 // ─── Segunda reserva en la misma conversación (Sante) ───────────────────────
 // Tras confirmar una cita, la clienta puede pedir otra (para ella o un acompañante).
 // Reiniciamos SOLO el estado de reserva, conservando idioma, contacto e historial,
@@ -1282,10 +1303,8 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
         const mainServiceName = buildFullServiceName(session.selectedService, catalogDur);
         const allServices = [mainServiceName, ...(session.upsellingAccepted || [])].filter(Boolean).join(' + ');
         // [DIAG-VARIANTE] String EXACTO que se escribirá en appointments.service.
-        const upsellingDuration = (session.upsellingAccepted || []).reduce((sum, name) => {
-            const svc = catalogDur.find(s => normalizeText(s.nombre) === normalizeText(name));
-            return sum + (svc?.duracion || 30);
-        }, 0);
+        const upsellingDuration = (session.upsellingAccepted || []).reduce(
+            (sum, name) => sum + resolveServiceDurationMin(name, catalogDur), 0);
         const totalDuration = (session.selectedService?.duracion || 60) + upsellingDuration;
 
         // Si la cita es para un acompañante, lo dejamos anotado en la cita (el contacto
@@ -2269,13 +2288,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // recorrido multi-turno del árbol de cortes (root cause del bug de Irina fija).
             if (meDaIgual) session.prefiereMasCercano = true;
 
-            const variasEstilistas = !!session.selectedService && !session.selectedStylist && eligibleStylists.length > 1;
             // anyStylists (búsqueda combinada, sin fijar estilista) se DERIVA de la intención
             // sticky, no del mensaje actual: así "el más cercano" dicho un turno antes de que
             // el servicio se resuelva no se pierde. loadAvailableSlots ignora preferredStylistId
             // cuando es true → propone huecos de TODAS las elegibles ordenados por fecha.
-            session.anyStylists = variasEstilistas && session.prefiereMasCercano;
-            session.askStylistFirst = variasEstilistas && !session.anyStylists;
+            const gating = computeStylistGating(session, eligibleStylists.length);
+            session.anyStylists = gating.anyStylists;
+            session.askStylistFirst = gating.askStylistFirst;
 
             // Si es una reserva para un acompañante y aún no sabemos su nombre, lo pedimos primero.
             const esperandoNombreInvitado = session.guestBooking && !session.guestName;
@@ -2591,8 +2610,11 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 }
             }
 
-            // Stylist from LLM
-            if (aiResponse.datos?.estilista_preferida && !session.selectedStylist) {
+            // Stylist from LLM. shouldFixStylistFromLlm rechaza fijarla si en este
+            // turno seguimos preguntando la elección (askStylistFirst): ahí la estilista
+            // que devuelve el LLM es inferida del historial (habitual/última visita), no
+            // una respuesta real de la clienta → fijarla se saltaría la pregunta.
+            if (aiResponse.datos?.estilista_preferida && shouldFixStylistFromLlm(session)) {
                 const stylists = await getStylistsByOrg(orgId);
                 const matched = extractStylistFromText(aiResponse.datos.estilista_preferida, stylists);
                 if (matched && stylistCanDoService(matched, session.selectedService)) {
@@ -2633,10 +2655,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     const updServices = [session.selectedService.nombre, ...session.upsellingAccepted].filter(Boolean).join(' + ');
                     const cfgUp = await getAgentConfig(orgId);
                     const catUp = cfgUp?.services || [];
-                    const upDur = session.upsellingAccepted.reduce((sum, name) => {
-                        const svc = catUp.find(s => normalizeText(s.nombre) === normalizeText(name));
-                        return sum + (svc?.duracion || 30);
-                    }, 0);
+                    const upDur = session.upsellingAccepted.reduce(
+                        (sum, name) => sum + resolveServiceDurationMin(name, catUp), 0);
                     const totalDur = (session.selectedService.duracion || 60) + upDur;
                     const startsAt = new Date(`${session.partialData.fecha_cita}T${session.partialData.hora_cita}:00`);
                     const endsAt = new Date(startsAt.getTime() + totalDur * 60000);
@@ -2763,30 +2783,42 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 // (blocked_days) o franja concreta (schedule_blocks). Si viola cualquiera → no
                 // ofrecer el upselling.
                 if (upsellSug && session.partialData.hora_cita && session.partialData.fecha_cita) {
-                    const upsellSvcDef = (cfgConf?.services || []).find(s => normalizeText(s.nombre) === normalizeText(upsellSug));
-                    const upsellDurMin = upsellSvcDef?.duracion || 30;
-                    const [startH, startM] = session.partialData.hora_cita.split(':').map(Number);
-                    const apptEnd = startH * 60 + startM + (svc.duracion || 60) + upsellDurMin;
-                    const apptStart = startH * 60 + startM;
-                    const HARD_CUTOFF = 19 * 60; // 19:00 — tope de salón para el upselling
-                    let noCabe = apptEnd > HARD_CUTOFF;
-                    let motivo = noCabe ? 'tope_19h' : null;
-                    if (!noCabe && session.selectedStylist?.id) {
+                    // Parte determinista (tope 19:00 + cierre estilista) delegada al helper
+                    // puro: resuelve la duración REAL del upsell desde su etiqueta de marketing
+                    // (p.ej. "…K18…" → 60 min) en vez de caer a un fallback de 30 que
+                    // infra-estimaba y dejaba pasar upsells por encima del cierre.
+                    const fecha = session.partialData.fecha_cita;
+                    // Mismo cálculo de dayOfWeek que calendar-sante.js (0=Lunes … 6=Domingo)
+                    const apptDate = new Date(`${fecha}T12:00:00`);
+                    const jsDay = apptDate.getDay();
+                    const dayOfWeek = jsDay === 0 ? 6 : jsDay - 1;
+                    let stylistCloseMin = null;
+                    if (session.selectedStylist?.id) {
                         try {
-                            const fecha = session.partialData.fecha_cita;
-                            // Mismo cálculo de dayOfWeek que calendar-sante.js (0=Lunes … 6=Domingo)
-                            const apptDate = new Date(`${fecha}T12:00:00`);
-                            const jsDay = apptDate.getDay();
-                            const dayOfWeek = jsDay === 0 ? 6 : jsDay - 1;
-
-                            // (1) Cierre fijo de la estilista ese día.
                             const allSched = await getAllStylistSchedules(orgId);
                             const stylistSched = allSched.find(sc => sc.stylist_id === session.selectedStylist.id && sc.day_of_week === dayOfWeek);
                             if (stylistSched) {
                                 const [closeH, closeM] = stylistSched.end_time.split(':').map(Number);
-                                if (apptEnd >= closeH * 60 + closeM) { noCabe = true; motivo = 'cierre_estilista'; }
+                                stylistCloseMin = closeH * 60 + closeM;
                             }
-
+                        } catch (e) {
+                            logger.error('error_check_upselling_cierre', { orgId, error: e.message });
+                        }
+                    }
+                    const guard = shouldDiscardUpsellForClosing({
+                        horaCita: session.partialData.hora_cita,
+                        serviceDurMin: svc.duracion || 60,
+                        upsellLabel: upsellSug,
+                        catalog: cfgConf?.services || [],
+                        stylistCloseMin,
+                    });
+                    let noCabe = guard.discard;
+                    let motivo = guard.motivo;
+                    const apptEnd = guard.apptEnd;
+                    const [startH, startM] = session.partialData.hora_cita.split(':').map(Number);
+                    const apptStart = startH * 60 + (startM || 0);
+                    if (!noCabe && session.selectedStylist?.id) {
+                        try {
                             // (2) Bloqueos de agenda reales guardados desde el panel — misma
                             // prioridad que el cierre. Día completo (blocked_days) o franja
                             // concreta (schedule_blocks) que solape la cita ampliada con upsell.
@@ -2819,10 +2851,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     }
                 }
 
-                const upsellingDur = (session.upsellingAccepted || []).reduce((sum, name) => {
-                    const s = (cfgConf?.services || []).find(x => normalizeText(x.nombre) === normalizeText(name));
-                    return sum + (s?.duracion || 30);
-                }, 0);
+                const upsellingDur = (session.upsellingAccepted || []).reduce(
+                    (sum, name) => sum + resolveServiceDurationMin(name, cfgConf?.services || []), 0);
                 const upsellingPrice = (session.upsellingAccepted || []).reduce((sum, name) => {
                     const s = (cfgConf?.services || []).find(x => normalizeText(x.nombre) === normalizeText(name));
                     return sum + (s?.precio || 0);
@@ -3232,7 +3262,7 @@ module.exports = {
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
         respondsWithInventedSlots, salonNoSlotsMsg,
         // Estado de servicio centralizado (fuente de verdad + limpieza):
-        clearServiceState, assignStylistIfAppropriate, SERVICE_STATE_DEFAULTS, SERVICE_PARTIAL_FIELDS, createEmptySession,
+        clearServiceState, assignStylistIfAppropriate, computeStylistGating, shouldFixStylistFromLlm, SERVICE_STATE_DEFAULTS, SERVICE_PARTIAL_FIELDS, createEmptySession,
         // Semana "sticky" entre turnos (salón):
         resolveStickyWeek,
         // Flujos de reserva (aceptación de upsell, 2ª reserva, skill de estilista):

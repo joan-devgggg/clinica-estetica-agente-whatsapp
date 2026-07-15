@@ -416,6 +416,14 @@ function buildFullServiceName(svc, servicesCatalog = []) {
     const norm = normalizeText(svc.nombre);
     // Ya contiene la categoría → nombre propio completo, no duplicar.
     if (norm.includes(normalizeText(svc.categoria))) return svc.nombre;
+    // Categoría "Cortes": en el catálogo los cortes se guardan con un `nombre`
+    // genérico que NO menciona "corte" ("Hombre", "Niño", "Mujer y secado"…). Sin
+    // prefijo el panel muestra "Niño"/"Hombre" en vez de "Corte niño"/"Corte hombre".
+    // Prefijamos "Corte" (singular) + nombre en minúscula para leerse natural.
+    // (No usamos la categoría literal "Cortes" porque el prefijo natural es "Corte".)
+    if (normalizeText(svc.categoria) === 'cortes' && !norm.startsWith('corte')) {
+        return `Corte ${svc.nombre.charAt(0).toLowerCase()}${svc.nombre.slice(1)}`;
+    }
     const esVarianteGenerica =
         /^largo\s*\d+$/.test(norm) ||
         (servicesCatalog || []).filter(s => normalizeText(s.nombre) === norm).length > 1;
@@ -702,6 +710,47 @@ function matchUpsellSuggestion(selectedService, upsellingRules) {
         }
     }
     return null;
+}
+
+// Resuelve la duración (min) de un servicio a partir de un NOMBRE o ETIQUETA de
+// upselling. Las reglas de upselling guardan frases de marketing ("Reconstrucción
+// molecular K18 o Pro-Miracle") que NO casan por nombre exacto contra el catálogo,
+// así que un `find(nombre === label)` caía a un fallback de 30 min e infra-estimaba
+// la duración — causa del upsell ofrecido pasado el cierre. Estrategia: (1) match
+// exacto de nombre; (2) resolución difusa vía extractServiceFromText (mapea la
+// frase al servicio real: "…K18…" → K18 60 min); (3) fallback CONSERVADOR (60, no
+// 30) para no volver a infra-estimar si la etiqueta fuese irresoluble.
+function resolveServiceDurationMin(name, catalog, fallback = 60) {
+    if (!name || !Array.isArray(catalog) || !catalog.length) return fallback;
+    const target = normalizeText(name);
+    const exact = catalog.find(s => normalizeText(s.nombre) === target);
+    if (exact?.duracion) return exact.duracion;
+    const fuzzy = extractServiceFromText(name, catalog);
+    if (fuzzy?.duracion) return fuzzy.duracion;
+    return fallback;
+}
+
+// Parte DETERMINISTA del guard anti-cierre del upselling: dada la hora de inicio de
+// la cita, la duración del servicio principal y la ETIQUETA del upsell sugerido,
+// decide si el upsell debe descartarse porque la cita ampliada cruzaría (1) el tope
+// duro del salón (19:00 por defecto) o (2) el cierre de la estilista ese día. La
+// comprobación async de bloqueos de agenda (blocked_days / schedule_blocks) se hace
+// aparte en bot.js. Devuelve { discard, motivo, apptEnd } en minutos-del-día.
+function shouldDiscardUpsellForClosing({ horaCita, serviceDurMin, upsellLabel, catalog, hardCutoffMin = 19 * 60, stylistCloseMin = null }) {
+    // Nota: Number('') === 0, así que validamos con regex — una hora ausente o
+    // malformada NO debe producir un apptEnd falso (arrancaría en 00:00).
+    const m = /^(\d{1,2}):(\d{2})/.exec(String(horaCita || '').trim());
+    if (!m) return { discard: false, motivo: null, apptEnd: null };
+    const startH = Number(m[1]);
+    const startM = Number(m[2]);
+    const upsellDurMin = resolveServiceDurationMin(upsellLabel, catalog);
+    const apptStart = startH * 60 + (startM || 0);
+    const apptEnd = apptStart + (serviceDurMin || 60) + upsellDurMin;
+    if (apptEnd > hardCutoffMin) return { discard: true, motivo: 'tope_19h', apptEnd };
+    if (Number.isFinite(stylistCloseMin) && apptEnd >= stylistCloseMin) {
+        return { discard: true, motivo: 'cierre_estilista', apptEnd };
+    }
+    return { discard: false, motivo: null, apptEnd };
 }
 
 // Construye el bloque de texto que se añade al mensaje de confirmación.
@@ -1024,6 +1073,8 @@ module.exports = {
     detectGuestBooking,
     extractGuestName,
     matchUpsellSuggestion,
+    resolveServiceDurationMin,
+    shouldDiscardUpsellForClosing,
     buildSanteConfirmationMessage,
     detectLargoCategory,
     extractLargoPelo,
