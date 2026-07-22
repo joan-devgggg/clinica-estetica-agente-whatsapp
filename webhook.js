@@ -69,6 +69,50 @@ app.get('/api/wa-status', async (_req, res) => {
     res.json(statuses);
 });
 
+// ─── Webhook 360dialog (WhatsApp Cloud API) — SOLO Sante ─────────────────────
+// Fuera de /api → NO pasa por requireApiAuth (360dialog es server-to-server y no
+// envía el Bearer del dashboard). Se protege con un token secreto en la URL.
+// `./bot` y el provider se requieren perezosamente dentro del handler para no
+// crear un ciclo de carga (misma convención que el resto del archivo).
+const WHATSAPP_WEBHOOK_TOKEN = process.env.WHATSAPP_WEBHOOK_TOKEN || '';
+
+function require360Token(req, res, next) {
+    const token = req.params.token || '';
+    if (!WHATSAPP_WEBHOOK_TOKEN) {
+        logger.warn('webhook_360d_sin_token_configurado');
+        return res.sendStatus(403);
+    }
+    try {
+        const a = Buffer.from(token);
+        const b = Buffer.from(WHATSAPP_WEBHOOK_TOKEN);
+        if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.sendStatus(403);
+    } catch {
+        return res.sendStatus(403);
+    }
+    next();
+}
+
+// GET: no-op defensivo. 360dialog NO exige handshake tipo Meta (hub.challenge),
+// pero exponerlo permite verificar la ruta desde el navegador / un ping.
+app.get('/webhook/360dialog/:token', require360Token, (_req, res) => res.sendStatus(200));
+
+// POST: responde 200 inmediato y procesa async (Cloud API reintenta si tardas →
+// evita timeouts y duplicados; el dedupe por wamid en bot.js cubre reintentos).
+app.post('/webhook/360dialog/:token', require360Token, (req, res) => {
+    res.sendStatus(200);
+    const body = req.body;
+    setImmediate(async () => {
+        try {
+            const { process360Webhook } = require('./services/providers/threesixty-dialog');
+            const { resolveOrgByPhone } = require('./services/org-registry');
+            const { handleIncomingMessage, isBotActivo } = require('./bot');
+            await process360Webhook(body, { resolveOrgByPhone, isBotActivo, handleIncomingMessage });
+        } catch (e) {
+            logger.error('webhook_360d_error', { error: e.message });
+        }
+    });
+});
+
 // ─── Auth middleware ──────────────────────────────────────────────────────────
 function requireApiAuth(req, res, next) {
     if (!DASHBOARD_API_SECRET) {
