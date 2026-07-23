@@ -25,5 +25,10 @@
   "devDependencies": {
     "pg": "^8.20.0",
     "xlsx": "^0.18.5"
+  },
+  "overrides": {
+    "request-promise-core": {
+      "request": "^2.88.2"
+    }
   }
 }
