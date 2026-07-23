@@ -1,3 +1,4 @@
+require('dotenv').config();
 const readline = require('readline');
 const { handleIncomingMessage } = require('./bot');
 const { deleteClient } = require('./services/memory');

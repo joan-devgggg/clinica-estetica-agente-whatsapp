@@ -5,7 +5,8 @@
  */
 
 const config = require('../config.json');
-const { getLeadsPendientesRecordatorio, marcarRecordatorioSent, getConfigValue } = require('./db');
+const { getAppointmentsPendientesRecordatorio, marcarRecordatorioSent, getConfigValue } = require('./db');
+const logger = require('../lib/logger');
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 let waClient = null;
@@ -31,7 +32,7 @@ function minutosHastaCita(fechaStr, horaStr) {
 
 async function sendReminderMessage(telefono, mensaje) {
     if (!waClient) {
-        console.warn('⚠️ Reminder worker: cliente WhatsApp no disponible');
+        logger.warn('reminder_wa_no_disponible');
         return false;
     }
     try {
@@ -39,7 +40,7 @@ async function sendReminderMessage(telefono, mensaje) {
         await waClient.sendMessage(chatId, mensaje);
         return true;
     } catch (e) {
-        console.error('Reminder worker error enviando WA:', e.message);
+        logger.error('reminder_error_envio', { telefono, error: e.message });
         return false;
     }
 }
@@ -50,9 +51,9 @@ async function checkAndSendReminders() {
 
     let pendientes;
     try {
-        pendientes = await getLeadsPendientesRecordatorio();
+        pendientes = await getAppointmentsPendientesRecordatorio();
     } catch (e) {
-        console.error('Reminder worker error consultando Airtable:', e.message);
+        logger.error('reminder_error_db', { error: e.message });
         return;
     }
 
@@ -73,14 +74,14 @@ async function checkAndSendReminders() {
 
         if (sent) {
             await marcarRecordatorioSent(record.id);
-            console.log(`🔔 Recordatorio enviado a ${Nombre} (${Telefono}) — cita en ${Math.round(minutosRestantes)} min`);
+            logger.info('recordatorio_enviado', { nombre: Nombre, telefono: Telefono, minutos_restantes: Math.round(minutosRestantes) });
         }
     }
 }
 
 function startReminderWorker(client) {
     waClient = client;
-    console.log('🔔 Reminder worker iniciado — comprobando cada 5 minutos');
+    logger.info('reminder_worker_iniciado');
     setInterval(checkAndSendReminders, CHECK_INTERVAL_MS);
     setTimeout(checkAndSendReminders, 60 * 1000);
 }

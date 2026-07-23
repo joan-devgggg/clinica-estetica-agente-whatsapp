@@ -6,16 +6,44 @@
 
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const crypto = require('crypto');
 const path = require('path');
 const { EventEmitter } = require('events');
 const db = require('./services/db');
+const logger = require('./lib/logger');
 
 const VERIFY_TOKEN = process.env.META_WEBHOOK_VERIFY_TOKEN || 'clinica_verify_token';
 const APP_SECRET = process.env.META_APP_SECRET || '';
+const DASHBOARD_API_SECRET = process.env.DASHBOARD_API_SECRET || '';
 
 const emitter = new EventEmitter();
 const app = express();
+
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+const DASHBOARD_ORIGIN = process.env.DASHBOARD_ORIGIN || '';
+const allowedOrigins = [
+    'http://localhost:3001',
+    ...(DASHBOARD_ORIGIN ? [DASHBOARD_ORIGIN] : []),
+];
+
+app.use(cors({
+    origin: (origin, callback) => {
+        // Permitir peticiones sin origin (Postman, curl, server-to-server)
+        if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+        callback(new Error(`CORS: origen no permitido — ${origin}`));
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+// WhatsApp client y callback de modo conversación (inyectados desde server.js)
+let _waClient = null;
+let _setConvMode = null;
+function setWAClient(client, setConvMode) {
+    _waClient = client;
+    _setConvMode = setConvMode;
+}
 
 // Raw body para validar firma HMAC de Meta
 app.use(express.json({
@@ -29,16 +57,16 @@ app.get('/webhook/meta', (req, res) => {
     const challenge = req.query['hub.challenge'];
 
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-        console.log('✅ Webhook Meta verificado');
+        logger.info('webhook_verificado');
         return res.status(200).send(challenge);
     }
-    console.warn('⚠️ Verificación webhook fallida');
+    logger.warn('webhook_verificacion_fallida');
     res.sendStatus(403);
 });
 
 // ─── Validar firma HMAC de Meta ───────────────────────────────────────────────
 function isValidMetaSignature(req) {
-    if (!APP_SECRET) return true; // En desarrollo sin APP_SECRET, omitir validación
+    if (!APP_SECRET) return false; // Rechazar si APP_SECRET no está configurado
     const signature = req.headers['x-hub-signature-256'];
     if (!signature) return false;
     const expected = 'sha256=' + crypto
@@ -80,7 +108,7 @@ function extractLeadData(entry) {
             }
         }
     } catch (e) {
-        console.error('Error extrayendo lead de payload Meta:', e.message);
+        logger.error('error_extraccion_lead', { error: e.message });
     }
     return null;
 }
@@ -89,7 +117,7 @@ function extractLeadData(entry) {
 app.post('/webhook/meta', (req, res) => {
     // Validar firma
     if (!isValidMetaSignature(req)) {
-        console.warn('⚠️ Firma Meta inválida — rechazando webhook');
+        logger.warn('firma_meta_invalida');
         return res.sendStatus(403);
     }
 
@@ -98,7 +126,7 @@ app.post('/webhook/meta', (req, res) => {
 
     const body = req.body;
     if (body.object !== 'page' && body.object !== 'instagram') {
-        console.log('Webhook recibido pero no es de página/instagram:', body.object);
+        logger.info('webhook_objeto_desconocido', { objeto: body.object });
         return;
     }
 
@@ -106,7 +134,7 @@ app.post('/webhook/meta', (req, res) => {
     for (const entry of entries) {
         const leadData = extractLeadData(entry);
         if (leadData) {
-            console.log('📥 Nuevo lead de Instagram:', leadData.telefono, leadData.nombre || '(sin nombre)');
+            logger.info('lead_nuevo', { telefono: leadData.telefono, nombre: leadData.nombre || null });
             emitter.emit('lead:new', leadData);
         }
     }
@@ -115,75 +143,137 @@ app.post('/webhook/meta', (req, res) => {
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
-// ─── Dashboard ────────────────────────────────────────────────────────────────
-app.use('/dashboard', express.static(path.join(__dirname, 'dashboard')));
-app.get('/dashboard', (_req, res) => res.sendFile(path.join(__dirname, 'dashboard', 'index.html')));
+// ─── Auth middleware para la API del dashboard ────────────────────────────────
+function requireApiAuth(req, res, next) {
+    if (!DASHBOARD_API_SECRET) {
+        logger.warn('api_sin_proteccion');
+        return next();
+    }
+    const auth = req.headers['authorization'] || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    if (!token) return res.status(401).json({ error: 'Token requerido' });
+    try {
+        const a = Buffer.from(token);
+        const b = Buffer.from(DASHBOARD_API_SECRET);
+        if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+            return res.status(401).json({ error: 'Token inválido' });
+        }
+    } catch {
+        return res.status(401).json({ error: 'Token inválido' });
+    }
+    next();
+}
+
+app.use('/api', requireApiAuth);
 
 // ─── API: Leads ───────────────────────────────────────────────────────────────
-app.get('/api/leads', (req, res) => {
+app.get('/api/leads', async (req, res) => {
     try {
         const { limit = 100, offset = 0, estado, search } = req.query;
-        const leads = db.getAllLeads({ limit: Number(limit), offset: Number(offset), estado, search });
+        const leads = await db.getAllLeads({ limit: Number(limit), offset: Number(offset), estado, search });
         res.json(leads);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/leads/:id', (req, res) => {
+app.get('/api/leads/:id', async (req, res) => {
     try {
-        const lead = db.findById(Number(req.params.id));
+        const lead = await db.findById(req.params.id);
         if (!lead) return res.status(404).json({ error: 'No encontrado' });
         res.json(lead);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/leads', (req, res) => {
+app.post('/api/leads', async (req, res) => {
     try {
-        const id = db.guardarLeadEnAirtable(req.body);
-        const lead = db.findById(Number(id));
+        const id = await db.saveLead(req.body);
+        const lead = await db.findById(id);
         res.status(201).json(lead);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/leads/:id', (req, res) => {
+app.put('/api/leads/:id', async (req, res) => {
     try {
-        const lead = db.updateLeadById(Number(req.params.id), req.body);
+        const lead = await db.updateLeadById(req.params.id, req.body);
         res.json(lead);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/leads/:id', (req, res) => {
+app.delete('/api/leads/:id', async (req, res) => {
     try {
-        db.deleteLead(Number(req.params.id));
+        await db.deleteLead(req.params.id);
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ─── API: Citas (leads con fecha) ─────────────────────────────────────────────
-app.get('/api/citas', (req, res) => {
+app.get('/api/citas', async (req, res) => {
     try {
         const hoy = new Date().toISOString().split('T')[0];
         const desde = req.query.desde || hoy;
         const hasta = req.query.hasta || hoy;
-        const citas = db.getLeadsByDateRange(desde, hasta);
+        const citas = await db.getAppointmentsByDateRange(desde, hasta);
         res.json(citas);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ─── API: Stats ───────────────────────────────────────────────────────────────
-app.get('/api/stats', (_req, res) => {
-    try { res.json(db.getStats()); }
+app.get('/api/stats', async (_req, res) => {
+    try { res.json(await db.getStats()); }
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ─── API: Config ──────────────────────────────────────────────────────────────
-app.get('/api/config', (_req, res) => {
-    try { res.json(db.getAllConfig()); }
+app.get('/api/config', async (_req, res) => {
+    try { res.json(await db.getAllConfig()); }
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/config/:clave', (req, res) => {
+app.put('/api/config/:clave', async (req, res) => {
     try {
-        db.setConfigValue(req.params.clave, req.body.valor);
+        await db.setConfigValue(req.params.clave, req.body.valor);
+        res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── API: Agent Config ────────────────────────────────────────────────────────
+app.get('/api/agent-config', async (_req, res) => {
+    try { res.json(await db.getAgentConfig()); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.patch('/api/agent-config', async (req, res) => {
+    try { res.json(await db.updateAgentConfig(req.body)); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── API: Monitor WhatsApp ────────────────────────────────────────────────────
+
+app.get('/api/messages/:telefono', async (req, res) => {
+    try {
+        const messages = await db.getMessages(req.params.telefono);
+        res.json(messages);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/leads/:id/bot-mode', async (req, res) => {
+    try {
+        const lead = await db.findById(req.params.id);
+        if (!lead) return res.status(404).json({ error: 'No encontrado' });
+        const mode = req.body.mode === 'manual' ? 'manual' : 'auto';
+        await db.setLeadBotMode(lead.telefono, mode);
+        if (_setConvMode) _setConvMode(lead.telefono, mode === 'auto');
+        res.json({ ok: true, mode });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/send', async (req, res) => {
+    try {
+        const { telefono, mensaje } = req.body;
+        if (!telefono || !mensaje) return res.status(400).json({ error: 'telefono y mensaje requeridos' });
+        if (!_waClient) return res.status(503).json({ error: 'WhatsApp no conectado' });
+        const userPhone = `${telefono.replace(/\D/g, '')}@c.us`;
+        await _waClient.sendMessage(userPhone, mensaje);
+        await db.saveMessage({ telefono: telefono.replace(/\D/g, ''), contenido: mensaje, direccion: 'saliente', esManual: true });
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -191,12 +281,9 @@ app.put('/api/config/:clave', (req, res) => {
 function startWebhookServer(port) {
     const PORT = port || process.env.PORT || 3000;
     app.listen(PORT, () => {
-        console.log(`🌐 Webhook server escuchando en puerto ${PORT}`);
-        console.log(`   GET  /webhook/meta → verificación Meta`);
-        console.log(`   POST /webhook/meta → leads de Instagram`);
-        console.log(`   GET  /health       → health check`);
+        logger.info('servidor_iniciado', { puerto: PORT });
     });
     return emitter;
 }
 
-module.exports = { startWebhookServer };
+module.exports = { startWebhookServer, setWAClient };

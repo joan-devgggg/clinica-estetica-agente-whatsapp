@@ -6,21 +6,19 @@ require('dotenv').config();
 
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
-const { handleIncomingMessage, initiateLeadConversation, isBotGlobalActivo, setBotGlobalActivo } = require('./bot');
-const { startWebhookServer } = require('./webhook');
+const { handleIncomingMessage, initiateLeadConversation, isBotGlobalActivo, setBotGlobalActivo, setConversationBotMode } = require('./bot');
+const { startWebhookServer, setWAClient } = require('./webhook');
 const { startReviewWorker } = require('./services/review');
 const { startReminderWorker } = require('./services/reminder');
 const { startTelegramBot } = require('./services/telegram');
+const logger = require('./lib/logger');
 
 const required = ['OPENAI_API_KEY'];
 for (const key of required) {
     if (!process.env[key]) {
-        console.error(`❌ Variable de entorno requerida no configurada: ${key}`);
+        logger.error('env_faltante', { variable: key });
         process.exit(1);
     }
-}
-if (!process.env.AIRTABLE_API_KEY) {
-    console.log('ℹ️  Airtable no configurado — usando SQLite local (dashboard en /dashboard)');
 }
 
 // ─── Cliente WhatsApp ─────────────────────────────────────────────────────────
@@ -30,18 +28,19 @@ const client = new Client({
 });
 
 client.on('qr', (qr) => {
-    console.log('\n📱 Escanea este QR con WhatsApp:');
+    logger.info('qr_generado');
     qrcode.generate(qr, { small: true });
 });
 
 client.on('ready', () => {
-    console.log('✅ Bot WhatsApp conectado');
+    logger.info('whatsapp_conectado');
+    setWAClient(client, setConversationBotMode);
     startReviewWorker(client);
     startReminderWorker(client);
 });
 
 client.on('disconnected', (reason) => {
-    console.warn('⚠️ WhatsApp desconectado:', reason);
+    logger.warn('whatsapp_desconectado', { reason });
 });
 
 client.on('message', async (message) => {
@@ -54,7 +53,7 @@ client.on('message', async (message) => {
 const webhookEmitter = startWebhookServer(process.env.PORT || 3000);
 
 webhookEmitter.on('lead:new', async (leadData) => {
-    console.log('🎯 Lead nuevo recibido:', leadData.telefono);
+    logger.info('lead_nuevo_recibido', { telefono: leadData.telefono });
     await initiateLeadConversation(client, leadData);
 });
 
@@ -69,15 +68,15 @@ client.initialize();
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 process.on('SIGINT', async () => {
-    console.log('\n🛑 Cerrando bot...');
+    logger.info('bot_cerrando');
     await client.destroy();
     process.exit(0);
 });
 
 process.on('uncaughtException', (err) => {
-    console.error('❌ Uncaught exception:', err.message);
+    logger.error('excepcion_no_capturada', { error: err.message, stack: err.stack });
 });
 
 process.on('unhandledRejection', (reason) => {
-    console.error('❌ Unhandled rejection:', reason);
+    logger.error('rechazo_no_manejado', { reason: String(reason) });
 });

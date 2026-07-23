@@ -1,12 +1,12 @@
 {
   "leadsDetected": 70,
-  "leadsSaved": 18,
-  "fallbacksUsed": 3,
+  "leadsSaved": 20,
+  "fallbacksUsed": 4,
   "fieldMisses": {},
-  "conversationStarted": 38,
-  "userReplied": 241,
+  "conversationStarted": 47,
+  "userReplied": 291,
   "botQuestion": 130,
-  "conversationDropped": 1,
+  "conversationDropped": 31,
   "leadCompleted": 12,
   "objecionesDetectadas": 0,
   "step_tipo_reforma": 1,
@@ -247,8 +247,8 @@
       "timestamp": "2026-04-25T23:53:10.903Z"
     }
   ],
-  "conversionRate": "31.58",
-  "dropOffRate": "2.63",
+  "conversionRate": "25.53",
+  "dropOffRate": "65.96",
   "averageTimeToConvert": 101923,
-  "totalConversations": 38
+  "totalConversations": 47
 }

@@ -1,46 +1,18 @@
 /**
- * db.js — SQLite storage (reemplaza Airtable)
- * Misma interfaz pública que airtable.js para compatibilidad con bot, review y reminder.
+ * db.js — Supabase storage (multi-tenant schema)
+ * Misma interfaz pública que la versión SQLite para compatibilidad con bot, review y reminder.
+ *
+ * Mapeo de tablas:
+ *   leads (antigua)  →  contacts    (telefono→wa_phone, nombre→full_name, estado_cita→estado)
+ *   messages         →  conversations + messages (direction/sender en lugar de direccion)
+ *   appointments     →  appointments con contact_id
+ *   config           →  config con organization_id
+ *   agent_configs    →  agent_configs con organization_id
  */
 
-const Database = require('better-sqlite3');
-const path = require('path');
-const fs = require('fs');
+const supabase = require('./supabase');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
-const db = new Database(path.join(DATA_DIR, 'clinica.db'));
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-
-// ─── Esquema ──────────────────────────────────────────────────────────────────
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS leads (
-    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-    nombre                TEXT,
-    telefono              TEXT,
-    tratamiento           TEXT,
-    preferencia_horaria   TEXT,
-    fecha_cita            TEXT,
-    hora_cita             TEXT,
-    estado_cita           TEXT DEFAULT 'pendiente',
-    resena_enviada        INTEGER DEFAULT 0,
-    recordatorio_enviado  INTEGER DEFAULT 0,
-    origen                TEXT DEFAULT 'instagram_ads',
-    notas                 TEXT,
-    appointment_id        TEXT,
-    created_at            TEXT DEFAULT (datetime('now')),
-    updated_at            TEXT DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS config (
-    clave       TEXT PRIMARY KEY,
-    valor       TEXT,
-    updated_at  TEXT DEFAULT (datetime('now'))
-  );
-`);
+const ORG_ID = process.env.ORGANIZATION_ID || 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
 // ─── Helpers internos ─────────────────────────────────────────────────────────
 
@@ -54,228 +26,536 @@ function now() { return new Date().toISOString(); }
 function rowToPublic(row) {
     if (!row) return null;
     return {
-        id: row.id,
-        nombre: row.nombre,
-        telefono: row.telefono,
-        tratamiento: row.tratamiento,
-        preferencia_horaria: row.preferencia_horaria,
-        fecha_cita: row.fecha_cita,
-        hora_cita: row.hora_cita,
-        estado_cita: row.estado_cita || 'pendiente',
-        resena_enviada: !!row.resena_enviada,
-        recordatorio_enviado: !!row.recordatorio_enviado,
-        origen: row.origen,
-        notas: row.notas,
-        appointment_id: row.appointment_id,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
+        id:                    row.id,
+        nombre:                row.full_name,
+        telefono:              row.wa_phone,
+        tratamiento:           row.tratamiento,
+        preferencia_horaria:   row.preferencia_horaria,
+        fecha_cita:            row.fecha_cita,
+        hora_cita:             row.hora_cita,
+        estado_cita:           row.estado || 'pendiente',
+        bot_mode:              row.bot_mode || 'auto',
+        resena_enviada:        !!row.resena_enviada,
+        recordatorio_enviado:  !!row.recordatorio_enviado,
+        origen:                row.origen,
+        notas:                 row.notas,
+        appointment_id:        row.appointment_id,
+        created_at:            row.created_at,
+        updated_at:            row.updated_at,
     };
 }
 
-// ─── Leads ────────────────────────────────────────────────────────────────────
+function normalizePref(pref) {
+    if (!pref) return null;
+    if (typeof pref === 'object') return pref.periodo || JSON.stringify(pref);
+    return pref;
+}
 
-function findByPhone(telefono) {
+// ─── Leads / Contacts ────────────────────────────────────────────────────────
+
+async function findByPhone(telefono) {
     const phone = sanitizePhone(telefono);
     if (!phone) return null;
-    const row = db.prepare('SELECT * FROM leads WHERE telefono = ? ORDER BY id DESC LIMIT 1').get(phone);
-    return rowToPublic(row);
+    const { data } = await supabase
+        .from('contacts')
+        .select('*')
+        .eq('organization_id', ORG_ID)
+        .eq('wa_phone', phone)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+    return rowToPublic(data);
 }
 
-function findById(id) {
-    const row = db.prepare('SELECT * FROM leads WHERE id = ?').get(id);
-    return rowToPublic(row);
+async function findById(id) {
+    if (!id) return null;
+    const { data } = await supabase
+        .from('contacts')
+        .select('*')
+        .eq('organization_id', ORG_ID)
+        .eq('id', id)
+        .maybeSingle();
+    return rowToPublic(data);
 }
 
-function getAllLeads({ limit = 200, offset = 0, estado, search } = {}) {
-    let sql = 'SELECT * FROM leads WHERE 1=1';
-    const params = [];
-    if (estado) { sql += ' AND estado_cita = ?'; params.push(estado); }
+async function getAllLeads({ limit = 200, offset = 0, estado, search } = {}) {
+    let query = supabase
+        .from('contacts')
+        .select('*')
+        .eq('organization_id', ORG_ID);
+
+    if (estado) query = query.eq('estado', estado);
     if (search) {
-        sql += ' AND (nombre LIKE ? OR telefono LIKE ? OR tratamiento LIKE ?)';
-        const q = `%${search}%`;
-        params.push(q, q, q);
+        query = query.or(
+            `full_name.ilike.%${search}%,wa_phone.ilike.%${search}%,tratamiento.ilike.%${search}%`
+        );
     }
-    sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-    params.push(limit, offset);
-    return db.prepare(sql).all(...params).map(rowToPublic);
+    const { data } = await query
+        .order('updated_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+    return (data || []).map(rowToPublic);
 }
 
-function getLeadsByDateRange(desde, hasta) {
-    return db.prepare(
-        `SELECT * FROM leads
-         WHERE fecha_cita IS NOT NULL AND fecha_cita != ''
-           AND fecha_cita BETWEEN ? AND ?
-           AND estado_cita NOT IN ('cancelado')
-         ORDER BY fecha_cita ASC, hora_cita ASC`
-    ).all(desde, hasta).map(rowToPublic);
+async function getLeadsByDateRange(desde, hasta) {
+    const { data } = await supabase
+        .from('contacts')
+        .select('*')
+        .eq('organization_id', ORG_ID)
+        .not('fecha_cita', 'is', null)
+        .gte('fecha_cita', desde)
+        .lte('fecha_cita', hasta)
+        .not('estado', 'eq', 'cancelado')
+        .order('fecha_cita', { ascending: true })
+        .order('hora_cita', { ascending: true });
+    return (data || []).map(rowToPublic);
 }
 
-function guardarLeadEnAirtable(datos) {
+async function saveLead(datos) {
     if (!datos.telefono) return null;
     const phone = sanitizePhone(datos.telefono);
 
-    // Si ya tenemos recordId en sesión, actualizamos esa fila
-    if (datos.airtableRecordId) {
-        return updateLeadInAirtable(datos);
+    if (datos.leadId) {
+        await updateLead(datos);
+        return datos.leadId;
     }
 
-    // Siempre crear fila nueva para cada conversación
-    const stmt = db.prepare(`
-        INSERT INTO leads (nombre, telefono, tratamiento, preferencia_horaria,
-                           fecha_cita, hora_cita, estado_cita, origen, notas, appointment_id, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const pref = datos.preferencia_horaria
-        ? (typeof datos.preferencia_horaria === 'object'
-            ? datos.preferencia_horaria.periodo || JSON.stringify(datos.preferencia_horaria)
-            : datos.preferencia_horaria)
-        : null;
+    // saveMessage creates contacts with just the phone before the bot flow assigns leadId.
+    // Find that contact and update it instead of failing with a unique constraint violation.
+    const existing = await findByPhone(phone);
+    if (existing) {
+        await updateLead({ ...datos, leadId: existing.id });
+        return existing.id;
+    }
 
-    const result = stmt.run(
-        datos.nombre || null,
-        phone,
-        datos.tratamiento || null,
-        pref,
-        datos.fecha_cita || null,
-        datos.hora_cita || null,
-        datos.estado_cita || 'pendiente',
-        datos.origen || 'instagram_ads',
-        datos.notas || null,
-        datos.appointment_id || null,
-        now()
-    );
-    return result.lastInsertRowid;
+    const { data } = await supabase
+        .from('contacts')
+        .insert({
+            organization_id:    ORG_ID,
+            wa_phone:           phone,
+            full_name:          datos.nombre || null,
+            tratamiento:        datos.tratamiento || null,
+            preferencia_horaria: normalizePref(datos.preferencia_horaria),
+            fecha_cita:         datos.fecha_cita || null,
+            hora_cita:          datos.hora_cita || null,
+            estado:             datos.estado_cita || 'pendiente',
+            origen:             datos.origen || 'instagram_ads',
+            notas:              datos.notas || null,
+            appointment_id:     datos.appointment_id || null,
+            updated_at:         now(),
+        })
+        .select('id')
+        .single();
+    return data?.id ?? null;
 }
 
-function updateLeadInAirtable(datos) {
-    if (!datos.telefono && !datos.airtableRecordId) return false;
-
+async function updateLead(datos) {
+    if (!datos.telefono && !datos.leadId) return false;
     const phone = sanitizePhone(datos.telefono);
-    let row = datos.airtableRecordId
-        ? db.prepare('SELECT id FROM leads WHERE id = ?').get(datos.airtableRecordId)
-        : db.prepare('SELECT id FROM leads WHERE telefono = ? ORDER BY id DESC LIMIT 1').get(phone);
 
-    if (!row) return !!guardarLeadEnAirtable(datos);
+    let existing = null;
+    if (datos.leadId) {
+        existing = await findById(datos.leadId);
+    } else {
+        existing = await findByPhone(phone);
+    }
 
-    const pref = datos.preferencia_horaria
-        ? (typeof datos.preferencia_horaria === 'object'
-            ? datos.preferencia_horaria.periodo || JSON.stringify(datos.preferencia_horaria)
-            : datos.preferencia_horaria)
-        : undefined;
+    if (!existing) return !!await saveLead(datos);
 
-    const updates = {};
-    if (datos.nombre !== undefined)       updates.nombre = datos.nombre;
-    if (datos.telefono !== undefined)     updates.telefono = phone;
-    if (datos.tratamiento !== undefined)  updates.tratamiento = datos.tratamiento;
-    if (pref !== undefined)               updates.preferencia_horaria = pref;
-    if (datos.fecha_cita !== undefined)   updates.fecha_cita = datos.fecha_cita;
-    if (datos.hora_cita !== undefined)    updates.hora_cita = datos.hora_cita;
-    if (datos.estado_cita !== undefined)  updates.estado_cita = datos.estado_cita;
-    if (datos.notas !== undefined)        updates.notas = datos.notas;
-    if (datos.appointment_id !== undefined) updates.appointment_id = datos.appointment_id;
-    updates.updated_at = now();
+    const updates = { updated_at: now() };
+    if (datos.nombre !== undefined)              updates.full_name = datos.nombre;
+    if (datos.telefono !== undefined)            updates.wa_phone = phone;
+    if (datos.tratamiento !== undefined)         updates.tratamiento = datos.tratamiento;
+    if (datos.preferencia_horaria !== undefined) updates.preferencia_horaria = normalizePref(datos.preferencia_horaria);
+    if (datos.fecha_cita !== undefined)          updates.fecha_cita = datos.fecha_cita;
+    if (datos.hora_cita !== undefined)           updates.hora_cita = datos.hora_cita;
+    if (datos.estado_cita !== undefined)         updates.estado = datos.estado_cita;
+    if (datos.notas !== undefined)               updates.notas = datos.notas;
+    if (datos.appointment_id !== undefined)      updates.appointment_id = datos.appointment_id;
 
-    const keys = Object.keys(updates);
-    if (keys.length === 1) return true; // solo updated_at
-    const set = keys.map(k => `${k} = ?`).join(', ');
-    db.prepare(`UPDATE leads SET ${set} WHERE id = ?`).run(...Object.values(updates), row.id);
+    await supabase.from('contacts').update(updates).eq('id', existing.id).eq('organization_id', ORG_ID);
     return true;
 }
 
-function updateLeadById(id, campos) {
-    const allowed = ['nombre', 'telefono', 'tratamiento', 'preferencia_horaria',
-                     'fecha_cita', 'hora_cita', 'estado_cita', 'notas', 'origen'];
-    const updates = {};
-    for (const k of allowed) {
-        if (campos[k] !== undefined) updates[k] = campos[k];
+async function updateLeadById(id, campos) {
+    const fieldMap = {
+        nombre:             'full_name',
+        telefono:           'wa_phone',
+        tratamiento:        'tratamiento',
+        preferencia_horaria:'preferencia_horaria',
+        fecha_cita:         'fecha_cita',
+        hora_cita:          'hora_cita',
+        estado_cita:        'estado',
+        notas:              'notas',
+        origen:             'origen',
+    };
+    const updates = { updated_at: now() };
+    for (const [oldKey, newKey] of Object.entries(fieldMap)) {
+        if (campos[oldKey] !== undefined) updates[newKey] = campos[oldKey];
     }
-    updates.updated_at = now();
-    const keys = Object.keys(updates);
-    const set = keys.map(k => `${k} = ?`).join(', ');
-    db.prepare(`UPDATE leads SET ${set} WHERE id = ?`).run(...Object.values(updates), id);
+    await supabase.from('contacts').update(updates).eq('id', id).eq('organization_id', ORG_ID);
     return findById(id);
 }
 
-function deleteLead(id) {
-    db.prepare('DELETE FROM leads WHERE id = ?').run(id);
+async function deleteLead(id) {
+    await supabase.from('contacts').delete().eq('id', id).eq('organization_id', ORG_ID);
 }
 
-function marcarCitaCompletada(telefono) {
+async function marcarCitaCompletada(telefono) {
     const phone = sanitizePhone(telefono);
-    db.prepare(`UPDATE leads SET estado_cita = 'completado', updated_at = ? WHERE telefono = ?`).run(now(), phone);
+    await supabase
+        .from('contacts')
+        .update({ estado: 'completado', updated_at: now() })
+        .eq('organization_id', ORG_ID)
+        .eq('wa_phone', phone);
     return true;
 }
 
-function marcarResenaSent(id) {
-    db.prepare(`UPDATE leads SET resena_enviada = 1, updated_at = ? WHERE id = ?`).run(now(), id);
+async function marcarResenaSent(id) {
+    await supabase
+        .from('contacts')
+        .update({ resena_enviada: true, updated_at: now() })
+        .eq('id', id)
+        .eq('organization_id', ORG_ID);
     return true;
 }
 
-function marcarRecordatorioSent(id) {
-    db.prepare(`UPDATE leads SET recordatorio_enviado = 1, updated_at = ? WHERE id = ?`).run(now(), id);
+async function marcarRecordatorioSent(id) {
+    await supabase
+        .from('contacts')
+        .update({ recordatorio_enviado: true, updated_at: now() })
+        .eq('id', id)
+        .eq('organization_id', ORG_ID);
     return true;
 }
 
-function getLeadsPendientesResena() {
-    return db.prepare(`
-        SELECT * FROM leads
-        WHERE estado_cita = 'completado' AND resena_enviada = 0
-    `).all().map(rowToPublic);
+async function getLeadsPendientesResena() {
+    const { data } = await supabase
+        .from('contacts')
+        .select('*')
+        .eq('organization_id', ORG_ID)
+        .eq('estado', 'completado')
+        .eq('resena_enviada', false);
+    return (data || []).map(rowToPublic);
 }
 
-function getLeadsPendientesRecordatorio() {
-    return db.prepare(`
-        SELECT * FROM leads
-        WHERE estado_cita = 'confirmado' AND recordatorio_enviado = 0
-          AND fecha_cita IS NOT NULL
-    `).all().map(rowToPublic);
+async function getLeadsPendientesRecordatorio() {
+    const { data } = await supabase
+        .from('contacts')
+        .select('*')
+        .eq('organization_id', ORG_ID)
+        .eq('estado', 'confirmado')
+        .eq('recordatorio_enviado', false)
+        .not('fecha_cita', 'is', null);
+    return (data || []).map(rowToPublic);
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-function getConfigValue(clave) {
-    const row = db.prepare('SELECT valor FROM config WHERE clave = ?').get(clave);
-    if (!row) return null;
-    try { return JSON.parse(row.valor); } catch { return row.valor; }
+async function getConfigValue(clave) {
+    const { data } = await supabase
+        .from('config')
+        .select('valor')
+        .eq('organization_id', ORG_ID)
+        .eq('clave', clave)
+        .maybeSingle();
+    if (!data) return null;
+    try { return JSON.parse(data.valor); } catch { return data.valor; }
 }
 
-function setConfigValue(clave, valor) {
+async function setConfigValue(clave, valor) {
     const valorStr = typeof valor === 'string' ? valor : JSON.stringify(valor);
-    db.prepare(`
-        INSERT INTO config (clave, valor, updated_at) VALUES (?, ?, ?)
-        ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, updated_at = excluded.updated_at
-    `).run(clave, valorStr, now());
+    await supabase
+        .from('config')
+        .upsert(
+            { organization_id: ORG_ID, clave, valor: valorStr, updated_at: now() },
+            { onConflict: 'organization_id,clave' }
+        );
     return true;
 }
 
-function getAllConfig() {
-    const rows = db.prepare('SELECT clave, valor FROM config').all();
+async function getAllConfig() {
+    const { data } = await supabase
+        .from('config')
+        .select('clave, valor')
+        .eq('organization_id', ORG_ID);
     const result = {};
-    for (const row of rows) {
+    for (const row of (data || [])) {
         try { result[row.clave] = JSON.parse(row.valor); } catch { result[row.clave] = row.valor; }
     }
     return result;
 }
 
+// ─── Messages (monitor WhatsApp) ─────────────────────────────────────────────
+
+async function findOrCreateConversation(contactId) {
+    const { data: existing } = await supabase
+        .from('conversations')
+        .select('id')
+        .eq('organization_id', ORG_ID)
+        .eq('contact_id', contactId)
+        .maybeSingle();
+    if (existing) return existing.id;
+
+    const { data: created } = await supabase
+        .from('conversations')
+        .insert({ organization_id: ORG_ID, contact_id: contactId })
+        .select('id')
+        .single();
+    return created?.id ?? null;
+}
+
+async function saveMessage({ telefono, contenido, direccion, esManual = false }) {
+    const phone = sanitizePhone(telefono);
+    if (!phone || !contenido) return null;
+
+    let contact = await findByPhone(phone);
+    if (!contact) {
+        const newId = await saveLead({ telefono: phone });
+        contact = await findById(newId);
+    }
+    if (!contact) return null;
+
+    const convId = await findOrCreateConversation(contact.id);
+    if (!convId) return null;
+
+    const direction = direccion === 'entrante' ? 'inbound' : 'outbound';
+    const sender    = direction === 'inbound' ? 'contact' : (esManual ? 'human' : 'bot');
+
+    const { data } = await supabase
+        .from('messages')
+        .insert({
+            conversation_id: convId,
+            organization_id: ORG_ID,
+            direction,
+            sender,
+            content: contenido,
+            created_at: now(),
+        })
+        .select('id')
+        .single();
+
+    // Actualizar last_message_at en la conversación
+    await supabase
+        .from('conversations')
+        .update({ last_message_at: now() })
+        .eq('id', convId);
+
+    return data?.id ?? null;
+}
+
+async function getMessages(telefono, { limit = 100 } = {}) {
+    const phone = sanitizePhone(telefono);
+    if (!phone) return [];
+
+    const contact = await findByPhone(phone);
+    if (!contact) return [];
+
+    const { data: conv } = await supabase
+        .from('conversations')
+        .select('id')
+        .eq('organization_id', ORG_ID)
+        .eq('contact_id', contact.id)
+        .maybeSingle();
+    if (!conv) return [];
+
+    const { data } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('conversation_id', conv.id)
+        .order('created_at', { ascending: true })
+        .limit(limit);
+
+    return (data || []).map(m => ({
+        id:         m.id,
+        lead_id:    contact.id,
+        telefono:   phone,
+        direccion:  m.direction === 'inbound' ? 'entrante' : 'saliente',
+        contenido:  m.content,
+        es_manual:  m.sender === 'human',
+        timestamp:  m.created_at,
+    }));
+}
+
+async function setLeadBotMode(telefono, mode) {
+    const phone = sanitizePhone(telefono);
+    await supabase
+        .from('contacts')
+        .update({ bot_mode: mode, updated_at: now() })
+        .eq('organization_id', ORG_ID)
+        .eq('wa_phone', phone);
+    return true;
+}
+
+// ─── Agent Config ─────────────────────────────────────────────────────────────
+
+async function getAgentConfig() {
+    const { data } = await supabase
+        .from('agent_configs')
+        .select('*')
+        .eq('organization_id', ORG_ID)
+        .maybeSingle();
+    return data || null;
+}
+
+async function updateAgentConfig(campos) {
+    const allowed = ['system_prompt', 'tone', 'services', 'business_hours', 'handoff_message'];
+    const updates = { updated_at: now() };
+    for (const k of allowed) {
+        if (campos[k] !== undefined) updates[k] = campos[k];
+    }
+    await supabase
+        .from('agent_configs')
+        .upsert(
+            { organization_id: ORG_ID, ...updates },
+            { onConflict: 'organization_id' }
+        );
+    return getAgentConfig();
+}
+
+// ─── Appointments ─────────────────────────────────────────────────────────────
+
+async function saveAppointment(contactId, { servicio, fecha, hora, estado = 'confirmed', notas } = {}) {
+    if (!contactId) {
+        console.error('[saveAppointment] contactId nulo — cita no guardada');
+        return null;
+    }
+    if (!fecha) {
+        console.error('[saveAppointment] fecha nula — cita no guardada', { contactId });
+        return null;
+    }
+
+    const contact = await findById(contactId);
+    if (!contact) {
+        console.error('[saveAppointment] contacto no encontrado', { contactId });
+        return null;
+    }
+
+    // Construir starts_at / ends_at desde fecha + hora
+    const startsAt = hora ? new Date(`${fecha}T${hora}:00`) : new Date(`${fecha}T10:00:00`);
+    const endsAt   = new Date(startsAt.getTime() + 60 * 60 * 1000); // 1h por defecto
+
+    const { data, error } = await supabase
+        .from('appointments')
+        .insert({
+            organization_id: ORG_ID,
+            contact_id:      contactId,
+            service:         servicio || contact.tratamiento || '',
+            starts_at:       startsAt.toISOString(),
+            ends_at:         endsAt.toISOString(),
+            status:          estado,
+            full_name:       contact.nombre || '',
+            phone:           contact.telefono || '',
+            notes:           notas || null,
+        })
+        .select()
+        .single();
+
+    if (error) {
+        console.error('[saveAppointment] error Supabase', { contactId, fecha, hora, error: error.message, code: error.code });
+        return null;
+    }
+    return data || null;
+}
+
+async function updateAppointment(appointmentId, campos) {
+    const updates = {};
+    if (campos.servicio !== undefined) updates.service = campos.servicio;
+    if (campos.estado   !== undefined) updates.status  = campos.estado;
+    if (campos.notas    !== undefined) updates.notes   = campos.notas;
+    if (campos.fecha !== undefined && campos.hora !== undefined) {
+        const startsAt = new Date(`${campos.fecha}T${campos.hora}:00`);
+        updates.starts_at = startsAt.toISOString();
+        updates.ends_at   = new Date(startsAt.getTime() + 60 * 60 * 1000).toISOString();
+    }
+    if (!Object.keys(updates).length) return null;
+    const { data } = await supabase
+        .from('appointments')
+        .update(updates)
+        .eq('id', appointmentId)
+        .eq('organization_id', ORG_ID)
+        .select()
+        .single();
+    return data || null;
+}
+
+async function getAppointmentsByDateRange(desde, hasta) {
+    const desdeTs = new Date(`${desde}T00:00:00`).toISOString();
+    const hastaTs = new Date(`${hasta}T23:59:59`).toISOString();
+    const { data } = await supabase
+        .from('appointments')
+        .select('*, contacts!contact_id(id, full_name, wa_phone, tratamiento, origen, bot_mode)')
+        .eq('organization_id', ORG_ID)
+        .gte('starts_at', desdeTs)
+        .lte('starts_at', hastaTs)
+        .neq('status', 'cancelled')
+        .order('starts_at', { ascending: true });
+
+    return (data || []).map(row => {
+        const startsAt = new Date(row.starts_at);
+        return {
+            id:            row.contacts?.id,
+            appointment_id: row.id,
+            nombre:        row.contacts?.full_name,
+            telefono:      row.contacts?.wa_phone,
+            tratamiento:   row.contacts?.tratamiento || row.service,
+            origen:        row.contacts?.origen,
+            bot_mode:      row.contacts?.bot_mode,
+            fecha_cita:    startsAt.toISOString().split('T')[0],
+            hora_cita:     startsAt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' }),
+            estado_cita:   row.status,
+            notas:         row.notes,
+        };
+    });
+}
+
+async function getAppointmentsByLead(contactId) {
+    const { data } = await supabase
+        .from('appointments')
+        .select('*')
+        .eq('organization_id', ORG_ID)
+        .eq('contact_id', contactId)
+        .order('starts_at', { ascending: false });
+    return data || [];
+}
+
+async function getAppointmentsPendientesResena() {
+    return getLeadsPendientesResena();
+}
+
+async function getAppointmentsPendientesRecordatorio() {
+    return getLeadsPendientesRecordatorio();
+}
+
 // ─── Stats dashboard ──────────────────────────────────────────────────────────
 
-function getStats() {
-    const total = db.prepare(`SELECT COUNT(*) as n FROM leads`).get().n;
-    const confirmados = db.prepare(`SELECT COUNT(*) as n FROM leads WHERE estado_cita = 'confirmado'`).get().n;
-    const enChat = db.prepare(`SELECT COUNT(*) as n FROM leads WHERE estado_cita IN ('pendiente','en_conversacion')`).get().n;
-    const completados = db.prepare(`SELECT COUNT(*) as n FROM leads WHERE estado_cita = 'completado'`).get().n;
+async function getStats() {
     const hoy = new Date().toISOString().split('T')[0];
-    const citasHoy = db.prepare(`SELECT COUNT(*) as n FROM leads WHERE fecha_cita = ? AND estado_cita = 'confirmado'`).get(hoy).n;
     const manana = new Date(Date.now() + 86400000).toISOString().split('T')[0];
-    const citasManana = db.prepare(`SELECT COUNT(*) as n FROM leads WHERE fecha_cita = ? AND estado_cita = 'confirmado'`).get(manana).n;
+
+    const [
+        { count: total },
+        { count: confirmados },
+        { count: enChat },
+        { count: completados },
+        { count: citasHoy },
+        { count: citasManana },
+    ] = await Promise.all([
+        supabase.from('contacts').select('*', { count: 'exact', head: true }).eq('organization_id', ORG_ID),
+        supabase.from('contacts').select('*', { count: 'exact', head: true }).eq('organization_id', ORG_ID).eq('estado', 'confirmado'),
+        supabase.from('contacts').select('*', { count: 'exact', head: true }).eq('organization_id', ORG_ID).in('estado', ['pendiente', 'en_conversacion']),
+        supabase.from('contacts').select('*', { count: 'exact', head: true }).eq('organization_id', ORG_ID).eq('estado', 'completado'),
+        supabase.from('contacts').select('*', { count: 'exact', head: true }).eq('organization_id', ORG_ID).eq('fecha_cita', hoy).eq('estado', 'confirmado'),
+        supabase.from('contacts').select('*', { count: 'exact', head: true }).eq('organization_id', ORG_ID).eq('fecha_cita', manana).eq('estado', 'confirmado'),
+    ]);
+
     return { total, confirmados, enChat, completados, citasHoy, citasManana };
 }
 
 module.exports = {
-    // Compatibilidad con airtable.js (bot, review, reminder)
-    guardarLeadEnAirtable,
-    updateLeadInAirtable,
+    saveLead,
+    updateLead,
     findByPhone,
+    findById,
     marcarCitaCompletada,
     marcarResenaSent,
     marcarRecordatorioSent,
@@ -283,14 +563,21 @@ module.exports = {
     getLeadsPendientesRecordatorio,
     getConfigValue,
     setConfigValue,
-    // API dashboard
     getAllLeads,
     getLeadsByDateRange,
-    findById,
     updateLeadById,
     deleteLead,
     getAllConfig,
     getStats,
-    // Acceso directo a la instancia (para migraciones puntuales)
-    _db: db,
+    saveMessage,
+    getMessages,
+    setLeadBotMode,
+    saveAppointment,
+    updateAppointment,
+    getAppointmentsByLead,
+    getAppointmentsByDateRange,
+    getAppointmentsPendientesResena,
+    getAppointmentsPendientesRecordatorio,
+    getAgentConfig,
+    updateAgentConfig,
 };

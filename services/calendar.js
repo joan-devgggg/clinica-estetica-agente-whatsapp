@@ -6,6 +6,7 @@
  */
 
 const config = require('../config.json');
+const logger = require('../lib/logger');
 
 // Mock: slots disponibles para los próximos 7 días
 function generateMockSlots() {
@@ -85,7 +86,7 @@ async function getAvailableSlots(preferencia = {}, duracionMinutos = 60) {
  */
 async function bookAppointment(slot, clientData) {
     // TODO: reemplazar por llamada a API real
-    console.log(`📅 [MOCK] Cita reservada: ${slot.fecha} ${slot.hora} para ${clientData.nombre}`);
+    logger.info('mock_cita_reservada', { fecha: slot.fecha, hora: slot.hora, nombre: clientData.nombre });
     return {
         success: true,
         appointmentId: `apt_${slot.id}_${Date.now()}`,
@@ -99,7 +100,7 @@ async function bookAppointment(slot, clientData) {
  */
 async function cancelAppointment(appointmentId) {
     // TODO: reemplazar por llamada a API real
-    console.log(`❌ [MOCK] Cita cancelada: ${appointmentId}`);
+    logger.info('mock_cita_cancelada', { appointmentId });
     return { success: true };
 }
 
@@ -110,7 +111,7 @@ async function cancelAppointment(appointmentId) {
  */
 async function rescheduleAppointment(appointmentId, newSlot) {
     // TODO: reemplazar por llamada a API real
-    console.log(`🔄 [MOCK] Cita reagendada: ${appointmentId} → ${newSlot.fecha} ${newSlot.hora}`);
+    logger.info('mock_cita_reagendada', { appointmentId, fecha: newSlot.fecha, hora: newSlot.hora });
     return { success: true, appointmentId, slot: newSlot };
 }
 

@@ -24,8 +24,8 @@
   "ai": {
     "model": "gpt-4o-mini",
     "temperature": 0.7,
-    "max_tokens": 220,
-    "responseMaxLength": 240
+    "max_tokens": 350,
+    "responseMaxLength": 320
   },
   "conversation": {
     "sessionTimeoutMs": 3600000,
@@ -41,14 +41,6 @@
     "deactivatedMessage": "Has desactivado el asistente automático.",
     "reactivatedMessage": "Asistente activado de nuevo.",
     "limitMessage": "Hemos llegado al límite de mensajes. Un agente te contactará pronto."
-  },
-  "storage": {
-    "airtable": {
-      "enabled": true,
-      "leadsTable": "💅 Leads",
-      "configTable": "⚙️ Configuración",
-      "origen": "Instagram Ads"
-    }
   },
   "review": {
     "minutosEspera": 30,

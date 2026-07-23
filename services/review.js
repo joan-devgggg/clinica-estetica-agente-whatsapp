@@ -4,7 +4,8 @@
  */
 
 const config = require('../config.json');
-const { getLeadsPendientesResena, marcarResenaSent, getConfigValue } = require('./db');
+const { getAppointmentsPendientesResena, marcarResenaSent, getConfigValue } = require('./db');
+const logger = require('../lib/logger');
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000; // cada 5 minutos
 let waClient = null;
@@ -30,7 +31,7 @@ function calcularMinutosDesde(fechaStr, horaStr) {
 
 async function sendReviewMessage(telefono, mensaje) {
     if (!waClient) {
-        console.warn('⚠️ Review worker: cliente WhatsApp no disponible');
+        logger.warn('review_wa_no_disponible');
         return false;
     }
     try {
@@ -38,7 +39,7 @@ async function sendReviewMessage(telefono, mensaje) {
         await waClient.sendMessage(chatId, mensaje);
         return true;
     } catch (e) {
-        console.error('Review worker error enviando WA:', e.message);
+        logger.error('review_error_envio', { telefono, error: e.message });
         return false;
     }
 }
@@ -49,9 +50,9 @@ async function checkAndSendReviews() {
 
     let pendientes;
     try {
-        pendientes = await getLeadsPendientesResena();
+        pendientes = await getAppointmentsPendientesResena();
     } catch (e) {
-        console.error('Review worker error consultando Airtable:', e.message);
+        logger.error('review_error_db', { error: e.message });
         return;
     }
 
@@ -70,7 +71,7 @@ async function checkAndSendReviews() {
 
         if (sent) {
             await marcarResenaSent(record.id);
-            console.log(`✅ Reseña enviada a ${Nombre} (${Telefono})`);
+            logger.info('resena_enviada', { nombre: Nombre, telefono: Telefono });
         }
     }
 }
@@ -81,7 +82,7 @@ async function checkAndSendReviews() {
  */
 function startReviewWorker(client) {
     waClient = client;
-    console.log('🔔 Review worker iniciado — comprobando cada 5 minutos');
+    logger.info('review_worker_iniciado');
     setInterval(checkAndSendReviews, CHECK_INTERVAL_MS);
     // Primera comprobación al arrancar (con delay de 1 min para que WA esté listo)
     setTimeout(checkAndSendReviews, 60 * 1000);

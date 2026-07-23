@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { getChatbotResponse } = require('./services/ai');
-const { guardarLeadEnAirtable, updateLeadInAirtable, findByPhone } = require('./services/db');
+const { saveLead, updateLead, findByPhone, saveMessage, saveAppointment } = require('./services/db');
 const { getAvailableSlots, bookAppointment, cancelAppointment, formatSlotForMessage } = require('./services/calendar');
 const { detectIntent, getMissingFields, extractQuickData } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
@@ -8,6 +8,7 @@ const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary } = require('./services/memory');
 const { summarizeHistory } = require('./services/providers/openai');
 const config = require('./config.json');
+const logger = require('./lib/logger');
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 const userSessions = new Map();
@@ -26,9 +27,6 @@ const SUMMARY_THRESHOLD = 20; // Mensajes antes de comprimir historial
 
 let _botGlobalActivo = true;
 function isBotGlobalActivo() {
-    const { getConfigValue } = require('./services/db');
-    const dbVal = getConfigValue('bot_activo');
-    if (dbVal !== null) return dbVal !== false;
     return _botGlobalActivo;
 }
 function setBotGlobalActivo(v) {
@@ -76,7 +74,7 @@ function createEmptySession(userId) {
         availableSlots: [],
         currentSlotIndex: 0,
         leadGuardado: false,
-        airtableRecordId: null,
+        leadId: null,
         leadStatus: 'in_progress',
         modoReagendamiento: false,
         clienteRecurrente: false,
@@ -84,6 +82,7 @@ function createEmptySession(userId) {
         startTime: Date.now(),
         _summarizing: false,
         pendingNewBooking: null, // null | { nombre, tratamiento, fecha_cita, hora_cita, esMismaPersona }
+        notasAsked: false,
     };
 }
 
@@ -118,6 +117,7 @@ async function sendWithDelay(client, phone, text) {
     } catch {
         await client.sendMessage(phone, text);
     }
+    saveMessage({ telefono: phone.replace('@c.us', '').replace(/\D/g, ''), contenido: text, direccion: 'saliente' }).catch(() => {});
 }
 
 function clearFollowUps(session) {
@@ -135,7 +135,7 @@ async function loadAvailableSlots(session) {
         session.availableSlots = slots;
         session.currentSlotIndex = 0;
     } catch (e) {
-        console.error('Error cargando slots:', e.message);
+        logger.error('error_slots', { error: e.message });
         session.availableSlots = [];
     }
 }
@@ -150,7 +150,7 @@ function buildConfirmationMessage(session) {
 
 // ─── Persistencia SQLite ──────────────────────────────────────────────────────
 function persistSession(userPhone, session) {
-    try { saveClient(userPhone, session); } catch (e) { console.error('SQLite save error:', e.message); }
+    try { saveClient(userPhone, session); } catch (e) { logger.error('sqlite_save_error', { error: e.message }); }
 }
 
 function triggerAsyncSummary(userPhone, session) {
@@ -164,10 +164,10 @@ function triggerAsyncSummary(userPhone, session) {
                 session.history = session.history.slice(-10);
                 saveSummary(userPhone, summary);
                 persistSession(userPhone, session);
-                console.log(`📝 Historial comprimido para ${userPhone}`);
+                logger.info('historial_comprimido', { telefono: userPhone });
             }
         })
-        .catch(e => console.error('Error generando resumen:', e.message))
+        .catch(e => logger.error('error_resumen', { telefono: userPhone, error: e.message }))
         .finally(() => { session._summarizing = false; });
 }
 
@@ -177,7 +177,7 @@ async function handleAppointmentAction(client, session, userPhone, accion) {
         if (session.appointmentId) await cancelAppointment(session.appointmentId);
         session.citaConfirmada = false;
         session.appointmentId = null;
-        await updateLeadInAirtable({ ...session.partialData, estado_cita: 'cancelado', airtableRecordId: session.airtableRecordId });
+        await updateLead({ ...session.partialData, estado_cita: 'cancelado', leadId: session.leadId });
         await sendWithDelay(client, userPhone, 'Tu cita ha sido cancelada ✅ Si quieres reservar otra, dímelo cuando quieras 😊');
         return true;
     }
@@ -255,16 +255,24 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             isNewSession = true;
         }
 
-        // Consulta Airtable solo si el cliente NO está en SQLite (primera vez absoluta)
+        // Consulta base de datos solo si el cliente es nuevo (primera vez absoluta)
         const returningCustomerPromise = (isNewSession && !loadedFromSQLite)
             ? findByPhone(userSessions.get(userPhone).partialData.telefono).catch(e => {
-                console.error('Error comprobando cliente recurrente:', e.message);
+                logger.error('error_cliente_recurrente', { error: e.message });
                 return null;
             })
             : null;
 
         const session = userSessions.get(userPhone);
         if (!session) return;
+
+        // Check per-conversation bot mode when session is newly created
+        if (isNewSession) {
+            try {
+                const modeCheck = await findByPhone(session.partialData.telefono).catch(() => null);
+                if (modeCheck?.bot_mode === 'manual') session.botActivo = false;
+            } catch {}
+        }
 
         if (messageKey && session.seenMessages.has(messageKey)) return;
         if (messageKey) session.seenMessages.add(messageKey);
@@ -323,7 +331,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     hora_cita: null,
                     esMismaPersona
                 };
-                console.log(`🔄 Nueva cita iniciada para ${esMismaPersona ? 'misma persona' : 'otra persona'}`);
+                logger.info('nueva_cita_iniciada', { telefono: userPhone, esMismaPersona });
             }
         }
 
@@ -335,7 +343,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             await loadAvailableSlots(session);
         }
 
-        // Resolver cliente recurrente vía Airtable (solo si no está en SQLite)
+        // Resolver cliente recurrente si no está en sesión activa
         if (returningCustomerPromise) {
             const record = await returningCustomerPromise;
             if (record) {
@@ -364,18 +372,21 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             __clienteRecurrente: session.clienteRecurrente,
             __ultimaVisita: session.ultimaVisita,
             __pendingNewBooking: session.pendingNewBooking,
-            __pendingNewBookingMissing: pendingNewBookingMissing
+            __pendingNewBookingMissing: pendingNewBookingMissing,
+            __notasAsked: session.notasAsked,
         };
 
         let aiResponse;
+        const t0 = Date.now();
         try {
             const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 9000));
             aiResponse = await Promise.race([
                 getChatbotResponse(session.history.slice(-12), partialDataWithCtx, intent, session.citaConfirmada, session.summary),
                 timeout
             ]);
+            logger.info('llm_response', { telefono: userPhone, latencia_ms: Date.now() - t0, wa_message_id: messageKey });
         } catch (e) {
-            console.error('LLM error:', e.message);
+            logger.error('llm_error', { telefono: userPhone, error: e.message, latencia_ms: Date.now() - t0, wa_message_id: messageKey });
         }
 
         if (!aiResponse?.respuesta) {
@@ -420,19 +431,35 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 const faltaNombre = !nb.nombre;
                 if (!nb.nombre || !nb.tratamiento || !nb.fecha_cita || !nb.hora_cita) {
                     aiResponse.cita_confirmada = false;
-                    console.log(`⚠️ Nueva cita bloqueada: nombre=${nb.nombre}, tratamiento=${nb.tratamiento}, fecha=${nb.fecha_cita}, hora=${nb.hora_cita}`);
+                    logger.warn('nueva_cita_bloqueada', { telefono: userPhone, nombre: nb.nombre, tratamiento: nb.tratamiento, fecha: nb.fecha_cita, hora: nb.hora_cita });
                     if (faltaNombre) aiResponse.respuesta = 'Sin el nombre no puedo reservar la cita, lo necesito para guardar el hueco 😊';
                 }
             } else {
-                // Primera cita: nombre y tratamiento obligatorios
+                // Primera cita: nombre, tratamiento, fecha y hora obligatorios
                 const efectiveNombre = aiResponse.datos?.nombre || session.partialData.nombre;
                 const efectiveTratamiento = aiResponse.datos?.tratamiento || session.partialData.tratamiento;
-                if (!efectiveNombre || !efectiveTratamiento) {
+                const efectiveFecha = session.availableSlots[session.currentSlotIndex]?.fecha || aiResponse.datos?.fecha_cita || session.partialData.fecha_cita;
+                const efectivaHora  = session.availableSlots[session.currentSlotIndex]?.hora  || aiResponse.datos?.hora_cita  || session.partialData.hora_cita;
+                if (!efectiveNombre || !efectiveTratamiento || !efectiveFecha || !efectivaHora) {
                     aiResponse.cita_confirmada = false;
-                    console.log(`⚠️ Confirmación bloqueada: nombre=${efectiveNombre}, tratamiento=${efectiveTratamiento}`);
-                    if (!efectiveNombre) aiResponse.respuesta = '¿Cómo te llamas? Lo necesito para reservar la cita 😊';
+                    logger.warn('confirmacion_bloqueada', { telefono: userPhone, nombre: efectiveNombre, tratamiento: efectiveTratamiento, fecha: efectiveFecha, hora: efectivaHora });
+                    if (!efectiveNombre)                    aiResponse.respuesta = '¿Cómo te llamas? Lo necesito para reservar la cita 😊';
+                    else if (!efectiveTratamiento)          aiResponse.respuesta = '¿Qué tratamiento quieres agendar?';
+                    else if (!efectiveFecha || !efectivaHora) aiResponse.respuesta = 'Necesito una fecha y hora para confirmar. ¿Cuándo te vendría mejor?';
                 }
             }
+        }
+
+        // Intercepción de notas: preguntar antes de la primera confirmación real
+        if (aiResponse.cita_confirmada && !session.citaConfirmada && !session.notasAsked && session.pendingNewBooking === null) {
+            session.notasAsked = true;
+            aiResponse.cita_confirmada = false;
+            aiResponse.respuesta = '¿Tienes alguna nota o comentario para la clínica? (alergias, medicación, preferencias del médico...) Si no tienes nada, dímelo y confirmo tu cita 😊';
+        }
+
+        // Si notasAsked y el LLM confirma — capturar notas en partialData antes del booking
+        if (aiResponse.cita_confirmada && session.notasAsked && !session.citaConfirmada && session.pendingNewBooking === null) {
+            if (aiResponse.datos?.notas) session.partialData.notas = aiResponse.datos.notas;
         }
 
         if (aiResponse.cita_confirmada && !session.citaConfirmada) {
@@ -449,14 +476,25 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         session.partialData.hora_cita = slot.hora;
                         session.partialData.estado_cita = 'confirmado';
                         session.leadStatus = 'completed';
-                        const rid1 = await guardarLeadEnAirtable({ ...session.partialData, appointment_id: booking.appointmentId, airtableRecordId: session.airtableRecordId });
-                        if (rid1) session.airtableRecordId = rid1;
+                        const rid1 = await saveLead({ ...session.partialData, appointment_id: booking.appointmentId, leadId: session.leadId });
+                        if (rid1) session.leadId = rid1;
                         session.leadGuardado = true;
                         incrementMetric('leadsSaved');
+                        logger.info('appointment_saving', { leadId: session.leadId, fecha: slot.fecha, hora: slot.hora, tratamiento: session.partialData.tratamiento });
+                        saveAppointment(session.leadId, {
+                            servicio: session.partialData.tratamiento,
+                            fecha: slot.fecha,
+                            hora: slot.hora,
+                            estado: 'confirmed',
+                            notas: session.partialData.notas || null,
+                        }).then(apt => {
+                            if (apt) logger.info('appointment_saved', { appointmentId: apt.id, leadId: session.leadId });
+                            else logger.error('appointment_save_failed', { leadId: session.leadId, fecha: slot.fecha });
+                        }).catch(e => logger.error('appointment_save_error', { leadId: session.leadId, error: e.message }));
                         aiResponse.respuesta = buildConfirmationMessage(session);
-                        console.log(`✅ Cita confirmada: ${userPhone} → ${slot.fecha} ${slot.hora}`);
+                        logger.info('cita_confirmada', { telefono: userPhone, fecha: slot.fecha, hora: slot.hora });
                     }
-                } catch (e) { console.error('Error bookAppointment:', e.message); }
+                } catch (e) { logger.error('error_book_appointment', { telefono: userPhone, error: e.message }); }
             } else {
                 session.citaConfirmada = true;
                 session.partialData.estado_cita = 'confirmado';
@@ -464,19 +502,32 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 if (aiResponse.datos?.fecha_cita) session.partialData.fecha_cita = aiResponse.datos.fecha_cita;
                 if (aiResponse.datos?.hora_cita) session.partialData.hora_cita = aiResponse.datos.hora_cita;
                 try {
-                    const rid2 = await guardarLeadEnAirtable({ ...session.partialData, airtableRecordId: session.airtableRecordId });
-                    if (rid2) session.airtableRecordId = rid2;
+                    const rid2 = await saveLead({ ...session.partialData, leadId: session.leadId });
+                    if (rid2) session.leadId = rid2;
                     session.leadGuardado = true;
                     incrementMetric('leadsSaved');
-                    console.log(`✅ Cita confirmada (sin slot): ${userPhone}`);
-                } catch (e) { console.error('Error guardando cita confirmada:', e.message); }
+                    if (session.partialData.fecha_cita && session.partialData.hora_cita) {
+                        logger.info('appointment_saving_fallback', { leadId: session.leadId, fecha: session.partialData.fecha_cita });
+                        saveAppointment(session.leadId, {
+                            servicio: session.partialData.tratamiento,
+                            fecha: session.partialData.fecha_cita,
+                            hora: session.partialData.hora_cita,
+                            estado: 'confirmed',
+                            notas: session.partialData.notas || null,
+                        }).then(apt => {
+                            if (apt) logger.info('appointment_saved', { appointmentId: apt.id, leadId: session.leadId });
+                            else logger.error('appointment_save_failed_fallback', { leadId: session.leadId });
+                        }).catch(e => logger.error('appointment_save_error_fallback', { leadId: session.leadId, error: e.message }));
+                    }
+                    logger.info('cita_confirmada', { telefono: userPhone });
+                } catch (e) { logger.error('error_guardar_cita', { telefono: userPhone, error: e.message }); }
                 aiResponse.respuesta = buildConfirmationMessage(session);
             }
         } else if (aiResponse.cita_confirmada && session.citaConfirmada && session.pendingNewBooking !== null) {
             // Nueva cita (misma o distinta persona) — todos los campos ya validados arriba
             const nb = session.pendingNewBooking;
             try {
-                await guardarLeadEnAirtable({
+                await saveLead({
                     telefono: session.partialData.telefono,
                     nombre: nb.nombre,
                     tratamiento: nb.tratamiento,
@@ -487,8 +538,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 });
                 session.pendingNewBooking = null;
                 incrementMetric('leadsSaved');
-                console.log(`✅ Nueva cita guardada: ${session.partialData.telefono} → ${nb.nombre} ${nb.fecha_cita} ${nb.hora_cita}`);
-            } catch (e) { console.error('Error guardando nueva cita:', e.message); }
+                logger.info('nueva_cita_guardada', { telefono: session.partialData.telefono, nombre: nb.nombre, fecha: nb.fecha_cita, hora: nb.hora_cita });
+            } catch (e) { logger.error('error_guardar_nueva_cita', { telefono: userPhone, error: e.message }); }
         }
 
         // Actualizar partialData — nunca sobreescribir nombre cuando hay pendingNewBooking activo
@@ -515,8 +566,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         }
 
         if (!session.leadGuardado && session.partialData.telefono && session.partialData.tratamiento) {
-            guardarLeadEnAirtable({ ...session.partialData, estado_cita: 'pendiente', airtableRecordId: session.airtableRecordId })
-                .then(rid => { if (rid) session.airtableRecordId = rid; })
+            saveLead({ ...session.partialData, estado_cita: 'pendiente', leadId: session.leadId })
+                .then(rid => { if (rid) session.leadId = rid; })
                 .catch(() => {});
         }
 
@@ -540,7 +591,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         }
 
     } catch (err) {
-        console.error('❌ processMessageCore error:', userPhone, err.message);
+        logger.error('process_message_error', { telefono: userPhone, error: err.message });
         incrementMetric('fallbacksUsed');
         try { await sendWithDelay(client, userPhone, config.conversation?.technicalErrorMessage || 'Lo siento, ha habido un error. Inténtalo de nuevo.'); } catch {}
     }
@@ -572,9 +623,9 @@ async function handleIncomingMessage(client, message) {
                 if (!media?.data) throw new Error('media vacía');
                 userText = await transcribeAudio(media.data, media.mimetype);
                 if (!userText) throw new Error('transcripción vacía');
-                console.log(`🎙️ Audio transcrito [${userPhone}]: "${userText}"`);
+                logger.info('audio_transcrito', { telefono: userPhone });
             } catch (e) {
-                console.error('Error transcribiendo audio:', e.message);
+                logger.error('error_transcripcion', { telefono: userPhone, error: e.message });
                 await sendWithDelay(client, userPhone, 'No pude escuchar el audio 😅 ¿Puedes escribirme lo que necesitas?');
                 return;
             }
@@ -590,12 +641,15 @@ async function handleIncomingMessage(client, message) {
         const messageId = messageKey || Date.now().toString();
         latestMessages.set(userPhone, { message, userText, messageId, timestamp: Date.now() });
 
+        // Log incoming message to Supabase for the monitor
+        saveMessage({ telefono: userPhone.replace('@c.us', '').replace(/\D/g, ''), contenido: userText, direccion: 'entrante' }).catch(() => {});
+
         const currentQueue = userQueues.get(userPhone) || Promise.resolve();
         const newQueue = currentQueue.then(async () => {
             const latest = latestMessages.get(userPhone);
             if (!latest || latest.messageId !== messageId) return;
-            try { await processMessageCore(client, message, userPhone, userText, messageKey); } catch (e) { console.error('Error cola:', e.message); }
-        }).catch(e => console.error('Error cola catch:', e.message));
+            try { await processMessageCore(client, message, userPhone, userText, messageKey); } catch (e) { logger.error('error_cola', { telefono: userPhone, error: e.message }); }
+        }).catch(e => logger.error('error_cola_catch', { error: e.message }));
 
         userQueues.set(userPhone, newQueue);
         newQueue.finally(() => {
@@ -607,7 +661,7 @@ async function handleIncomingMessage(client, message) {
             }, QUEUE_TTL_MS);
         });
     } catch (err) {
-        console.error('❌ handleIncomingMessage error:', err.message);
+        logger.error('error_incoming_message', { error: err.message });
     }
 }
 
@@ -638,9 +692,9 @@ async function initiateLeadConversation(client, leadData) {
         await sendWithDelay(client, userPhone, saludo);
         session.history.push({ role: 'assistant', content: saludo });
         incrementMetric('conversationStarted');
-        console.log(`📱 Conversación iniciada con ${telefono}`);
+        logger.info('conversacion_iniciada', { telefono });
     } catch (e) {
-        console.error('Error iniciando conversación lead:', e.message);
+        logger.error('error_inicio_conversacion', { telefono, error: e.message });
     }
 }
 
@@ -667,7 +721,7 @@ setInterval(() => {
         if (now - session.lastUpdate > ABANDON_THRESHOLD_MS && session.history.filter(m => m.role === 'user').length >= 2) {
             incrementMetric('conversationDropped');
             if (session.partialData.telefono) {
-                guardarLeadEnAirtable({ ...session.partialData, estado_cita: 'abandonado', airtableRecordId: session.airtableRecordId }).catch(() => {});
+                saveLead({ ...session.partialData, estado_cita: 'abandonado', leadId: session.leadId }).catch(() => {});
                 session.leadStatus = 'abandoned';
                 persistSession(phone, session);
             }
@@ -675,4 +729,10 @@ setInterval(() => {
     }
 }, 60000);
 
-module.exports = { handleIncomingMessage, initiateLeadConversation, isBotGlobalActivo, setBotGlobalActivo };
+function setConversationBotMode(phone, active) {
+    const userPhone = phone.includes('@c.us') ? phone : `${phone.replace(/\D/g, '')}@c.us`;
+    const session = userSessions.get(userPhone);
+    if (session) session.botActivo = active;
+}
+
+module.exports = { handleIncomingMessage, initiateLeadConversation, isBotGlobalActivo, setBotGlobalActivo, setConversationBotMode };

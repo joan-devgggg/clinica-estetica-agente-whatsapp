@@ -7,8 +7,9 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
-const { getConfigValue, setConfigValue } = require('./airtable');
+const { getConfigValue, setConfigValue } = require('./db');
 const config = require('../config.json');
+const logger = require('../lib/logger');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ALLOWED_USERS = (process.env.TELEGRAM_ALLOWED_USERS || '')
@@ -81,7 +82,7 @@ Si no entiendes el mensaje → accion: "unknown" con una respuesta pidiendo más
 
         return JSON.parse(res.data.choices[0].message.content);
     } catch (e) {
-        console.error('Telegram admin LLM error:', e.message);
+        logger.error('telegram_llm_error', { error: e.message });
         return null;
     }
 }
@@ -166,7 +167,7 @@ async function ejecutarAccion(accion, datos, bot, chatId) {
 
 function startTelegramBot(options = {}) {
     if (!TELEGRAM_TOKEN) {
-        console.warn('⚠️ TELEGRAM_BOT_TOKEN no configurado — bot de Telegram desactivado');
+        logger.warn('telegram_token_no_configurado');
         return { isBotActivo: getBotActivoFn, setBotActivo: setBotActivoFn };
     }
 
@@ -174,7 +175,7 @@ function startTelegramBot(options = {}) {
     if (options.setBotActivo) setBotActivoFn = options.setBotActivo;
 
     const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
-    console.log('📱 Bot de Telegram iniciado');
+    logger.info('telegram_iniciado');
 
     bot.on('message', async (msg) => {
         const chatId = msg.chat.id;
@@ -229,7 +230,7 @@ function startTelegramBot(options = {}) {
         }
     });
 
-    bot.on('polling_error', (e) => console.error('Telegram polling error:', e.message));
+    bot.on('polling_error', (e) => logger.error('telegram_polling_error', { error: e.message }));
 
     return { isBotActivo: getBotActivoFn, setBotActivo: setBotActivoFn };
 }
