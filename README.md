@@ -87,3 +87,5 @@ server.js              ← Punto de entrada único
 - Acceso Meta Business para configurar el webhook
 - Sistema de citas a conectar (Calendly, Acuity, Google Calendar…)
 - ID de Telegram del administrador
+
+<!-- deploy trigger: forzar rebuild en Railway desde el commit actual de main -->
