@@ -220,7 +220,7 @@ export default function WhatsAppPage() {
       try {
         await fetch(`${API}/api/lista-negra/${leadId}`, {
           method: "DELETE",
-          headers: apiHeaders(orgId),
+          headers: await apiHeaders(orgId),
         });
         await toggleLeadBotMode(orgId, leadId, "auto");
         await sendManualMessage(

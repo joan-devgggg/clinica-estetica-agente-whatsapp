@@ -88,7 +88,7 @@ export function AppointmentEditSheet({
     try {
       const res = await fetch(`${API}/api/citas/${appointmentId}`, {
         method: "PUT",
-        headers: apiHeaders(orgId),
+        headers: await apiHeaders(orgId),
         body: JSON.stringify({
           servicio: form.servicio,
           fecha: form.fecha,
@@ -129,7 +129,7 @@ export function AppointmentEditSheet({
       // 404-tratado-como-éxito, mostraba "eliminada" sin borrar nada.
       const res = await fetch(`${API}/api/citas/${appointmentId}`, {
         method: "PUT",
-        headers: apiHeaders(orgId),
+        headers: await apiHeaders(orgId),
         body: JSON.stringify({ estado: "cancelled" }),
       });
       if (!res.ok) {

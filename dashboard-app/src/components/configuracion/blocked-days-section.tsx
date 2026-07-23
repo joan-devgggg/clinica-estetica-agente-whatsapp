@@ -58,7 +58,7 @@ export function BlockedDaysSection({ orgId }: { orgId: string }) {
     try {
       const [b, sRes] = await Promise.all([
         getBlockedDays(orgId),
-        fetch(`${API}/api/stylists`, { headers: apiHeaders(orgId) }),
+        fetch(`${API}/api/stylists`, { headers: await apiHeaders(orgId) }),
       ]);
       setBlocks(b);
       if (sRes.ok) setStylists(await sRes.json());

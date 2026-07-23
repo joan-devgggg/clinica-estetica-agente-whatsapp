@@ -4,7 +4,7 @@ import type { BlockedDay } from "./types";
 export async function getBlockedDays(orgId: string): Promise<BlockedDay[]> {
   const today = new Date().toISOString().slice(0, 10);
   const res = await fetch(`${API}/api/blocked-days?from=${today}`, {
-    headers: apiHeaders(orgId),
+    headers: await apiHeaders(orgId),
   });
   if (!res.ok) return [];
   return res.json();
@@ -16,7 +16,7 @@ export async function createBlockedDay(
 ): Promise<BlockedDay> {
   const res = await fetch(`${API}/api/blocked-days`, {
     method: "POST",
-    headers: apiHeaders(orgId),
+    headers: await apiHeaders(orgId),
     body: JSON.stringify(data),
   });
   if (!res.ok) {
@@ -29,7 +29,7 @@ export async function createBlockedDay(
 export async function deleteBlockedDay(orgId: string, id: string): Promise<void> {
   const res = await fetch(`${API}/api/blocked-days/${id}`, {
     method: "DELETE",
-    headers: apiHeaders(orgId),
+    headers: await apiHeaders(orgId),
   });
   if (!res.ok) {
     throw new Error("Error eliminando bloqueo");

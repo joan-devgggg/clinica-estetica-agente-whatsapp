@@ -6,8 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node tests/slots.test.js && node tests/service-state.test.js && node tests/stylist-assignment.test.js && node tests/recurrent-stylist-question.test.js && node tests/calendar-sante-slots.test.js && node tests/largo-presentation.test.js && node tests/sante-helpers.test.js && node tests/preferencia-persistence.test.js && node tests/reservation-flows.test.js && node tests/upsell-closing-time.test.js && node tests/consulta-service.test.js && node tests/db-contracts.test.js && node tests/noshow-blacklist-webhook.test.js",
-    "verify:sante": "node tests/verify-sante-catalog.js"
+    "test": "node tests/slots.test.js && node tests/service-state.test.js && node tests/stylist-assignment.test.js && node tests/recurrent-stylist-question.test.js && node tests/calendar-sante-slots.test.js && node tests/largo-presentation.test.js && node tests/sante-helpers.test.js && node tests/preferencia-persistence.test.js && node tests/reservation-flows.test.js && node tests/upsell-closing-time.test.js && node tests/consulta-service.test.js && node tests/db-contracts.test.js && node tests/noshow-blacklist-webhook.test.js && node tests/threesixty-dialog.test.js && node tests/auth-email.test.js && node tests/api-auth-isolation.test.js",
+    "verify:sante": "node tests/verify-sante-catalog.js",
+    "create-user": "node scripts/create-dashboard-user.js"
   },
   "type": "commonjs",
   "dependencies": {

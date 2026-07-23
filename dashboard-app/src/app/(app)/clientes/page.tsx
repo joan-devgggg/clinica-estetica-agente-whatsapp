@@ -34,7 +34,7 @@ export default function ClientesPage() {
     try {
       const params = new URLSearchParams({ limit: "100" });
       if (estadoFilter !== "todos") params.set("estado", estadoFilter);
-      const res = await fetch(`${API}/api/clientes?${params}`, { headers: apiHeaders(orgId) });
+      const res = await fetch(`${API}/api/clientes?${params}`, { headers: await apiHeaders(orgId) });
       if (!res.ok) throw new Error("API no disponible");
       setClientes(await res.json());
     } catch {
@@ -75,14 +75,14 @@ export default function ClientesPage() {
   async function handleSave(id: number, data: Partial<Cliente>) {
     await fetch(`${API}/api/leads/${id}`, {
       method: "PUT",
-      headers: apiHeaders(orgId),
+      headers: await apiHeaders(orgId),
       body: JSON.stringify(data),
     });
     await fetchClientes();
   }
 
   async function handleDelete(id: number) {
-    await fetch(`${API}/api/leads/${id}`, { method: "DELETE", headers: apiHeaders(orgId) });
+    await fetch(`${API}/api/leads/${id}`, { method: "DELETE", headers: await apiHeaders(orgId) });
     await fetchClientes();
   }
 

@@ -31,8 +31,8 @@ export default function DashboardPage() {
     if (!orgId) return;
     try {
       const [statsRes, leadsRes] = await Promise.all([
-        fetch(`${API}/api/stats`, { headers: apiHeaders(orgId) }),
-        fetch(`${API}/api/leads?limit=10`, { headers: apiHeaders(orgId) }),
+        fetch(`${API}/api/stats`, { headers: await apiHeaders(orgId) }),
+        fetch(`${API}/api/leads?limit=10`, { headers: await apiHeaders(orgId) }),
       ]);
       if (!statsRes.ok || !leadsRes.ok) throw new Error("API no disponible");
       setStats(await statsRes.json());

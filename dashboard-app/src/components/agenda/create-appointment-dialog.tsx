@@ -44,7 +44,7 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
       // First create or find contact
       const leadRes = await fetch(`${API}/api/leads`, {
         method: "POST",
-        headers: apiHeaders(orgId),
+        headers: await apiHeaders(orgId),
         body: JSON.stringify({ nombre: form.nombre, telefono: form.telefono }),
       });
       if (!leadRes.ok) {
@@ -57,7 +57,7 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
       // Then create appointment
       const apptRes = await fetch(`${API}/api/appointments`, {
         method: "POST",
-        headers: apiHeaders(orgId),
+        headers: await apiHeaders(orgId),
         body: JSON.stringify({
           contactId: lead.id,
           servicio: form.servicio || "Cita manual",

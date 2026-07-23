@@ -57,9 +57,9 @@ export default function AgendaEstilistasPage() {
     if (!orgId) return;
     try {
       const [styRes, apptRes, bdRes] = await Promise.all([
-        fetch(`${API}/api/stylists`, { headers: apiHeaders(orgId) }),
-        fetch(`${API}/api/citas?desde=${week.start}&hasta=${week.end}`, { headers: apiHeaders(orgId) }),
-        fetch(`${API}/api/blocked-days?from=${week.start}&to=${week.end}`, { headers: apiHeaders(orgId) }),
+        fetch(`${API}/api/stylists`, { headers: await apiHeaders(orgId) }),
+        fetch(`${API}/api/citas?desde=${week.start}&hasta=${week.end}`, { headers: await apiHeaders(orgId) }),
+        fetch(`${API}/api/blocked-days?from=${week.start}&to=${week.end}`, { headers: await apiHeaders(orgId) }),
       ]);
 
       const styData: Stylist[] = styRes.ok ? await styRes.json() : [];
@@ -78,9 +78,9 @@ export default function AgendaEstilistasPage() {
         const [blockRes, schedRes] = await Promise.all([
           fetch(
             `${API}/api/schedule-blocks?stylistId=${activeStylistId}&desde=${week.start}&hasta=${week.end}`,
-            { headers: apiHeaders(orgId) }
+            { headers: await apiHeaders(orgId) }
           ),
-          fetch(`${API}/api/stylist-schedule/${activeStylistId}`, { headers: apiHeaders(orgId) }),
+          fetch(`${API}/api/stylist-schedule/${activeStylistId}`, { headers: await apiHeaders(orgId) }),
         ]);
         setBlocks(blockRes.ok ? await blockRes.json() : []);
         setSchedule(schedRes.ok ? await schedRes.json() : []);
@@ -115,7 +115,7 @@ export default function AgendaEstilistasPage() {
     try {
       const res = await fetch(`${API}/api/schedule-blocks/${blockToDelete.id}`, {
         method: "DELETE",
-        headers: apiHeaders(orgId),
+        headers: await apiHeaders(orgId),
       });
       if (!res.ok) throw new Error();
       toast.success("Bloqueo eliminado");

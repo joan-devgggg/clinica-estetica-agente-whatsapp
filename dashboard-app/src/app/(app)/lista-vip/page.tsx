@@ -48,8 +48,8 @@ export default function ListaVipPage() {
     setLoading(true);
     try {
       const [vipRes, pendRes] = await Promise.all([
-        fetch(`${API}/api/lista-vip`, { headers: apiHeaders(orgId) }),
-        fetch(`${API}/api/pending-actions?type=vip_suggestion`, { headers: apiHeaders(orgId) }),
+        fetch(`${API}/api/lista-vip`, { headers: await apiHeaders(orgId) }),
+        fetch(`${API}/api/pending-actions?type=vip_suggestion`, { headers: await apiHeaders(orgId) }),
       ]);
       if (!vipRes.ok || !pendRes.ok) throw new Error("API no disponible");
       setItems(await vipRes.json());
@@ -79,7 +79,7 @@ export default function ListaVipPage() {
     if (!search.trim()) { setResults([]); return; }
     setSearching(true);
     try {
-      const res = await fetch(`${API}/api/leads?search=${encodeURIComponent(search)}&limit=5`, { headers: apiHeaders(orgId) });
+      const res = await fetch(`${API}/api/leads?search=${encodeURIComponent(search)}&limit=5`, { headers: await apiHeaders(orgId) });
       if (!res.ok) throw new Error("API no disponible");
       const data: Cliente[] = await res.json();
       setResults(data.filter((c) => !c.is_vip));
@@ -91,14 +91,14 @@ export default function ListaVipPage() {
   }
 
   async function addVip(id: number) {
-    await fetch(`${API}/api/lista-vip/${id}`, { method: "POST", headers: apiHeaders(orgId) });
+    await fetch(`${API}/api/lista-vip/${id}`, { method: "POST", headers: await apiHeaders(orgId) });
     toast.success("Añadido a VIP");
     setResults((r) => r.filter((c) => c.id !== id));
     await fetchAll();
   }
 
   async function removeVip(id: number) {
-    await fetch(`${API}/api/lista-vip/${id}`, { method: "DELETE", headers: apiHeaders(orgId) });
+    await fetch(`${API}/api/lista-vip/${id}`, { method: "DELETE", headers: await apiHeaders(orgId) });
     toast.success("Eliminado de VIP");
     await fetchAll();
   }
@@ -106,7 +106,7 @@ export default function ListaVipPage() {
   async function resolveSuggestion(id: string, accion: "aceptar" | "rechazar") {
     await fetch(`${API}/api/pending-actions/${id}/resolver`, {
       method: "POST",
-      headers: apiHeaders(orgId),
+      headers: await apiHeaders(orgId),
       body: JSON.stringify({ accion }),
     });
     toast.success(accion === "aceptar" ? "Cliente añadido a VIP" : "Sugerencia descartada");
@@ -119,7 +119,7 @@ export default function ListaVipPage() {
     try {
       const res = await fetch(`${API}/api/vip/generate-message`, {
         method: "POST",
-        headers: { ...apiHeaders(orgId), "Content-Type": "application/json" },
+        headers: { ...await apiHeaders(orgId), "Content-Type": "application/json" },
         body: JSON.stringify({ idea: promoIdea }),
       });
       if (!res.ok) throw new Error("Error generando mensaje");
@@ -138,7 +138,7 @@ export default function ListaVipPage() {
     try {
       const res = await fetch(`${API}/api/vip/broadcast`, {
         method: "POST",
-        headers: { ...apiHeaders(orgId), "Content-Type": "application/json" },
+        headers: { ...await apiHeaders(orgId), "Content-Type": "application/json" },
         body: JSON.stringify({ mensaje: promoMensaje }),
       });
       if (!res.ok) throw new Error("Error enviando mensajes");

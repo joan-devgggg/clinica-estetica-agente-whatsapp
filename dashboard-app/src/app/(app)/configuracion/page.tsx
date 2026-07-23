@@ -82,7 +82,7 @@ interface AgentConfig {
 async function putConfig(orgId: string, clave: string, valor: unknown) {
   await fetch(`${API}/api/config/${clave}`, {
     method: "PUT",
-    headers: apiHeaders(orgId),
+    headers: await apiHeaders(orgId),
     body: JSON.stringify({ valor }),
   });
 }
@@ -90,7 +90,7 @@ async function putConfig(orgId: string, clave: string, valor: unknown) {
 async function patchAgentConfig(orgId: string, campos: Partial<AgentConfig>) {
   const res = await fetch(`${API}/api/agent-config`, {
     method: "PATCH",
-    headers: apiHeaders(orgId),
+    headers: await apiHeaders(orgId),
     body: JSON.stringify(campos),
   });
   if (!res.ok) throw new Error(await res.text());
@@ -108,8 +108,8 @@ export default function ConfiguracionPage() {
     if (!orgId) return;
     try {
       const [cfgRes, agentRes] = await Promise.all([
-        fetch(`${API}/api/config`, { headers: apiHeaders(orgId) }),
-        fetch(`${API}/api/agent-config`, { headers: apiHeaders(orgId) }),
+        fetch(`${API}/api/config`, { headers: await apiHeaders(orgId) }),
+        fetch(`${API}/api/agent-config`, { headers: await apiHeaders(orgId) }),
       ]);
       if (!cfgRes.ok || !agentRes.ok) throw new Error("API no disponible");
       setConfig(await cfgRes.json());

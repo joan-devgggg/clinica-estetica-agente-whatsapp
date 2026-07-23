@@ -29,6 +29,7 @@ export default function ReservasPage() {
   });
   const [allReservas, setAllReservas] = useState<Reserva[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [editReserva, setEditReserva] = useState<Reserva | null>(null);
   const [stylists, setStylists] = useState<Stylist[]>([]);
   // Memoizado: createClient() en cada render creaba un socket realtime nuevo cada vez y los
@@ -42,10 +43,22 @@ export default function ReservasPage() {
     try {
       const desde = toKey(weekStart);
       const hasta = toKey(addDays(weekStart, 6));
-      const res = await fetch(`${API}/api/citas?desde=${desde}&hasta=${hasta}`, { headers: apiHeaders(orgId) });
-      if (!res.ok) throw new Error("API no disponible");
+      const res = await fetch(`${API}/api/citas?desde=${desde}&hasta=${hasta}`, { headers: await apiHeaders(orgId) });
+      if (!res.ok) {
+        if (res.status === 401) throw new Error("401 — sesión no autorizada (el token no llegó o caducó). Cierra sesión y vuelve a entrar.");
+        if (res.status === 403) throw new Error("403 — sin permiso para esta organización.");
+        throw new Error(`La API respondió ${res.status}. Inténtalo de nuevo o revisa el servidor.`);
+      }
       setAllReservas(await res.json());
-    } catch {
+      setError(null);
+    } catch (err) {
+      // Antes se tragaba el error y se veía "Sin reservas este día", indistinguible
+      // de un día realmente vacío. Ahora dejamos el motivo visible.
+      setError(
+        err instanceof Error && err.message !== "Failed to fetch"
+          ? err.message
+          : "No se pudo contactar con la API (fallo de red o servidor caído)."
+      );
       setAllReservas([]);
     } finally {
       setLoading(false);
@@ -58,10 +71,14 @@ export default function ReservasPage() {
 
   useEffect(() => {
     if (!orgId || orgType !== "salon") return;
-    fetch(`${API}/api/stylists`, { headers: apiHeaders(orgId) })
-      .then(r => r.ok ? r.json() : [])
-      .then(setStylists)
-      .catch(() => {});
+    (async () => {
+      try {
+        const r = await fetch(`${API}/api/stylists`, { headers: await apiHeaders(orgId) });
+        setStylists(r.ok ? await r.json() : []);
+      } catch {
+        /* noop */
+      }
+    })();
   }, [orgId, orgType]);
 
   // Realtime: actualizar agenda cuando el bot confirma o cambia una reserva
@@ -134,6 +151,13 @@ export default function ReservasPage() {
                 {[...Array(3)].map((_, i) => (
                   <Skeleton key={i} className="h-20 w-full rounded-lg" />
                 ))}
+              </div>
+            ) : error ? (
+              <div
+                role="alert"
+                className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-[13px] text-destructive"
+              >
+                No se pudieron cargar las citas. {error}
               </div>
             ) : reservasDelDia.length === 0 ? (
               <div className="flex flex-col items-center gap-3 py-16 text-center">

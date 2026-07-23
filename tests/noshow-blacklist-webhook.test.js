@@ -20,6 +20,10 @@ require.cache[telegramPath] = {
 const { app } = require('../webhook');
 const db = require('../services/db');
 
+// Auth: la API deriva la org del token verificado. Mockeamos el verificador para
+// que 'test-secret' equivalga a un usuario de org-sante (sin tocar Supabase real).
+db.authenticateToken = async (token) => (token === 'test-secret' ? { userId: 'u1', orgId: 'org-sante' } : null);
+
 // Mock de la capa db que usa la ruta (mismo objeto de módulo que webhook.js).
 let blacklistCalls = [];
 db.updateAppointment = async (orgId, id, body) => ({ id, contact_id: 'c1', status: body.estado });

@@ -32,7 +32,7 @@ const ACTIVE_ESTADOS: EstadoCita[] = ["pendiente", "en_conversacion", "pendiente
 
 export async function getConversations(orgId: string): Promise<Conversation[]> {
   try {
-    const res = await fetch(`${API}/api/leads?limit=60&hasConversation=true`, { headers: apiHeaders(orgId) });
+    const res = await fetch(`${API}/api/leads?limit=60&hasConversation=true`, { headers: await apiHeaders(orgId) });
     if (!res.ok) return [];
     const data: Conversation[] = await res.json();
     return data
@@ -52,7 +52,7 @@ export async function getMessages(orgId: string, telefono: string, limit = 100):
   try {
     const res = await fetch(
       `${API}/api/messages/${encodeURIComponent(telefono)}?limit=${limit}`,
-      { headers: apiHeaders(orgId) }
+      { headers: await apiHeaders(orgId) }
     );
     if (!res.ok) return [];
     return await res.json();
@@ -63,7 +63,7 @@ export async function getMessages(orgId: string, telefono: string, limit = 100):
 
 export async function getBotActivo(orgId: string): Promise<boolean> {
   try {
-    const res = await fetch(`${API}/api/config`, { headers: apiHeaders(orgId) });
+    const res = await fetch(`${API}/api/config`, { headers: await apiHeaders(orgId) });
     if (!res.ok) return true;
     const config = await res.json();
     return config.bot_activo !== false;
@@ -75,7 +75,7 @@ export async function getBotActivo(orgId: string): Promise<boolean> {
 export async function toggleGlobalBot(orgId: string, active: boolean): Promise<void> {
   await fetch(`${API}/api/config/bot_activo`, {
     method: "PUT",
-    headers: apiHeaders(orgId),
+    headers: await apiHeaders(orgId),
     body: JSON.stringify({ valor: active }),
   });
 }
@@ -83,7 +83,7 @@ export async function toggleGlobalBot(orgId: string, active: boolean): Promise<v
 export async function toggleLeadBotMode(orgId: string, leadId: number, mode: BotMode): Promise<void> {
   await fetch(`${API}/api/leads/${leadId}/bot-mode`, {
     method: "PUT",
-    headers: apiHeaders(orgId),
+    headers: await apiHeaders(orgId),
     body: JSON.stringify({ mode }),
   });
 }
@@ -91,7 +91,7 @@ export async function toggleLeadBotMode(orgId: string, leadId: number, mode: Bot
 export async function sendManualMessage(orgId: string, telefono: string, mensaje: string): Promise<void> {
   const res = await fetch(`${API}/api/send`, {
     method: "POST",
-    headers: apiHeaders(orgId),
+    headers: await apiHeaders(orgId),
     body: JSON.stringify({ telefono, mensaje }),
   });
   if (!res.ok) {

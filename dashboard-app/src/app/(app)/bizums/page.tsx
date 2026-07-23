@@ -51,7 +51,7 @@ export default function BizumsPage() {
   const fetchBizums = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/api/bizums`, { headers: apiHeaders(orgId) });
+      const res = await fetch(`${API}/api/bizums`, { headers: await apiHeaders(orgId) });
       if (!res.ok) throw new Error("API no disponible");
       setBizums(await res.json());
     } catch {
@@ -79,7 +79,7 @@ export default function BizumsPage() {
     try {
       const res = await fetch(`${API}/api/bizums/${appointmentId}/resolver`, {
         method: "POST",
-        headers: apiHeaders(orgId),
+        headers: await apiHeaders(orgId),
         body: JSON.stringify({ confirmado }),
       });
       if (!res.ok) throw new Error(await res.text());

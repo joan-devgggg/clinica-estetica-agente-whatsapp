@@ -61,8 +61,8 @@ export function StylistsConfig({ orgId }: { orgId: string }) {
     if (!orgId) return;
     try {
       const [stylistsRes, agentRes] = await Promise.all([
-        fetch(`${API}/api/stylists`, { headers: apiHeaders(orgId) }),
-        fetch(`${API}/api/agent-config`, { headers: apiHeaders(orgId) }),
+        fetch(`${API}/api/stylists`, { headers: await apiHeaders(orgId) }),
+        fetch(`${API}/api/agent-config`, { headers: await apiHeaders(orgId) }),
       ]);
       if (!stylistsRes.ok) throw new Error("API no disponible");
       const list: Stylist[] = await stylistsRes.json();
@@ -83,7 +83,7 @@ export function StylistsConfig({ orgId }: { orgId: string }) {
       // Horarios por estilista en paralelo.
       const entries = await Promise.all(
         normalized.map(async (s) => {
-          const r = await fetch(`${API}/api/stylist-schedule/${s.id}`, { headers: apiHeaders(orgId) });
+          const r = await fetch(`${API}/api/stylist-schedule/${s.id}`, { headers: await apiHeaders(orgId) });
           const rows: ScheduleRow[] = r.ok ? await r.json() : [];
           return [s.id, buildDayStates(rows)] as const;
         })
@@ -141,12 +141,12 @@ export function StylistsConfig({ orgId }: { orgId: string }) {
       const [r1, r2] = await Promise.all([
         fetch(`${API}/api/stylists/${id}`, {
           method: "PUT",
-          headers: apiHeaders(orgId),
+          headers: await apiHeaders(orgId),
           body: JSON.stringify({ name: stylist.name, skills: stylist.skills }),
         }),
         fetch(`${API}/api/stylist-schedule/${id}`, {
           method: "PUT",
-          headers: apiHeaders(orgId),
+          headers: await apiHeaders(orgId),
           body: JSON.stringify({ schedules: scheduleRows }),
         }),
       ]);

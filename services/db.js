@@ -1241,7 +1241,26 @@ async function hasActiveAppointmentForSlot(orgId, contactId, fecha, hora) {
     return !!data;
 }
 
+// ─── Auth ───────────────────────────────────────────────────────────────────
+// Verifica un access_token de Supabase Auth (JWT del usuario del dashboard) y
+// deriva su organization_id desde `profiles`. Devuelve { userId, orgId } o null.
+// La org NUNCA se toma de un header del cliente: se deriva del token verificado.
+async function authenticateToken(accessToken) {
+    if (!accessToken || typeof accessToken !== 'string') return null;
+    const { data: userData, error: userErr } = await supabase.auth.getUser(accessToken);
+    const user = userData?.user;
+    if (userErr || !user) return null;
+    const { data: profile } = await supabase
+        .from('profiles')
+        .select('organization_id')
+        .eq('id', user.id)
+        .maybeSingle();
+    if (!profile?.organization_id) return null;
+    return { userId: user.id, orgId: profile.organization_id };
+}
+
 module.exports = {
+    authenticateToken,
     saveLead,
     updateLead,
     findByPhone,

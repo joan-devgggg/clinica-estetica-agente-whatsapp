@@ -35,7 +35,7 @@ export default function ListaNegraPage() {
   const fetchItems = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/api/lista-negra`, { headers: apiHeaders(orgId) });
+      const res = await fetch(`${API}/api/lista-negra`, { headers: await apiHeaders(orgId) });
       if (!res.ok) throw new Error("API no disponible");
       setItems(await res.json());
     } catch {
@@ -62,7 +62,7 @@ export default function ListaNegraPage() {
     if (!search.trim()) { setResults([]); return; }
     setSearching(true);
     try {
-      const res = await fetch(`${API}/api/leads?search=${encodeURIComponent(search)}&limit=5`, { headers: apiHeaders(orgId) });
+      const res = await fetch(`${API}/api/leads?search=${encodeURIComponent(search)}&limit=5`, { headers: await apiHeaders(orgId) });
       if (!res.ok) throw new Error("API no disponible");
       const data: Cliente[] = await res.json();
       setResults(data.filter((c) => !c.is_blacklisted));
@@ -77,7 +77,7 @@ export default function ListaNegraPage() {
     const motivo = window.prompt("Motivo (opcional):", "") ?? "";
     await fetch(`${API}/api/lista-negra/${id}`, {
       method: "POST",
-      headers: apiHeaders(orgId),
+      headers: await apiHeaders(orgId),
       body: JSON.stringify({ motivo }),
     });
     toast.success("Añadido a la lista negra");
@@ -86,7 +86,7 @@ export default function ListaNegraPage() {
   }
 
   async function removeFromBlacklist(id: number) {
-    await fetch(`${API}/api/lista-negra/${id}`, { method: "DELETE", headers: apiHeaders(orgId) });
+    await fetch(`${API}/api/lista-negra/${id}`, { method: "DELETE", headers: await apiHeaders(orgId) });
     toast.success("Eliminado de la lista negra");
     await fetchItems();
   }

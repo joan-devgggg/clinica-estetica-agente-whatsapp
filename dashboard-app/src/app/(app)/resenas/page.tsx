@@ -41,7 +41,7 @@ export default function ResenasPage() {
   const load = useCallback(async () => {
     if (!orgId) return;
     try {
-      const res = await fetch(`${API}/api/reviews-pending`, { headers: apiHeaders(orgId) });
+      const res = await fetch(`${API}/api/reviews-pending`, { headers: await apiHeaders(orgId) });
       if (!res.ok) throw new Error();
       setReviews(await res.json());
     } catch {
@@ -67,7 +67,7 @@ export default function ResenasPage() {
     try {
       const res = await fetch(`${API}/api/reviews/${appointmentId}/send`, {
         method: "POST",
-        headers: apiHeaders(orgId),
+        headers: await apiHeaders(orgId),
       });
       if (!res.ok) throw new Error();
       toast.success("Reseña enviada");

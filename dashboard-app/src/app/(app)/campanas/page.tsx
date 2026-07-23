@@ -43,7 +43,7 @@ export default function CampanasPage() {
     try {
       const res = await fetch(`${API}/api/campaigns/generate-message`, {
         method: "POST",
-        headers: { ...apiHeaders(orgId), "Content-Type": "application/json" },
+        headers: { ...await apiHeaders(orgId), "Content-Type": "application/json" },
         body: JSON.stringify({ idea: promoIdea }),
       });
       if (!res.ok) throw new Error("Error generando mensaje");
@@ -73,7 +73,7 @@ export default function CampanasPage() {
       }
       const res = await fetch(`${API}/api/campaigns/broadcast`, {
         method: "POST",
-        headers: { ...apiHeaders(orgId), "Content-Type": "application/json" },
+        headers: { ...await apiHeaders(orgId), "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error("Error enviando mensajes");

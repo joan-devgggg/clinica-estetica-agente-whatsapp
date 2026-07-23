@@ -43,7 +43,7 @@ export function CreateBlockDialog({ stylists, orgId, defaultStylistId, onClose, 
 
       const res = await fetch(`${API}/api/schedule-blocks`, {
         method: "POST",
-        headers: apiHeaders(orgId),
+        headers: await apiHeaders(orgId),
         body: JSON.stringify({
           stylistId: form.stylistId,
           startsAt,

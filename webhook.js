@@ -12,7 +12,6 @@ const config = require('./config.json');
 const { notifyBlacklistAlert } = require('./services/telegram');
 const logger = require('./lib/logger');
 
-const DASHBOARD_API_SECRET = process.env.DASHBOARD_API_SECRET || '';
 const DEFAULT_ORG = process.env.ORGANIZATION_ID || 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
 const app = express();
@@ -114,29 +113,47 @@ app.post('/webhook/360dialog/:token', require360Token, (req, res) => {
 });
 
 // ─── Auth middleware ──────────────────────────────────────────────────────────
-function requireApiAuth(req, res, next) {
-    if (!DASHBOARD_API_SECRET) {
-        logger.warn('api_sin_proteccion');
+// Cada request al dashboard trae el access_token (JWT) del usuario de Supabase
+// Auth en `Authorization: Bearer <token>`. Verificamos el token contra Supabase,
+// derivamos la organización del usuario desde `profiles` y la IMPUENTA en
+// req.authOrgId. El header X-Organization-Id se ignora: la org sale SIEMPRE del
+// token verificado, de modo que un usuario de una org no puede leer otra org
+// aunque manipule el header. Caché en memoria corta para evitar un round-trip
+// a Supabase por cada request.
+const AUTH_CACHE_TTL_MS = 60 * 1000;
+const authCache = new Map(); // token → { orgId, userId, exp }
+
+async function requireApiAuth(req, res, next) {
+    const auth = req.headers['authorization'] || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+    if (!token) return res.status(401).json({ error: 'Token requerido' });
+
+    const cached = authCache.get(token);
+    if (cached && cached.exp > Date.now()) {
+        req.authOrgId = cached.orgId;
+        req.authUserId = cached.userId;
         return next();
     }
-    const auth = req.headers['authorization'] || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    if (!token) return res.status(401).json({ error: 'Token requerido' });
+
     try {
-        const a = Buffer.from(token);
-        const b = Buffer.from(DASHBOARD_API_SECRET);
-        if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+        const session = await db.authenticateToken(token);
+        if (!session) {
+            authCache.delete(token);
             return res.status(401).json({ error: 'Token inválido' });
         }
-    } catch {
+        authCache.set(token, { orgId: session.orgId, userId: session.userId, exp: Date.now() + AUTH_CACHE_TTL_MS });
+        req.authOrgId = session.orgId;
+        req.authUserId = session.userId;
+        next();
+    } catch (e) {
+        logger.error('api_auth_error', { error: e.message });
         return res.status(401).json({ error: 'Token inválido' });
     }
-    next();
 }
 
-// Extract orgId from header (fallback to env default)
+// La org SIEMPRE proviene del token verificado (nunca de un header del cliente).
 function extractOrgId(req) {
-    return req.headers['x-organization-id'] || DEFAULT_ORG;
+    return req.authOrgId || DEFAULT_ORG;
 }
 
 app.use('/api', requireApiAuth);
