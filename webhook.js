@@ -20,6 +20,8 @@ const app = express();
 const DASHBOARD_ORIGIN = process.env.DASHBOARD_ORIGIN || '';
 const allowedOrigins = [
     'http://localhost:3001',
+    'https://clinica-estetica-agente-whatsapp.vercel.app',
+    'https://panel.ceromanual.es',
     ...(DASHBOARD_ORIGIN ? [DASHBOARD_ORIGIN] : []),
 ];
 
