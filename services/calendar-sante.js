@@ -216,13 +216,25 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     // estilista/servicio ignorando solo el filtro de día (conservando semana/franja),
     // para proponer alternativas verídicas y próximas, nunca inventadas.
     let pedidoDiaSinHueco = false;
-    if (!slots.length && (preferencia.fecha || Number.isInteger(preferencia.diaSemana))) {
-        // 'semana' también se despoja: si se quedara, seguiría acotando el rango (p.ej.
-        // 'esta' un domingo) y este reintento fallaría en falso igual que el primero,
-        // dejando pedidoDiaSinHueco en false para siempre y sin alternativas reales.
-        const { fecha, diaSemana, semana, ...resto } = preferencia;
-        slots = buildSlots(resto);
-        pedidoDiaSinHueco = slots.length > 0;
+    if (!slots.length && (preferencia.semana || preferencia.fecha || Number.isInteger(preferencia.diaSemana))) {
+        // ETAPA A — soltar SOLO el filtro de semana, CONSERVANDO el día pedido. La ventana de
+        // 'esta'/'siguiente' es la restricción que más falsos vacíos produce: cerca del fin de
+        // semana "esta semana" se queda en 1-2 días y excluye el día que la clienta acaba de
+        // pedir (bug real del 24/07: viernes + "el más cercano" → "mañana" → "lunes" daba 0
+        // huecos del lunes teniendo 16 libres). Si con el día intacto SÍ hay huecos, el día
+        // pedido está disponible y no hay nada que advertir → pedidoDiaSinHueco sigue false.
+        if (preferencia.semana) {
+            const { semana, ...sinSemana } = preferencia;
+            slots = buildSlots(sinSemana);
+        }
+        // ETAPA B — si sigue vacío, es el DÍA pedido el que no tiene hueco. Soltamos también
+        // día/fecha para proponer las alternativas reales más cercanas, nunca inventadas, y
+        // marcamos la bandera para que el bot lo avise. Cuerpo idéntico al anterior.
+        if (!slots.length && (preferencia.fecha || Number.isInteger(preferencia.diaSemana))) {
+            const { fecha, diaSemana, semana, ...resto } = preferencia;
+            slots = buildSlots(resto);
+            pedidoDiaSinHueco = slots.length > 0;
+        }
     }
 
     // Sort: preferred stylist first, then by date

@@ -87,6 +87,17 @@ function mockOpenSchedule() {
     return S;
 }
 
+// Horario realista de Sante: lunes a sábado 10–19, DOMINGO CERRADO (sin fila para el día 6).
+function mockLunesASabado() {
+    const S = { id: 'stylist-test', name: 'Ana', active: true, skills: ['Cortes'] };
+    db.getStylistsByOrg = async () => [S];
+    db.getStylistSchedule = async () => [0, 1, 2, 3, 4, 5].map(d => ({ day_of_week: d, start_time: '10:00:00', end_time: '19:00:00' }));
+    db.getBlockedDays = async () => [];
+    db.getScheduleBlocks = async () => [];
+    db.getAppointmentsByStylistAndRange = async () => [];
+    return S;
+}
+
 (async () => {
     // Fix A con fecha absoluta
     await testAsync('FIX A: "semana que viene" → "el martes 14 de julio" borra semana, conserva fecha', async () => {
@@ -140,6 +151,47 @@ function mockOpenSchedule() {
             assert.ok(!slots.requestedDayUnavailable, 'sin falso "día no disponible"');
         });
     });
+
+    // ─── Regresión del bug de producción del 24/07/2026 ──────────────────────────────────
+    // Conversación real: la clienta responde "el mas cercano" a la pregunta de ESTILISTA
+    // (que ASAP_RE lee como preferencia de FECHA → asap:true), luego "mañana" (que añade
+    // semana:'esta') y luego "lunes". El estado resultante es {asap, semana:'esta',
+    // diaSemana:0}: la ventana de "esta semana" un viernes/sábado NO llega al lunes, así que
+    // el motor devolvía 0 huecos del lunes y el LLM escalaba por "error técnico" — teniendo
+    // el lunes 16 huecos libres. El hotfix suelta el filtro de semana ANTES que el día, así
+    // que el día pedido sobrevive. Se prueba con "hoy" en viernes Y en sábado (el sábado es
+    // el peor caso: la ventana colapsa a un solo día, el domingo, que está cerrado).
+    mockLunesASabado();
+
+    for (const [diaNombre, hoyISO, lunesEsperado] of [
+        ['viernes', '2026-07-24T13:45:00Z', '2026-07-27'],
+        ['sábado', '2026-07-25T09:00:00Z', '2026-07-27'],
+    ]) {
+        await testAsync(`BUG 24/07 (hoy=${diaNombre}): "el mas cercano" → "mañana" → "lunes" da huecos DEL LUNES`, async () => {
+            await withMockedNow(hoyISO, async () => {
+                const session = { partialData: {}, weekPreference: null };
+                turno(session, 'el mas cercano');
+                turno(session, 'mañana');
+                turno(session, 'lunes');
+                const pref = session.partialData.preferencia_horaria;
+                // El estado contaminado se reproduce tal cual: el hotfix NO lo evita (eso es
+                // el punto 1, pendiente), solo impide que vacíe el resultado.
+                assert.deepStrictEqual(pref, { asap: true, semana: 'esta', diaSemana: 0 },
+                    'la secuencia debe reproducir el estado exacto del bug');
+
+                const slots = await calendarSante.getAvailableSlots('org', {
+                    serviceDuration: 60, serviceCategory: 'Cortes', preferredStylistId: null, preferencia: pref,
+                });
+                assert.ok(slots.length > 0, 'no puede devolver 0 huecos: eso es lo que hacía escalar por error técnico');
+                assert.ok(slots.some(s => s.fecha === lunesEsperado),
+                    `debe ofrecer huecos del lunes ${lunesEsperado}, que es el día que pidió la clienta`);
+                assert.ok(slots.every(s => new Date(s.fecha + 'T12:00:00').getDay() === 1),
+                    'con el día pedido intacto, todos los huecos son de un lunes');
+                assert.ok(!slots.requestedDayUnavailable,
+                    'el lunes SÍ tiene hueco → no debe avisar de que el día pedido no está disponible');
+            });
+        });
+    }
 
     if (!process.exitCode) console.log('\nTodos los tests de persistencia de preferencia OK');
     // bot.js deja un setInterval (GC) que mantiene vivo el event loop → cerrar explícitamente.

@@ -191,6 +191,21 @@ function mockDbForVeronika({ appointments = [] } = {}) {
     db.getAppointmentsByStylistAndRange = async () => appointments;
 }
 
+// Horario REALISTA de Sante: lunes a sábado 10–19 y DOMINGO CERRADO (el día 6 no existe en
+// stylist_schedules). El domingo cerrado es esencial aquí: es lo que convierte la ventana
+// colapsada de "esta semana" en 0 huecos cuando hoy es viernes o sábado.
+function mockDbLunesASabado() {
+    db.getStylistsByOrg = async () => [
+        { id: VERONIKA_ID, name: 'Veronika', active: true, skills: ['Mechas Balayage'] },
+    ];
+    db.getStylistSchedule = async () => [0, 1, 2, 3, 4, 5].map(d => (
+        { day_of_week: d, start_time: '10:00:00', end_time: '19:00:00' }
+    ));
+    db.getBlockedDays = async () => [];
+    db.getScheduleBlocks = async () => [];
+    db.getAppointmentsByStylistAndRange = async () => [];
+}
+
 (async () => {
     // 2026-07-12 es domingo y 2026-07-13 es lunes (confirmado: new Date('2026-07-12T12:00:00Z').getUTCDay() === 0).
     mockDbForVeronika();
@@ -223,9 +238,14 @@ function mockDbForVeronika({ appointments = [] } = {}) {
         });
     });
 
-    await testAsync('MARTES (día normal, no domingo) + semana:"esta" sigue acotando al domingo de esa misma semana', async () => {
-        // Control: el fix ancla a la semana de startDateStr, que en un día normal es la
-        // misma semana que HOY — no debe cambiar el comportamiento fuera del caso domingo.
+    await testAsync('MARTES + semana:"esta" sin hueco en esa ventana → huecos reales más cercanos, NUNCA 0', async () => {
+        // DECISIÓN CAMBIADA (hotfix 25/07/2026). Antes este test exigía `slots.length === 0`
+        // con el argumento de que "esta semana ya dejó atrás el lunes → 0 es correcto". En
+        // producción ese 0 es justo lo que rompe: el bot recibe totalSlots:0, el LLM lo lee
+        // como fallo del sistema (caso 7 del system prompt, "la lista de huecos no carga") y
+        // escala a humano teniendo el calendario huecos de sobra. Ahora el fallback suelta el
+        // filtro de semana y devuelve los huecos REALES más cercanos: sigue sin inventar nada
+        // (todos caen en días que Veronika trabaja), pero ya no hay falso 0.
         await withMockedNow('2026-07-14T09:00:00Z', async () => { // martes 14/07/2026
             const slots = await calendarSante.getAvailableSlots('org-test', {
                 serviceDuration: 60,
@@ -233,11 +253,61 @@ function mockDbForVeronika({ appointments = [] } = {}) {
                 preferredStylistId: VERONIKA_ID,
                 preferencia: { semana: 'esta' },
             });
-            // Veronika solo trabaja lunes en este mock: "esta semana" desde el martes 14 ya
-            // dejó atrás el lunes 13 → 0 huecos es el resultado CORRECTO aquí (no un bug).
-            // (slots trae además la propiedad no-índice `requestedDayUnavailable`, por eso
-            // se compara la longitud y no con deepStrictEqual contra un array literal.)
-            assert.strictEqual(slots.length, 0, 'el lunes de esta semana ya pasó; no debe inventar huecos');
+            assert.ok(slots.length > 0, 'debe ofrecer los huecos reales más cercanos, no un falso 0 que hace escalar');
+            // Veronika solo trabaja lunes en este mock → ningún hueco puede caer en otro día.
+            assert.ok(slots.every(s => mondayDow(s.fecha) === 0), 'todos los huecos deben ser en lunes (día real de trabajo)');
+            assert.strictEqual(slots[0].fecha, '2026-07-20', 'el más cercano es el lunes siguiente, no uno inventado');
+            // No se pidió ningún DÍA, solo una semana: la bandera de "día pedido sin hueco"
+            // no aplica (la reserva el caso en que la clienta nombra un día concreto).
+            assert.ok(!slots.requestedDayUnavailable, 'sin día pedido no debe marcarse requestedDayUnavailable');
+        });
+    });
+
+    // ─── Ningún día como "hoy" puede producir un falso 0 con semana:"esta" ───────────────
+    // Root cause del bug del 24/07: la ventana de "esta semana" va de [inicio_búsqueda ..
+    // domingo de esa semana], así que un viernes son 2 días y un sábado 1 solo — y ese único
+    // día es el domingo, el que el salón cierra. Con horario real (domingo CERRADO) el motor
+    // devolvía 0 y el bot escalaba por error técnico. Se prueban los 7 anclajes de "hoy".
+    // (El horario sintético de verify:sante abre los 7 días, y por eso nunca lo detectó.)
+    mockDbLunesASabado();
+
+    const ANCLAS = [
+        ['lunes', '2026-07-13'], ['martes', '2026-07-14'], ['miércoles', '2026-07-15'],
+        ['jueves', '2026-07-16'], ['viernes', '2026-07-17'], ['sábado', '2026-07-18'],
+        ['domingo', '2026-07-19'],
+    ];
+    for (const [diaNombre, anclaISO] of ANCLAS) {
+        await testAsync(`HOY=${diaNombre} + semana:"esta" (domingo cerrado) → nunca 0 huecos`, async () => {
+            await withMockedNow(`${anclaISO}T09:00:00Z`, async () => {
+                const slots = await calendarSante.getAvailableSlots('org-test', {
+                    serviceDuration: 60,
+                    serviceCategory: 'Mechas Balayage',
+                    preferredStylistId: VERONIKA_ID,
+                    preferencia: { semana: 'esta' },
+                });
+                assert.ok(slots.length > 0, `HOY=${diaNombre}: la ventana de "esta semana" no puede vaciar el resultado`);
+                assert.ok(slots.every(s => mondayDow(s.fecha) !== 6), 'ningún hueco en domingo (cerrado)');
+            });
+        });
+    }
+
+    // ─── Control: la etapa B del fallback sigue viva ─────────────────────────────────────
+    // Cuando el día pedido REALMENTE no tiene hueco (Veronika solo trabaja lunes y se pide
+    // domingo), hay que seguir soltando el día para dar alternativas verídicas Y marcar la
+    // bandera, que es lo que hace que el bot avise en vez de afirmar que ese día está libre.
+    mockDbForVeronika();
+
+    await testAsync('ETAPA B intacta: día pedido sin hueco → alternativas reales + requestedDayUnavailable', async () => {
+        await withMockedNow('2026-07-14T09:00:00Z', async () => { // martes 14/07/2026
+            const slots = await calendarSante.getAvailableSlots('org-test', {
+                serviceDuration: 60,
+                serviceCategory: 'Mechas Balayage',
+                preferredStylistId: VERONIKA_ID,
+                preferencia: { diaSemana: 6 }, // domingo: Veronika no trabaja
+            });
+            assert.ok(slots.length > 0, 'debe ofrecer alternativas reales');
+            assert.strictEqual(slots.requestedDayUnavailable, true, 'debe avisar de que el día pedido no tiene hueco');
+            assert.ok(slots.every(s => mondayDow(s.fecha) === 0), 'las alternativas caen en días que sí trabaja (lunes)');
         });
     });
 
