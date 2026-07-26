@@ -107,7 +107,7 @@ const ESCALATION_LABELS = {
     lista_negra: 'Cliente en lista negra',
     consulta_extensiones: 'Consulta: extensiones de cabello',
     consulta_permanente: 'Consulta: permanente',
-    consulta_salida_negro: 'Consulta: salida de negro / arrastre de color',
+    consulta_salida_negro: 'Consulta: eliminación del pigmento (salida de negro / arrastre de color)',
     queja_cita: 'Queja sobre cita anterior',
     tono_agresivo: 'Tono agresivo o frustrado',
     pedir_persona: 'Pide hablar con una persona',

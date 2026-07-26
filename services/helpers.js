@@ -695,9 +695,12 @@ function resolveUpcomingDate(dom, month) {
 // salón y (c) la política de cancelación de 48h. Se hace de forma determinista (no
 // dependemos del LLM) y multi-idioma (es/en/ru/uk) para que NUNCA falte.
 
-// Devuelve la primera sugerencia de upselling cuyo "servicio" case con el servicio
-// elegido (por nombre o categoría), o null si no hay regla aplicable.
-function matchUpsellSuggestion(selectedService, upsellingRules) {
+// Devuelve la REGLA de upselling completa cuyo "servicio" case con el servicio
+// elegido (por nombre o categoría), o null si no hay regla aplicable. Se expone
+// aparte de matchUpsellSuggestion porque las reglas de decoloración llevan un campo
+// `tono` que decide con qué redacción se ofrece la sugerencia (consejo de cuidado
+// en vez de venta).
+function matchUpsellRule(selectedService, upsellingRules) {
     if (!selectedService || !Array.isArray(upsellingRules) || !upsellingRules.length) return null;
     const name = normalizeText(selectedService.nombre);
     const cat = normalizeText(selectedService.categoria);
@@ -706,10 +709,17 @@ function matchUpsellSuggestion(selectedService, upsellingRules) {
         if (!r) continue;
         if (name.includes(r) || cat.includes(r) || r.includes(name)) {
             const sug = (rule.sugerencias || [])[0];
-            if (sug) return sug;
+            if (sug) return rule;
         }
     }
     return null;
+}
+
+// Devuelve la primera sugerencia de upselling cuyo "servicio" case con el servicio
+// elegido (por nombre o categoría), o null si no hay regla aplicable.
+function matchUpsellSuggestion(selectedService, upsellingRules) {
+    const rule = matchUpsellRule(selectedService, upsellingRules);
+    return rule ? (rule.sugerencias || [])[0] || null : null;
 }
 
 // Resuelve la duración (min) de un servicio a partir de un NOMBRE o ETIQUETA de
@@ -771,7 +781,44 @@ function _formatFechaHora(fecha, hora, lang) {
     return `${cap} ${T[lang] || T.es} ${hora}`;
 }
 
-function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistNombre, precio, duracion, categoria, direccion, language, upsellSuggestion } = {}) {
+// ─── Promo 10% primera visita a Spa Hair / Masajes ───────────────────────────
+// Tras confirmar CUALQUIER cita el bot menciona los servicios nuevos con un 10% de
+// descuento válido solo en la primera visita. Estas dos categorías del catálogo son
+// las que cubre la promo.
+const SPA_PROMO_CATEGORIES = ['spa hair', 'masajes y spa'];
+
+function isSpaPromoCategory(categoria) {
+    return SPA_PROMO_CATEGORIES.includes(normalizeText(categoria || ''));
+}
+
+// ¿La clienta ya ha estado en Spa Hair o Masajes? Si sí, no es su primera visita y
+// la promo no aplica. Hay que resolverlo contra el catálogo porque
+// appointments.service guarda el nombre de la VARIANTE ("Relax 45min"), no la
+// categoría. `serviciosPasados` son los strings de appointments.service de citas
+// anteriores (pueden venir fusionados con upsells: "Corte + K18").
+function hasPreviousSpaOrMassage(serviciosPasados, catalog) {
+    if (!Array.isArray(serviciosPasados) || !serviciosPasados.length) return false;
+    const promoNames = (Array.isArray(catalog) ? catalog : [])
+        .filter(s => isSpaPromoCategory(s.categoria))
+        .map(s => normalizeText(s.nombre))
+        .filter(Boolean);
+    const promoCats = SPA_PROMO_CATEGORIES;
+    return serviciosPasados.some(svc => {
+        const t = normalizeText(svc || '');
+        if (!t) return false;
+        return promoCats.some(c => t.includes(c)) || promoNames.some(n => t.includes(n));
+    });
+}
+
+// Marcador que se escribe en appointments.notes cuando se ofrece la promo, para que
+// el personal del salón pueda comprobar en el panel si a una clienta que menciona el
+// 10% ya se le ofreció (y por tanto era su primera visita en ese momento).
+function buildSpaPromoNote(date = new Date()) {
+    const fecha = date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Europe/Madrid' });
+    return `[PROMO] 10% 1ª visita Spa Hair/Masajes ofrecido el ${fecha}`;
+}
+
+function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistNombre, precio, duracion, categoria, direccion, language, upsellSuggestion, upsellTono, spaPromo } = {}) {
     const lang = ['es', 'en', 'ru', 'uk'].includes(language) ? language : 'es';
     const dir = (direccion || '').trim();
     const emoji = _serviceEmoji(categoria);
@@ -784,6 +831,8 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
             cancel: '🙏 Si necesitas cancelar o cambiar, avísanos con 48h de antelación.',
             more: '¿Algo más en lo que pueda ayudarte?',
             upsell: s => `Por cierto, mientras estás aquí podrías aprovechar para ${s.toLowerCase()}. ¿Te lo añado?`,
+            upsellCuidado: s => `La decoloración es un proceso agresivo para el cabello, por eso te aconsejamos acompañarla con una ${s.toLowerCase()}: así tu pelo queda corregido y más fuerte 💛 ¿Te la añado a la cita?`,
+            spaPromo: '✨ Y una novedad para nuestras clientas: ahora tenemos Spa Hair Capilar y Masajes. En tu primera visita a cualquiera de los dos tienes un 10% de descuento, por si te apetece probarlo algún día 💛',
             consultaSvc: 'Consulta de valoración (20 min)',
             consultaPrice: 'El precio se confirma en el salón según lo que decidas',
             consultaNote: 'Si tras la consulta decides hacerte el servicio que te recomiende, ya tendrás tiempo reservado a continuación sin esperar.',
@@ -793,6 +842,8 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
             cancel: '🙏 If you need to cancel or change, please let us know 48h in advance.',
             more: 'Anything else I can help you with?',
             upsell: s => `By the way, while you're here you could also add ${s.toLowerCase()}. Want me to include it?`,
+            upsellCuidado: s => `Bleaching is a harsh process for your hair, so we recommend pairing it with a ${s.toLowerCase()}: your hair comes out corrected and stronger 💛 Shall I add it to your appointment?`,
+            spaPromo: "✨ And something new for our clients: we now offer Spa Hair treatments and Massages. You get 10% off your first visit to either one, in case you'd like to try it someday 💛",
             consultaSvc: 'Assessment consultation (20 min)',
             consultaPrice: 'The price is confirmed at the salon based on what you decide',
             consultaNote: "If after the consultation you decide to get the recommended service, you'll already have time reserved right after, no waiting.",
@@ -802,6 +853,8 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
             cancel: '🙏 Если нужно отменить или изменить, предупредите нас за 48ч.',
             more: 'Могу ещё чем-то помочь?',
             upsell: s => `Кстати, пока вы у нас, можно добавить ${s.toLowerCase()}. Добавить?`,
+            upsellCuidado: s => `Осветление — агрессивный процесс для волос, поэтому советуем дополнить его услугой «${s}»: волосы будут восстановлены и станут крепче 💛 Добавить к записи?`,
+            spaPromo: '✨ И новинка для наших клиенток: теперь у нас есть Spa Hair (уход за волосами) и Массажи. На первое посещение любого из них — скидка 10%, если захотите попробовать 💛',
             consultaSvc: 'Консультация-оценка (20 мин)',
             consultaPrice: 'Цена подтверждается в салоне в зависимости от вашего решения',
             consultaNote: 'Если после консультации вы решите сделать рекомендованную услугу, у вас уже будет зарезервировано время сразу после, без ожидания.',
@@ -811,6 +864,8 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
             cancel: '🙏 Якщо потрібно скасувати або змінити, попередьте нас за 48год.',
             more: 'Чим ще можу допомогти?',
             upsell: s => `До речі, поки ви у нас, можна додати ${s.toLowerCase()}. Додати?`,
+            upsellCuidado: s => `Освітлення — агресивний процес для волосся, тому радимо доповнити його послугою «${s}»: волосся буде відновлене й міцніше 💛 Додати до запису?`,
+            spaPromo: '✨ І новинка для наших клієнток: тепер у нас є Spa Hair (догляд за волоссям) і Масажі. На перший візит до будь-якого з них — знижка 10%, якщо захочете спробувати 💛',
             consultaSvc: 'Консультація-оцінка (20 хв)',
             consultaPrice: 'Ціна підтверджується в салоні залежно від вашого рішення',
             consultaNote: 'Якщо після консультації ви вирішите зробити рекомендовану послугу, у вас вже буде зарезервовано час одразу після, без очікування.',
@@ -837,9 +892,18 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
     }
     lines.push('');
     lines.push(t.cancel);
+    // La promo va ANTES de la pregunta de upselling y redactada como afirmación (sin
+    // interrogación) para que un "sí" de la clienta siga siendo, sin ambigüedad, la
+    // respuesta al upselling.
+    if (spaPromo) {
+        lines.push('');
+        lines.push(t.spaPromo);
+    }
     if (upsellSuggestion) {
         lines.push('');
-        lines.push(t.upsell(upsellSuggestion));
+        lines.push(upsellTono === 'cuidado_decoloracion'
+            ? t.upsellCuidado(upsellSuggestion)
+            : t.upsell(upsellSuggestion));
     } else {
         lines.push('');
         lines.push(t.more);
@@ -984,7 +1048,12 @@ function detectConsultaService(text) {
     if (/\b(permanente|permanent)\b/.test(t)) {
         return { type: 'permanente' };
     }
-    if (/salida de negro|arrastre de color|quitar tinte negro|subir tono desde negro|quitar el negro|salir del negro/.test(t)) {
+    // "Eliminación del pigmento" es el nombre nuevo del servicio (las clientas
+    // españolas no entendían "salida de negro"). Mantenemos las variantes antiguas:
+    // muchas clientas siguen pidiéndolo con las palabras de siempre. La clave interna
+    // ('salida_negro' → motivo 'consulta_salida_negro') NO cambia: ya está escrita en
+    // contacts.escalation_reason y pending_actions de escaladas históricas.
+    if (/salida de negro|arrastre de color|quitar tinte negro|subir tono desde negro|quitar el negro|salir del negro|eliminacion del pigmento|eliminar el pigmento|quitar el pigmento|quitar pigmento/.test(t)) {
         return { type: 'salida_negro' };
     }
     return null;
@@ -1073,9 +1142,13 @@ module.exports = {
     detectGuestBooking,
     extractGuestName,
     matchUpsellSuggestion,
+    matchUpsellRule,
     resolveServiceDurationMin,
     shouldDiscardUpsellForClosing,
     buildSanteConfirmationMessage,
+    isSpaPromoCategory,
+    hasPreviousSpaOrMassage,
+    buildSpaPromoNote,
     detectLargoCategory,
     extractLargoPelo,
     classifyLargoVariant,

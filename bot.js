@@ -5,11 +5,11 @@ const {
     updateAppointment, setLeadBotMode, setEscalationReason, setBlacklist, createPendingAction,
     getAgentConfig, updateContactLanguage, updateContactPreferredStylist, updateContactLastStylist,
     getStylistsByOrg, getAllStylistSchedules, getLastCompletedAppointment, hasActiveAppointmentForSlot,
-    getScheduleBlocks, getBlockedDays,
+    getScheduleBlocks, getBlockedDays, getAppointmentsByLead,
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellSuggestion, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -224,12 +224,16 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         pendingCorteGenero: false,
         pendingCorteMujerTipo: false,
         pendingCorteNinoTipo: false,
-        // Escalation confirmation (extensiones / permanente / salida de negro)
+        // Escalation confirmation (extensiones / permanente / eliminación del pigmento)
         pendingEscalation: false,
         pendingEscalationService: null,
         // Segunda reserva en la misma conversación (para un acompañante)
         guestBooking: false,
         guestName: null,
+        // Promo 10% 1ª visita Spa Hair / Masajes: se menciona una sola vez por
+        // conversación (no se limpia en clearServiceState a propósito).
+        spaPromoOffered: false,
+        spaPromoNote: null,
         // Marca el inicio de la conversación activa — el LLM solo ve mensajes posteriores
         conversationStartedAt: Date.now(),
     };
@@ -529,6 +533,8 @@ function buildSessionExtra(session) {
         pendingEscalation: !!session.pendingEscalation,
         pendingEscalationService: session.pendingEscalationService || null,
         proposedSlots: Array.isArray(session.proposedSlots) ? session.proposedSlots : [],
+        spaPromoOffered:   !!session.spaPromoOffered,
+        spaPromoNote:      session.spaPromoNote || null,
     };
 }
 
@@ -1310,7 +1316,45 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
         // Si la cita es para un acompañante, lo dejamos anotado en la cita (el contacto
         // sigue siendo el titular del WhatsApp, pero la cita es para otra persona).
         const guestNote = session.guestBooking && session.guestName ? `Cita para: ${session.guestName}` : null;
-        const notasCita = [guestNote, session.partialData.notas].filter(Boolean).join(' · ') || null;
+
+        // ── Promo 10% primera visita a Spa Hair / Masajes ────────────────────────
+        // Se ofrece tras confirmar cualquier cita, salvo cuando el descuento no podría
+        // aplicarse: la cita reservada YA es de esas categorías, la clienta ya estuvo
+        // antes (no sería su primera visita) o esto es un reagendado (no se re-ofrece).
+        // Se calcula ANTES del INSERT para que la cita nueva no se cuente a sí misma.
+        // La nota queda en appointments.notes → visible en la ficha de reserva del panel.
+        let ofrecerPromoAhora = false;
+        if (!session.spaPromoOffered) {
+            let elegible = !session.modoReagendamiento
+                && !isSpaPromoCategory(session.selectedService?.categoria);
+            if (elegible) {
+                try {
+                    const previas = await getAppointmentsByLead(orgId, session.leadId);
+                    const serviciosPrevios = (previas || [])
+                        .filter(a => a.status !== 'cancelled')
+                        .map(a => a.service);
+                    elegible = !hasPreviousSpaOrMassage(serviciosPrevios, catalogDur);
+                } catch (e) {
+                    // Sin historial fiable no prometemos un descuento que quizá no aplique.
+                    logger.error('error_check_spa_promo', { orgId, telefono: userPhone, error: e.message });
+                    elegible = false;
+                }
+            }
+            if (elegible) {
+                ofrecerPromoAhora = true;
+                session.spaPromoOffered = true;
+                session.spaPromoNote = buildSpaPromoNote();
+            }
+        }
+        // La nota va en la cita que llevó la promo. Un reagendado reescribe notes, así que
+        // en ese caso la re-estampamos idéntica para no perder la constancia.
+        const promoNote = ofrecerPromoAhora || (session.modoReagendamiento && session.spaPromoNote)
+            ? session.spaPromoNote
+            : null;
+        // Solo el mensaje de confirmación de ESTA cita menciona la promo.
+        session._spaPromoEnEsteMensaje = ofrecerPromoAhora;
+
+        const notasCita = [guestNote, promoNote, session.partialData.notas].filter(Boolean).join(' · ') || null;
 
         logger.info('DIAG_finalizarCitaSante_bookAppointment_antes', {
             orgId, telefono: userPhone, leadId: session.leadId,
@@ -1579,6 +1623,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession.pendingEscalation     = !!ex.pendingEscalation;
                     newSession.pendingEscalationService = ex.pendingEscalationService || null;
                     newSession.proposedSlots         = Array.isArray(ex.proposedSlots) ? ex.proposedSlots : [];
+                    newSession.spaPromoOffered       = !!ex.spaPromoOffered;
+                    newSession.spaPromoNote          = ex.spaPromoNote || null;
 
                     const assistantTurns = newSession.history.filter(m => m.role === 'assistant').length;
                     const extraIncoherente =
@@ -2016,11 +2062,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         ru: 'Химическая завивка требует индивидуальной оценки 😊 Хочешь, чтобы я связала тебя с одной из наших специалисток?',
                         uk: 'Хімічна завивка потребує індивідуальної оцінки 😊 Хочеш, щоб я зв\'язала тебе з однією з наших спеціалісток?',
                     },
+                    // Clave interna 'salida_negro' (y el motivo 'consulta_salida_negro' que
+                    // deriva de ella) intactas: el nombre cara a la clienta es el nuevo.
                     salida_negro: {
-                        es: 'La salida de negro requiere una valoración personalizada 😊 ¿Quieres que te ponga en contacto con una de nuestras especialistas?',
-                        en: 'Black removal requires a personalized assessment 😊 Would you like me to put you in touch with one of our specialists?',
-                        ru: 'Выход из чёрного требует индивидуальной оценки 😊 Хочешь, чтобы я связала тебя с одной из наших специалисток?',
-                        uk: 'Вихід з чорного потребує індивідуальної оцінки 😊 Хочеш, щоб я зв\'язала тебе з однією з наших спеціалісток?',
+                        es: 'La eliminación del pigmento requiere una valoración personalizada 😊 ¿Quieres que te ponga en contacto con una de nuestras especialistas?',
+                        en: 'Pigment removal requires a personalized assessment 😊 Would you like me to put you in touch with one of our specialists?',
+                        ru: 'Удаление пигмента требует индивидуальной оценки 😊 Хочешь, чтобы я связала тебя с одной из наших специалисток?',
+                        uk: 'Видалення пігменту потребує індивідуальної оцінки 😊 Хочеш, щоб я зв\'язала тебе з однією з наших спеціалісток?',
                     },
                 };
                 const lang = session.language || 'es';
@@ -2772,9 +2820,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 const cfgConf = await getAgentConfig(orgId);
                 const infoConf = cfgConf?.business_info || {};
                 const svc = session.selectedService || {};
-                let upsellSug = (session.upsellingAccepted || []).length
+                const upsellRule = (session.upsellingAccepted || []).length
                     ? null
-                    : matchUpsellSuggestion(session.selectedService, infoConf.upselling || []);
+                    : matchUpsellRule(session.selectedService, infoConf.upselling || []);
+                let upsellSug = upsellRule ? (upsellRule.sugerencias || [])[0] || null : null;
+                // `tono` de la regla: las de decoloración se ofrecen como consejo de
+                // cuidado, no como venta (ver plantilla upsellCuidado en helpers.js).
+                const upsellTono = upsellRule?.tono || null;
 
                 // Comprobar que el upselling CABE en el tiempo disponible antes de ofrecerlo.
                 // La cita ampliada [inicio, inicio+servicio+upsell] debe respetar, con la MISMA
@@ -2873,6 +2925,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     direccion: infoConf.direccion,
                     language: session.language,
                     upsellSuggestion: upsellSug,
+                    upsellTono,
+                    spaPromo: !!session._spaPromoEnEsteMensaje,
                 });
                 session.upsellingSuggested = true;
                 if (upsellSug) session._lastUpsellSuggestion = upsellSug;

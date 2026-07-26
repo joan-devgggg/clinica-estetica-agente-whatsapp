@@ -78,7 +78,7 @@ export function ChatView({
     lista_negra: "Cliente en lista negra",
     consulta_extensiones: "Consulta sobre extensiones",
     consulta_permanente: "Consulta sobre permanente",
-    consulta_salida_negro: "Consulta sobre salida de negro",
+    consulta_salida_negro: "Consulta sobre eliminación del pigmento (salida de negro)",
     queja_cita: "Queja sobre cita anterior",
     tono_agresivo: "Tono agresivo",
     pedir_persona: "Pidió hablar con una persona",
