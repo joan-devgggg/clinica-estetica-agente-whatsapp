@@ -50,6 +50,18 @@ function getWAClient(orgId) {
     return _waClients;
 }
 
+// Cliente SALIENTE consciente del proveedor. Si la org tiene canal 360dialog
+// configurado (hoy: solo Sante con SANTE_360_API_KEY), devuelve el cliente de
+// Cloud API — que expone la misma superficie (`sendMessage`/`getChatById`) que
+// consume waSendMessage. El resto de orgs (San Remo) siguen por whatsapp-web.js
+// SIN cambios: get360Config devuelve null → getWAClient. Lo usan todos los
+// envíos que dispara el panel (/api/send y los broadcasts).
+const { get360Config, build360Client } = require('./services/providers/threesixty-dialog');
+function getOutboundClient(orgId) {
+    if (get360Config(orgId)) return build360Client(orgId);
+    return getWAClient(orgId);
+}
+
 app.use(express.json());
 
 // ─── Health check ─────────────────────────────────────────────────────────────
@@ -417,7 +429,7 @@ app.post('/api/vip/broadcast', async (req, res) => {
         const orgId = extractOrgId(req);
         const { mensaje } = req.body;
         if (!mensaje) return res.status(400).json({ error: 'mensaje requerido' });
-        const client = getWAClient(orgId);
+        const client = getOutboundClient(orgId);
         if (!client) return res.status(503).json({ error: 'WhatsApp no conectado' });
         const vips = await db.getVipList(orgId);
         if (!vips.length) return res.json({ enviados: 0, omitidos: 0, fallos: [] });
@@ -496,7 +508,7 @@ app.post('/api/campaigns/broadcast', async (req, res) => {
 
         // Ruta mensaje libre — mismo patrón que /api/vip/broadcast.
         if (!mensaje) return res.status(400).json({ error: 'mensaje requerido' });
-        const client = getWAClient(orgId);
+        const client = getOutboundClient(orgId);
         if (!client) return res.status(503).json({ error: 'WhatsApp no conectado' });
         if (!total) return res.json({ enviados: 0, total: 0, omitidos: 0 });
 
@@ -623,7 +635,7 @@ app.post('/api/send', async (req, res) => {
         const orgId = extractOrgId(req);
         const { telefono, mensaje } = req.body;
         if (!telefono || !mensaje) return res.status(400).json({ error: 'telefono y mensaje requeridos' });
-        const client = getWAClient(orgId);
+        const client = getOutboundClient(orgId);
         if (!client) return res.status(503).json({ error: 'WhatsApp no conectado — reconecta el bot e inténtalo de nuevo' });
         const { findOriginalJid, waSendMessage, isTransientWAError } = require('./bot');
         const digits = telefono.replace(/\D/g, '');
