@@ -264,6 +264,12 @@ const SERVICE_SYNONYMS = [
     [/\bmanicure\b/g, 'manicura'],
 ];
 
+// Longitud mínima para que una palabra cuente como "distintiva" de un servicio en la
+// pasada de último recurso de extractServiceFromText. Con 5 caracteres entran los
+// términos que de verdad identifican ("aromaterapia", "relajante", "deportivo",
+// "espalda") y quedan fuera los conectores y las colas cortas de nombre.
+const MIN_DISTINCTIVE_TOKEN = 5;
+
 // normalizeText + canonicalización de sinónimos de servicio. Se aplica por igual
 // al texto de consulta y a los nombres del catálogo dentro de extractServiceFromText
 // para que ambos lados converjan a la misma forma.
@@ -397,6 +403,62 @@ function extractServiceFromText(text, servicesCatalog) {
                 if (inCat.length === 1) { bestMatch = inCat[0]; break; }
                 // categoría ambigua sin variante nombrada → seguimos sin match (null)
             }
+        }
+    }
+
+    // Pasada 2 (último recurso): token distintivo del NOMBRE del catálogo presente en
+    // el texto. Es la simétrica de la pasada 1a — allí buscamos el nombre completo
+    // DENTRO del texto ("quiero aromaterapia relax"), aquí buscamos las palabras del
+    // nombre cuando la clienta lo ABREVIA ("aromaterapia" → "Aromaterapia relax").
+    // Solo corre si todo lo anterior falló, así que nunca cambia una resolución que
+    // hoy funciona: únicamente rescata casos que hoy devuelven null. Y devolver null
+    // aquí no es neutro — el bot ya le ha dicho al LLM que no vuelva a preguntar el
+    // servicio, así que un null se convierte en bucle (ver salonNoSlotsMsg).
+    if (!bestMatch) {
+        // Palabras completas, no substring: las pasadas anteriores usan includes()
+        // sobre la frase entera, demasiado laxo para un criterio tan permisivo como
+        // "una sola palabra del nombre basta".
+        const tokenize = s => s.split(/[^a-z0-9]+/).filter(Boolean);
+        const textTokens = new Set(tokenize(t).filter(w => w.length >= MIN_DISTINCTIVE_TOKEN));
+        // Si el texto nombra una CATEGORÍA del catálogo, la búsqueda no puede salirse de
+        // ella: "Deco Total Blond" (categoría con variantes por largo, ambigua a
+        // propósito) compartía el token "blond" con "Botanical Glow Pure Blond" y se lo
+        // llevaba a otra categoría, otro precio y otra duración. Cruzar de categoría es
+        // peor que no resolver: con null el bot pregunta, con el servicio equivocado
+        // reserva mal en silencio.
+        const catsMencionadas = servicesCatalog
+            .map(s => normalizeText(s.categoria))
+            .filter(c => c && t.includes(c));
+        const candidatos = catsMencionadas.length
+            ? servicesCatalog.filter(s => catsMencionadas.includes(normalizeText(s.categoria)))
+            : servicesCatalog;
+        if (textTokens.size) {
+            let best = null;
+            let bestScore = 0;
+            let bestIsPrefix = false;
+            let tied = false;
+            for (const svc of candidatos) {
+                const distintivos = tokenize(normalizeService(svc.nombre)).filter(w =>
+                    w.length >= MIN_DISTINCTIVE_TOKEN && !SERVICE_MATCH_STOPWORDS.has(w) && !/^\d+$/.test(w)
+                );
+                const matched = distintivos.filter(w => textTokens.has(w));
+                if (!matched.length) continue;
+                // Un token que ENCABEZA el nombre identifica el servicio mucho mejor que
+                // uno accesorio: "masaje relajante" debe caer en "Relajante completo",
+                // no en "Holistic relajante Premium". Es el desempate, no el criterio.
+                const isPrefix = matched.includes(distintivos[0]);
+                if (matched.length > bestScore || (matched.length === bestScore && isPrefix && !bestIsPrefix)) {
+                    bestScore = matched.length;
+                    best = svc;
+                    bestIsPrefix = isPrefix;
+                    tied = false;
+                } else if (matched.length === bestScore && isPrefix === bestIsPrefix) {
+                    tied = true;
+                }
+            }
+            // Empate que el prefijo no rompe → mejor seguir sin match que arriesgar
+            // un servicio equivocado (precio y duración distintos).
+            if (best && !tied) bestMatch = best;
         }
     }
 

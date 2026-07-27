@@ -15,19 +15,32 @@ function test(name, fn) {
     }
 }
 
-// ── Minimal catalog with the shapes that appear in the real Sante catalog ──────
+// ── Fixture con NOMBRES REALES del catálogo de Sante (agent_configs.services) ──
+// Los nombres deben salir del catálogo vivo, no inventarse: un fixture con un
+// "Masaje relajante" que no existe en producción da verde sobre datos irreales y
+// deja pasar bugs de resolución (así se coló el bucle de "Aromaterapia").
 const catalog = [
     // Cortes — multi-service, no length variants
     { nombre: 'Mujer y peinado Dyson', categoria: 'Cortes', precio: 50, duracion: 60 },
     { nombre: 'Mujer y secado',        categoria: 'Cortes', precio: 40, duracion: 45 },
     { nombre: 'Hombre',                categoria: 'Cortes', precio: 25, duracion: 30 },
     // Alisado — multi-variant by length (largo 1/2/3)
-    { nombre: 'Largo 1', categoria: 'Alisado vegano', precio: 80,  duracion: 90 },
-    { nombre: 'Largo 2', categoria: 'Alisado vegano', precio: 100, duracion: 120 },
-    { nombre: 'Largo 3', categoria: 'Alisado vegano', precio: 130, duracion: 150 },
-    // Single-service categories
-    { nombre: 'Masaje relajante', categoria: 'Masajes y SPA',    precio: 60, duracion: 60 },
-    { nombre: 'K18',              categoria: 'Reconstrucción',   precio: 35, duracion: 30 },
+    { nombre: 'Largo 1', categoria: 'Alisado vegano', precio: 210, duracion: 300 },
+    { nombre: 'Largo 2', categoria: 'Alisado vegano', precio: 260, duracion: 300 },
+    { nombre: 'Largo 3', categoria: 'Alisado vegano', precio: 310, duracion: 300 },
+    // Masajes y SPA — multi-service; varios nombres comparten el token "relajante",
+    // que es justo lo que hacía empatar y devolver null.
+    { nombre: 'Relajante completo',         categoria: 'Masajes y SPA', precio: 70, duracion: 60 },
+    { nombre: 'Holistic relajante Premium', categoria: 'Masajes y SPA', precio: 95, duracion: 90 },
+    { nombre: 'Aromaterapia relax',         categoria: 'Masajes y SPA', precio: 75, duracion: 60 },
+    { nombre: 'Drenaje linfático piernas',  categoria: 'Masajes y SPA', precio: 45, duracion: 40 },
+    { nombre: 'Deportivo',                  categoria: 'Masajes y SPA', precio: 65, duracion: 60 },
+    // "Blond" aparece en un nombre de Tratamiento Orgánico y en la CATEGORÍA Deco
+    // Total Blond (variantes por largo): el rescate por token no debe cruzarlas.
+    { nombre: 'Botanical Glow Pure Blond', categoria: 'Tratamiento Orgánico', precio: 45, duracion: 40 },
+    { nombre: 'Largo 1', categoria: 'Deco Total Blond', precio: 125, duracion: 120 },
+    { nombre: 'Largo 2', categoria: 'Deco Total Blond', precio: 145, duracion: 120 },
+    { nombre: 'K18',     categoria: 'Reconstrucción',   precio: 45,  duracion: 60 },
 ];
 
 // ─── extractServiceFromText — Fix: "degradado" maps to Cortes ─────────────────
@@ -51,9 +64,21 @@ test('extractServiceFromText: "quiero un corte" resuelve a Cortes', () => {
     assert.ok(svc === null || svc.categoria === 'Cortes');
 });
 
-test('extractServiceFromText: "masaje" resuelve a Masajes y SPA (única en cat)', () => {
-    const svc = extractServiceFromText('quiero un masaje', catalog);
-    assert.ok(svc !== null, 'debería encontrar un servicio');
+test('extractServiceFromText: "masaje" a secas NO resuelve (categoría ambigua)', () => {
+    // Masajes y SPA tiene 9 servicios en el catálogo real: "quiero un masaje" no
+    // identifica ninguno. null es la respuesta CORRECTA — el bot repregunta el tipo,
+    // que es exactamente lo que hace en producción. Lo que nunca debe hacer es elegir
+    // uno arbitrario (precio y duración distintos).
+    assert.strictEqual(extractServiceFromText('quiero un masaje', catalog), null);
+});
+
+test('extractServiceFromText: "masaje relajante" resuelve a "Relajante completo"', () => {
+    // El token "relajante" está en "Relajante completo" (lo encabeza) y en "Holistic
+    // relajante Premium" (accesorio). Antes empataban y se abortaba con null; el
+    // desempate por prefijo elige el que lleva el término como nombre principal.
+    const svc = extractServiceFromText('quiero un masaje relajante', catalog);
+    assert.ok(svc !== null, 'no debe abortar por empate');
+    assert.strictEqual(svc.nombre, 'Relajante completo');
     assert.strictEqual(svc.categoria, 'Masajes y SPA');
 });
 
@@ -138,4 +163,33 @@ test('extractQuickDataSante: un diaSemana ya guardado en un turno anterior tambi
     const result = extractQuickDataSante('¿Y mañana tienes algo?', { preferencia_horaria: { diaSemana: 3 } });
     assert.strictEqual(result.preferencia_horaria.diaSemana, 3, 'conserva el día ya fijado');
     assert.strictEqual(result.preferencia_horaria.semana, undefined, 'no debe añadir semana sobre un día ya concreto de un turno previo');
+});
+
+// ─── Pasada de último recurso: nombre de catálogo abreviado ───────────────────
+// Bug de producción (27/07/2026): la clienta pide "Aromaterapia", el catálogo la
+// guarda como "Aromaterapia relax" y la resolución devolvía null. Como el prompt ya
+// le había dicho al LLM que no volviera a preguntar el servicio, el null se convertía
+// en bucle infinito ("Para mirarte los huecos primero necesito saber qué servicio").
+
+test('extractServiceFromText: "Aromaterapia" resuelve a "Aromaterapia relax" (nombre abreviado)', () => {
+    const svc = extractServiceFromText('Aromaterapia', catalog);
+    assert.ok(svc !== null, 'no debe devolver null: el null dispara el bucle de repregunta');
+    assert.strictEqual(svc.nombre, 'Aromaterapia relax');
+    assert.strictEqual(svc.categoria, 'Masajes y SPA');
+});
+
+test('extractServiceFromText: el rescate por token no cruza a una categoría que el texto nombra', () => {
+    // "Deco Total Blond" es una categoría con variantes por largo: lo correcto es NO
+    // resolver (el bot preguntará el largo). Resolver a "Botanical Glow Pure Blond"
+    // por el token "blond" sería reservar otro servicio a otro precio en silencio.
+    const svc = extractServiceFromText('quiero deco total blond', catalog);
+    assert.ok(svc === null || svc.categoria === 'Deco Total Blond',
+        `no debe salirse de la categoría nombrada; se obtuvo ${svc && svc.categoria}`);
+});
+
+test('extractServiceFromText: un token corto/no distintivo no basta para resolver', () => {
+    // Sin esta guarda, cualquier palabra suelta del mensaje engancharía un servicio.
+    assert.strictEqual(extractServiceFromText('a las cinco', catalog), null);
+    assert.strictEqual(extractServiceFromText('mañana', catalog), null);
+    assert.strictEqual(extractServiceFromText('me llamo Ana', catalog), null);
 });

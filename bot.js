@@ -2970,19 +2970,36 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // Update partialData from LLM datos
         if (aiResponse.datos) {
             let svcCatalogForNameCheck;
+            const loadSvcCatalog = async () => {
+                if (!svcCatalogForNameCheck) {
+                    const cfgNc = await getAgentConfig(orgId);
+                    svcCatalogForNameCheck = cfgNc?.services || [];
+                }
+                return svcCatalogForNameCheck;
+            };
             for (const [k, v] of Object.entries(aiResponse.datos)) {
                 if (v && v !== '' && v !== 'desconocido' && !k.startsWith('upselling')) {
                     if (k === 'nombre' && orgType === 'salon') {
-                        if (!svcCatalogForNameCheck) {
-                            const cfgNc = await getAgentConfig(orgId);
-                            svcCatalogForNameCheck = cfgNc?.services || [];
-                        }
-                        if (isServiceName(v, svcCatalogForNameCheck)) {
+                        if (isServiceName(v, await loadSvcCatalog())) {
                             logger.info('nombre_llm_es_servicio_descartado', { orgId, nombre: v });
                             continue;
                         }
                     }
-                    const canOverwrite = k === 'nombre' || !session.partialData[k] || session.partialData[k] === 'desconocido';
+                    let canOverwrite = k === 'nombre' || !session.partialData[k] || session.partialData[k] === 'desconocido';
+                    // `servicio` es sticky para no pisar la elección de la clienta con
+                    // una mención de pasada del LLM. Pero si el valor guardado NO resuelve
+                    // contra el catálogo es basura que atasca el flujo: la ruta de
+                    // recuperación lo reintenta cada turno y siempre falla, mientras el
+                    // prompt le dice al LLM que no vuelva a preguntar el servicio → bucle
+                    // infinito. Ahí sí dejamos que lo corrija ("Aromaterapia" →
+                    // "Aromaterapia relax"). Solo salón; San Remo intacto.
+                    if (!canOverwrite && k === 'servicio' && orgType === 'salon'
+                            && !extractServiceFromText(session.partialData.servicio, await loadSvcCatalog())) {
+                        canOverwrite = true;
+                        logger.info('partialData_servicio_no_resoluble_sobreescrito', {
+                            orgId, telefono: userPhone, previo: session.partialData.servicio, nuevo: v,
+                        });
+                    }
                     if (canOverwrite) session.partialData[k] = v;
                 }
             }
