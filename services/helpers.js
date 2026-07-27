@@ -1184,13 +1184,12 @@ function extractLargoPelo(text) {
 // (agent_configs.services). El campo service se guardó con buildFullServiceName para
 // el servicio principal y el nombre crudo de cada upsell, unidos por " + ".
 
-// Resuelve la entrada de catálogo de UN nombre de servicio ya guardado. Cascada
-// determinista → difusa: (a) match exacto contra el nombre completo generado por
-// buildFullServiceName (cubre el servicio principal, ej. "Mechas Airtouch Largo 2");
-// (b) match exacto contra svc.nombre crudo (cubre los upsells, ej. "K18"); (c)
-// fallback difuso vía extractServiceFromText (separadores, sinónimos, variantes).
-// Devuelve el objeto de catálogo o null.
-function resolveServiceCatalogEntry(name, catalog) {
+// Match DETERMINISTA (sin difuso) de un nombre contra el catálogo: (a) nombre completo
+// generado por buildFullServiceName (cubre el servicio principal, ej. "Mechas Airtouch
+// Largo 2"); (b) nombre crudo de catálogo (cubre los upsells, ej. "K18"). Se usa aparte
+// del difuso porque es lo único fiable para decidir si un tramo que contiene " + " es UN
+// servicio de catálogo o dos servicios unidos por el separador.
+function resolveCatalogEntryExact(name, catalog) {
     if (!name || !Array.isArray(catalog) || !catalog.length) return null;
     const target = normalizeText(name);
     // (a) nombre completo generado
@@ -1198,9 +1197,44 @@ function resolveServiceCatalogEntry(name, catalog) {
     if (byFull) return byFull;
     // (b) nombre crudo del catálogo
     const byName = catalog.find(svc => normalizeText(svc.nombre) === target);
-    if (byName) return byName;
-    // (c) fallback difuso
-    return extractServiceFromText(name, catalog) || null;
+    return byName || null;
+}
+
+// Resuelve la entrada de catálogo de UN nombre de servicio ya guardado. Cascada
+// determinista → difusa: primero resolveCatalogEntryExact (a/b) y, si falla, fallback
+// difuso vía extractServiceFromText (separadores, sinónimos, variantes).
+// Devuelve el objeto de catálogo o null.
+function resolveServiceCatalogEntry(name, catalog) {
+    if (!name || !Array.isArray(catalog) || !catalog.length) return null;
+    return resolveCatalogEntryExact(name, catalog) || extractServiceFromText(name, catalog) || null;
+}
+
+// Parte el string de appointments.service en NOMBRES de servicio. No basta con partir por
+// " + ": hay servicios de catálogo que llevan ese separador dentro del nombre ("Pedicura +
+// esmaltado", "Manicura + gel"). Un split ciego los trocea, el trozo suelto queda unmatched
+// y la cita entera cae a "sin poder calcular" → su importe DESAPARECE del informe.
+// Recomponemos de izquierda a derecha con el tramo más largo que matchee de forma
+// determinista ("longest match"), así "Pedicura + esmaltado + K18" da dos servicios y no tres.
+function splitServiceNames(serviceString, catalog) {
+    const parts = String(serviceString || '')
+        .split(' + ')
+        .map(s => s.trim())
+        .filter(Boolean);
+
+    const names = [];
+    for (let i = 0; i < parts.length; i++) {
+        let taken = 1;
+        // De más largo a más corto; solo tramos de 2+ partes (1 parte es el caso por defecto).
+        for (let j = parts.length; j > i + 1; j--) {
+            if (resolveCatalogEntryExact(parts.slice(i, j).join(' + '), catalog)) {
+                taken = j - i;
+                break;
+            }
+        }
+        names.push(parts.slice(i, i + taken).join(' + '));
+        i += taken - 1;
+    }
+    return names;
 }
 
 // Descompone el string appointments.service en segmentos y clasifica cada uno.
@@ -1209,11 +1243,7 @@ function resolveServiceCatalogEntry(name, catalog) {
 // NO suma) o 'unmatched' (sin entrada de catálogo — NO suma). totalConIva es la suma
 // de los segmentos 'ok' (el precio del catálogo ya incluye IVA).
 function computeServiceBilling(serviceString, catalog) {
-    const parts = String(serviceString || '')
-        .split(' + ')
-        .map(s => s.trim())
-        .filter(Boolean);
-    const segments = parts.map(name => {
+    const segments = splitServiceNames(serviceString, catalog).map(name => {
         const entry = resolveServiceCatalogEntry(name, catalog);
         if (!entry) return { name, precio: null, status: 'unmatched' };
         if (entry.precio == null || !Number.isFinite(Number(entry.precio))) {

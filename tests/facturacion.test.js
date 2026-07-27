@@ -26,6 +26,10 @@ const CATALOG = [
     { nombre: 'Mujer y secado', precio: 35, duracion: 60, categoria: 'Cortes' },
     { nombre: 'K18', precio: 45, duracion: 60, categoria: 'Reconstrucción' },
     { nombre: 'Manicura', precio: 20, duracion: 45, categoria: 'Manicura/Pedicura' },
+    // Nombres REALES del catálogo de Sante que contienen el separador " + " dentro del
+    // propio nombre. Un split ciego los troceaba y la cita entera quedaba "sin calcular".
+    { nombre: 'Manicura + gel', precio: 35, duracion: 90, categoria: 'Manicura/Pedicura' },
+    { nombre: 'Pedicura + esmaltado', precio: 45, duracion: 120, categoria: 'Manicura/Pedicura' },
     { nombre: 'Consulta', precio: null, duracion: 300, categoria: 'Consulta' },
 ];
 
@@ -56,6 +60,44 @@ test('split de service con upsell múltiple y suma de precios', () => {
     assert.strictEqual(segments.length, 2);
     assert.strictEqual(totalConIva, 165); // 120 + 45
     assert.ok(segments.every(s => s.status === 'ok'));
+});
+
+// Regresión: servicios de catálogo cuyo NOMBRE lleva " + " dentro. Detectado barriendo el
+// catálogo real de Sante (81 servicios) — un split ciego los partía, dejaba el trozo suelto
+// unmatched y el importe de la cita desaparecía del informe (80€ de 155€ en el caso real).
+test('nombre de catálogo con " + " dentro NO se trocea ("Pedicura + esmaltado")', () => {
+    const { totalConIva, segments } = computeServiceBilling('Pedicura + esmaltado', CATALOG);
+    assert.strictEqual(segments.length, 1);
+    assert.strictEqual(segments[0].name, 'Pedicura + esmaltado');
+    assert.strictEqual(segments[0].status, 'ok');
+    assert.strictEqual(totalConIva, 45);
+});
+
+test('nombre de catálogo con " + " dentro NO se trocea ("Manicura + gel")', () => {
+    // Ojo: "Manicura" TAMBIÉN existe suelto en el catálogo (20€), así que el longest match
+    // debe preferir el nombre largo y no facturar 20€.
+    const { totalConIva, segments } = computeServiceBilling('Manicura + gel', CATALOG);
+    assert.strictEqual(segments.length, 1);
+    assert.strictEqual(segments[0].name, 'Manicura + gel');
+    assert.strictEqual(totalConIva, 35);
+});
+
+test('longest match: "Pedicura + esmaltado + K18" = 2 servicios, no 3', () => {
+    const { totalConIva, segments } = computeServiceBilling('Pedicura + esmaltado + K18', CATALOG);
+    assert.strictEqual(segments.length, 2);
+    assert.deepStrictEqual(segments.map(s => s.name), ['Pedicura + esmaltado', 'K18']);
+    assert.strictEqual(totalConIva, 90); // 45 + 45
+});
+
+test('el combo con " + " dentro SÍ cuenta como facturable en el informe', () => {
+    const rep = buildStylistBillingReport([
+        { appointment_id: 'a1', service: 'Manicura + gel', stylist_id: 's1', stylist_name: 'Olgha', starts_at: '2026-07-28T10:00:00Z', cliente: 'A' },
+        { appointment_id: 'a2', service: 'Pedicura + esmaltado', stylist_id: 's1', stylist_name: 'Olgha', starts_at: '2026-07-28T12:00:00Z', cliente: 'B' },
+    ], CATALOG);
+    const olgha = rep.estilistas[0];
+    assert.strictEqual(olgha.sinCalcular, 0);
+    assert.strictEqual(olgha.totalConIva, 80); // 35 + 45
+    assert.strictEqual(rep.sinCalcularTotal, 0);
 });
 
 test('precio null (Consulta) → unpriced, NO suma', () => {
