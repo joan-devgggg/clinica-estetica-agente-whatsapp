@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Trash2, Star, Ban } from "lucide-react";
+import { Trash2, Star, Ban, AlertCircle } from "lucide-react";
+import { toast } from "sonner";
 import type { Cliente, OrgType } from "@/lib/types";
+import { syncHoraCita, INITIAL_HORA_CITA } from "@/lib/cliente-form";
 import {
   Sheet,
   SheetContent,
@@ -42,7 +44,13 @@ export function ClienteEditSheet({
 }: ClienteEditSheetProps) {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [horaCita, setHoraCita] = useState(cliente?.hora_cita || "");
+  const [error, setError] = useState<string | null>(null);
+  // Derivado del cliente seleccionado (el sheet nunca se desmonta): ver lib/cliente-form.
+  const [horaState, setHoraState] = useState(INITIAL_HORA_CITA);
+  const syncedHora = syncHoraCita(horaState, cliente);
+  if (syncedHora !== horaState) setHoraState(syncedHora);
+  const horaCita = syncedHora.hora;
+  const setHoraCita = (hora: string) => setHoraState((s) => ({ ...s, hora }));
   const isSalon = orgType === "salon";
 
   if (!cliente) return null;
@@ -52,17 +60,27 @@ export function ClienteEditSheet({
     if (!cliente) return;
     const form = new FormData(e.currentTarget);
     setSaving(true);
-    await onSave(cliente.id, {
-      nombre: form.get("nombre") as string,
-      ...(!isSalon && { personas: Number(form.get("personas")) || undefined }),
-      ...(!isSalon && { ocasion: form.get("ocasion") as string }),
-      estado_cita: form.get("estado_cita") as import("@/lib/types").EstadoCita,
-      fecha_cita: form.get("fecha_cita") as string,
-      hora_cita: horaCita,
-      allergies: form.get("allergies") as string,
-      preferences: form.get("preferences") as string,
-      notas: form.get("notas") as string,
-    });
+    setError(null);
+    try {
+      await onSave(cliente.id, {
+        nombre: form.get("nombre") as string,
+        ...(!isSalon && { personas: Number(form.get("personas")) || undefined }),
+        ...(!isSalon && { ocasion: form.get("ocasion") as string }),
+        estado_cita: form.get("estado_cita") as import("@/lib/types").EstadoCita,
+        fecha_cita: form.get("fecha_cita") as string,
+        hora_cita: horaCita,
+        allergies: form.get("allergies") as string,
+        preferences: form.get("preferences") as string,
+        notas: form.get("notas") as string,
+      });
+    } catch (err) {
+      // El sheet NO se cierra: cerrarlo daría por guardado algo que no se guardó.
+      const msg = err instanceof Error ? err.message : "No se pudieron guardar los cambios";
+      setError(msg);
+      toast.error("No se pudieron guardar los cambios", { description: msg });
+      setSaving(false);
+      return;
+    }
     setSaving(false);
     onClose();
   }
@@ -99,6 +117,18 @@ export function ClienteEditSheet({
           onSubmit={handleSubmit}
           className="flex-1 overflow-y-auto px-6 py-5 space-y-4"
         >
+          {error && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[12px] text-destructive"
+            >
+              <AlertCircle size={14} className="mt-px shrink-0" />
+              <span>
+                <strong className="font-semibold">No se guardó.</strong> {error}
+              </span>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <Label className="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground">
               Nombre

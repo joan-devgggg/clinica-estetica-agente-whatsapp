@@ -204,11 +204,15 @@ app.post('/api/leads', async (req, res) => {
 });
 
 app.put('/api/leads/:id', async (req, res) => {
+    const orgId = extractOrgId(req);
     try {
-        const orgId = extractOrgId(req);
         const lead = await db.updateLeadById(orgId, req.params.id, req.body);
         res.json(lead);
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) {
+        // Nunca devolver 200 con la fila sin modificar: el panel lo leería como "guardado".
+        logger.error('lead_update_error', { orgId, leadId: req.params.id, error: e.message });
+        res.status(500).json({ error: e.message });
+    }
 });
 
 app.delete('/api/leads/:id', async (req, res) => {

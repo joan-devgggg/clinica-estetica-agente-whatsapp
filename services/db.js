@@ -206,6 +206,23 @@ async function saveLead(orgId, datos) {
     return data?.id ?? null;
 }
 
+// Columnas de `contacts` que NO son text: un '' que llegue de un <input> vacío del panel
+// (date/number sin valor devuelven cadena vacía) hace que Postgres rechace la sentencia
+// ENTERA — p.ej. 22007 «invalid input syntax for type date: ""» — y con ella se pierden
+// también las alergias, preferencias y notas que sí venían rellenas. Se normaliza a null.
+const CONTACT_NON_TEXT_COLUMNS = new Set([
+    'fecha_cita',            // date
+    'party_size',            // integer
+    'preferred_stylist_id',  // uuid
+]);
+
+function normalizeContactUpdates(updates) {
+    for (const col of Object.keys(updates)) {
+        if (CONTACT_NON_TEXT_COLUMNS.has(col) && updates[col] === '') updates[col] = null;
+    }
+    return updates;
+}
+
 async function updateLead(orgId, datos) {
     const oid = resolveOrg(orgId);
     if (!datos.telefono && !datos.leadId) return false;
@@ -233,6 +250,7 @@ async function updateLead(orgId, datos) {
     if (datos.allergies !== undefined)           updates.allergies = datos.allergies;
     if (datos.preferences !== undefined)         updates.preferences = datos.preferences;
 
+    normalizeContactUpdates(updates);
     await supabase.from('contacts').update(updates).eq('id', existing.id).eq('organization_id', oid);
     return true;
 }
@@ -257,7 +275,11 @@ async function updateLeadById(orgId, id, campos) {
     for (const [oldKey, newKey] of Object.entries(fieldMap)) {
         if (campos[oldKey] !== undefined) updates[newKey] = campos[oldKey];
     }
-    await supabase.from('contacts').update(updates).eq('id', id).eq('organization_id', oid);
+    normalizeContactUpdates(updates);
+    // El error de Supabase se PROPAGA: devolver la fila releída sin mirarlo hacía que un
+    // UPDATE fallido se viese como un guardado correcto (200 con los valores viejos).
+    const { error } = await supabase.from('contacts').update(updates).eq('id', id).eq('organization_id', oid);
+    if (error) throw new Error(`No se pudo guardar el contacto: ${error.message}`);
     return findById(oid, id);
 }
 

@@ -73,11 +73,19 @@ export default function ClientesPage() {
   });
 
   async function handleSave(id: number, data: Partial<Cliente>) {
-    await fetch(`${API}/api/leads/${id}`, {
+    const res = await fetch(`${API}/api/leads/${id}`, {
       method: "PUT",
       headers: await apiHeaders(orgId),
       body: JSON.stringify(data),
     });
+    // Sin esta comprobación un 500 se veía igual que un guardado correcto.
+    if (!res.ok) {
+      const detalle = await res
+        .json()
+        .then((b) => b?.error as string | undefined)
+        .catch(() => undefined);
+      throw new Error(detalle || `El servidor respondió ${res.status}`);
+    }
     await fetchClientes();
   }
 
