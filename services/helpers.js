@@ -1257,13 +1257,51 @@ function computeServiceBilling(serviceString, catalog) {
 
 const _round2 = n => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
+// Centinela del grupo "citas sin estilista asignada". Es la clave del bucket del informe,
+// el valor del filtro en el selector del panel y el valor aceptado por ?stylist= en la API:
+// una sola constante para que las tres capas no se desincronicen.
+const NO_STYLIST_KEY = '__sin_estilista__';
+
+// Filtra las citas de UNA estilista antes de que entren al motor de cálculo. El filtro
+// NUNCA recalcula importes: solo reduce el conjunto de entrada, así el informe filtrado
+// sale de la misma aritmética que la fila de esa estilista en el informe de "todas".
+// stylistId null/undefined/'' = sin filtro; NO_STYLIST_KEY = citas con stylist_id null.
+function filterAppointmentsByStylist(appointments, stylistId) {
+    const list = appointments || [];
+    if (stylistId == null || stylistId === '') return [...list];
+    if (stylistId === NO_STYLIST_KEY) return list.filter(a => !a.stylist_id);
+    return list.filter(a => a.stylist_id === stylistId);
+}
+
+// Opciones del selector de estilista del informe. Unión de (a) las estilistas activas de
+// la org y (b) las que aparecen en el informe — (b) cubre a una estilista desactivada que
+// aún tenga citas facturables en el periodo, que si no desaparecería del selector y su
+// dinero quedaría sin poder inspeccionarse. Siempre añade el grupo "sin estilista" al final
+// para que la suma de las opciones individuales cuadre con el total de "todas".
+function buildBillingStylistOptions(stylists, estilistasDelInforme) {
+    const byId = new Map();
+    for (const s of (stylists || [])) {
+        if (!s || !s.id) continue;
+        byId.set(s.id, { stylist_id: s.id, stylist_name: s.name || null });
+    }
+    for (const e of (estilistasDelInforme || [])) {
+        if (!e || !e.stylist_id || byId.has(e.stylist_id)) continue;
+        byId.set(e.stylist_id, { stylist_id: e.stylist_id, stylist_name: e.stylist_name || null });
+    }
+    const opciones = [...byId.values()].sort((a, b) =>
+        String(a.stylist_name || '').localeCompare(String(b.stylist_name || ''), 'es')
+    );
+    opciones.push({ stylist_id: NO_STYLIST_KEY, stylist_name: 'Sin estilista asignada' });
+    return opciones;
+}
+
 // Construye el informe agregado por estilista a partir de las citas COMPLETED del
 // periodo (ya filtradas y con { appointment_id, service, stylist_id, stylist_name,
 // starts_at, cliente }) y el catálogo. Cada cita cuenta como "sin poder calcular" si
 // ALGÚN segmento suyo es unpriced/unmatched (su total sería incorrecto). Los precios
 // del catálogo incluyen IVA → base sin IVA = total / (1 + ivaRate).
 function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {}) {
-    const NO_STYLIST = '__sin_estilista__';
+    const NO_STYLIST = NO_STYLIST_KEY;
     const buckets = new Map();
 
     const getBucket = (key, name) => {
@@ -1313,8 +1351,12 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
         };
     }).sort((a, b) => b.totalConIva - a.totalConIva);
 
+    // Los totales globales son la SUMA de las filas ya redondeadas (no se rederivan del
+    // total global): así el informe de "todas" cuadra al céntimo con la suma de los informes
+    // individuales por estilista, y la tabla suma exactamente lo que muestran las KPI.
     const totalConIva = _round2(estilistas.reduce((s, e) => s + e.totalConIva, 0));
-    const totalSinIva = _round2(totalConIva / (1 + ivaRate));
+    const totalSinIva = _round2(estilistas.reduce((s, e) => s + e.totalSinIva, 0));
+    const iva = _round2(estilistas.reduce((s, e) => s + e.iva, 0));
     const numCitas = estilistas.reduce((s, e) => s + e.numCitas, 0);
     const sinCalcularTotal = estilistas.reduce((s, e) => s + e.sinCalcular, 0);
 
@@ -1323,7 +1365,7 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
         totales: {
             totalConIva,
             totalSinIva,
-            iva: _round2(totalConIva - totalSinIva),
+            iva,
             numCitas,
         },
         sinCalcularTotal,
@@ -1378,4 +1420,7 @@ module.exports = {
     resolveServiceCatalogEntry,
     computeServiceBilling,
     buildStylistBillingReport,
+    filterAppointmentsByStylist,
+    buildBillingStylistOptions,
+    NO_STYLIST_KEY,
 };

@@ -4,6 +4,7 @@
  */
 
 const supabase = require('./supabase');
+const { NO_STYLIST_KEY } = require('./helpers');
 
 const DEFAULT_ORG = process.env.ORGANIZATION_ID || 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
@@ -741,18 +742,28 @@ async function getAppointmentsByDateRange(orgId, desde, hasta) {
 // Citas COMPLETED de un rango de fechas, con estilista y cliente, para el informe de
 // facturación por estilista. No devuelve precio (appointments no lo guarda): el importe
 // se recalcula en helpers a partir de `service` contra el catálogo.
-async function getCompletedAppointmentsForBilling(orgId, desde, hasta) {
+// stylistId opcional: UUID → solo esa estilista; NO_STYLIST_KEY → solo citas sin estilista
+// asignada; null/undefined → todas. El importe NO cambia por filtrar: solo entran menos
+// citas al mismo cálculo.
+async function getCompletedAppointmentsForBilling(orgId, desde, hasta, stylistId = null) {
     const oid = resolveOrg(orgId);
     const desdeTs = new Date(`${desde}T00:00:00`).toISOString();
     const hastaTs = new Date(`${hasta}T23:59:59`).toISOString();
-    const { data } = await supabase
+    let query = supabase
         .from('appointments')
         .select('id, service, stylist_id, starts_at, contacts!contact_id(full_name), stylists!stylist_id(id, name)')
         .eq('organization_id', oid)
         .eq('status', 'completed')
         .gte('starts_at', desdeTs)
-        .lte('starts_at', hastaTs)
-        .order('starts_at', { ascending: true });
+        .lte('starts_at', hastaTs);
+
+    if (stylistId === NO_STYLIST_KEY) query = query.is('stylist_id', null);
+    else if (stylistId) query = query.eq('stylist_id', stylistId);
+
+    // Es dinero: si la consulta falla NO devolvemos [] (se leería como "0 € facturados").
+    // Propagamos el error y el panel muestra el fallo.
+    const { data, error } = await query.order('starts_at', { ascending: true });
+    if (error) throw new Error(error.message);
 
     return (data || []).map(row => ({
         appointment_id: row.id,

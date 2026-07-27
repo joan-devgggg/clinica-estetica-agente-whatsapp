@@ -85,12 +85,24 @@ interface BillingStylist {
   citas: BillingCita[];
 }
 
+interface BillingStylistOption {
+  stylist_id: string;
+  stylist_name: string | null;
+}
+
 interface BillingReport {
   estilistas: BillingStylist[];
   totales: { totalConIva: number; totalSinIva: number; iva: number; numCitas: number };
   sinCalcularTotal: number;
   ivaRate: number;
+  // Opciones del selector: las estilistas activas de la org + las que tengan citas en el
+  // periodo + "Sin estilista asignada". No dependen del filtro aplicado.
+  estilistasDisponibles: BillingStylistOption[];
+  stylistFiltro: string | null;
 }
+
+// Centinela del grupo "citas sin estilista asignada" (mismo valor en helpers.js y en la API).
+const NO_STYLIST_KEY = "__sin_estilista__";
 
 const eur = (n: number) =>
   new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(n);
@@ -101,27 +113,36 @@ export default function FacturacionPage() {
   const [report, setReport] = useState<BillingReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [stylistFilter, setStylistFilter] = useState<string>("all");
+  // Las opciones viven aparte del informe: si una carga falla, el selector no puede
+  // vaciarse y aparentar "Todas las estilistas" mientras hay un filtro aplicado.
+  const [stylistOptions, setStylistOptions] = useState<BillingStylistOption[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const { orgId } = useOrg();
   const range = periodMode === "week" ? getWeekRange(offset) : getMonthRange(offset);
 
+  // El filtro por estilista se aplica en el servidor: el informe que llega ya es el de la
+  // estilista elegida (mismos importes que su fila en "todas"). El panel no recalcula dinero.
   const loadData = useCallback(async () => {
     if (!orgId) return;
+    setLoading(true);
     try {
+      const filtro = stylistFilter === "all" ? "" : `&stylist=${encodeURIComponent(stylistFilter)}`;
       const res = await fetch(
-        `${API}/api/facturacion?desde=${range.start}&hasta=${range.end}`,
+        `${API}/api/facturacion?desde=${range.start}&hasta=${range.end}${filtro}`,
         { headers: await apiHeaders(orgId) }
       );
       if (!res.ok) throw new Error();
-      setReport(await res.json());
+      const data: BillingReport = await res.json();
+      setReport(data);
+      if (data.estilistasDisponibles?.length) setStylistOptions(data.estilistasDisponibles);
     } catch {
       toast.error("Error cargando la facturación");
       setReport(null);
     } finally {
       setLoading(false);
     }
-  }, [orgId, range.start, range.end]);
+  }, [orgId, range.start, range.end, stylistFilter]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -131,25 +152,15 @@ export default function FacturacionPage() {
     setOffset(0);
   }
 
-  const rows = (report?.estilistas ?? []).filter(
-    e => stylistFilter === "all" || (e.stylist_id ?? "__sin_estilista__") === stylistFilter
-  );
+  const rows = report?.estilistas ?? [];
+  const visibleTotals = report?.totales;
+  const visibleSinCalcular = report?.sinCalcularTotal ?? 0;
+  const ivaPct = Math.round((report?.ivaRate ?? 0.21) * 100);
 
-  // Totales visibles: si hay filtro por estilista, recalculamos sobre la fila filtrada.
-  const visibleTotals = stylistFilter === "all"
-    ? report?.totales
-    : rows.reduce(
-        (acc, e) => ({
-          totalConIva: acc.totalConIva + e.totalConIva,
-          totalSinIva: acc.totalSinIva + e.totalSinIva,
-          iva: acc.iva + e.iva,
-          numCitas: acc.numCitas + e.numCitas,
-        }),
-        { totalConIva: 0, totalSinIva: 0, iva: 0, numCitas: 0 }
-      );
-  const visibleSinCalcular = stylistFilter === "all"
-    ? report?.sinCalcularTotal ?? 0
-    : rows.reduce((n, e) => n + e.sinCalcular, 0);
+  const selectedName =
+    stylistFilter === "all"
+      ? null
+      : stylistOptions.find(o => o.stylist_id === stylistFilter)?.stylist_name ?? null;
 
   function toggle(id: string) {
     setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
@@ -207,12 +218,10 @@ export default function FacturacionPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">Todas las estilistas</SelectItem>
-                {(report?.estilistas ?? []).map(e => (
-                  <SelectItem
-                    key={e.stylist_id ?? "__sin_estilista__"}
-                    value={e.stylist_id ?? "__sin_estilista__"}
-                  >
-                    {e.stylist_name ?? "Sin estilista asignada"}
+                {stylistOptions.map(o => (
+                  <SelectItem key={o.stylist_id} value={o.stylist_id}>
+                    {o.stylist_name ??
+                      (o.stylist_id === NO_STYLIST_KEY ? "Sin estilista asignada" : "—")}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -255,7 +264,9 @@ export default function FacturacionPage() {
             <Skeleton className="h-[300px] w-full rounded-lg" />
           ) : rows.length === 0 ? (
             <p className="text-center text-muted-foreground py-12">
-              No hay citas completadas en este periodo
+              {selectedName
+                ? `No hay citas completadas de ${selectedName} en este periodo`
+                : "No hay citas completadas en este periodo"}
             </p>
           ) : (
             <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
@@ -265,7 +276,7 @@ export default function FacturacionPage() {
                     <TableHead className="text-[10.5px] uppercase tracking-[0.07em] font-semibold text-muted-foreground">Estilista</TableHead>
                     <TableHead className="text-[10.5px] uppercase tracking-[0.07em] font-semibold text-muted-foreground text-right">Citas</TableHead>
                     <TableHead className="text-[10.5px] uppercase tracking-[0.07em] font-semibold text-muted-foreground text-right">Base sin IVA</TableHead>
-                    <TableHead className="text-[10.5px] uppercase tracking-[0.07em] font-semibold text-muted-foreground text-right">IVA (21%)</TableHead>
+                    <TableHead className="text-[10.5px] uppercase tracking-[0.07em] font-semibold text-muted-foreground text-right">IVA ({ivaPct}%)</TableHead>
                     <TableHead className="text-[10.5px] uppercase tracking-[0.07em] font-semibold text-muted-foreground text-right">Total con IVA</TableHead>
                     <TableHead className="w-10" />
                   </TableRow>

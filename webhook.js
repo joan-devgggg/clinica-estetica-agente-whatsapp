@@ -265,19 +265,39 @@ app.get('/api/citas', async (req, res) => {
 
 // Informe de facturación por estilista (solo salón). Recalcula el importe de las citas
 // COMPLETED del rango cruzando appointments.service contra el catálogo de precios.
+// ?stylist= filtra por UNA estilista (UUID) o por el grupo sin estilista asignada.
 app.get('/api/facturacion', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
         const hoy = new Date().toISOString().split('T')[0];
         const desde = req.query.desde || hoy;
         const hasta = req.query.hasta || hoy;
-        const { buildStylistBillingReport } = require('./services/helpers');
-        const [citas, agentConfig] = await Promise.all([
-            db.getCompletedAppointmentsForBilling(orgId, desde, hasta),
+        const {
+            buildStylistBillingReport, buildBillingStylistOptions, NO_STYLIST_KEY,
+        } = require('./services/helpers');
+
+        // Es dinero: un filtro mal escrito se rechaza en voz alta. Ignorarlo devolvería el
+        // total de TODAS las estilistas presentado como el de una sola.
+        const stylistParam = req.query.stylist;
+        let stylistFiltro = null;
+        if (stylistParam != null && stylistParam !== '' && stylistParam !== 'all') {
+            const valido = stylistParam === NO_STYLIST_KEY ||
+                /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(stylistParam));
+            if (!valido) return res.status(400).json({ error: 'stylist inválido' });
+            stylistFiltro = String(stylistParam);
+        }
+
+        const [citas, agentConfig, stylists] = await Promise.all([
+            db.getCompletedAppointmentsForBilling(orgId, desde, hasta, stylistFiltro),
             db.getAgentConfig(orgId),
+            db.getStylistsByOrg(orgId),
         ]);
         const report = buildStylistBillingReport(citas, agentConfig?.services || []);
-        res.json(report);
+        res.json({
+            ...report,
+            estilistasDisponibles: buildBillingStylistOptions(stylists, report.estilistas),
+            stylistFiltro,
+        });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
