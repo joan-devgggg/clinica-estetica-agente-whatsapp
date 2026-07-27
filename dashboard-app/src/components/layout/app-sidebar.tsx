@@ -16,6 +16,7 @@ import {
   MessageSquareText,
   CreditCard,
   Megaphone,
+  Receipt,
 } from "lucide-react";
 import {
   Sidebar,
@@ -62,6 +63,7 @@ const salonNavItems: NavItem[] = [
 ];
 
 const salonSettingsItems: NavItem[] = [
+  { href: "/facturacion", label: "Facturación", icon: Receipt },
   { href: "/lista-vip", label: "Lista VIP", icon: Star },
   { href: "/campanas", label: "Campañas", icon: Megaphone },
   { href: "/lista-negra", label: "Lista negra", icon: Ban },

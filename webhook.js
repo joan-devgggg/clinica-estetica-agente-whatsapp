@@ -263,6 +263,24 @@ app.get('/api/citas', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Informe de facturación por estilista (solo salón). Recalcula el importe de las citas
+// COMPLETED del rango cruzando appointments.service contra el catálogo de precios.
+app.get('/api/facturacion', async (req, res) => {
+    try {
+        const orgId = extractOrgId(req);
+        const hoy = new Date().toISOString().split('T')[0];
+        const desde = req.query.desde || hoy;
+        const hasta = req.query.hasta || hoy;
+        const { buildStylistBillingReport } = require('./services/helpers');
+        const [citas, agentConfig] = await Promise.all([
+            db.getCompletedAppointmentsForBilling(orgId, desde, hasta),
+            db.getAgentConfig(orgId),
+        ]);
+        const report = buildStylistBillingReport(citas, agentConfig?.services || []);
+        res.json(report);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/appointments', async (req, res) => {
     try {
         const orgId = extractOrgId(req);

@@ -738,6 +738,32 @@ async function getAppointmentsByDateRange(orgId, desde, hasta) {
     });
 }
 
+// Citas COMPLETED de un rango de fechas, con estilista y cliente, para el informe de
+// facturación por estilista. No devuelve precio (appointments no lo guarda): el importe
+// se recalcula en helpers a partir de `service` contra el catálogo.
+async function getCompletedAppointmentsForBilling(orgId, desde, hasta) {
+    const oid = resolveOrg(orgId);
+    const desdeTs = new Date(`${desde}T00:00:00`).toISOString();
+    const hastaTs = new Date(`${hasta}T23:59:59`).toISOString();
+    const { data } = await supabase
+        .from('appointments')
+        .select('id, service, stylist_id, starts_at, contacts!contact_id(full_name), stylists!stylist_id(id, name)')
+        .eq('organization_id', oid)
+        .eq('status', 'completed')
+        .gte('starts_at', desdeTs)
+        .lte('starts_at', hastaTs)
+        .order('starts_at', { ascending: true });
+
+    return (data || []).map(row => ({
+        appointment_id: row.id,
+        service:        row.service,
+        stylist_id:     row.stylist_id,
+        stylist_name:   row.stylists?.name || null,
+        starts_at:      row.starts_at,
+        cliente:        row.contacts?.full_name || null,
+    }));
+}
+
 async function getAppointmentsByLead(orgId, contactId) {
     const oid = resolveOrg(orgId);
     const { data } = await supabase
@@ -1289,6 +1315,7 @@ module.exports = {
     deleteAppointment,
     getAppointmentsByLead,
     getAppointmentsByDateRange,
+    getCompletedAppointmentsForBilling,
     getAppointmentsPendientesRecordatorio,
     getReservasBizumPendiente,
     getAgentConfig,

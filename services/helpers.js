@@ -1178,6 +1178,129 @@ function extractLargoPelo(text) {
     return null;
 }
 
+// ─── Facturación por estilista ────────────────────────────────────────────────
+// El informe de facturación no puede leer un precio de appointments (no existe esa
+// columna): lo RECALCULA cruzando appointments.service contra el catálogo de precios
+// (agent_configs.services). El campo service se guardó con buildFullServiceName para
+// el servicio principal y el nombre crudo de cada upsell, unidos por " + ".
+
+// Resuelve la entrada de catálogo de UN nombre de servicio ya guardado. Cascada
+// determinista → difusa: (a) match exacto contra el nombre completo generado por
+// buildFullServiceName (cubre el servicio principal, ej. "Mechas Airtouch Largo 2");
+// (b) match exacto contra svc.nombre crudo (cubre los upsells, ej. "K18"); (c)
+// fallback difuso vía extractServiceFromText (separadores, sinónimos, variantes).
+// Devuelve el objeto de catálogo o null.
+function resolveServiceCatalogEntry(name, catalog) {
+    if (!name || !Array.isArray(catalog) || !catalog.length) return null;
+    const target = normalizeText(name);
+    // (a) nombre completo generado
+    const byFull = catalog.find(svc => normalizeText(buildFullServiceName(svc, catalog)) === target);
+    if (byFull) return byFull;
+    // (b) nombre crudo del catálogo
+    const byName = catalog.find(svc => normalizeText(svc.nombre) === target);
+    if (byName) return byName;
+    // (c) fallback difuso
+    return extractServiceFromText(name, catalog) || null;
+}
+
+// Descompone el string appointments.service en segmentos y clasifica cada uno.
+// Devuelve { totalConIva, segments: [{ name, precio, status }] } donde status es
+// 'ok' (precio numérico, suma), 'unpriced' (matchea pero precio null, ej. Consulta —
+// NO suma) o 'unmatched' (sin entrada de catálogo — NO suma). totalConIva es la suma
+// de los segmentos 'ok' (el precio del catálogo ya incluye IVA).
+function computeServiceBilling(serviceString, catalog) {
+    const parts = String(serviceString || '')
+        .split(' + ')
+        .map(s => s.trim())
+        .filter(Boolean);
+    const segments = parts.map(name => {
+        const entry = resolveServiceCatalogEntry(name, catalog);
+        if (!entry) return { name, precio: null, status: 'unmatched' };
+        if (entry.precio == null || !Number.isFinite(Number(entry.precio))) {
+            return { name, precio: null, status: 'unpriced' };
+        }
+        return { name, precio: Number(entry.precio), status: 'ok' };
+    });
+    const totalConIva = segments.reduce((sum, s) => s.status === 'ok' ? sum + s.precio : sum, 0);
+    return { totalConIva, segments };
+}
+
+const _round2 = n => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+// Construye el informe agregado por estilista a partir de las citas COMPLETED del
+// periodo (ya filtradas y con { appointment_id, service, stylist_id, stylist_name,
+// starts_at, cliente }) y el catálogo. Cada cita cuenta como "sin poder calcular" si
+// ALGÚN segmento suyo es unpriced/unmatched (su total sería incorrecto). Los precios
+// del catálogo incluyen IVA → base sin IVA = total / (1 + ivaRate).
+function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {}) {
+    const NO_STYLIST = '__sin_estilista__';
+    const buckets = new Map();
+
+    const getBucket = (key, name) => {
+        if (!buckets.has(key)) {
+            buckets.set(key, {
+                stylist_id: key === NO_STYLIST ? null : key,
+                stylist_name: name || (key === NO_STYLIST ? 'Sin estilista asignada' : null),
+                numCitas: 0,
+                sinCalcular: 0,
+                totalConIva: 0,
+                citas: [],
+            });
+        }
+        return buckets.get(key);
+    };
+
+    for (const appt of (appointments || [])) {
+        const key = appt.stylist_id || NO_STYLIST;
+        const bucket = getBucket(key, appt.stylist_name);
+        const { totalConIva, segments } = computeServiceBilling(appt.service, catalog);
+        const calculable = segments.length > 0 && segments.every(s => s.status === 'ok');
+        bucket.numCitas += 1;
+        if (calculable) {
+            bucket.totalConIva += totalConIva;
+        } else {
+            bucket.sinCalcular += 1;
+        }
+        bucket.citas.push({
+            appointment_id: appt.appointment_id,
+            cliente: appt.cliente || null,
+            service: appt.service || null,
+            starts_at: appt.starts_at || null,
+            precio: calculable ? _round2(totalConIva) : null,
+            calculable,
+            segments,
+        });
+    }
+
+    const estilistas = [...buckets.values()].map(b => {
+        const totalConIva = _round2(b.totalConIva);
+        const totalSinIva = _round2(totalConIva / (1 + ivaRate));
+        return {
+            ...b,
+            totalConIva,
+            totalSinIva,
+            iva: _round2(totalConIva - totalSinIva),
+        };
+    }).sort((a, b) => b.totalConIva - a.totalConIva);
+
+    const totalConIva = _round2(estilistas.reduce((s, e) => s + e.totalConIva, 0));
+    const totalSinIva = _round2(totalConIva / (1 + ivaRate));
+    const numCitas = estilistas.reduce((s, e) => s + e.numCitas, 0);
+    const sinCalcularTotal = estilistas.reduce((s, e) => s + e.sinCalcular, 0);
+
+    return {
+        estilistas,
+        totales: {
+            totalConIva,
+            totalSinIva,
+            iva: _round2(totalConIva - totalSinIva),
+            numCitas,
+        },
+        sinCalcularTotal,
+        ivaRate,
+    };
+}
+
 module.exports = {
     normalizeText,
     detectLanguage,
@@ -1221,4 +1344,8 @@ module.exports = {
     detectCorteNinoTipo,
     detectConsultaService,
     detectConsultaValoracion,
+    // Facturación por estilista
+    resolveServiceCatalogEntry,
+    computeServiceBilling,
+    buildStylistBillingReport,
 };
