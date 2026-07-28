@@ -65,7 +65,21 @@ function getOutboundClient(orgId) {
 app.use(express.json());
 
 // ─── Health check ─────────────────────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+// Incluye el commit desplegado para poder VERIFICAR con un curl qué versión está
+// corriendo. Sin esto, un /health en 200 no distingue el código nuevo del viejo y no
+// hay forma de confirmar un redespliegue desde fuera (Railway despliega en rolling: un
+// deploy correcto no produce ningún corte observable). Railway inyecta
+// RAILWAY_GIT_COMMIT_SHA en el build; fuera de Railway queda en null.
+const COMMIT_SHA = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT_SHA || null;
+const STARTED_AT = new Date().toISOString();
+
+app.get('/health', (_req, res) => res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    commit: COMMIT_SHA ? COMMIT_SHA.slice(0, 7) : null,
+    commitFull: COMMIT_SHA,
+    startedAt: STARTED_AT, // cambia en cada reinicio → delata el redespliegue
+}));
 
 app.get('/api/wa-status', async (_req, res) => {
     const statuses = {};
