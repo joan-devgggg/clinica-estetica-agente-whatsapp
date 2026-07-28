@@ -9,7 +9,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -211,6 +211,8 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         proposedSlots: [],
         askDatePreferenceFirst: false,
         datePreferenceAsked: false,
+        stylistQuestionAsked: false,
+        stylistQuestionPending: false,
         upsellingSuggested: false,
         upsellingAccepted: [],
         _lastUpsellSuggestion: null,
@@ -370,6 +372,10 @@ function stylistCanDoService(stylist, service) {
 
 async function loadAvailableSlots(session) {
     const orgId = session.orgId;
+    // Marca de que el motor de huecos SÍ se ha consultado en este turno. La red
+    // anti-escalada-falsa la exige antes de dejar escalar por "error_tecnico": un
+    // availableSlots vacío porque nunca preguntamos no es un fallo del sistema.
+    session._slotsQueriedThisTurn = true;
     try {
         if (session.orgType === 'salon') {
             // INVARIANTE A (defensivo): garantizar que selectedService es el objeto
@@ -444,6 +450,10 @@ async function loadAvailableSlots(session) {
             // devuelve los huecos más cercanos y marca esta bandera para que el LLM
             // avise a la clienta en vez de afirmar que el día pedido está libre.
             session.slotsRequestedDayUnavailable = !!slots.requestedDayUnavailable;
+            // Ídem con la SEMANA: si la ventana pedida se agotó (un viernes/sábado "esta
+            // semana" deja 1-2 días) o no tenía huecos, estos caen fuera de ella y hay que
+            // decirlo, no proponer otra semana en silencio.
+            session.slotsWeekPreferenceRelaxed = !!slots.weekPreferenceRelaxed;
 
             // Si solo hay una estilista posible para el servicio (p.ej. masajes → Larisa),
             // asígnala automáticamente y sáltate la pregunta de preferencia. Así el flujo
@@ -995,6 +1005,38 @@ function salonNoSlotsMsg(session) {
     return (language && askDay[language]) || '¿Qué día o semana te viene mejor? Así te miro los huecos reales 😊';
 }
 
+// ¿El texto PROMETE a la clienta que el equipo humano toma el relevo? Se exige la pareja
+// verbo-de-traspaso + destinatario ("paso/derivo/aviso… a nuestro equipo / a mis compañeras"),
+// no solo mencionar al equipo: "el equipo abre a las 10" no es una escalada. Sirve de red
+// para que jamás se anuncie un traspaso sin crear la acción pendiente ni avisar por Telegram.
+function announcesHumanHandover(respuesta) {
+    const t = normalizeText(respuesta);
+    if (!t) return false;
+    const traspaso = /\b(paso|pasar|pasare|derivo|derivar|derivare|traslado|trasladar|aviso|avisar|avisare|comento|comentar|escalo|escalar)\b/;
+    const destino = /(nuestro equipo|al equipo|del equipo|el equipo se|mis companer|nuestras companer|una companer|el salon te|te contactara|se pondran en contacto|se pondra en contacto|atiendan directamente|atiendan personalmente)/;
+    // Frase a frase, y SOLO afirmaciones: los casos 1-6 del prompt PIDEN permiso antes de
+    // escalar ("¿Quieres que te paso con el equipo?"), y esa pregunta no debe disparar nada
+    // — la escalada llega en el turno siguiente, cuando la clienta dice que sí. Una frase con
+    // interrogación (de apertura o de cierre) se descarta siempre.
+    return t.split(/(?<=[.!?])\s+|\n+/)
+        .some(frase => !/[?¿]/.test(frase) && traspaso.test(frase) && destino.test(frase));
+}
+
+// Mensaje DETERMINISTA que ofrece los primeros huecos REALES ya cargados. Lo usa la red
+// anti-escalada-falsa: cuando el LLM iba a decir "problema técnico" y resulta que sí hay
+// calendario, sustituimos su texto por una propuesta verídica en vez de por una disculpa.
+// Nunca inventa: sale de session.availableSlots vía formatSlotForMessage.
+function salonOfferSlotsMsg(session) {
+    const lista = session.availableSlots.slice(0, 3)
+        .map(s => calendarSante.formatSlotForMessage(s)).join(', ');
+    const msgs = {
+        en: `I've got ${lista}. Would any of those work for you?`,
+        ru: `Есть ${lista}. Подойдёт что-нибудь из этого?`,
+        uk: `Є ${lista}. Підійде щось із цього?`,
+    };
+    return (session.language && msgs[session.language]) || `Tengo ${lista}. ¿Te viene bien alguno?`;
+}
+
 // ─── Estado de servicio: fuente de verdad única ─────────────────────────────
 // Cualquier campo de sesión relacionado con la SELECCIÓN DE SERVICIO va aquí.
 // clearServiceState() y el test de regresión lo consumen. Añadir un campo nuevo
@@ -1014,6 +1056,12 @@ const SERVICE_STATE_DEFAULTS = {
     currentSlotIndex: 0,
     slotsProposed: false,
     datePreferenceAsked: false,
+    // La pregunta de estilista se hace UNA vez por servicio; si la respuesta no resuelve
+    // nada, el gating cae a búsqueda combinada en vez de repreguntar para siempre.
+    stylistQuestionAsked: false,
+    // ¿Quedó la pregunta de estilista abierta al cerrar el turno? El turno siguiente lo usa
+    // para leer "el más cercano" como respuesta de QUIÉN y no contaminar la fecha con asap.
+    stylistQuestionPending: false,
     upsellingSuggested: false,
     upsellingAccepted: () => [],
     _lastUpsellSuggestion: null,
@@ -1047,33 +1095,11 @@ function clearServiceState(session) {
     }
 }
 
-// ─── Semana "sticky" entre turnos (solo salón): ÚNICA autoridad ─────────────────
-// La preferencia de semana se recuerda en session.weekPreference y se restaura en los
-// turnos que solo mencionan un día (evita el falso positivo de "por la mañana", donde
-// extractPreferenciaHoraria pone semana:'esta'). Reglas por prioridad:
-//   - asap                 → olvidar la semana (buscar desde ya)
-//   - fecha ABSOLUTA        → olvidar la semana y NO re-inyectarla: una fecha concreta
-//                             ("14 de julio") determina la semana por sí sola; conservar
-//                             un 'siguiente' viejo re-acotaba el rango y excluía la fecha
-//                             pedida (falso totalSlots:0 / "ese día no está disponible").
-//   - palabra de semana + semana detectada → es la verdad del turno, recordarla
-//   - sin palabra de semana pero hay recordada → restaurarla
-function resolveStickyWeek(session, text) {
-    let pref = session.partialData.preferencia_horaria;
-    const tNorm = normalizeText(text);
-    const hasWeekWord = /\b(semana|siguiente|proxim[ao])\b/.test(tNorm);
-    if (pref?.asap) {
-        session.weekPreference = null;
-    } else if (pref?.fecha) {
-        session.weekPreference = null;
-        delete pref.semana; // defensivo: Fix A ya lo borra en el extractor
-    } else if (hasWeekWord && pref?.semana) {
-        session.weekPreference = pref.semana;
-    } else if (!hasWeekWord && session.weekPreference) {
-        if (!pref) { pref = {}; session.partialData.preferencia_horaria = pref; }
-        pref.semana = session.weekPreference;
-    }
-}
+// La preferencia de semana ya NO vive en un sticky paralelo (session.weekPreference +
+// resolveStickyWeek, eliminados). El ÚNICO store es preferencia_horaria y el reducer
+// idempotente applyDatePreference (services/date-preference.js) resuelve herencia, correcciones
+// y limpiezas: un contexto de semana + un día se colapsa a una `fecha` absoluta, así que no
+// queda un `semana` suelto que un turno posterior (o un typo) vuelva a aplicar y desplace.
 
 // ─── Asignación de estilista: ÚNICA autoridad ───────────────────────────────
 // Todos los flujos de resolución de servicio (árbol de cortes, mechas/largo y
@@ -1107,10 +1133,18 @@ function assignStylistIfAppropriate(session, eligibleStylists) {
 //     preguntar la preferencia ANTES de proponer huecos.
 // Con una sola elegible (o una ya fijada) → ninguna de las dos: el flujo avanza.
 // Pura y sin efectos: la fuente de verdad del gating vive aquí para poder testearla.
+//
+// FAIL-SAFE anti-bloqueo (bug de producción del 28/07): la pregunta se hace UNA vez
+// (stylistQuestionAsked, sticky igual que datePreferenceAsked). Si la respuesta de la clienta
+// no fija estilista ni activa prefiereMasCercano — porque la escribió de una forma que ningún
+// detector cubre —, el turno siguiente NO vuelve a preguntar: cae a búsqueda combinada. Antes,
+// askStylistFirst se quedaba activo para siempre, loadAvailableSlots no se llamaba nunca,
+// availableSlots seguía vacío y el LLM acababa diciendo "problema técnico" y escalando con el
+// calendario lleno de huecos. Con esto, el motor SIEMPRE se ejecuta tras un round-trip.
 function computeStylistGating(session, eligibleCount) {
     const varias = !!session.selectedService && !session.selectedStylist && eligibleCount > 1;
-    const anyStylists = varias && !!session.prefiereMasCercano;
-    return { anyStylists, askStylistFirst: varias && !anyStylists };
+    const askStylistFirst = varias && !session.prefiereMasCercano && !session.stylistQuestionAsked;
+    return { anyStylists: varias && !askStylistFirst, askStylistFirst };
 }
 
 // ¿Aceptamos la estilista que INFIRIÓ el LLM (datos.estilista_preferida)?
@@ -1881,6 +1915,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         const sanitized = sanitizeUserMessage(userText);
         if (!sanitized) return;
 
+        // Cada turno arranca sin haber consultado el motor de huecos (lo marca
+        // loadAvailableSlots). Lo usa la red anti-escalada-falsa más abajo.
+        session._slotsQueriedThisTurn = false;
+
         // ─── Snapshot del estado ANTES de modificar la sesión ────────────
         // Si el LLM falla/timeout, restauramos para no dejar la sesión en un
         // estado parcial que confunde al LLM en el siguiente turno.
@@ -1911,9 +1949,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         const prevData = { ...session.partialData };
 
         if (orgType === 'salon') {
-            // Salon: extract name, preference, detect service/stylist from LLM
-            session.partialData = extractQuickDataSante(sanitized, session.partialData);
-            resolveStickyWeek(session, sanitized);
+            // Salon: extract name, preference, detect service/stylist from LLM.
+            // extractQuickDataSante fusiona la señal de fecha del turno en el ÚNICO store
+            // (preferencia_horaria) vía el reducer idempotente — ya no hay sticky paralelo.
+            // stylistQuestionPending: si el turno anterior dejó abierta la pregunta de
+            // estilista, "el más cercano" contesta a QUIÉN y no debe tocar la fecha.
+            session.partialData = extractQuickDataSante(sanitized, session.partialData, [], [],
+                { stylistQuestionPending: !!session.stylistQuestionPending });
             // Bug 1: si el nombre extraído coincide con un servicio del catálogo, descartarlo
             if (session.partialData.nombre && session.partialData.nombre !== prevData.nombre) {
                 const agentCfgNameCheck = await getAgentConfig(orgId);
@@ -2318,7 +2360,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 
         // ─── Load slots when ready ───────────────────────────────────────
         if (orgType === 'salon') {
-            const meDaIgual = /\b(me da igual|cualquiera|la que sea|el que sea|no tengo preferencia|me es igual|sin preferencia|whoever|anyone|любой|любую|lo antes posible|cuanto antes|lo más pronto|primera disponibilidad|primer hueco|hueco más cercano|el más cercano|as soon as possible|asap|earliest|любое время|как можно скорее|ближайшее время|ближайший)\b/i.test(sanitized);
+            // "Me da igual / el más cercano / lo antes posible": UNA sola lectura, la de
+            // helpers (siempre sobre texto normalizado). Antes había aquí una regex paralela
+            // con tildes ("el más cercano") evaluada sobre el texto CRUDO: una clienta que
+            // escribía "el mas cercano" sin tilde no la activaba, la pregunta de estilista no
+            // se cerraba nunca y el flujo se quedaba sin cargar huecos (28/07).
+            const noPref = detectNoPreferenceSignal(sanitized);
+            const meDaIgual = noPref.asapTemporal || noPref.sinPreferencia;
 
             // Estilistas que pueden hacer el servicio (por skills). La decisión de FIJAR
             // (o no) una estilista está centralizada en assignStylistIfAppropriate: si solo
@@ -2343,6 +2391,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             const gating = computeStylistGating(session, eligibleStylists.length);
             session.anyStylists = gating.anyStylists;
             session.askStylistFirst = gating.askStylistFirst;
+            // La pregunta de estilista se marca como YA hecha en el turno en que se hace: si
+            // la respuesta no resuelve nada, el turno siguiente busca en combinado en vez de
+            // repreguntar eternamente sin cargar huecos (ver computeStylistGating).
+            if (gating.askStylistFirst) session.stylistQuestionAsked = true;
+            // Y se recuerda como PENDIENTE para el turno siguiente, que es quien tiene que
+            // saber que "el más cercano" contesta a QUIÉN, no a CUÁNDO.
+            session.stylistQuestionPending = gating.askStylistFirst;
 
             // Si es una reserva para un acompañante y aún no sabemos su nombre, lo pedimos primero.
             const esperandoNombreInvitado = session.guestBooking && !session.guestName;
@@ -2441,6 +2496,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             partialDataWithCtx.__guestBooking = !!session.guestBooking;
             partialDataWithCtx.__guestName = session.guestName || null;
             partialDataWithCtx.__requestedDayUnavailable = !!session.slotsRequestedDayUnavailable;
+            partialDataWithCtx.__semanaRelajada = !!session.slotsWeekPreferenceRelaxed;
 
             // Inyectar días de trabajo de cada estilista para que el LLM sepa cuándo libran
             const DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
@@ -2584,6 +2640,50 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         }
 
         // ─── Process LLM response ────────────────────────────────────────
+
+        // Red anti-escalada-falsa (salón). El caso 7 del prompt ("la lista de huecos no
+        // carga") es lo que el LLM aplica cuando ve __availableSlots vacío — pero vacío NO
+        // significa fallo: puede ser que nunca hayamos consultado el motor porque faltaba
+        // preguntar servicio/estilista/fecha. Ese fue el bug del 28/07: dos clientas oyeron
+        // "problema técnico" con 8 y 51 huecos libres. Solo dejamos escalar por error_tecnico
+        // si el motor se consultó DE VERDAD en este turno y volvió vacío.
+        if (orgType === 'salon' && aiResponse.accion === 'escalar_humano'
+                && aiResponse.motivo_escalado === 'error_tecnico'
+                && !(session._slotsQueriedThisTurn && session.availableSlots.length === 0)) {
+            logger.warn('sante_escalada_tecnica_falsa_bloqueada', {
+                orgId, telefono: userPhone,
+                slotsConsultados: !!session._slotsQueriedThisTurn,
+                huecosCargados: (session.availableSlots || []).length,
+                askStylistFirst: !!session.askStylistFirst,
+                askDatePreferenceFirst: !!session.askDatePreferenceFirst,
+                preferencia: session.partialData.preferencia_horaria || null,
+            });
+            aiResponse.accion = null;
+            aiResponse.motivo_escalado = null;
+            // Si nunca llegamos a mirar el calendario, míralo AHORA: casi siempre hay huecos.
+            // Sin estilista fijada buscamos en combinado, que es justo lo que la clienta pedía
+            // al decir "el más cercano".
+            if (!session._slotsQueriedThisTurn && session.selectedService) {
+                if (!session.selectedStylist) session.anyStylists = true;
+                await loadAvailableSlots(session);
+                session.proposedSlots = session.availableSlots.slice(session.currentSlotIndex);
+            }
+            aiResponse.respuesta = session.availableSlots.length
+                ? salonOfferSlotsMsg(session)
+                : salonNoSlotsMsg(session);
+        }
+
+        // Backstop de escalada ANUNCIADA pero no ejecutada (bug real del 28/07): el LLM
+        // escribió "voy a pasar tu solicitud a nuestro equipo" y NO puso accion:escalar_humano
+        // (la regla del prompt le hace esperar un "sí" que la clienta puede no dar nunca). El
+        // resultado era una promesa vacía: cero pending_actions, cero Telegram, bot en
+        // automático. Si el texto promete el traspaso, lo ejecutamos igual.
+        if (orgType === 'salon' && aiResponse.accion !== 'escalar_humano'
+                && announcesHumanHandover(aiResponse.respuesta)) {
+            logger.warn('sante_escalada_anunciada_sin_accion', { orgId, telefono: userPhone });
+            aiResponse.accion = 'escalar_humano';
+            aiResponse.motivo_escalado = aiResponse.motivo_escalado || 'escalado_bot';
+        }
 
         // Handle actions (cancel, reschedule, escalate)
         if (aiResponse.accion && !(aiResponse.accion === 'cambiar' && session.modoReagendamiento)) {
@@ -3331,11 +3431,11 @@ module.exports = {
     isTransientWAError,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
-        respondsWithInventedSlots, salonNoSlotsMsg,
+        respondsWithInventedSlots, salonNoSlotsMsg, salonOfferSlotsMsg,
+        // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
+        announcesHumanHandover,
         // Estado de servicio centralizado (fuente de verdad + limpieza):
         clearServiceState, assignStylistIfAppropriate, computeStylistGating, shouldFixStylistFromLlm, SERVICE_STATE_DEFAULTS, SERVICE_PARTIAL_FIELDS, createEmptySession,
-        // Semana "sticky" entre turnos (salón):
-        resolveStickyWeek,
         // Flujos de reserva (aceptación de upsell, 2ª reserva, skill de estilista):
         isUpsellingAcceptance, matchesServiceName, resetForSecondBooking, stylistCanDoService,
         // Solo para introspección en tests (no usar en producción):

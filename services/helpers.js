@@ -1,3 +1,7 @@
+// Reducer puro de preferencia de fecha/hora (salón). Requiere solo date-utils (aritmética
+// pura), así que NO arrastra la capa de datos/Supabase al requerir helpers en tests.
+const { applyDatePreference } = require('./date-preference');
+
 function normalizeText(value) {
     return String(value || '')
         .normalize('NFD')
@@ -614,7 +618,7 @@ function getMissingFieldsSante(partialData) {
     return missing;
 }
 
-function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], teamList = []) {
+function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], teamList = [], opts = {}) {
     const result = { ...partialData };
 
     // Name extraction (reuse existing logic)
@@ -638,57 +642,99 @@ function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], tea
         }
     }
 
-    // Día de la semana ("el miércoles") y fecha concreta ("el 24", "24 de junio"). Se
-    // calcula ANTES de decidir 'semana' porque un día/fecha concreto hace innecesaria
-    // (y arriesgada) la acotación por semana — ver más abajo.
-    const t = normalizeText(text);
-    const datePref = extractDatePreferenceSante(t);
-
-    // Time preference (semana: esta/siguiente). El periodo comida/cena del restaurante no
-    // aplica al salón, así que lo descartamos y detectamos mañana/tarde, que es lo que el
-    // motor de huecos (calendar-sante) sabe filtrar.
-    const pref = extractPreferenciaHoraria(text);
-    if (pref) {
-        const { periodo, semana, ...rest } = pref; // periodo (comida/cena) no se usa aquí
-        // Si ya hay un día/fecha concreto (de este mensaje o de un turno anterior), NO
-        // fijamos 'semana': es redundante y puede sobre-acotar el rango (p.ej. "mañana"
-        // dicho en domingo pone semana:'esta', que en calendar-sante excluye el lunes
-        // que la clienta acaba de pedir — bug real que causaba totalSlots:0 falsos).
-        const yaTieneDiaConcreto = datePref?.diaSemana !== undefined || !!datePref?.fecha ||
-            result.preferencia_horaria?.diaSemana !== undefined || !!result.preferencia_horaria?.fecha;
-        if (semana && !yaTieneDiaConcreto) rest.semana = semana;
-        if (Object.keys(rest).length) result.preferencia_horaria = { ...(result.preferencia_horaria || {}), ...rest };
-    }
-
-    // Periodo del día (solo expresiones inequívocas; "mañana" a secas = día siguiente, no franja).
-    if (/\b(por la mañana|por la manana|en la mañana|en la manana|de mañana|de manana|la mañana|la manana|morning|утром|вранці)\b/.test(t)) {
-        result.preferencia_horaria = { ...(result.preferencia_horaria || {}), periodo: 'mañana' };
-    } else if (/\b(por la tarde|en la tarde|de tarde|la tarde|afternoon|evening|днем|днём|вдень|ввечері)\b/.test(t)) {
-        result.preferencia_horaria = { ...(result.preferencia_horaria || {}), periodo: 'tarde' };
-    }
-
-    if (datePref) {
-        result.preferencia_horaria = { ...(result.preferencia_horaria || {}), ...datePref };
-        // Una fecha ABSOLUTA ("14 de julio") determina la semana por sí sola: limpiar cualquier
-        // 'semana' heredada de turnos anteriores. Si no, un 'siguiente' viejo re-acota el rango y
-        // excluye la fecha pedida (falso totalSlots:0 / "ese día no está disponible"). El caso de
-        // solo 'diaSemana' sin fecha ("el martes que viene") NO se toca: ahí diaSemana+semana es
-        // una combinación legítima ("el martes de la semana que viene").
-        if (datePref.fecha) delete result.preferencia_horaria.semana;
-    }
-
-    // "Lo antes posible" / "cuanto antes" / "el hueco más cercano": buscar desde ahora mismo,
-    // sin restricción de semana. Limpia cualquier semana previa para no heredar filtros.
-    // Incluye las frases de respuesta cuando el bot pregunta "¿estilista concreta o el hueco
-    // más cercano?" → el cliente responde "el más cercano", "cualquiera", etc.
-    const asapRe = /\b(lo antes posible|cuanto antes|cu[aá]nto antes|el primer hueco|primer hueco|primera disponibilidad|lo m[aá]s pronto|lo mas pronto|lo m[aá]s r[aá]pido|lo mas rapido|cuando antes|cuanto antes puedas|lo antes que puedas|antes posible|el m[aá]s cercano|mas cercano disponible|hueco m[aá]s cercano|el primero disponible|primer disponible|cualquier hueco|lo m[aá]s pronto posible|lo antes posible que puedas)\b/;
-    if (asapRe.test(t)) {
-        const pref = result.preferencia_horaria || {};
-        delete pref.semana;
-        result.preferencia_horaria = { ...pref, asap: true };
+    // Toda la señal de fecha/hora de ESTE mensaje (día, fecha, semana, periodo, asap) se
+    // extrae en un objeto puro y se fusiona en el ÚNICO store (preferencia_horaria) vía el
+    // reducer idempotente applyDatePreference. Esto sustituye el manejo disperso anterior
+    // (merges condicionales + sticky en bot.js) y elimina la contaminación de 'semana' entre
+    // turnos: en cuanto hay contexto de semana + un día, el combo se colapsa a una 'fecha'
+    // absoluta, así repetir el turno (typo) recalcula la MISMA fecha (idempotente).
+    //
+    // `opts.stylistQuestionPending`: el turno anterior dejó abierta la pregunta de ESTILISTA
+    // ("¿tienes estilista de confianza o prefieres el hueco más cercano?"). Ahí "el más
+    // cercano" responde a QUIÉN, no a CUÁNDO: descartamos la señal asap débil para que no
+    // contamine la preferencia de fecha (bug de producción del 28/07).
+    const dateSignal = extractDateSignalSante(text);
+    if (opts.stylistQuestionPending) delete dateSignal.asapWeak;
+    if (Object.keys(dateSignal).length) {
+        result.preferencia_horaria = applyDatePreference(result.preferencia_horaria, dateSignal, new Date());
     }
 
     return result;
+}
+
+// ─── "El más cercano / me da igual": UNA sola lectura ─────────────────────────
+// La misma frase la consumen dos sitios (la preferencia de fecha aquí y la intención sticky
+// de estilista en bot.js). Antes cada uno tenía su propia regex y sobre texto distinto: esta
+// sobre `normalizeText` (sin tildes) y la de bot.js sobre el texto crudo (con tildes). Una
+// clienta escribiendo "el mas cercano" sin tilde activaba SOLO la de fecha → la preferencia
+// se contaminaba con asap y la pregunta de estilista no se cerraba nunca, dejando el flujo
+// bloqueado sin cargar huecos ("problema técnico" del 28/07). Ahora hay un único detector,
+// siempre sobre texto normalizado, y ambos consumidores leen su resultado.
+//
+// Se distinguen dos familias porque NO significan lo mismo:
+//   - TEMPORAL     ("lo antes posible", "cuanto antes"): dice CUÁNDO → asap fuerte.
+//   - SIN PREFERENCIA ("el más cercano", "cualquiera"): responde a una PREGUNTA DE ELECCIÓN.
+//     Implica "me da igual quién", y solo implica "cuanto antes" si lo que se preguntaba era
+//     la fecha. El reducer lo trata como asap DÉBIL (no borra un día ya pedido).
+const ASAP_TEMPORAL_RE = /\b(lo antes posible|cuanto antes|cu[aá]nto antes|el primer hueco|primer hueco|primera disponibilidad|lo m[aá]s pronto|lo mas pronto|lo m[aá]s r[aá]pido|lo mas rapido|cuando antes|cuanto antes puedas|lo antes que puedas|antes posible|el primero disponible|primer disponible|cualquier hueco|lo m[aá]s pronto posible|lo antes posible que puedas|as soon as possible|asap|earliest|как можно скорее|якомога швидше)\b/;
+const SIN_PREFERENCIA_RE = /\b(el m[aá]s cercano|la m[aá]s cercana|mas cercano disponible|hueco m[aá]s cercano|el hueco m[aá]s cercano|me da igual|me es igual|cualquiera|la que sea|el que sea|no tengo preferencia|sin preferencia|whoever|anyone|any of them|любой|любую|любое время|ближайшее время|ближайший|будь-хто|будь-який)\b/;
+
+// Devuelve { asapTemporal, sinPreferencia } para un texto libre. Ambos flags se evalúan
+// SIEMPRE sobre texto normalizado (sin tildes, minúsculas), que es lo que arregla el bug.
+function detectNoPreferenceSignal(text) {
+    const t = normalizeText(text);
+    return {
+        asapTemporal: ASAP_TEMPORAL_RE.test(t),
+        sinPreferencia: SIN_PREFERENCIA_RE.test(t),
+    };
+}
+
+// Extrae la SEÑAL de fecha/hora que expresa ESTE mensaje (sin estado previo, sin mutar nada).
+// Devuelve un objeto plano con solo los campos detectados:
+//   { asap?, asapWeak?, fecha?, diaSemana?, semana?, semanaWeak?, periodo? }
+//   - `semana`     : semana EXPLÍCITA ("esta semana", "la semana que viene", "siguiente").
+//   - `semanaWeak` : semana DÉBIL de "mañana" a secas (día siguiente); el reducer solo la
+//                    asciende a semana si no hay ningún día concreto en juego.
+//   - `asap`/`asapWeak` : ver detectNoPreferenceSignal + date-preference.js.
+// El reducer (date-preference.js) decide cómo fusionarla con el store; aquí NO se resuelve
+// prioridad ni herencia — solo se reporta lo que dice el texto.
+function extractDateSignalSante(text) {
+    const t = normalizeText(text);
+    const signal = {};
+
+    const { asapTemporal, sinPreferencia } = detectNoPreferenceSignal(text);
+    if (asapTemporal) signal.asap = true;
+    else if (sinPreferencia) signal.asapWeak = true;
+
+    const datePref = extractDatePreferenceSante(t);
+    if (datePref) {
+        if (datePref.diaSemana !== undefined) signal.diaSemana = datePref.diaSemana;
+        if (datePref.fecha) signal.fecha = datePref.fecha;
+    }
+
+    // Semana EXPLÍCITA (fuerte). "hoy" cuenta como 'esta' (comportamiento previo).
+    if (/\besta semana\b/.test(t) || /\besta misma semana\b/.test(t) || /\bhoy\b/.test(t)) {
+        signal.semana = 'esta';
+    }
+    // "que viene" (p.ej. "el martes que viene") = próxima; NO añadimos "proximo" a secas para
+    // no capturar "el proximo hueco" (que es asap, no semana siguiente).
+    // `\s*` tolera typos frecuentes SIN espacio o con espacios de más: "queviene", "q viene",
+    // "qviene", "que  viene" — root cause del bug en el que "semana queviene" perdía la señal
+    // de semana y dejaba un diaSemana pelado (el motor caía a la ocurrencia más cercana).
+    if (/semana que\s*viene|semana q\s*viene|la semana siguiente|proxima semana|la proxima semana|semana proxima|siguiente semana|la proxima|la siguiente|que\s*viene|que\s*biene|q\s*viene|q\s*biene|\bsiguiente\b/.test(t)) {
+        signal.semana = 'siguiente';
+    }
+    // Semana DÉBIL: "mañana" a secas (día siguiente) → 'esta'. Solo si no hay semana fuerte.
+    if (!signal.semana && /\bmanana\b/.test(t)) signal.semanaWeak = 'esta';
+
+    // Periodo del día (franja) — expresiones inequívocas (t va sin acentos).
+    if (/\b(por la manana|en la manana|de manana|la manana|morning|утром|вранці)\b/.test(t)) {
+        signal.periodo = 'mañana';
+    } else if (/\b(por la tarde|en la tarde|de tarde|la tarde|afternoon|evening|днем|днём|вдень|ввечері)\b/.test(t)) {
+        signal.periodo = 'tarde';
+    }
+
+    return signal;
 }
 
 // Día de la semana → 0=Lunes…6=Domingo (misma convención que stylist_schedules).
@@ -713,15 +759,20 @@ function extractDatePreferenceSante(t) {
         if (new RegExp(`\\b${nombre}\\b`).test(t)) { pref.diaSemana = idx; break; }
     }
 
-    // "24 de junio" / "3 de julio" — día + mes explícito.
-    const conMes = t.match(/\b(\d{1,2})\s+de\s+([a-z]+)\b/);
+    // "24 de junio" / "24 junio" — día + mes ("de" opcional; el filtro por MESES_MAP evita
+    // falsos positivos como "24 horas" o "2 personas").
+    const conMes = t.match(/\b(\d{1,2})\s+(?:de\s+)?([a-z]+)\b/);
     if (conMes && MESES_MAP[conMes[2]] !== undefined) {
         const dom = parseInt(conMes[1], 10);
         const f = resolveUpcomingDate(dom, MESES_MAP[conMes[2]]);
         if (f) pref.fecha = f;
     } else {
-        // "el 24" — día del mes suelto, solo >= 10 para no confundir con opciones 1-9.
-        const soloDia = t.match(/\bel\s+(\d{1,2})\b/);
+        // "el 24" (día del mes suelto) o "martes 24" (día de semana + número PEGADO): día del
+        // mes >= 10 para no confundir con la selección de hueco por número (opciones 1-9). El
+        // patrón "día+número" se exige adyacente para no capturar la hora ("martes a las 11").
+        const diaWords = Object.keys(DIA_SEMANA_MAP).join('|');
+        const soloDia = t.match(/\bel\s+(\d{1,2})\b/) ||
+            t.match(new RegExp(`\\b(?:${diaWords})\\s+(\\d{1,2})\\b`));
         if (soloDia) {
             const dom = parseInt(soloDia[1], 10);
             if (dom >= 10 && dom <= 31) {
@@ -1394,6 +1445,8 @@ module.exports = {
     extractStylistFromText,
     getMissingFieldsSante,
     extractQuickDataSante,
+    extractDateSignalSante,
+    detectNoPreferenceSignal,
     wantsAnotherBooking,
     wantsRestart,
     detectGuestBooking,

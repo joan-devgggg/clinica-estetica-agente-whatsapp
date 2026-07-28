@@ -274,6 +274,13 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
         ? '\nAVISO IMPORTANTE: El día exacto que pidió la clienta NO tiene disponibilidad (la estilista no trabaja ese día o está completo). Los huecos de arriba son las alternativas REALES más cercanas. Dile con amabilidad que ese día no hay hueco y ofrécele estas fechas. NUNCA confirmes ni propongas el día original.'
         : '';
 
+    // La SEMANA que pidió la clienta no se ha podido honrar (ventana agotada — un viernes o
+    // sábado "esta semana" deja 1-2 días — o sin huecos en ella). Los huecos de arriba caen
+    // FUERA de esa semana: hay que decirlo, no colarlos como si fueran de la semana pedida.
+    const avisoSemanaRelajada = partialData.__semanaRelajada
+        ? '\nAVISO IMPORTANTE: En la semana que pidió la clienta ya no queda disponibilidad para este servicio. Los huecos de arriba son de FUERA de esa semana (los más cercanos reales). Díselo con naturalidad ("esta semana ya no me queda hueco para X, lo más cercano que tengo es…") antes de proponérselos. NUNCA los presentes como si fueran de la semana que pidió.'
+        : '';
+
     // Selected service info
     const selectedService = partialData.__selectedService;
     const selectedStylist = partialData.__selectedStylist;
@@ -547,7 +554,7 @@ Pregunta si quiere Mechas Airtouch (premium, más sofisticadas), Mechas clásica
 
 HUECOS DISPONIBLES:
 ${slotsStr}
-${avisoDiaNoDisponible}${selectedStylistDias ? `\n${selectedStylist.nombre} SOLO trabaja: ${selectedStylistDias}. No existe ningún hueco con ella fuera de esos días.` : ''}
+${avisoDiaNoDisponible}${avisoSemanaRelajada}${selectedStylistDias ? `\n${selectedStylist.nombre} SOLO trabaja: ${selectedStylistDias}. No existe ningún hueco con ella fuera de esos días.` : ''}
 
 REGLA ABSOLUTA: los ÚNICOS días y horas válidos son los que aparecen LITERALMENTE en la lista de HUECOS DISPONIBLES. NUNCA inventes, ofrezcas ni confirmes una fecha u hora que no esté en ella, aunque la clienta la pida. Si pide un día que no aparece, dile que ese día no hay hueco y ofrécele solo los que SÍ están en la lista.
 NUNCA inventes fechas, horas ni disponibilidad. Si la lista de HUECOS DISPONIBLES está vacía, tienes PROHIBIDO ofrecer ninguna hora, ningún día y ninguna estilista con hueco: en ese caso pregunta por el servicio o el día que le viene mejor y espera a que se carguen los huecos reales. Ofrecer horarios sin que estén en la lista es un error grave.
@@ -660,8 +667,10 @@ Escala SOLO en estos casos concretos. En todos (excepto tono agresivo) SIEMPRE p
    Solo cuando hay un fallo REAL del sistema que te impide completar la reserva: la lista de huecos no carga, los datos no se guardan, o el sistema devuelve un error.
    "Disculpa, estoy teniendo un problema técnico 😅 Voy a pasar tu solicitud a nuestro equipo para que te atiendan directamente 🙏"
    NUNCA uses este motivo por frustración del cliente, preguntas retóricas, lenguaje coloquial o malsonante, ni porque la clienta diga algo que no entiendes. Solo por fallos reales del sistema.
+   ANTES de usar este motivo, comprueba que NO estabas esperando una respuesta suya (estilista, servicio o fecha): si aún faltaba ese dato, no hay ningún fallo — vuelve a pedírselo con naturalidad.
+   Este caso es la EXCEPCIÓN a la regla crítica de abajo: al anunciar un problema técnico pones YA accion:"escalar_humano" y motivo_escalado:"error_tecnico" en ESE MISMO mensaje. No preguntes ni esperes confirmación: si la clienta no contesta, el equipo nunca se enteraría.
 
-REGLA CRÍTICA DE ESCALADA: NUNCA pongas accion:escalar_humano en el mismo mensaje en que preguntas si la clienta quiere hablar con el equipo. Solo pon accion:escalar_humano DESPUÉS de que la clienta haya confirmado explícitamente con "sí" o similar. Ejemplo correcto: primero preguntas → ella dice sí → entonces en tu SIGUIENTE respuesta pones accion:escalar_humano.
+REGLA CRÍTICA DE ESCALADA (casos 1-6, NO el 7): NUNCA pongas accion:escalar_humano en el mismo mensaje en que preguntas si la clienta quiere hablar con el equipo. Solo pon accion:escalar_humano DESPUÉS de que la clienta haya confirmado explícitamente con "sí" o similar. Ejemplo correcto: primero preguntas → ella dice sí → entonces en tu SIGUIENTE respuesta pones accion:escalar_humano.
 
 IMPORTANTE: NUNCA escales por ningún otro motivo. Si la clienta pregunta algo sobre un servicio, precios, horarios o disponibilidad, respóndelo tú con la información que tienes. Si la clienta está frustrada pero no amenaza ni insulta, responde con empatía y sigue ayudándola. Solo escala en los 7 casos de arriba.
 

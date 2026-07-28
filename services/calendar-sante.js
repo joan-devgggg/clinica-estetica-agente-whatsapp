@@ -5,20 +5,16 @@
 
 const db = require('./db');
 const logger = require('../lib/logger');
+// Aritmética de fecha/hora del negocio (TZ-safe, pura). Compartida con date-preference.js:
+// la resolución "día+semana → fecha" tiene que ser LA MISMA en el motor y en el reducer de
+// preferencia, o el bot verbaliza una fecha y busca huecos en otra.
+const { BUSINESS_TZ, toMinutes, toLocalDateStr, addDaysStr, mondayDow, resolveWeekdayToDate } = require('./date-utils');
 
 const DIAS_SEMANA = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
 const SLOT_OFFER_STEP_MIN = 30; // intervalo entre huecos ofrecidos dentro de una ventana libre (10:00, 10:30, 11:00...)
-
-// Zona horaria del NEGOCIO. Los horarios (`stylist_schedules`) se guardan como texto de
-// pared local ("10:00"), pero las citas/bloqueos son timestamps UTC. Para que ambos se
-// comparen en el MISMO reloj hay que interpretarlos siempre en esta TZ — nunca en la del
-// proceso. Si no, un servidor en UTC (o cualquier otra TZ) calcularía huecos desplazados y
-// podría ofrecer horas ocupadas o hasta sobre-reservar el día entero. Antes esto solo
-// funcionaba porque server.js fija process.env.TZ='Europe/Madrid'; ahora es correcto por
-// construcción en cualquier entorno (tests, scripts, workers) sin depender de ese pin.
-const BUSINESS_TZ = process.env.SALON_TZ || 'Europe/Madrid';
-const _dateFmt = new Intl.DateTimeFormat('en-CA', { timeZone: BUSINESS_TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
-const _timeFmt = new Intl.DateTimeFormat('en-GB', { timeZone: BUSINESS_TZ, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+// Mínimo de días de calendario que debe cubrir la ventana de `semana:'esta'` para seguir
+// siendo un filtro DURO. Por debajo, se relaja (ver buildSlots).
+const MIN_DIAS_VENTANA_SEMANA = 2;
 
 /**
  * Devuelve huecos disponibles para un servicio en los próximos 14 días.
@@ -111,9 +107,19 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     }
     const todayDow = mondayDow(todayStr);
 
+    // ¿Se ha tenido que soltar (total o parcialmente) el filtro de semana que pidió la
+    // clienta? El bot lo usa para DECIRLO en voz alta en vez de proponer en silencio días de
+    // otra semana. Lo escribe buildSlots (ventana blanda) y la ETAPA A del fallback.
+    let weekPreferenceRelaxed = false;
+
     function buildSlots(pref) {
         // Límites de semana como strings YYYY-MM-DD (comparables con < y >).
         let startOfNextWeekStr = null, endOfNextWeekStr = null, endOfThisWeekStr = null;
+        // La ventana de 'esta' se encoge un día por jornada: un viernes deja 2 días y un
+        // sábado deja 1 (domingo, cerrado). Por debajo de MIN_DIAS_VENTANA_SEMANA deja de
+        // tener sentido como filtro DURO — solo produce falsos "no hay huecos" — y pasa a ser
+        // preferencia blanda: no acota, y se avisa a la clienta (weekPreferenceRelaxed).
+        let ventanaSemanaBlanda = false;
         if (pref.semana === 'siguiente') {
             const daysToSunday = 6 - todayDow;              // días hasta el domingo de esta semana
             startOfNextWeekStr = addDaysStr(todayStr, daysToSunday + 1); // lunes próxima semana
@@ -128,6 +134,12 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
             // inicio real de la búsqueda cubre siempre la semana que corresponde.
             const startDow = mondayDow(startDateStr);
             endOfThisWeekStr = addDaysStr(startDateStr, 6 - startDow); // domingo de la semana de inicio
+            const diasEnVentana = (6 - startDow) + 1;
+            if (diasEnVentana < MIN_DIAS_VENTANA_SEMANA) {
+                ventanaSemanaBlanda = true;
+                weekPreferenceRelaxed = true;
+                logger.info('sante_ventana_semana_relajada', { orgId, startDateStr, endOfThisWeekStr, diasEnVentana });
+            }
         }
 
         const out = [];
@@ -158,7 +170,7 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
                 if (!pref.fecha) {
                     if (pref.semana === 'siguiente') {
                         if (dateStr < startOfNextWeekStr || dateStr > endOfNextWeekStr) continue;
-                    } else if (pref.semana === 'esta') {
+                    } else if (pref.semana === 'esta' && !ventanaSemanaBlanda) {
                         if (dateStr > endOfThisWeekStr) continue;
                     }
                 }
@@ -226,6 +238,9 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
         if (preferencia.semana) {
             const { semana, ...sinSemana } = preferencia;
             slots = buildSlots(sinSemana);
+            // Si estos huecos salen de haber soltado la semana, la clienta pidió una semana
+            // que no podemos honrar: hay que decírselo, no proponer otra en silencio.
+            if (slots.length) weekPreferenceRelaxed = true;
         }
         // ETAPA B — si sigue vacío, es el DÍA pedido el que no tiene hueco. Soltamos también
         // día/fecha para proponer las alternativas reales más cercanas, nunca inventadas, y
@@ -263,9 +278,13 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
         if (unique.length >= MAX_TOTAL) break;
     }
 
-    // Bandera para que el bot avise al LLM: el día pedido no tenía disponibilidad real
-    // y estos son los huecos más cercanos (alternativas verídicas, no inventadas).
+    // Banderas para que el bot avise al LLM en vez de callarse:
+    //  - requestedDayUnavailable: el DÍA pedido no tenía disponibilidad real y estos son los
+    //    huecos más cercanos (alternativas verídicas, no inventadas).
+    //  - weekPreferenceRelaxed: la SEMANA pedida no se ha podido honrar (ventana agotada o
+    //    sin huecos) y estos huecos caen fuera de ella.
     unique.requestedDayUnavailable = pedidoDiaSinHueco;
+    unique.weekPreferenceRelaxed = weekPreferenceRelaxed && unique.length > 0;
     return unique;
 }
 
@@ -290,38 +309,6 @@ function addSlot(slots, dateStr, minuteOfDay, diaNombre, stylist, serviceDuratio
         stylistName: stylist.name,
         texto: `el ${fechaFormatted} a las ${hora} con ${stylist.name}`,
     });
-}
-
-// Minuto-del-día (0..1439) de un instante, medido en la TZ de negocio (no la del proceso).
-// Así una cita guardada como 08:00 UTC se lee como 600 (10:00 Madrid) en cualquier servidor.
-function toMinutes(date) {
-    const p = Object.fromEntries(_timeFmt.formatToParts(date).map(x => [x.type, x.value]));
-    return Number(p.hour) * 60 + Number(p.minute);
-}
-
-// Formatea un instante como YYYY-MM-DD en la TZ de negocio (no UTC ni la del proceso).
-// Imprescindible: toISOString() da UTC y, en zonas adelantadas (España, UTC+1/+2), la
-// medianoche local cae el día anterior → desfase de un día. Y getFullYear/getDate usan la
-// TZ del proceso, que en un servidor no-Madrid también desfasa.
-function toLocalDateStr(date) {
-    const p = Object.fromEntries(_dateFmt.formatToParts(date).map(x => [x.type, x.value]));
-    return `${p.year}-${p.month}-${p.day}`;
-}
-
-// Suma n días de CALENDARIO a un 'YYYY-MM-DD' con aritmética pura en UTC (sin TZ, sin DST).
-// Devuelve otro 'YYYY-MM-DD'. Como YYYY-MM-DD ordena lexicográficamente igual que
-// cronológicamente, los strings resultantes se pueden comparar con < y >.
-function addDaysStr(dateStr, n) {
-    const [y, m, d] = dateStr.split('-').map(Number);
-    const dt = new Date(Date.UTC(y, m - 1, d + n));
-    return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
-}
-
-// Día de la semana (0=lunes … 6=domingo) de un 'YYYY-MM-DD', TZ-free.
-function mondayDow(dateStr) {
-    const [y, m, d] = dateStr.split('-').map(Number);
-    const jsDay = new Date(Date.UTC(y, m - 1, d)).getUTCDay(); // 0=domingo
-    return jsDay === 0 ? 6 : jsDay - 1;
 }
 
 // Cálculo puro de huecos: resta los intervalos `occupied` del horario [workStart,workEnd] y
@@ -393,4 +380,4 @@ async function rescheduleAppointment(orgId, appointmentId, slot, { servicio, dur
 
 module.exports = { getAvailableSlots, bookAppointment, cancelAppointment, rescheduleAppointment, formatSlotForMessage };
 // Expuesto para tests de regresión (huecos + TZ-independencia), no para uso en producción.
-module.exports._internals = { computeFreeSlots, toLocalDateStr, toMinutes, addDaysStr, mondayDow, BUSINESS_TZ };
+module.exports._internals = { computeFreeSlots, toLocalDateStr, toMinutes, addDaysStr, mondayDow, resolveWeekdayToDate, BUSINESS_TZ };
