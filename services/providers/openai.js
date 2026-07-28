@@ -263,9 +263,29 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
 
     // Available slots (injected from calendar-sante)
     const slotsDisponibles = partialData.__availableSlots || [];
+
+    // Con la lista vacía hay que decirle al modelo POR QUÉ. Antes siempre se le mandaba
+    // "todavía no hay huecos cargados", que el modelo interpreta como el caso 7 del prompt
+    // (fallo del sistema) y le hace anunciar una avería y escalar — aunque el motivo real
+    // fuera simplemente que el salón está completo. Ése fue el fallo observado el 27/07.
+    // La causa la calcula calendar-sante.js (CAUSAS_CERO) y la propaga bot.js.
+    const CERO_STR = {
+        agenda_llena: 'NO quedan huecos libres para este servicio en las próximas dos semanas: el salón está COMPLETO. NO es un fallo técnico. Díselo con naturalidad y ofrécele mirar más adelante o con otra estilista.',
+        no_cabe_antes_del_cierre: 'El servicio que pide dura más de lo que queda de jornada en los días buscados, así que no entra antes del cierre. NO es un fallo técnico. Propón reservarlo a primera hora de otro día.',
+        sin_horario: 'Ninguna estilista tiene horario en las fechas buscadas. NO es un fallo técnico. Ofrece mirar otras fechas.',
+        sin_skill: 'Ninguna estilista del equipo hace ese servicio. NO es un fallo técnico. Explícaselo y ofrécele algo parecido del catálogo.',
+        sin_estilistas: 'No hay estilistas activas configuradas. NO es un fallo técnico de la conversación: ofrécele que el equipo la contacte.',
+    };
+    const causaCero = partialData.__causaCero;
+    // Sin causa, la lista vacía significa que la agenda NO se ha llegado a consultar (falta
+    // concretar el servicio). Se redacta como INSTRUCCIÓN, no como estado: la versión
+    // anterior ("Todavía no hay huecos cargados…") estaba escrita en primera persona del
+    // asistente y el modelo se la repetía tal cual a la clienta —"en este momento no tengo
+    // cargados los huecos"—, que suena a avería y es justo lo que hay que evitar.
     const slotsStr = slotsDisponibles.length > 0
         ? slotsDisponibles.map((s, i) => `  ${i + 1}. ${s.texto}`).join('\n')
-        : 'Todavía no hay huecos cargados — necesito saber qué servicio quiere la clienta antes de buscar disponibilidad.';
+        : (CERO_STR[causaCero]
+            || 'AÚN NO SE HA CONSULTADO LA AGENDA porque falta concretar el servicio. NO digas que no tienes huecos, ni que no se cargan, ni que hay un problema: simplemente sigue preguntando con naturalidad lo que falta para poder buscar.');
 
     // El día concreto que pidió la clienta no tenía disponibilidad real: los huecos de
     // arriba son las alternativas más cercanas (calculadas de los horarios reales). El LLM

@@ -4,6 +4,7 @@
  */
 
 const supabase = require('./supabase');
+const logger = require('../lib/logger');
 const { NO_STYLIST_KEY } = require('./helpers');
 
 const DEFAULT_ORG = process.env.ORGANIZATION_ID || 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
@@ -11,6 +12,23 @@ const DEFAULT_ORG = process.env.ORGANIZATION_ID || 'a1b2c3d4-e5f6-7890-abcd-ef12
 // ─── Helpers internos ─────────────────────────────────────────────────────────
 
 function resolveOrg(orgId) { return orgId || DEFAULT_ORG; }
+
+// Lecturas del camino de DISPONIBILIDAD de Sante: un error de Supabase (RLS denegado,
+// timeout, corte de red) NO puede degradarse a "sin datos".
+//
+// Antes, el patrón `const { data } = await …; return data || []` descartaba `error` y
+// convertía un fallo de infraestructura en "no hay huecos" — cita perdida y escalada
+// anunciando una avería inexistente. Y en la dirección contraria era peor: si la que
+// fallaba era la lectura de CITAS, el motor creía que la agenda estaba vacía y ofrecía
+// horas ya reservadas (disponibilidad fantasma → doble reserva).
+//
+// Lanzar deja que el llamador distinga "falló la BD" de "no hay hueco", que es justo lo
+// que el bot necesita para decir la verdad. Auditoría 28/07/2026.
+function assertRead(error, tabla) {
+    if (!error) return;
+    logger.error('db_read_error', { tabla, error: error.message || String(error), code: error.code });
+    throw new Error(`Lectura de ${tabla} falló: ${error.message || error}`);
+}
 
 function sanitizePhone(phone) {
     if (!phone || typeof phone !== 'string') return '';
@@ -539,11 +557,24 @@ async function getAgentConfig(orgId) {
     const cached = _agentConfigCache.get(oid);
     if (cached && Date.now() - cached.ts < 60000) return cached.data;
 
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from('agent_configs')
         .select('*')
         .eq('organization_id', oid)
         .maybeSingle();
+
+    // Un error de lectura NO se cachea. Antes se guardaba `null` con timestamp fresco, así
+    // que un fallo transitorio dejaba a la org sin catálogo durante 60 s: todas las
+    // clientas recibían "¿qué servicio quieres?" hicieran lo que hicieran, y sin ningún
+    // log que explicara por qué. Se devuelve la última copia buena si la hay (aunque esté
+    // caducada: mejor catálogo viejo que ninguno) y se reintenta en la llamada siguiente.
+    // Esta función la comparten Sante y San Remo, por eso NO lanza: se conserva el
+    // contrato de devolver config-o-null.
+    if (error) {
+        logger.error('agent_config_read_error', { orgId: oid, error: error.message, stale: !!cached });
+        return cached?.data ?? null;
+    }
+
     const result = data || null;
     _agentConfigCache.set(oid, { data: result, ts: Date.now() });
     return result;
@@ -1011,12 +1042,13 @@ async function getStats(orgId) {
 
 async function getStylistsByOrg(orgId) {
     const oid = resolveOrg(orgId);
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from('stylists')
         .select('*')
         .eq('organization_id', oid)
         .eq('active', true)
         .order('name');
+    assertRead(error, 'stylists');
     return data || [];
 }
 
@@ -1061,12 +1093,13 @@ async function updateStylist(orgId, stylistId, campos) {
 
 async function getStylistSchedule(orgId, stylistId) {
     const oid = resolveOrg(orgId);
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from('stylist_schedules')
         .select('*')
         .eq('organization_id', oid)
         .eq('stylist_id', stylistId)
         .order('day_of_week');
+    assertRead(error, 'stylist_schedules');
     return data || [];
 }
 
@@ -1115,7 +1148,8 @@ async function getScheduleBlocks(orgId, stylistId, from, to) {
     if (stylistId) query = query.eq('stylist_id', stylistId);
     if (from) query = query.gte('ends_at', from);
     if (to) query = query.lte('starts_at', to);
-    const { data } = await query.order('starts_at');
+    const { data, error } = await query.order('starts_at');
+    assertRead(error, 'schedule_blocks');
     return data || [];
 }
 
@@ -1149,7 +1183,8 @@ async function getBlockedDays(orgId, { from, to, stylistId } = {}) {
     if (stylistId) query = query.or(`stylist_id.eq.${stylistId},stylist_id.is.null`);
     if (from) query = query.gte('fecha', from);
     if (to) query = query.lte('fecha', to);
-    const { data } = await query.order('fecha');
+    const { data, error } = await query.order('fecha');
+    assertRead(error, 'blocked_days');
     return data || [];
 }
 
@@ -1176,9 +1211,11 @@ async function deleteBlockedDay(orgId, blockId) {
 
 // ─── Appointments by stylist (for availability) ──────────────────────────────
 
+// Ésta es la lectura más peligrosa de las cinco: si falla y devuelve [], el motor cree
+// que la estilista NO tiene ninguna cita y ofrece huecos ya reservados.
 async function getAppointmentsByStylistAndRange(orgId, stylistId, from, to) {
     const oid = resolveOrg(orgId);
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from('appointments')
         .select('id, stylist_id, starts_at, ends_at, status, service')
         .eq('organization_id', oid)
@@ -1187,6 +1224,7 @@ async function getAppointmentsByStylistAndRange(orgId, stylistId, from, to) {
         .gte('starts_at', from)
         .lte('starts_at', to)
         .order('starts_at');
+    assertRead(error, 'appointments');
     return data || [];
 }
 

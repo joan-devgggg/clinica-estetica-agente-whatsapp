@@ -20,67 +20,12 @@ bot.setBotActivo(SANREMO_ORG_ID, true, false);
 let pass = 0, fail = 0;
 const results = [];
 
-// ─── Cliente WA simulado ────────────────────────────────────────────────────
-function makeClient(sink) {
-    return {
-        sendMessage: async (_phone, text) => { sink.push({ text, t: Date.now() }); },
-        getChatById: async () => ({ sendStateTyping: async () => {} }),
-    };
-}
-let msgCounter = 0;
-function makeMessage(from, text) {
-    return {
-        from, body: text,
-        id: { _serialized: `LLM${Date.now()}_${msgCounter++}@s.whatsapp.net` },
-        fromMe: false, timestamp: Date.now(), isStatus: false, isBroadcast: false, hasMedia: false,
-        getChat: async () => ({ sendStateTyping: async () => {} }),
-    };
-}
+// ─── Arnés de conversación (compartido con verify-sante-robustez.js) ────────
+const { Convo: BaseConvo, sleep, assertQuality } = require('./lib/convo');
 
-class Convo {
-    constructor(phone) {
-        this.phone = phone.includes('@c.us') ? phone : `${phone}@c.us`;
-        this.sink = [];
-        this.client = makeClient(this.sink);
-        this.allBotMsgs = [];
-    }
-    // Envía un mensaje y espera a que el bot termine de responder. Un mensaje de espera
-    // ("Un momento") NO se considera respuesta final: seguimos esperando la real (test 24).
-    // Fuerza flush del buffer para no esperar 5s de debounce en cada turno de test.
-    async send(text, { timeout = 90000, quiet = 3000 } = {}) {
-        const before = this.sink.length;
-        await bot.handleIncomingMessage(this.client, makeMessage(this.phone, text), ORG);
-        await bot._internals.flushBuffer(ORG, this.phone);
-        const deadline = Date.now() + timeout;
-        let lastLen = this.sink.length;
-        let lastChange = Date.now();
-        while (Date.now() < deadline) {
-            await sleep(300);
-            if (this.sink.length !== lastLen) { lastLen = this.sink.length; lastChange = Date.now(); }
-            const got = this.sink.slice(before).map(m => m.text);
-            const lastIsWait = got.length && isWaitMsg(got[got.length - 1]);
-            // Terminamos si hay al menos una respuesta, hubo silencio, y la última no es de espera.
-            if (got.length > 0 && (Date.now() - lastChange) > quiet && !lastIsWait) break;
-        }
-        const newMsgs = this.sink.slice(before).map(m => m.text);
-        this.allBotMsgs.push(...newMsgs);
-        return newMsgs;
-    }
-    lastText() { return this.allBotMsgs[this.allBotMsgs.length - 1] || ''; }
-    fullText() { return this.allBotMsgs.join('\n'); }
-}
-
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-function isWaitMsg(t) {
-    return /^(un momento|one moment|минутку|хвилинку)/i.test((t || '').trim());
-}
-
-// ─── Aserciones de calidad (tests 22, 23) ──────────────────────────────────
-function assertQuality(msgs, label) {
-    for (const m of msgs) {
-        assert(!/[*_]{1,2}\S/.test(m) && !/\*\*/.test(m), `${label}: mensaje con markdown → "${m.slice(0, 60)}"`);
-        assert(m.length <= 1000, `${label}: mensaje > 1000 chars (${m.length})`);
-    }
+// Fija la org para no tener que pasarla en los ~15 `new Convo(phone)` de este fichero.
+class Convo extends BaseConvo {
+    constructor(phone) { super(phone, ORG); }
 }
 
 async function cleanupPhone(phone) {

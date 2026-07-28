@@ -16,6 +16,26 @@ const SLOT_OFFER_STEP_MIN = 30; // intervalo entre huecos ofrecidos dentro de un
 // siendo un filtro DURO. Por debajo, se relaja (ver buildSlots).
 const MIN_DIAS_VENTANA_SEMANA = 2;
 
+// Causas por las que el motor puede devolver CERO huecos. Antes las cinco eran
+// indistinguibles —un `[]` pelado— y el bot acababa comunicando un salón lleno como si
+// fuera una avería técnica ("problema técnico… paso tu solicitud al equipo"), que es
+// exactamente lo que le pasó a una clienta real el 27/07/2026 con la agenda vacía.
+// Un error de BD ya no llega hasta aquí: db.js lanza (ver assertRead).
+const CAUSAS_CERO = {
+    SIN_ESTILISTAS: 'sin_estilistas',                   // la org no tiene estilistas activas
+    SIN_SKILL: 'sin_skill',                             // nadie sabe hacer ese servicio
+    SIN_HORARIO: 'sin_horario',                         // nadie trabaja ningún día del rango
+    NO_CABE: 'no_cabe_antes_del_cierre',                // el servicio no cabe en la jornada
+    AGENDA_LLENA: 'agenda_llena',                       // hay hueco teórico, pero está todo cogido
+};
+
+// Marca la causa en el array de resultado. `causa` es null cuando SÍ hay huecos: el
+// llamador distingue "no hay nada que decir" de cada motivo concreto.
+function conCausa(slots, causa) {
+    slots.causa = causa || null;
+    return slots;
+}
+
 /**
  * Devuelve huecos disponibles para un servicio en los próximos 14 días.
  * @param {string} orgId
@@ -28,7 +48,7 @@ const MIN_DIAS_VENTANA_SEMANA = 2;
  */
 async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory, preferredStylistId, preferencia = {} } = {}) {
     const allStylists = await db.getStylistsByOrg(orgId);
-    if (!allStylists.length) return [];
+    if (!allStylists.length) return conCausa([], 'sin_estilistas');
 
     // Filtrar por skill: SOLO estilistas cuyo `skills` incluye exactamente la categoría
     // del servicio. Antes había un fallback a TODAS las estilistas si ninguna hacía match,
@@ -43,7 +63,7 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
         });
         if (!eligible.length) {
             logger.warn('sante_sin_estilista_para_categoria', { orgId, serviceCategory });
-            return [];
+            return conCausa([], 'sin_skill');
         }
     }
 
@@ -285,7 +305,39 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     //    sin huecos) y estos huecos caen fuera de ella.
     unique.requestedDayUnavailable = pedidoDiaSinHueco;
     unique.weekPreferenceRelaxed = weekPreferenceRelaxed && unique.length > 0;
-    return unique;
+
+    if (unique.length) return conCausa(unique, null);
+
+    // Cero real tras haberlo intentado todo (incluidas ETAPA A y B). Se diagnostica el
+    // PORQUÉ recorriendo lo que ya está en memoria — sin volver a la BD — para que el bot
+    // pueda decir la verdad ("está completo" / "no cabe en la jornada") en vez del
+    // "no hay huecos cargados" genérico que el LLM interpreta como avería.
+    let hayAlgunaJornada = false;   // ¿alguien trabaja algún día del rango?
+    let cabeEnAlgunaJornada = false; // ¿el servicio cabe en alguna de esas jornadas?
+    for (const { scheduleByDay } of stylistData) {
+        for (const { dayOfWeek } of calendarDays) {
+            const ds = scheduleByDay.get(dayOfWeek);
+            if (!ds) continue;
+            hayAlgunaJornada = true;
+            const [sH, sM] = ds.start_time.split(':').map(Number);
+            const [eH, eM] = ds.end_time.split(':').map(Number);
+            // Mismo criterio estricto que computeFreeSlots: la cita debe TERMINAR antes del
+            // cierre, no justo al cierre.
+            if ((sH * 60 + sM) + serviceDuration < (eH * 60 + eM)) { cabeEnAlgunaJornada = true; break; }
+        }
+        if (cabeEnAlgunaJornada) break;
+    }
+
+    const causa = !hayAlgunaJornada ? CAUSAS_CERO.SIN_HORARIO
+        : !cabeEnAlgunaJornada ? CAUSAS_CERO.NO_CABE
+        : CAUSAS_CERO.AGENDA_LLENA;
+
+    logger.warn('sante_cero_huecos_diagnosticado', {
+        orgId, causa, serviceCategory, serviceDuration,
+        estilistasElegibles: eligible.length,
+        preferencia,
+    });
+    return conCausa(unique, causa);
 }
 
 function addSlot(slots, dateStr, minuteOfDay, diaNombre, stylist, serviceDuration, preferencia) {
@@ -378,6 +430,6 @@ async function rescheduleAppointment(orgId, appointmentId, slot, { servicio, dur
     return result ? { success: true, appointmentId: result.id, appointment: result } : { success: false };
 }
 
-module.exports = { getAvailableSlots, bookAppointment, cancelAppointment, rescheduleAppointment, formatSlotForMessage };
+module.exports = { getAvailableSlots, bookAppointment, cancelAppointment, rescheduleAppointment, formatSlotForMessage, CAUSAS_CERO };
 // Expuesto para tests de regresión (huecos + TZ-independencia), no para uso en producción.
 module.exports._internals = { computeFreeSlots, toLocalDateStr, toMinutes, addDaysStr, mondayDow, resolveWeekdayToDate, BUSINESS_TZ };

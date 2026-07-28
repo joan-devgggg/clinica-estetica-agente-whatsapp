@@ -376,6 +376,10 @@ async function loadAvailableSlots(session) {
     // anti-escalada-falsa la exige antes de dejar escalar por "error_tecnico": un
     // availableSlots vacío porque nunca preguntamos no es un fallo del sistema.
     session._slotsQueriedThisTurn = true;
+    // Cada consulta parte de cero: un fallo de BD del turno anterior no debe seguir
+    // marcando la sesión cuando la lectura vuelve a funcionar.
+    session.slotsDbError = false;
+    session.slotsCausaCero = null;
     try {
         if (session.orgType === 'salon') {
             // INVARIANTE A (defensivo): garantizar que selectedService es el objeto
@@ -438,6 +442,7 @@ async function loadAvailableSlots(session) {
             if (slots.length === 0 && service) {
                 logger.warn('sante_cero_huecos', {
                     orgId,
+                    causa: slots.causa || null,
                     servicio: service.nombre || null,
                     serviceCategory: service.categoria || null,
                     serviceDuration: (service.duracion || 60) + upsellingDuration,
@@ -446,6 +451,10 @@ async function loadAvailableSlots(session) {
                     preferencia: session.partialData.preferencia_horaria || {},
                 });
             }
+            // Por qué el motor devolvió cero (agenda_llena / no_cabe_antes_del_cierre /
+            // sin_horario / sin_skill / sin_estilistas), o null si sí hay huecos. Permite
+            // decirle la verdad a la clienta en vez del genérico que el LLM lee como avería.
+            session.slotsCausaCero = slots.causa || null;
             // Si el día concreto pedido no tenía disponibilidad real, calendar-sante
             // devuelve los huecos más cercanos y marca esta bandera para que el LLM
             // avise a la clienta en vez de afirmar que el día pedido está libre.
@@ -473,8 +482,13 @@ async function loadAvailableSlots(session) {
         }
         session.currentSlotIndex = 0;
     } catch (e) {
+        // Desde el arreglo de db.js (assertRead), un fallo de Supabase LLEGA aquí como
+        // excepción en vez de disfrazarse de "[] huecos". Se marca para que la escalada por
+        // error_tecnico sea verdad cuando la haya, y mentira nunca.
         logger.error('error_slots', { orgId, error: e.message });
         session.availableSlots = [];
+        session.slotsCausaCero = null;
+        session.slotsDbError = true;
     }
 }
 
@@ -995,6 +1009,38 @@ function salonNoSlotsMsg(session) {
             uk: `На цей день вільного часу немає, але є ${lista}. Підійде щось із цього?`,
         };
         return (language && noDayMsg[language]) || `Ese día no tengo hueco libre, pero sí tengo ${lista}. ¿Te viene bien alguno?`;
+    }
+
+    // Cero REAL con el servicio ya conocido: el motor buscó y no hay nada. Antes se caía
+    // al "¿qué día te viene mejor?" de abajo —repreguntando lo que la clienta ya había
+    // contestado— y el LLM, al ver la lista vacía, anunciaba una avería técnica. Decir la
+    // verdad según la causa evita las dos cosas.
+    const causa = session.slotsCausaCero;
+    if (causa) {
+        const msgs = {
+            no_cabe_antes_del_cierre: {
+                es: 'Ese servicio necesita más tiempo del que queda en la jornada 😅 Lo reservamos mejor a primera hora: ¿qué día te vendría bien?',
+                en: "That service needs more time than we have left in the day 😅 It's best first thing in the morning: which day suits you?",
+                ru: 'Эта услуга занимает больше времени, чем остаётся в рабочем дне 😅 Лучше записать тебя с утра: какой день подойдёт?',
+                uk: 'Ця послуга займає більше часу, ніж лишається в робочому дні 😅 Краще записати тебе зранку: який день підійде?',
+            },
+            sin_horario: {
+                es: 'Justo esos días no tenemos a nadie en agenda 😕 ¿Miramos otra fecha?',
+                en: "We don't have anyone scheduled those days 😕 Shall we look at another date?",
+                ru: 'В эти дни у нас никого нет в графике 😕 Посмотрим другую дату?',
+                uk: 'Саме ці дні у нас нікого немає в графіку 😕 Подивимось іншу дату?',
+            },
+            // sin_skill / sin_estilistas / agenda_llena comparten el mensaje de "completo":
+            // para la clienta el resultado es el mismo y no le interesa el detalle interno.
+            _default: {
+                es: 'Uy, para esas fechas lo tenemos completo 😕 ¿Quieres que mire la semana siguiente o prefieres otra estilista?',
+                en: "We're fully booked for those dates 😕 Shall I check the following week, or would you prefer another stylist?",
+                ru: 'На эти даты у нас всё занято 😕 Посмотреть следующую неделю или предпочитаешь другого мастера?',
+                uk: 'На ці дати у нас все зайнято 😕 Подивитися наступний тиждень чи волієш іншу майстриню?',
+            },
+        };
+        const set = msgs[causa] || msgs._default;
+        return set[language] || set.es;
     }
 
     const askDay = {
@@ -2497,6 +2543,9 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             partialDataWithCtx.__guestName = session.guestName || null;
             partialDataWithCtx.__requestedDayUnavailable = !!session.slotsRequestedDayUnavailable;
             partialDataWithCtx.__semanaRelajada = !!session.slotsWeekPreferenceRelaxed;
+            // Por qué la lista de huecos viene vacía. Sin esto el modelo asume "fallo del
+            // sistema" y anuncia una avería que no existe (caso 7 del prompt).
+            partialDataWithCtx.__causaCero = session.slotsCausaCero || null;
 
             // Inyectar días de trabajo de cada estilista para que el LLM sepa cuándo libran
             const DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
@@ -2645,15 +2694,22 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // carga") es lo que el LLM aplica cuando ve __availableSlots vacío — pero vacío NO
         // significa fallo: puede ser que nunca hayamos consultado el motor porque faltaba
         // preguntar servicio/estilista/fecha. Ese fue el bug del 28/07: dos clientas oyeron
-        // "problema técnico" con 8 y 51 huecos libres. Solo dejamos escalar por error_tecnico
-        // si el motor se consultó DE VERDAD en este turno y volvió vacío.
+        // "problema técnico" con 8 y 51 huecos libres.
+        //
+        // Desde la auditoría del 28/07 el criterio es más estricto: "el motor volvió vacío"
+        // TAMPOCO es una avería. Un salón lleno, un servicio que no cabe en la jornada o
+        // una categoría sin estilista son respuestas legítimas con su propio mensaje
+        // (salonNoSlotsMsg según session.slotsCausaCero). La ÚNICA avería real es que la
+        // lectura de BD haya fallado — y eso ahora llega como excepción (slotsDbError),
+        // no como un [] indistinguible.
         if (orgType === 'salon' && aiResponse.accion === 'escalar_humano'
                 && aiResponse.motivo_escalado === 'error_tecnico'
-                && !(session._slotsQueriedThisTurn && session.availableSlots.length === 0)) {
+                && !session.slotsDbError) {
             logger.warn('sante_escalada_tecnica_falsa_bloqueada', {
                 orgId, telefono: userPhone,
                 slotsConsultados: !!session._slotsQueriedThisTurn,
                 huecosCargados: (session.availableSlots || []).length,
+                causaCero: session.slotsCausaCero || null,
                 askStylistFirst: !!session.askStylistFirst,
                 askDatePreferenceFirst: !!session.askDatePreferenceFirst,
                 preferencia: session.partialData.preferencia_horaria || null,
