@@ -71,6 +71,7 @@ export function ClienteEditSheet({
         hora_cita: horaCita,
         allergies: form.get("allergies") as string,
         preferences: form.get("preferences") as string,
+        ...(isSalon && { formula_coloracion: form.get("formula_coloracion") as string }),
         notas: form.get("notas") as string,
       });
     } catch (err) {
@@ -231,6 +232,23 @@ export function ClienteEditSheet({
               placeholder={isSalon ? "Estilista habitual, tipo de corte..." : "Mesa junto a la ventana..."}
             />
           </div>
+          {isSalon && (
+            <div className="space-y-1.5">
+              <Label className="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground">
+                Fórmula de coloración
+              </Label>
+              <textarea
+                name="formula_coloracion"
+                defaultValue={cliente.formula_coloracion}
+                rows={3}
+                placeholder="Ej. Base 6.0 + 7.3 (30ml) · oxidante 20 vol · 35 min..."
+                className="w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-[13.5px] placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring transition-shadow"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Última fórmula usada. Se sobrescribe al guardar.
+              </p>
+            </div>
+          )}
           <div className="space-y-1.5">
             <Label className="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground">
               Notas

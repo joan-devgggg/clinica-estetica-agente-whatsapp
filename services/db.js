@@ -42,6 +42,7 @@ function rowToPublic(row) {
         visit_count:           row.visit_count || 0,
         allergies:             row.allergies,
         preferences:           row.preferences,
+        formula_coloracion:    row.formula_coloracion,
         preferred_stylist_id:  row.preferred_stylist_id || null,
         last_stylist:          row.last_stylist || null,
         language:              row.language || 'es',
@@ -269,6 +270,7 @@ async function updateLeadById(orgId, id, campos) {
         origen:         'origen',
         allergies:      'allergies',
         preferences:    'preferences',
+        formula_coloracion: 'formula_coloracion',
         appointment_id: 'appointment_id',
     };
     const updates = { updated_at: now() };

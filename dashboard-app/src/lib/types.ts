@@ -27,6 +27,7 @@ export interface Cliente {
   visit_count: number;
   allergies?: string;
   preferences?: string;
+  formula_coloracion?: string;
   bot_mode?: "auto" | "manual";
   origen?: string;
   preferred_stylist_id?: string;
