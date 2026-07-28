@@ -112,6 +112,7 @@ const ESCALATION_LABELS = {
     tono_agresivo: 'Tono agresivo o frustrado',
     pedir_persona: 'Pide hablar con una persona',
     pregunta_sin_respuesta: 'Pregunta que el bot no puede responder',
+    limite_mensajes: 'Conversación muy larga: límite de mensajes alcanzado',
 };
 
 async function notifyEscalation(orgId, contacto, mensaje, reason) {

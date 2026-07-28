@@ -587,6 +587,38 @@ function triggerAsyncSummary(orgId, userPhone, session) {
         .finally(() => { session._summarizing = false; });
 }
 
+// ─── Escalada real: fila en pending_actions + aviso Telegram ─────────────────
+// Extraído del patrón canónico de handleAppointmentAction/'escalar_humano'. NO envía
+// mensaje al cliente (el llamante ya lo ha hecho) y nunca lanza: fallar la escalada no
+// puede tumbar el turno. Devuelve true solo si quedó registrada — un false es una
+// promesa incumplida y tiene que verse en los logs.
+async function escalateToHuman(session, userPhone, reason, ultimoMensaje) {
+    const orgId = session.orgId;
+    const telefono = session.partialData.telefono;
+    try {
+        let contact = await findByPhone(orgId, telefono);
+        if (!contact && !session.leadId) {
+            const newId = await saveLead(orgId, { ...session.partialData, leadId: session.leadId });
+            if (newId) { session.leadId = newId; session.leadGuardado = true; }
+            contact = await findByPhone(orgId, telefono);
+        }
+        const contactId = contact?.id || session.leadId;
+        await setLeadBotMode(orgId, telefono, 'manual');
+        await setEscalationReason(orgId, telefono, reason);
+        await createPendingAction(orgId, {
+            type: 'escalation',
+            contactId,
+            payload: { motivo: reason, mensaje: ultimoMensaje || '' },
+        });
+        notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono }, ultimoMensaje, reason).catch(() => {});
+        logger.info('escalada_ejecutada', { orgId, telefono: userPhone, reason });
+        return true;
+    } catch (e) {
+        logger.error('error_escalar', { orgId, telefono: userPhone, reason, error: e.message });
+        return false;
+    }
+}
+
 // ─── Acciones de reserva/cita ────────────────────────────────────────────────
 async function handleAppointmentAction(client, session, userPhone, accion, respuesta, motivoEscalado) {
     const orgId = session.orgId;
@@ -1952,6 +1984,17 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 }
                 await _send(limitMsg);
                 session.botActivo = false;
+                // La promesa del mensaje ("nuestro equipo te atenderá") tiene que ser real.
+                // Hasta ahora solo se silenciaba la sesión EN MEMORIA: cero fila en
+                // pending_actions, cero Telegram, y contacts.bot_mode seguía en 'auto', así
+                // que la reconciliación de arriba (L1820/L1889) revivía el bot en el mensaje
+                // siguiente. Mismo patrón de bug que "el más cercano": escalada anunciada y no
+                // ejecutada. Solo Sante: San Remo mantiene el comportamiento actual.
+                if (orgType === 'salon') {
+                    const escalada = await escalateToHuman(session, userPhone, 'limite_mensajes', userText);
+                    if (!escalada) logger.warn('limite_escalada_fallida', { orgId, telefono: userPhone });
+                    persistSession(orgId, userPhone, session);
+                }
             }
             return;
         }
@@ -3490,6 +3533,8 @@ module.exports = {
         respondsWithInventedSlots, salonNoSlotsMsg, salonOfferSlotsMsg,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover,
+        // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:
+        escalateToHuman,
         // Estado de servicio centralizado (fuente de verdad + limpieza):
         clearServiceState, assignStylistIfAppropriate, computeStylistGating, shouldFixStylistFromLlm, SERVICE_STATE_DEFAULTS, SERVICE_PARTIAL_FIELDS, createEmptySession,
         // Flujos de reserva (aceptación de upsell, 2ª reserva, skill de estilista):
