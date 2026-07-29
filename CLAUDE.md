@@ -4,10 +4,10 @@ Bot de WhatsApp multi-organización que gestiona citas, reservas y seguimiento p
 
 ## Organizaciones activas
 
-| Org | Tipo | WhatsApp | UUID |
-|---|---|---|---|
-| Restaurante San Remo | restaurant | +34667474233 | `a1b2c3d4-e5f6-7890-abcd-ef1234567890` |
-| Sante Healthy Hair Salon | salon | +34641029104 | `b2c3d4e5-f6a7-8901-bcde-f12345678901` |
+| Org | Tipo | WhatsApp | Canal | UUID |
+|---|---|---|---|---|
+| Restaurante San Remo | restaurant | +34667474233 | whatsapp-web.js | `a1b2c3d4-e5f6-7890-abcd-ef1234567890` |
+| Sante Healthy Hair Salon | salon | +34641029104 | 360dialog (Cloud API) | `b2c3d4e5-f6a7-8901-bcde-f12345678901` |
 
 ## Arquitectura
 
@@ -19,7 +19,7 @@ server.js              ← Punto de entrada: crea N clientes WA, arranca workers
 ├── webhook.js         ← API REST multi-org (orgId via header X-Organization-Id)
 ├── dashboard-app/     ← Dashboard Next.js (puerto 3001)
 └── services/
-    ├── org-registry.js    ← Mapeo teléfono → orgId, tipo de org
+    ├── org-registry.js    ← Mapeo teléfono → orgId, tipo de org, CANAL de WhatsApp
     ├── db.js              ← Capa de datos Supabase (TODAS las funciones reciben orgId)
     ├── supabase.js        ← Cliente Supabase
     ├── calendar.js        ← Mock de mesas (San Remo)
@@ -31,8 +31,22 @@ server.js              ← Punto de entrada: crea N clientes WA, arranca workers
     ├── memory.js          ← Sesiones SQLite (clave compuesta orgId:phone)
     ├── metrics.js         ← Métricas internas
     └── providers/
-        └── openai.js      ← System prompts por tipo de org + llamadas Claude API (Anthropic)
+        ├── openai.js             ← System prompts por tipo de org + llamadas Claude API (Anthropic)
+        └── threesixty-dialog.js  ← Adapter 360dialog: webhook entrante + cliente saliente (Sante)
 ```
+
+## Canal de WhatsApp por organización
+
+Cada org tiene UN canal, declarado en `services/org-registry.js` (`getOrgChannel(orgId)`):
+
+- **`wwebjs`** (San Remo) — `server.js` crea un `Client` de whatsapp-web.js con su `LocalAuth`; el entrante llega por el evento `message_create`.
+- **`360dialog`** (Sante) — **NO se crea cliente wwebjs**. El entrante llega por `POST /webhook/360dialog/:token` → `process360Webhook` → el mismo `handleIncomingMessage`. La org sigue en el Map `waClients` pero con el cliente de Cloud API, porque `reminder.js` y `review.js` iteran sus claves para saber qué orgs procesar.
+
+**El canal es un dato del registry, nunca se deriva de `SANTE_360_API_KEY`.** Si dependiera de la key, una máquina sin ella levantaría otra vez el cliente wwebjs de Sante y habría dos canales escuchando el mismo número. Eso ya pasó: el dedupe no lo detecta porque los ids viven en espacios distintos (`wamid.…` vs `false_…@c.us_…`) y `TTLMessageDedupe` es un Map en RAM de 60 s por proceso. Guard de refuerzo en `handleIncomingMessage`: un mensaje sin id `wamid.` dirigido a una org no-wwebjs se descarta con `mensaje_ignorado_canal_inactivo`.
+
+Rollback sin deploy: `SANTE_CHANNEL=wwebjs`.
+
+⚠️ **Ventana de 24 h (Cloud API)**: el texto libre solo se entrega dentro de las 24 h desde el último mensaje *entrante* de la clienta. Recordatorios y reseñas caen fuera casi siempre (entre reservar y la visita pasan días) → necesitan **plantilla aprobada de Meta**, que aún no está implementada (`build360Client` solo envía `type: 'text'`).
 
 ## Multi-tenancy
 
@@ -111,6 +125,11 @@ SANREMO_ORG_ID                # UUID San Remo
 SANTE_ORG_ID                  # UUID Sante
 SANREMO_WA_PHONE              # 34667474233
 SANTE_WA_PHONE                # 34641029104
+SANTE_360_API_KEY             # 360dialog: clave de envío de Sante (necesaria para ENVIAR como Sante)
+SANTE_360_PHONE_NUMBER_ID     # 360dialog: phone number id de Sante
+WHATSAPP_360_BASE_URL         # Opcional (default: https://waba-v2.360dialog.io)
+WHATSAPP_WEBHOOK_TOKEN        # Token secreto de /webhook/360dialog/:token (única protección de esa ruta)
+SANTE_CHANNEL                 # Escape hatch: 'wwebjs' devuelve Sante a whatsapp-web.js
 ORGANIZATION_ID               # Fallback/default org
 DASHBOARD_API_SECRET          # Bearer token para API REST
 TELEGRAM_BOT_TOKEN            # Bot Telegram (compartido)

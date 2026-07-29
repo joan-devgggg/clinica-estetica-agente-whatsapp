@@ -15,7 +15,7 @@ const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
 const { summarizeHistory } = require('./services/providers/openai');
 const { notifyBizumPending, notifyEscalation, notifyBlacklistAlert } = require('./services/telegram');
-const { getOrgType } = require('./services/org-registry');
+const { getOrgType, getOrgChannel, CHANNEL_WWEBJS } = require('./services/org-registry');
 const config = require('./config.json');
 const logger = require('./lib/logger');
 
@@ -3463,6 +3463,19 @@ async function handleIncomingMessage(client, message, orgId) {
     try {
         if (!message) return;
         const messageKey = getMessageKey(message);
+
+        // Guard de canal. Una org migrada a Cloud API solo debe entrar por el webhook de
+        // 360dialog, cuyos ids son `wamid.…` (threesixty-dialog.js → buildInboundAdapters).
+        // Un id con forma de whatsapp-web.js (`false_34…@c.us_ABC`) significa que en algún
+        // proceso sobrevive un cliente wwebjs de esa org: sería una SEGUNDA entrada del
+        // mismo mensaje y el dedupe NO puede verla — los ids viven en espacios distintos y
+        // TTLMessageDedupe es un Map en RAM por proceso. Para San Remo (canal 'wwebjs') la
+        // condición es falsa siempre: cero impacto.
+        if (getOrgChannel(orgId) !== CHANNEL_WWEBJS && !String(messageKey || '').startsWith('wamid.')) {
+            logger.info('mensaje_ignorado_canal_inactivo', { orgId, messageKey: messageKey || null });
+            return;
+        }
+
         if (!message.from || message.from.includes('@g.us') || message.isStatus || message.isBroadcast) return;
 
         const userPhone = message.from;

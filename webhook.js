@@ -57,6 +57,7 @@ function getWAClient(orgId) {
 // SIN cambios: get360Config devuelve null → getWAClient. Lo usan todos los
 // envíos que dispara el panel (/api/send y los broadcasts).
 const { get360Config, build360Client } = require('./services/providers/threesixty-dialog');
+const { CHANNEL_WWEBJS } = require('./services/org-registry');
 function getOutboundClient(orgId) {
     if (get360Config(orgId)) return build360Client(orgId);
     return getWAClient(orgId);
@@ -85,11 +86,19 @@ app.get('/api/wa-status', async (_req, res) => {
     const statuses = {};
     if (_waClients instanceof Map) {
         for (const [orgId, entry] of _waClients) {
+            const key = entry.slug || orgId;
+            // Una org en Cloud API no tiene sesión de whatsapp-web.js: su cliente no expone
+            // getState(), así que la rama de abajo la reportaría DISCONNECTED de por vida.
+            // Eso es falso y esconde el estado real (el canal está operativo por webhook).
+            if (entry.channel && entry.channel !== CHANNEL_WWEBJS) {
+                statuses[key] = String(entry.channel).toUpperCase();
+                continue;
+            }
             try {
                 const state = await entry.client.getState();
-                statuses[entry.slug || orgId] = state || 'DISCONNECTED';
+                statuses[key] = state || 'DISCONNECTED';
             } catch {
-                statuses[entry.slug || orgId] = 'DISCONNECTED';
+                statuses[key] = 'DISCONNECTED';
             }
         }
     }

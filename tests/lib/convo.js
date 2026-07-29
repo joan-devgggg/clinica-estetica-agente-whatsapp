@@ -31,11 +31,15 @@ function makeClient(sink) {
 }
 
 let msgCounter = 0;
+// El id por defecto tiene forma de wamid porque Sante —la org que conducen estos tests—
+// recibe por Cloud API (360dialog), y el guard de canal de handleIncomingMessage descarta
+// lo que llegue con id de whatsapp-web.js para una org migrada. Un test que necesite
+// simular el otro canal puede pasar `id` en `overrides`.
 function makeMessage(from, text, overrides = {}) {
     return {
         from,
         body: text,
-        id: { _serialized: `T${Date.now()}_${msgCounter++}@s.whatsapp.net` },
+        id: { _serialized: `wamid.T${Date.now()}_${msgCounter++}` },
         fromMe: false,
         timestamp: Date.now(),
         isStatus: false,
