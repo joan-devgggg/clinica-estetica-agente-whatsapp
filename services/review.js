@@ -101,4 +101,4 @@ function startReviewWorker(clients) {
     setTimeout(checkAndSendReviews, 2 * 60 * 1000);
 }
 
-module.exports = { startReviewWorker };
+module.exports = { startReviewWorker, buildReviewMessage };

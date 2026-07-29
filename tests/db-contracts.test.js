@@ -124,6 +124,42 @@ const lastCall = () => mock.calls[mock.calls.length - 1];
         assert.strictEqual(c.payload.ends_at, '2026-07-14T12:00:00.000Z');
     });
 
+    // ── recordatorio_enviado: debe resetearse en cada (re)confirmación, no solo en el alta ──
+    // Antes de este fix se ponía a true la primera vez (marcarRecordatorioSent) y nunca volvía
+    // a false, así que una clienta recurrente dejaba de recibir recordatorio en su 2ª visita.
+    await test('updateLead(estado_cita: confirmado) resetea recordatorio_enviado a false', async () => {
+        mock.setResponder((state) => {
+            if (state.op === 'update') return { data: null, error: null };
+            return { data: { id: 'contact-1', full_name: 'Ana' }, error: null }; // findById (select/maybeSingle)
+        });
+        await db.updateLead('org', { leadId: 'contact-1', estado_cita: 'confirmado' });
+        const c = lastCall();
+        assert.strictEqual(c.op, 'update');
+        assert.strictEqual(c.payload.estado, 'confirmado');
+        assert.strictEqual(c.payload.recordatorio_enviado, false);
+    });
+
+    await test('updateLead sin cambio de estado_cita NO toca recordatorio_enviado', async () => {
+        mock.setResponder((state) => {
+            if (state.op === 'update') return { data: null, error: null };
+            return { data: { id: 'contact-1' }, error: null };
+        });
+        await db.updateLead('org', { leadId: 'contact-1', notas: 'x' });
+        const c = lastCall();
+        assert.ok(!('recordatorio_enviado' in c.payload), 'no debe fijar el campo si no cambia estado_cita');
+    });
+
+    await test('updateLeadById(estado_cita: confirmado) también resetea recordatorio_enviado (confirm manual del panel)', async () => {
+        mock.setResponder((state) => {
+            if (state.op === 'update') return { error: null };
+            return { data: { id: 'contact-1' }, error: null };
+        });
+        await db.updateLeadById('org', 'contact-1', { estado_cita: 'confirmado' });
+        const c = mock.calls.find((x) => x.op === 'update' && x.payload && 'estado' in x.payload);
+        assert.ok(c, 'debe haber un UPDATE con estado');
+        assert.strictEqual(c.payload.recordatorio_enviado, false);
+    });
+
     if (!process.exitCode) console.log('\nTodos los tests de contratos db OK');
     process.exit(process.exitCode || 0);
 })();

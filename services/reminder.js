@@ -10,6 +10,25 @@ const logger = require('../lib/logger');
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 let waClients = null; // Map<orgId, { client, orgId, ... }>
 
+// Mismo patrón que REVIEW_TEMPLATES en review.js: la clienta habla en su idioma durante
+// toda la conversación (bot.js detecta ES/EN/RU/UK), así que el recordatorio no puede ser
+// el único mensaje que le llega siempre en español.
+const REMINDER_TEMPLATES = {
+    es: (nombre, salon, hora) =>
+        `Hola ${nombre || ''} 😊 Te recordamos tu cita en ${salon} a las ${hora || ''}. ¡Te esperamos!`,
+    en: (nombre, salon, hora) =>
+        `Hi ${nombre || ''} 😊 Just a reminder of your appointment at ${salon} at ${hora || ''}. See you soon!`,
+    ru: (nombre, salon, hora) =>
+        `Привет ${nombre || ''} 😊 Напоминаем о вашей записи в ${salon} в ${hora || ''}. Ждём вас!`,
+    uk: (nombre, salon, hora) =>
+        `Привіт ${nombre || ''} 😊 Нагадуємо про ваш запис у ${salon} о ${hora || ''}. Чекаємо на вас!`,
+};
+
+function buildReminderMessage(nombre, salon, hora, language) {
+    const template = REMINDER_TEMPLATES[language] || REMINDER_TEMPLATES.es;
+    return template(nombre, salon, hora);
+}
+
 function minutosHastaCita(fechaStr, horaStr) {
     if (!fechaStr) return Infinity;
     try {
@@ -75,7 +94,7 @@ async function checkAndSendReminders() {
                 const minutosRestantes = minutosHastaCita(record.fecha_cita, record.hora_cita);
                 if (minutosRestantes < 0 || minutosRestantes > minutosAntes) continue;
 
-                const mensaje = `Hola ${record.nombre || ''} 😊 Te recordamos tu cita en ${companyName} a las ${record.hora_cita || ''}. ¡Te esperamos!`;
+                const mensaje = buildReminderMessage(record.nombre, companyName, record.hora_cita, record.language);
                 const sent = await sendReminderMessage(orgId, record.telefono, mensaje, record.wa_jid);
 
                 if (sent) {
@@ -96,4 +115,4 @@ function startReminderWorker(clients) {
     setTimeout(checkAndSendReminders, 60 * 1000);
 }
 
-module.exports = { startReminderWorker };
+module.exports = { startReminderWorker, buildReminderMessage };

@@ -259,6 +259,16 @@ function normalizeContactUpdates(updates) {
     return updates;
 }
 
+// Una cita que pasa a 'confirmado' es, por definición, una que aún no ha recibido su
+// recordatorio. Sin este reset, recordatorio_enviado se queda en true para siempre tras el
+// primer aviso (nunca se pone a false en ningún otro sitio) y reminder.js — que lee esta
+// columna, no la de `appointments` — deja de avisar a esa clienta en TODAS sus visitas
+// siguientes. Afecta a los tres caminos que confirman una cita: bot.js (Sante y Bizum de
+// San Remo) y el confirm manual del panel (webhook.js).
+function resetRecordatorioIfConfirmado(updates, estadoCita) {
+    if (estadoCita === 'confirmado') updates.recordatorio_enviado = false;
+}
+
 async function updateLead(orgId, datos) {
     const oid = resolveOrg(orgId);
     if (!datos.telefono && !datos.leadId) return false;
@@ -286,6 +296,7 @@ async function updateLead(orgId, datos) {
     if (datos.allergies !== undefined)           updates.allergies = datos.allergies;
     if (datos.preferences !== undefined)         updates.preferences = datos.preferences;
 
+    resetRecordatorioIfConfirmado(updates, datos.estado_cita);
     normalizeContactUpdates(updates);
     await supabase.from('contacts').update(updates).eq('id', existing.id).eq('organization_id', oid);
     return true;
@@ -312,6 +323,7 @@ async function updateLeadById(orgId, id, campos) {
     for (const [oldKey, newKey] of Object.entries(fieldMap)) {
         if (campos[oldKey] !== undefined) updates[newKey] = campos[oldKey];
     }
+    resetRecordatorioIfConfirmado(updates, campos.estado_cita);
     normalizeContactUpdates(updates);
     // El error de Supabase se PROPAGA: devolver la fila releída sin mirarlo hacía que un
     // UPDATE fallido se viese como un guardado correcto (200 con los valores viejos).
