@@ -301,6 +301,30 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
         ? '\nAVISO IMPORTANTE: En la semana que pidió la clienta ya no queda disponibilidad para este servicio. Los huecos de arriba son de FUERA de esa semana (los más cercanos reales). Díselo con naturalidad ("esta semana ya no me queda hueco para X, lo más cercano que tengo es…") antes de proponérselos. NUNCA los presentes como si fueran de la semana que pidió.'
         : '';
 
+    // La clienta nombró a una estilista y el sistema NO pudo dársela tal cual. Antes
+    // esto se descartaba en silencio y el bot seguía proponiendo huecos de otra, como
+    // si no hubiera pedido nada. Los tres avisos van juntos porque son el mismo
+    // problema visto desde tres ángulos, y la lista de alternativas SIEMPRE sale del
+    // equipo real (nunca del modelo, que se inventaría nombres).
+    const alternativasStr = (partialData.__estilistaAlternativas || []).join(', ');
+    const avisoEstilista = (() => {
+        if (partialData.__estilistaNoReconocida) {
+            return `\nAVISO IMPORTANTE: la clienta ha pedido cita con "${partialData.__estilistaNoReconocida}", y en el equipo NO hay nadie con ese nombre. NO la ignores ni sigas como si no lo hubiera dicho. Dile con naturalidad y sin cortar el trato que no tienes a nadie con ese nombre${alternativasStr ? ` y ofrécele las que SÍ pueden atenderla: ${alternativasStr}` : ''}. Si crees que quiso escribir uno de esos nombres, pregúntaselo ("¿te refieres a X?"). NUNCA confirmes una cita con "${partialData.__estilistaNoReconocida}" ni la des por asignada.`;
+        }
+        if (partialData.__estilistaSinSkill) {
+            const { nombre, rol } = partialData.__estilistaSinSkill;
+            return `\nAVISO IMPORTANTE: la clienta ha pedido cita con ${nombre}, que${rol ? ` se dedica a ${rol} y` : ''} NO hace el servicio que quiere. NO la ignores. Explícaselo en UNA frase corta y ofrécele las que sí lo hacen${alternativasStr ? `: ${alternativasStr}` : ''}. Espera a que elija antes de proponer horarios.`;
+        }
+        return '';
+    })();
+
+    // Casi-acierto ya corregido por el sistema: la estilista YA está asignada, así que
+    // esto no bloquea el flujo — solo hay que reconocer la corrección al vuelo para que,
+    // si nos hemos equivocado de persona, la clienta lo vea en el acto y pueda decirlo.
+    const avisoEstilistaCorregida = partialData.__estilistaCorregida
+        ? `\nNOTA: la clienta escribió "${partialData.__estilistaCorregida.mencion}" y se refiere a ${partialData.__estilistaCorregida.nombre}, que ya le has asignado. Nómbrala por su nombre correcto con naturalidad ("perfecto, con ${partialData.__estilistaCorregida.nombre}") y sigue el flujo normal. NO le pidas que lo confirme ni te disculpes por la corrección.`
+        : '';
+
     // Selected service info
     const selectedService = partialData.__selectedService;
     const selectedStylist = partialData.__selectedStylist;
@@ -407,6 +431,17 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
                 return `La clienta ya mencionó que quiere "${partialData.__servicioMencionado}". NO le preguntes de nuevo qué servicio quiere: mapéalo al servicio más parecido del catálogo, confírmaselo (precio y duración) y continúa el flujo.`;
             }
             return 'Pregunta qué servicio necesita. Si no tiene claro, ofrécele las categorías principales.';
+        }
+        // Pidió una estilista que no existe, o una que no hace su servicio. Va ANTES de
+        // askStylistFirst y de proponer huecos: sin esto el flujo seguía de largo y le
+        // ofrecía horarios de otra persona sin mencionar jamás a quien había pedido.
+        // (Si aún no hay servicio, manda la rama de arriba: se pregunta el servicio y el
+        // aviso del bloque EQUIPO se encarga igualmente de responder por la estilista.)
+        if (partialData.__estilistaNoReconocida) {
+            return `La clienta ha pedido a "${partialData.__estilistaNoReconocida}", que NO existe en el equipo. Dile que no tienes a nadie con ese nombre y ofrécele las que sí pueden hacer su servicio${alternativasStr ? `: ${alternativasStr}` : ''}; si alguna se parece a lo que escribió, pregúntale si se refería a esa. NO propongas horarios todavía: primero hay que saber con quién.`;
+        }
+        if (partialData.__estilistaSinSkill) {
+            return `La clienta ha pedido a ${partialData.__estilistaSinSkill.nombre}, que no hace este servicio. Explícaselo en una frase y ofrécele las que sí lo hacen${alternativasStr ? `: ${alternativasStr}` : ''}. NO propongas horarios todavía: primero hay que saber con quién.`;
         }
         if (partialData.__askStylistFirst) {
             const names = (partialData.__eligibleStylistNames || []).join(', ');
@@ -539,8 +574,9 @@ Política de cancelación: ${cancelacion}
 # ── EQUIPO ─────────────────────────────────────────────────────────────────
 
 ${equipoStr}
-
+${avisoEstilista}${avisoEstilistaCorregida}
 IMPORTANTE: Cada estilista SOLO trabaja los días indicados arriba. Si la clienta pide un día en que su estilista no trabaja, explícale amablemente qué días sí trabaja y sugiere el más cercano. NUNCA agendes en un día libre de la estilista.
+REGLA — EQUIPO CERRADO: el equipo es EXACTAMENTE el de la lista de arriba, no hay nadie más. Si la clienta pide a alguien que no está en ella, NUNCA aceptes el nombre, ni lo repitas como si trabajara aquí, ni confirmes una cita con esa persona: dile que no tienes a nadie con ese nombre y ofrécele el equipo real.
 
 # ── CATÁLOGO DE SERVICIOS ──────────────────────────────────────────────────
 
@@ -958,4 +994,9 @@ async function summarizeHistory(messages, partialData = {}) {
     }
 }
 
-module.exports = { getChatbotResponse, getFallbackResponse, summarizeHistory };
+// buildSystemPrompt se exporta para poder AFIRMAR sobre el prompt en los arneses de
+// verificación: los avisos al cliente (estilista no reconocida, causa del cero de
+// huecos…) ya no son strings fijos en bot.js — Sante habla 4 idiomas y los redacta el
+// modelo —, así que el único sitio donde comprobar que la instrucción existe es aquí.
+// Es una función pura: exportarla no cambia ningún comportamiento.
+module.exports = { getChatbotResponse, getFallbackResponse, summarizeHistory, buildSystemPrompt };

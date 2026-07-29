@@ -97,6 +97,12 @@ test('la fuente de verdad coincide con la lista esperada (candado anti-drift)', 
         '_lastUpsellSuggestion', 'pendingLargoCategory', 'largoPelo',
         'pendingCorteGenero', 'pendingCorteMujerTipo', 'pendingCorteNinoTipo',
         'modoReagendamiento', 'reagendarAppointmentId', 'guestBooking', 'guestName',
+        // Avisos de mención de estilista. Se limpian con el servicio a propósito:
+        // "Larisa no hace este servicio" deja de ser cierto en cuanto cambia el
+        // servicio, y una mención desconocida ya avisada no debe sobrevivir a un
+        // reinicio del flujo (si la vuelve a pedir, se le vuelve a contestar).
+        'stylistMentionUnknown', 'stylistMentionCorrected', 'stylistMentionNoSkill',
+        'stylistMentionRejected',
     ];
     const EXPECTED_PARTIAL = [
         'servicio', 'categoria_servicio', 'estilista_preferida',

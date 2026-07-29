@@ -229,6 +229,20 @@ async function turno(c, texto) {
         else rec('DEGRADADO', `no dice que Carmen no existe: "${r.txt.slice(0, 70)}"`);
     });
 
+    // CONTROL de no regresión: el camino que SIEMPRE funcionó debe seguir igual. Si el
+    // reconocimiento tolerante se pasara de laxo, aquí aparecería una "corrección" sobre
+    // un nombre que ya estaba bien escrito, o una lista de alternativas que sobra.
+    await escenario('CONTROL · estilista correcta ("con Irina") sin corregir nada', async (c, rec) => {
+        await turno(c, 'hola soy Elena');
+        await turno(c, 'quiero un corte de mujer');
+        const r = await turno(c, 'con Irina');
+        if (r.vacio) return rec('SILENCIO');
+        if (/no tengo|no hay nadie|te refieres/i.test(r.txt)) {
+            return rec('DEGRADADO', `duda de un nombre correcto: "${r.txt.slice(0, 70)}"`);
+        }
+        rec(/irina/i.test(r.txt) ? 'OK' : 'DEGRADADO', r.txt.slice(0, 90));
+    });
+
     await escenario('Estilista sin la skill ("mechas con Larisa")', async (c, rec) => {
         await turno(c, 'hola soy Rosa');
         const r = await turno(c, 'quiero mechas balayage con Larisa');

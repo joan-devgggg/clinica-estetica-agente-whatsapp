@@ -9,7 +9,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -232,6 +232,11 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         // Segunda reserva en la misma conversación (para un acompañante)
         guestBooking: false,
         guestName: null,
+        // Avisos de mención de estilista (ver SERVICE_STATE_DEFAULTS)
+        stylistMentionUnknown: null,
+        stylistMentionCorrected: null,
+        stylistMentionNoSkill: null,
+        stylistMentionRejected: null,
         // Promo 10% 1ª visita Spa Hair / Masajes: se menciona una sola vez por
         // conversación (no se limpia en clearServiceState a propósito).
         spaPromoOffered: false,
@@ -1161,6 +1166,18 @@ const SERVICE_STATE_DEFAULTS = {
     reagendarAppointmentId: null,
     guestBooking: false,
     guestName: null,
+    // ─── Avisos de mención de estilista (se consumen al construir el prompt) ───
+    // Nombre que la clienta pidió y NO existe en el equipo ("Carmen"). Antes esto
+    // se descartaba en silencio y el bot seguía proponiendo huecos de otra.
+    stylistMentionUnknown: null,
+    // Casi-acierto ya corregido: { mencion: 'Iryna', nombre: 'Irina' }. Se asigna la
+    // estilista Y se le dice, para que una corrección equivocada sea visible.
+    stylistMentionCorrected: null,
+    // Estilista real pero sin la skill del servicio: { nombre, rol }.
+    stylistMentionNoSkill: null,
+    // Mención desconocida sobre la que YA avisamos (normalizada). Evita repetir
+    // "no tengo a ninguna Carmen" turno tras turno si el LLM la sigue devolviendo.
+    stylistMentionRejected: null,
 };
 // Campos de servicio anidados en partialData (se borran con delete).
 const SERVICE_PARTIAL_FIELDS = [
@@ -1241,6 +1258,63 @@ function computeStylistGating(session, eligibleCount) {
 // determinista previa ya la fijó y askStylistFirst habría quedado en false.)
 function shouldFixStylistFromLlm(session) {
     return !session.selectedStylist && !session.askStylistFirst;
+}
+
+// ─── Mención de estilista: veredicto → estado de sesión ─────────────────────
+// Punto ÚNICO donde una mención de la clienta se convierte en estado. Los dos
+// sitios que la resuelven (texto directo pre-LLM y datos.estilista_preferida
+// post-LLM) comparten estas reglas para que no puedan divergir:
+//   exact / fuzzy elegible → se fija la estilista (fuzzy deja además el aviso de
+//                            corrección: se asigna Y se le dice, para que una
+//                            corrección equivocada sea visible en el acto)
+//   exact / fuzzy sin skill→ NO se fija, pero se deja constancia para explicarlo
+//   unknown                → no se fija nada, y se deja constancia para ofrecerle
+//                            el equipo que sí puede atenderla
+// Antes, los tres casos que no eran "exact elegible" caían en un `if` sin `else`:
+// la petición se descartaba en silencio y el flujo seguía como si nada.
+// Devuelve true si cambió selectedStylist.
+function applyStylistMention(session, verdict, { orgId, telefono } = {}) {
+    if (!verdict || verdict.status === 'none') return false;
+
+    if (verdict.status === 'unknown') {
+        // Sin repetir: si ya avisamos por esta misma mención, no reabrimos el tema
+        // cada turno (el LLM tiende a devolver el nombre inventado una y otra vez).
+        if (normalizeText(verdict.mencion) !== session.stylistMentionRejected) {
+            session.stylistMentionUnknown = verdict.mencion;
+        }
+        logger.info('stylist_mention_unknown', { orgId, telefono, mencion: verdict.mencion });
+        return false;
+    }
+
+    const sty = verdict.stylist;
+    if (!sty) return false;
+
+    if (!stylistCanDoService(sty, session.selectedService)) {
+        session.stylistMentionNoSkill = { nombre: sty.name, rol: sty.role || null };
+        logger.info('stylist_mention_sin_skill', {
+            orgId, telefono, estilista: sty.name, servicio: session.selectedService?.nombre || null,
+        });
+        return false;
+    }
+
+    if (verdict.status === 'fuzzy' && normalizeText(verdict.mencion) !== normalizeText(sty.name)) {
+        session.stylistMentionCorrected = { mencion: verdict.mencion, nombre: sty.name };
+        logger.info('stylist_mention_corregida', {
+            orgId, telefono, mencion: verdict.mencion, estilista: sty.name,
+        });
+    }
+
+    if (sty.id === session.selectedStylist?.id) return false;
+    // Cambio de estilista en pleno flujo (tenía Veronika y ahora pide Irina):
+    // invalidamos los huecos de la anterior para no proponer disponibilidad ajena.
+    if (session.selectedStylist) {
+        session.availableSlots = [];
+        session.currentSlotIndex = 0;
+    }
+    session.selectedStylist = { id: sty.id, nombre: sty.name };
+    session.anyStylists = false;
+    session.prefiereMasCercano = false; // preferencia explícita anula "el más cercano"
+    return true;
 }
 
 // ─── Segunda reserva en la misma conversación (Sante) ───────────────────────
@@ -2424,17 +2498,17 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // selectedStylist ANTES de loadAvailableSlots e invalidamos los huecos
             // de la estilista anterior para no proponer disponibilidad equivocada.
             {
-                const matchedSty = extractStylistFromText(sanitized, stylistsPre);
-                if (matchedSty && stylistCanDoService(matchedSty, session.selectedService) &&
-                    matchedSty.id !== session.selectedStylist?.id) {
-                    if (session.selectedStylist) {
-                        session.availableSlots = [];
-                        session.currentSlotIndex = 0;
-                    }
-                    session.selectedStylist = { id: matchedSty.id, nombre: matchedSty.name };
-                    session.anyStylists = false;
-                    session.prefiereMasCercano = false; // preferencia explícita anula "el más cercano"
-                }
+                // El veredicto distingue acierto, casi-acierto, nombre inexistente y
+                // "no nombró a nadie". El catálogo y el nombre de la clienta se pasan
+                // como filtro anti-falso-positivo: "con mechas" o "con Ana" (ella misma)
+                // NO pueden interpretarse como una estilista que no existe.
+                const verdict = resolveStylistMention(sanitized, stylistsPre, {
+                    servicesCatalog: agentCfgPre?.services || [],
+                    excludeNames: [session.partialData?.nombre, session.guestName].filter(Boolean),
+                    guestBooking: !!session.guestBooking,
+                    expectingStylist: !!session.stylistQuestionPending,
+                });
+                applyStylistMention(session, verdict, { orgId, telefono: userPhone });
             }
 
             // Backup de recuperación: si ya tenemos servicio elegido, reflejarlo en
@@ -2582,6 +2656,28 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             partialDataWithCtx.__askLargoFirst = !!session.pendingLargoCategory && !session.selectedService;
             partialDataWithCtx.__pendingLargoCategory = session.pendingLargoCategory || null;
             partialDataWithCtx.__eligibleStylistNames = session._eligibleStylistNames || [];
+            // ─── Avisos de mención de estilista (one-shot) ───────────────────
+            // Se consumen aquí y se limpian: el aviso se da UNA vez, en el turno
+            // siguiente al que lo detectó. Las alternativas que se le ofrecen son las
+            // elegibles para su servicio; si aún no hay servicio elegido, el equipo
+            // entero (con lista vacía el modelo se inventaría nombres).
+            partialDataWithCtx.__estilistaNoReconocida = session.stylistMentionUnknown || null;
+            partialDataWithCtx.__estilistaCorregida = session.stylistMentionCorrected || null;
+            partialDataWithCtx.__estilistaSinSkill = session.stylistMentionNoSkill || null;
+            if (session.stylistMentionUnknown || session.stylistMentionNoSkill) {
+                let alternativas = session._eligibleStylistNames || [];
+                if (!alternativas.length) {
+                    alternativas = (await getStylistsByOrg(orgId)).map(s => s.name);
+                }
+                partialDataWithCtx.__estilistaAlternativas = alternativas;
+            }
+            // Recordamos la mención ya avisada para no repetirla turno tras turno.
+            if (session.stylistMentionUnknown) {
+                session.stylistMentionRejected = normalizeText(session.stylistMentionUnknown);
+            }
+            session.stylistMentionUnknown = null;
+            session.stylistMentionCorrected = null;
+            session.stylistMentionNoSkill = null;
             partialDataWithCtx.__clientLanguage = session.language;
             if (session.preferredStylistId) {
                 const stylists = await getStylistsByOrg(orgId);
@@ -2872,12 +2968,19 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // una respuesta real de la clienta → fijarla se saltaría la pregunta.
             if (aiResponse.datos?.estilista_preferida && shouldFixStylistFromLlm(session)) {
                 const stylists = await getStylistsByOrg(orgId);
-                const matched = extractStylistFromText(aiResponse.datos.estilista_preferida, stylists);
-                if (matched && stylistCanDoService(matched, session.selectedService)) {
-                    session.selectedStylist = { id: matched.id, nombre: matched.name };
-                    session.anyStylists = false;
-                    session.prefiereMasCercano = false; // preferencia explícita anula "el más cercano"
-                }
+                // assumePersonName: si el modelo rellenó este campo es porque cree que la
+                // clienta nombró a alguien, así que un valor que no resuelve contra el
+                // equipo ES una estilista inexistente — no hace falta heurística de
+                // marcador. Es la señal de mayor precisión que tenemos para el caso
+                // "Carmen". El aviso se consumirá al construir el prompt del turno
+                // siguiente (igual que __servicioMencionado).
+                const verdict = resolveStylistMention(aiResponse.datos.estilista_preferida, stylists, {
+                    servicesCatalog: (await getAgentConfig(orgId))?.services || [],
+                    excludeNames: [session.partialData?.nombre, session.guestName].filter(Boolean),
+                    guestBooking: !!session.guestBooking,
+                    assumePersonName: true,
+                });
+                applyStylistMention(session, verdict, { orgId, telefono: userPhone });
             }
 
             // Deterministic upselling acceptance: if the bot suggested an upselling
@@ -3190,6 +3293,18 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     if (k === 'nombre' && orgType === 'salon') {
                         if (isServiceName(v, await loadSvcCatalog())) {
                             logger.info('nombre_llm_es_servicio_descartado', { orgId, nombre: v });
+                            continue;
+                        }
+                    }
+                    // `estilista_preferida` solo entra si resuelve contra el equipo real.
+                    // Sin esta guarda, un nombre inventado ("Carmen") se guardaba en
+                    // partialData y se reinyectaba en TODOS los prompts siguientes vía
+                    // "Datos recogidos": el modelo seguía viendo para siempre una
+                    // estilista que no existe. Solo salón; San Remo no tiene el campo.
+                    if (k === 'estilista_preferida' && orgType === 'salon') {
+                        const rosterNc = await getStylistsByOrg(orgId);
+                        if (!resolveStylistMention(v, rosterNc, { assumePersonName: true }).stylist) {
+                            logger.info('estilista_llm_no_resoluble_descartada', { orgId, telefono: userPhone, valor: v });
                             continue;
                         }
                     }
@@ -3545,7 +3660,7 @@ module.exports = {
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:
         escalateToHuman,
         // Estado de servicio centralizado (fuente de verdad + limpieza):
-        clearServiceState, assignStylistIfAppropriate, computeStylistGating, shouldFixStylistFromLlm, SERVICE_STATE_DEFAULTS, SERVICE_PARTIAL_FIELDS, createEmptySession,
+        clearServiceState, assignStylistIfAppropriate, applyStylistMention, computeStylistGating, shouldFixStylistFromLlm, SERVICE_STATE_DEFAULTS, SERVICE_PARTIAL_FIELDS, createEmptySession,
         // Flujos de reserva (aceptación de upsell, 2ª reserva, skill de estilista):
         isUpsellingAcceptance, matchesServiceName, resetForSecondBooking, stylistCanDoService,
         // Solo para introspección en tests (no usar en producción):

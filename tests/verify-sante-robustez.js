@@ -40,9 +40,11 @@ const supabase = require('../services/supabase');
 const calendarSante = require('../services/calendar-sante');
 const {
     extractStylistFromText,
+    resolveStylistMention,
     extractDateSignalSante,
     normalizeText,
 } = require('../services/helpers');
+const { buildSystemPrompt } = require('../services/providers/openai');
 const { applyDatePreference } = require('../services/date-preference');
 const { resolveWeekdayToDate } = require('../services/date-utils');
 const { buildInboundAdapters } = require('../services/providers/threesixty-dialog');
@@ -172,6 +174,8 @@ const ANCHORS = [
     // tabla de alias que haría falta.
     console.log('▶ A1 · Reconocimiento de estilista');
     const variantes = [
+        // Nombre compuesto nombrado en desorden — antes se lo llevaba "Yulia" a secas.
+        ['con la tricologa Yulia', 'Yulia-Tricóloga'],
         // [texto de la clienta, nombre que espera acertar]
         ['quiero con Irina', 'Irina'],
         ['con IRINA por favor', 'Irina'],
@@ -197,6 +201,13 @@ const ANCHORS = [
         ['con Vero', 'Veronika'],
         ['con Irina 😊', 'Irina'],
     ];
+    // Lo que NO debe reconocerse: un falso "no tengo a ninguna Mechas" sería peor que
+    // el silencio original. Se afirma en el mismo sitio que los aciertos para que quien
+    // afine el umbral de erratas vea de inmediato si se ha pasado de laxo.
+    const noSonNombres = [
+        'quiero un corte de mujer', 'para el martes', 'una manicura', 'con mechas balayage',
+        'para mañana por la tarde', 'con gel', 'con prisa', 'lo antes posible', 'me da igual',
+    ];
     let fallos = [];
     for (const [texto, esperado] of variantes) {
         const m = extractStylistFromText(texto, stylists);
@@ -206,12 +217,32 @@ const ANCHORS = [
     }
     console.log(`   ${variantes.length - fallos.length}/${variantes.length} reconocidas · ${fallos.length} perdidas`);
 
-    // El punto clave no es que falle el match: es que al fallar NO se dice nada.
-    // Se comprueba que no existe ningún mensaje de "no encuentro a esa estilista".
-    const botSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'bot.js'), 'utf8');
-    const hayMsgEstilista = /no (te )?(he )?(encontrado|reconozco|localizo)[^\n]{0,40}estilista|esa estilista no/i.test(botSrc);
-    if (hayMsgEstilista) ok('A1', 'existe mensaje de estilista no reconocida');
-    else gap('A1', 'NO existe mensaje de estilista no reconocida', 'la petición se descarta en silencio (bot.js:2328-2341, 2766-2773)');
+    for (const texto of noSonNombres) {
+        const v = resolveStylistMention(texto, stylists, { servicesCatalog: catalog });
+        if (v.status === 'none') ok('A1', `"${texto}" → no se interpreta como estilista`);
+        else bug('A1', `FALSO POSITIVO: "${texto}" → ${v.status} (${v.mencion || v.stylist?.name})`,
+            'el bot anunciaría una estilista inexistente donde la clienta habló de otra cosa');
+    }
+
+    // El punto clave nunca fue que fallara el match: es que al fallar NO se decía nada.
+    // Ahora el veredicto distingue "no nombró a nadie" de "nombró a alguien que no existe",
+    // y el aviso lo redacta el prompt (no un string fijo en bot.js: Sante habla 4 idiomas).
+    // Por eso se afirma sobre las DOS piezas: la señal y la instrucción que la consume.
+    const carmen = resolveStylistMention('quiero cita con Carmen', stylists, { servicesCatalog: catalog });
+    if (carmen.status === 'unknown' && /carmen/i.test(carmen.mencion || '')) {
+        ok('A1', 'una estilista inexistente produce veredicto "unknown" con su mención');
+    } else {
+        bug('A1', `"con Carmen" → ${carmen.status}`, 'sin señal, la petición se vuelve a descartar en silencio');
+    }
+
+    const promptCarmen = buildSystemPrompt(ORG, {
+        __estilistaNoReconocida: 'Carmen',
+        __estilistaAlternativas: stylists.slice(0, 3).map(s => s.name),
+    }, 'reservar', false, null, cfg);
+    const avisaDeCarmen = /Carmen/.test(promptCarmen) && /NO hay nadie con ese nombre/i.test(promptCarmen);
+    if (avisaDeCarmen) ok('A1', 'el prompt instruye explícitamente sobre la estilista no reconocida');
+    else bug('A1', 'el prompt NO instruye sobre la estilista no reconocida',
+        'la señal existe pero nadie la convierte en respuesta → sigue el silencio');
 
     // ═══ A2 — Expresiones de fecha ════════════════════════════════════════════════════
     // Se afirma la SEÑAL producida, que es lo que decide qué días busca el motor.

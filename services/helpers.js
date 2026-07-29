@@ -509,36 +509,230 @@ function humanizeLargoLabel(text) {
     return text.replace(/\blargo\s*([1-4])\b/gi, (m, n) => `(cabello ${LARGO_LABELS[n]})`);
 }
 
-function extractStylistFromText(text, teamList) {
-    if (!text || !teamList?.length) return null;
+// ─── Reconocimiento de estilista ────────────────────────────────────────────
+// Antes esto era un String.includes() puro: cualquier errata ("Iryna") o nombre
+// inexistente ("Carmen") devolvía null. Y los tres call sites de bot.js son
+// `if (matched && …)` SIN else → la petición se descartaba en silencio y el flujo
+// seguía proponiendo huecos de otra estilista, como si la clienta no hubiera
+// pedido nada. resolveStylistMention devuelve un VEREDICTO para que quien llama
+// pueda distinguir los cuatro casos y responder a cada uno:
+//   exact   → la nombró tal cual (comportamiento histórico, intacto)
+//   fuzzy   → casi-acierto corregible ("Olga"→Olgha): se asigna Y se avisa
+//   unknown → nombró a alguien que NO está en el equipo: hay que decírselo
+//   none    → no nombró a nadie; aquí el silencio sí es lo correcto
+
+const STYLIST_NAME_VERDICT_NONE = { status: 'none', stylist: null, mencion: null, sugerencia: null };
+
+// Palabras que indican que la cita es para OTRA persona, no para el titular del WA.
+// Se declara AQUÍ (y no en la sección de segunda reserva, que es quien la usaba en
+// origen) porque STYLIST_NOT_NAMES la extiende: en orden de módulo tiene que estar
+// inicializada antes.
+const GUEST_NOT_NAMES = ['amigo', 'amiga', 'madre', 'padre', 'hija', 'hijo', 'hermana',
+    'hermano', 'pareja', 'marido', 'mujer', 'novia', 'novio', 'prima', 'primo', 'persona',
+    'otra', 'otro', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo',
+    'manana', 'tarde', 'noche', 'hoy', 'semana', 'dia', 'cita', 'reserva', 'corte', 'color'];
+
+// Palabras que siguen a "con/para" y NO son un nombre de persona. Sin esta lista,
+// "con prisa" o "con mi hija" se anunciarían como estilistas inexistentes, que es
+// un fallo peor que el silencio que venimos a arreglar.
+const STYLIST_NOT_NAMES = new Set([
+    ...GUEST_NOT_NAMES,
+    'quien', 'quién', 'alguien', 'cualquiera', 'nadie', 'ella', 'ellas', 'ese', 'esa',
+    'prisa', 'tiempo', 'urgencia', 'hora', 'horas', 'minutos', 'precio', 'descuento',
+    'estilista', 'peluquera', 'chica', 'senora', 'señora', 'equipo', 'salon', 'salón',
+    'preferencia', 'nombre', 'gusto', 'igual', 'cercano', 'disponible', 'libre',
+    'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto',
+    'septiembre', 'octubre', 'noviembre', 'diciembre',
+    'anyone', 'someone', 'whoever', 'stylist', 'hairdresser', 'time', 'price',
+]);
+
+// Distancia de Levenshtein con corte temprano: en cuanto se sabe que supera `max`
+// no interesa el valor exacto. Dos filas, sin matriz completa.
+function levenshtein(a, b, max = Infinity) {
+    if (a === b) return 0;
+    if (Math.abs(a.length - b.length) > max) return max + 1;
+    if (!a.length) return b.length;
+    if (!b.length) return a.length;
+
+    let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    let curr = new Array(b.length + 1);
+    for (let i = 1; i <= a.length; i++) {
+        curr[0] = i;
+        let rowMin = curr[0];
+        for (let j = 1; j <= b.length; j++) {
+            const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+            curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+            if (curr[j] < rowMin) rowMin = curr[j];
+        }
+        if (rowMin > max) return max + 1;
+        [prev, curr] = [curr, prev];
+    }
+    return prev[b.length];
+}
+
+// Tolerancia a erratas proporcional al nombre: en "Irina" (5) una sola letra ya
+// cambia mucho, en "Veronika" (8) caben dos sin acercarse a ningún otro nombre.
+function stylistTypoTolerance(name) {
+    return name.length <= 5 ? 1 : 2;
+}
+
+const stylistName = member => normalizeText(member?.nombre || member?.name).replace(/-/g, ' ');
+const tokenizeName = s => String(s || '').split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+
+// Varias candidatas a la misma distancia. Si todas comparten el nombre de pila
+// ("Yulia" y "Yulia-Tricóloga") no hay ambigüedad real: gana el nombre simple,
+// porque el compuesto solo debe ganar cuando la clienta lo nombra entero — y eso
+// ya lo resuelve la pasada de token-set, antes de llegar aquí.
+function collapseStylistTies(candidates) {
+    if (candidates.length === 1) return candidates[0];
+    const pila = new Set(candidates.map(m => tokenizeName(stylistName(m))[0]));
+    if (pila.size !== 1) return null;
+    return candidates.reduce((a, b) => (stylistName(a).length <= stylistName(b).length ? a : b));
+}
+
+function resolveStylistMention(text, teamList, opts = {}) {
+    if (!text || !teamList?.length) return STYLIST_NAME_VERDICT_NONE;
     const t = normalizeText(text).replace(/-/g, ' ');
+    const {
+        servicesCatalog = [],
+        excludeNames = [],
+        guestBooking = false,
+        expectingStylist = false,
+        assumePersonName = false,
+    } = opts;
 
-    // Nombres más largos/específicos primero (p.ej. "Yulia-Tricóloga" antes que
-    // "Yulia") para que un nombre compuesto no se confunda por inclusión de
-    // substring con el nombre corto que lo prefija. También se ignoran guiones
-    // en ambos lados, porque la clienta rara vez los escribe.
-    const sorted = [...teamList].sort((a, b) =>
-        normalizeText(b.nombre || b.name).length - normalizeText(a.nombre || a.name).length
-    );
+    const textTokens = tokenizeName(t);
+    if (!textTokens.length) return STYLIST_NAME_VERDICT_NONE;
+    const textTokenSet = new Set(textTokens);
 
+    // Pasada 1 — acierto. Nombres más largos primero, para que un nombre compuesto no
+    // se lo lleve por inclusión de substring el nombre corto que lo prefija. Se acepta
+    // de dos formas, y el orden importa: literal ("yulia-tricóloga") o con todas sus
+    // palabras presentes en cualquier orden ("con la tricologa Yulia"). Sin la segunda
+    // dentro de ESTE bucle, "yulia" a secas ganaría antes de llegar a comprobarla.
+    const sorted = [...teamList].sort((a, b) => stylistName(b).length - stylistName(a).length);
     for (const member of sorted) {
-        const name = normalizeText(member.nombre || member.name).replace(/-/g, ' ');
-        if (t.includes(name)) {
-            return member;
+        const name = stylistName(member);
+        const partes = tokenizeName(name);
+        const acierto = t.includes(name) || (partes.length > 1 && partes.every(p => textTokenSet.has(p)));
+        if (acierto) {
+            return { status: 'exact', stylist: member, mencion: member.nombre || member.name, sugerencia: null };
         }
     }
-    return null;
+
+    // Candidatas del mensaje: palabras que podrían ser un nombre propio.
+    const posiblesNombres = textTokens.filter(w => w.length >= 3 && !/^\d+$/.test(w) && !STYLIST_NOT_NAMES.has(w));
+
+    // Pasada 3 — distancia de edición contra el nombre de pila de cada miembro.
+    let mejorDist = Infinity;
+    let mejores = [];
+    let mencionFuzzy = null;
+    for (const token of posiblesNombres) {
+        if (token.length < 4) continue;
+        for (const member of teamList) {
+            const pila = tokenizeName(stylistName(member))[0];
+            if (!pila) continue;
+            const tol = stylistTypoTolerance(pila);
+            const d = levenshtein(token, pila, tol);
+            if (d > tol) continue;
+            if (d < mejorDist) {
+                mejorDist = d;
+                mejores = [member];
+                mencionFuzzy = token;
+            } else if (d === mejorDist && !mejores.includes(member)) {
+                mejores.push(member);
+            }
+        }
+    }
+    if (mejores.length) {
+        const elegida = collapseStylistTies(mejores);
+        // Empate entre personas distintas: mejor no adivinar. Mismo criterio que la
+        // pasada de último recurso de extractServiceFromText.
+        if (elegida) {
+            return { status: 'fuzzy', stylist: elegida, mencion: mencionFuzzy, sugerencia: elegida.nombre || elegida.name };
+        }
+    }
+
+    // Pasada 4 — hipocorísticos por prefijo: "Vero" → Veronika. Mínimo 4 letras y
+    // una sola candidata, para que "Nat"/"Iri" no disparen nada.
+    for (const token of posiblesNombres) {
+        if (token.length < 4) continue;
+        const prefijadas = teamList.filter(m => {
+            const pila = tokenizeName(stylistName(m))[0] || '';
+            return pila.length > token.length && pila.startsWith(token);
+        });
+        const elegida = collapseStylistTies(prefijadas);
+        if (elegida) {
+            return { status: 'fuzzy', stylist: elegida, mencion: token, sugerencia: elegida.nombre || elegida.name };
+        }
+    }
+
+    // Pasada 5 — desconocida. Solo si el mensaje nombra de verdad a una PERSONA.
+    // Es la pasada delicada: un falso positivo hace que el bot anuncie "no tengo a
+    // ninguna Mechas", así que se exige señal explícita y se filtra con dureza.
+    if (guestBooking) return STYLIST_NAME_VERDICT_NONE; // "para mi amiga Carmen" no pide estilista
+
+    // `capitalizado` es la señal fuerte de nombre propio en WhatsApp. Sin ella, una
+    // palabra corta y suelta tras "con" ("con gel", "con spa") se anunciaba como una
+    // estilista inexistente — un falso positivo peor que el silencio original. Así que
+    // se exige mayúscula O una longitud que ya no sea la de un término de servicio.
+    const esNombreDePersona = (token, capitalizado = false) => {
+        if (!token || token.length < 3) return false;
+        if (!capitalizado && token.length < 5) return false;
+        if (STYLIST_NOT_NAMES.has(token)) return false;
+        if (excludeNames.some(n => normalizeText(n) === token)) return false;
+        // No es un servicio ni una categoría del catálogo.
+        if (servicesCatalog.length) {
+            if (extractServiceFromText(token, servicesCatalog)) return false;
+            if (servicesCatalog.some(s => normalizeText(s.categoria || '').includes(token))) return false;
+        }
+        return true;
+    };
+
+    // Origen de la mención. `assumePersonName` es para el campo estilista_preferida
+    // del LLM: si el modelo lo rellenó es porque cree que la clienta nombró a
+    // alguien, así que no hace falta heurística de marcador.
+    const raw = String(text);
+    // ¿Aparece esa palabra con inicial mayúscula en el texto tal cual lo escribió?
+    const vieneCapitalizada = tok => new RegExp(`\\b\\p{Lu}${tok.slice(1)}`, 'u').test(raw);
+
+    let mencion = null;
+    if (assumePersonName) {
+        // El campo del LLM es de alta precisión: si lo rellenó, cree que la clienta
+        // nombró a alguien. No se le exige la señal de mayúscula.
+        const cand = posiblesNombres.find(tok => esNombreDePersona(tok, true));
+        if (cand) mencion = cand;
+    } else {
+        // Marcador explícito ("con Carmen", "cita con Carmen", "with Carmen").
+        const re = /\b(?:con|para|with|hora\s+con|cita\s+con|reservar\s+con|pedir\s+con)\s+(?:la\s+|el\s+|mi\s+)?(\p{L}{3,})/giu;
+        for (const m of raw.matchAll(re)) {
+            const token = normalizeText(m[1]);
+            if (esNombreDePersona(token, /^\p{Lu}/u.test(m[1]))) { mencion = m[1]; break; }
+        }
+        // Respuesta escueta a "¿tienes estilista de confianza?": un nombre suelto,
+        // sin marcador ("Carmen"). Solo cuando la pregunta quedó abierta.
+        if (!mencion && expectingStylist && textTokens.length <= 3) {
+            const cand = posiblesNombres.find(tok => esNombreDePersona(tok, vieneCapitalizada(tok)));
+            if (cand) mencion = cand;
+        }
+    }
+
+    if (!mencion) return STYLIST_NAME_VERDICT_NONE;
+    return { status: 'unknown', stylist: null, mencion, sugerencia: null };
+}
+
+// Compatibilidad: los flujos que solo necesitan "¿quién es?" y no el veredicto.
+// Devuelve el miembro SOLO en los casos seguros (exacto o casi-acierto resuelto).
+function extractStylistFromText(text, teamList, opts = {}) {
+    return resolveStylistMention(text, teamList, opts).stylist;
 }
 
 // ─── Segunda reserva en la misma conversación (Sante) ───────────────────────
 // Tras confirmar una cita, la clienta puede querer reservar OTRA (para ella o para
 // un acompañante). Detectamos esa intención para reiniciar el flujo de reserva.
 
-// Palabras que indican que la cita es para OTRA persona, no para el titular del WA.
-const GUEST_NOT_NAMES = ['amigo', 'amiga', 'madre', 'padre', 'hija', 'hijo', 'hermana',
-    'hermano', 'pareja', 'marido', 'mujer', 'novia', 'novio', 'prima', 'primo', 'persona',
-    'otra', 'otro', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo',
-    'manana', 'tarde', 'noche', 'hoy', 'semana', 'dia', 'cita', 'reserva', 'corte', 'color'];
+// GUEST_NOT_NAMES vive ahora en la sección de reconocimiento de estilista (arriba),
+// porque STYLIST_NOT_NAMES la extiende y necesita que esté ya inicializada.
 
 // La cita es para un acompañante ("para mi amiga", "para mi madre", "para otra persona").
 function detectGuestBooking(text) {
@@ -1443,6 +1637,7 @@ module.exports = {
     buildFullServiceName,
     humanizeLargoLabel,
     extractStylistFromText,
+    resolveStylistMention,
     getMissingFieldsSante,
     extractQuickDataSante,
     extractDateSignalSante,
