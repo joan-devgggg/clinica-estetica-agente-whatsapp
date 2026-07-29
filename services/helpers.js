@@ -39,6 +39,80 @@ function detectLanguage(text) {
     return null; // ambiguo (p.ej. solo un nombre): que decida el LLM
 }
 
+// ─── Mensajes entrantes que no son texto ─────────────────────────────────────
+// El bot no "ve" imágenes ni abre documentos, pero callarse es peor que decirlo: una foto
+// sin caption dejaba el turno en silencio absoluto. Estas dos funciones son puras y
+// normalizan las DOS superficies de entrada (whatsapp-web.js y el adaptador de Cloud API),
+// que usan los mismos nombres de tipo salvo el audio ('ptt' en wwebjs).
+
+// Eventos de sistema de whatsapp-web.js: el aviso de cifrado, un mensaje aún no descifrado,
+// un registro de llamada, una notificación de grupo… No los ha escrito la clienta, así que
+// responderlos sería spam. Estos SÍ deben seguir en silencio.
+const SYSTEM_MESSAGE_TYPES = new Set([
+    'e2e_notification', 'notification', 'notification_template', 'group_notification',
+    'gp2', 'ciphertext', 'protocol', 'revoked', 'call_log',
+]);
+
+// Familias de mensaje que comparten respuesta. 'unknown' cubre cualquier tipo futuro que
+// traiga un adjunto: preferimos un texto genérico a volver al silencio. Un tipo desconocido
+// SIN adjunto se trata como evento de sistema (ahí el silencio es lo correcto).
+function classifyIncomingMedia(message) {
+    const type = String(message?.type || '').toLowerCase();
+    if (SYSTEM_MESSAGE_TYPES.has(type)) return 'system';
+    switch (type) {
+        case 'ptt':
+        case 'audio':
+        case 'voice':
+            return 'audio';
+        case 'image':
+            return 'image';
+        case 'video':
+            return 'video';
+        case 'sticker':
+            return 'sticker';
+        case 'document':
+            return 'document';
+        case 'location':
+            return 'location';
+        case 'contacts':
+        case 'vcard':
+        case 'multi_vcard':
+            return 'contacts';
+        default:
+            return message?.hasMedia ? 'unknown' : 'system';
+    }
+}
+
+// Respuesta al mensaje no soportado, en el idioma de la clienta (fallback español), siguiendo
+// el patrón multiidioma del resto del salón (ver salonRetryMsg en bot.js).
+function unsupportedMediaMsg(kind, language) {
+    // Los eventos de sistema no llevan respuesta: cadena vacía = no enviar nada.
+    if (kind === 'system') return '';
+    const byKind = {
+        image: {
+            es: 'No puedo ver fotos ni vídeos 😅 ¿Me describes con palabras qué te quieres hacer (corte, color, largo)? Así te busco hueco.',
+            en: "I can't see photos or videos 😅 Could you describe in words what you'd like done (cut, colour, length)? Then I'll find you a slot.",
+            ru: 'Я не вижу фото и видео 😅 Опиши, пожалуйста, словами, что ты хочешь сделать (стрижка, цвет, длина) — и я подберу тебе окошко.',
+            uk: 'Я не бачу фото та відео 😅 Опиши, будь ласка, словами, що ти хочеш зробити (стрижка, колір, довжина) — і я підберу тобі віконце.',
+        },
+        document: {
+            es: 'No puedo abrir documentos 😅 ¿Me lo cuentas por aquí en un mensaje?',
+            en: "I can't open documents 😅 Could you tell me here in a message?",
+            ru: 'Я не могу открывать документы 😅 Напиши, пожалуйста, сообщением здесь.',
+            uk: 'Я не можу відкривати документи 😅 Напиши, будь ласка, повідомленням тут.',
+        },
+        generic: {
+            es: '¡Gracias! 😊 Cuéntame en un mensaje qué necesitas y te ayudo a reservar.',
+            en: 'Thanks! 😊 Tell me in a message what you need and I\'ll help you book.',
+            ru: 'Спасибо! 😊 Напиши сообщением, что тебе нужно, и я помогу записаться.',
+            uk: 'Дякую! 😊 Напиши повідомленням, що тобі потрібно, і я допоможу записатися.',
+        },
+    };
+    // El vídeo comparte el "no puedo ver"; sticker/ubicación/contacto/desconocido van al genérico.
+    const set = byKind[kind === 'video' ? 'image' : kind] || byKind.generic;
+    return (language && set[language]) || set.es;
+}
+
 // ─── Detección de intención ───────────────────────────────────────────────────
 
 function isBizumDone(text) {
@@ -1621,6 +1695,8 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
 module.exports = {
     normalizeText,
     detectLanguage,
+    classifyIncomingMedia,
+    unsupportedMediaMsg,
     detectIntent,
     isBizumDone,
     getMissingFields,

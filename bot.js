@@ -9,7 +9,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -3503,8 +3503,21 @@ async function handleIncomingMessage(client, message, orgId) {
             }
         }
 
+        // Mensaje sin texto utilizable (foto, sticker, ubicación, documento, contacto…). Antes
+        // se salía en silencio cuando hasMedia era falso —el caso de TODO el media que entra por
+        // Cloud API—, así que la clienta se quedaba sin respuesta. Ahora siempre contestamos algo.
         if (!userText) {
-            if (message.hasMedia) {
+            // 'system' = aviso de cifrado, registro de llamada, mensaje sin descifrar… No lo ha
+            // escrito la clienta: responderlo sería spam, ahí el silencio es lo correcto.
+            const kind = classifyIncomingMedia(message);
+            if (getOrgType(orgId) === 'salon' && kind !== 'system') {
+                const language = userSessions.get(sKey)?.language || null;
+                logger.info('media_no_soportada', { orgId, telefono: userPhone, kind });
+                // Dejamos rastro en el panel: antes estos mensajes no existían en el historial.
+                saveMessage(orgId, { telefono: dbPhone, contenido: `[${kind}]`, direccion: 'entrante' }).catch(() => {});
+                await sendWithDelay(client, userPhone, unsupportedMediaMsg(kind, language), orgId, dbPhone);
+            } else if (message.hasMedia) {
+                // San Remo: literal exacto de siempre (regla de oro, comportamiento sin cambios).
                 await sendWithDelay(client, userPhone, 'Gracias por tu mensaje 😊 Solo proceso texto y audios. Si tienes alguna duda, escríbeme.', orgId, dbPhone);
             }
             return;

@@ -17,6 +17,7 @@
  *     A3  Las 5 causas distintas de "[] huecos" → ¿son distinguibles?
  *     A4  Errores de BD → ¿se degradan a "no hay huecos" o a disponibilidad fantasma?
  *     A5  Media que no es audio por Cloud API → ¿responde algo o silencio?
+ *         (el recorrido completo por el motor real vive en tests/inbound-media-engine.test.js)
  *
  *   NIVEL B (tests/verify-sante-robustez-llm.js, con LLM real)
  *     Escenarios conversacionales completos, incluida la repro de la sesión de Eva.
@@ -43,6 +44,8 @@ const {
     resolveStylistMention,
     extractDateSignalSante,
     normalizeText,
+    classifyIncomingMedia,
+    unsupportedMediaMsg,
 } = require('../services/helpers');
 const { buildSystemPrompt } = require('../services/providers/openai');
 const { applyDatePreference } = require('../services/date-preference');
@@ -485,33 +488,53 @@ const ANCHORS = [
     }
 
     // ═══ A5 — Media que no es audio por Cloud API ═════════════════════════════════════
-    // El adaptador marca hasMedia solo para audio; con una foto sin caption el bot llega a
-    // `if (!userText) { if (message.hasMedia) {...} return; }` con AMBOS falsos → silencio.
+    // Antes el adaptador marcaba hasMedia solo para audio, así que una foto sin caption llegaba
+    // a `if (!userText) { if (message.hasMedia) {...} return; }` con AMBOS falsos → silencio.
+    // Ahora el tipo viaja intacto y la respuesta la deciden las MISMAS funciones que usa bot.js
+    // (classifyIncomingMedia + unsupportedMediaMsg), no una copia de la condición: si alguien
+    // rompe el guard, esto se entera. El recorrido extremo a extremo por el motor real está en
+    // tests/inbound-media-engine.test.js (parte de `npm test`).
     console.log('▶ A5 · Media entrante por 360dialog (Cloud API)');
+    const adapt = (valueMessage) => buildInboundAdapters(
+        valueMessage, { display_phone_number: '34641029104' }, ORG).message;
+
     const tiposMedia = [
         ['image', { image: { id: 'mid.1', mime_type: 'image/jpeg' } }],
         ['sticker', { sticker: { id: 'mid.2', mime_type: 'image/webp' } }],
         ['video', { video: { id: 'mid.3', mime_type: 'video/mp4' } }],
         ['document', { document: { id: 'mid.4', mime_type: 'application/pdf' } }],
         ['location', { location: { latitude: 38.34, longitude: -0.48 } }],
+        ['contacts', { contacts: [{ name: { formatted_name: 'Ana' } }] }],
     ];
     for (const [tipo, extra] of tiposMedia) {
-        const { message } = buildInboundAdapters(
-            { from: '34600111222', id: `wamid.${tipo}`, type: tipo, ...extra },
-            { display_phone_number: '34641029104' }, ORG);
-        const textoVacio = !(message.body || '').trim();
-        // Reproduce la condición exacta de bot.js:3283-3288.
-        const responderia = !textoVacio || message.hasMedia;
-        if (responderia) ok('A5', `${tipo}: el bot llega a responder algo`);
-        else gap('A5', `${tipo}: SILENCIO TOTAL`, 'body vacío y hasMedia=false → return sin enviar nada');
+        const message = adapt({ from: '34600111222', id: `wamid.${tipo}`, type: tipo, ...extra });
+        const respuesta = unsupportedMediaMsg(classifyIncomingMedia(message), null);
+        if ((message.body || '').trim() || (respuesta || '').trim()) {
+            ok('A5', `${tipo}: responde "${respuesta.slice(0, 40)}…"`);
+        } else {
+            bug('A5', `${tipo}: SILENCIO TOTAL`, 'sin texto y sin respuesta de media → return sin enviar nada');
+        }
+    }
+    // El caption ES el mensaje de la clienta: con él, el turno debe seguir al pipeline normal.
+    {
+        const message = adapt({ from: '34600111222', id: 'wamid.cap', type: 'image', image: { id: 'mid.1', caption: 'quiero esto' } });
+        if (message.body === 'quiero esto') ok('A5', 'caption de foto: llega como texto al pipeline');
+        else bug('A5', 'caption de foto: se pierde en el adaptador', `body="${message.body}"`);
     }
     // Contraste con audio, que sí se maneja.
     {
-        const { message } = buildInboundAdapters(
-            { from: '34600111222', id: 'wamid.audio', type: 'audio', audio: { id: 'mid.9', mime_type: 'audio/ogg' } },
-            { display_phone_number: '34641029104' }, ORG);
+        const message = adapt({ from: '34600111222', id: 'wamid.audio', type: 'audio', audio: { id: 'mid.9', mime_type: 'audio/ogg' } });
         if (message.hasMedia && message.type === 'ptt') ok('A5', 'audio: se marca como ptt + hasMedia → se transcribe');
         else bug('A5', 'audio: el adaptador ya no lo marca como ptt/hasMedia', JSON.stringify({ t: message.type, h: message.hasMedia }));
+    }
+    // El texto de siempre no se ve afectado.
+    {
+        const message = adapt({ from: '34600111222', id: 'wamid.txt', type: 'text', text: { body: 'hola' } });
+        if (message.type === 'chat' && message.hasMedia === false && message.body === 'hola') {
+            ok('A5', 'texto normal: intacto (chat, sin media)');
+        } else {
+            bug('A5', 'texto normal: el adaptador lo ha alterado', JSON.stringify({ t: message.type, h: message.hasMedia, b: message.body }));
+        }
     }
 
     // ─── Resumen ──────────────────────────────────────────────────────────────────────

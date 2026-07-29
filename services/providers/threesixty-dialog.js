@@ -101,6 +101,11 @@ async function download360Media(orgId, mediaId, mimetype) {
     return { data: buf.toString('base64'), mimetype: mimetype || 'audio/ogg' };
 }
 
+// Tipos de Cloud API que traen un binario adjunto. wwebjs marca hasMedia en todos ellos,
+// así que el adaptador debe hacer lo mismo: si mentimos con hasMedia:false, bot.js trata el
+// mensaje como texto vacío y se calla (silencio total ante una foto).
+const CLOUD_MEDIA_TYPES = new Set(['image', 'video', 'sticker', 'document', 'audio', 'voice']);
+
 /**
  * Adapta un mensaje entrante de Cloud API (un elemento de value.messages[]) a la
  * superficie { message, client } que consume handleIncomingMessage(client, message, orgId).
@@ -115,15 +120,26 @@ function buildInboundAdapters(valueMessage, valueMeta, orgId) {
     const cloudType = valueMessage?.type || 'text';
     const isAudio = cloudType === 'audio' || cloudType === 'voice';
 
+    // El caption de una foto/vídeo/documento ES el mensaje de la clienta ("quiero esto" con la
+    // foto del corte). Si lo tiramos, el turno entero se pierde: recuperarlo hace que el mensaje
+    // entre al pipeline normal en vez de quedarse en la rama de media no soportada.
+    const caption = valueMessage?.image?.caption
+        || valueMessage?.video?.caption
+        || valueMessage?.document?.caption
+        || '';
+
     const message = {
         // JID clásico → isLidJid() false → resolvePhoneFromMessage extrae el número sin path LID.
         from: `${digits}@c.us`,
         // getMessageKey() lee id._serialized || key.id || id.id → dedupe por wamid.
         id: { _serialized: wamid, id: wamid },
-        body: valueMessage?.text?.body || '',
-        // bot.js detecta audio con type 'ptt'/'audio'; texto normal es 'chat' en wwebjs.
-        type: isAudio ? 'ptt' : 'chat',
-        hasMedia: isAudio,
+        body: valueMessage?.text?.body || caption || '',
+        // bot.js detecta audio con type 'ptt'/'audio'; texto normal es 'chat' en wwebjs. Para el
+        // resto conservamos el tipo real de Cloud API, que coincide con el de wwebjs (image,
+        // sticker, video, document, location, contacts) → classifyIncomingMedia lo entiende igual
+        // venga de donde venga.
+        type: isAudio ? 'ptt' : (cloudType === 'text' ? 'chat' : cloudType),
+        hasMedia: CLOUD_MEDIA_TYPES.has(cloudType),
         fromMe: false,
         isStatus: false,
         isBroadcast: false,
