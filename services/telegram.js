@@ -87,8 +87,19 @@ function notifyOrgAdmin(orgId, mensaje) {
     const admins = getAdminIdsForOrg(orgId);
     for (const userId of admins) {
         _botInstance.sendMessage(userId, mensaje, { parse_mode: 'HTML' })
+            .then(res => logger.info('telegram_notify_ok', { userId, orgId, messageId: res.message_id }))
             .catch(e => logger.error('telegram_notify_error', { error: e.message, userId, orgId }));
     }
+}
+
+// Instancia solo-envío (sin polling) para disparar notificaciones desde scripts
+// puntuales sin competir por el long-polling con el proceso principal ya activo.
+async function initSendOnlyBot() {
+    if (!_botInstance) {
+        if (!TELEGRAM_TOKEN) throw new Error('TELEGRAM_BOT_TOKEN no configurado');
+        _botInstance = new TelegramBot(TELEGRAM_TOKEN, { polling: false });
+    }
+    await buildUserToOrgMap();
 }
 
 async function notifyBizumPending(orgId, reserva) {
@@ -550,4 +561,4 @@ function startTelegramBot(options = {}) {
     });
 }
 
-module.exports = { startTelegramBot, notifyBizumPending, notifyEscalation, notifyVipSuggestion, notifyBlacklistAlert, notifyOrgAdmin };
+module.exports = { startTelegramBot, notifyBizumPending, notifyEscalation, notifyVipSuggestion, notifyBlacklistAlert, notifyOrgAdmin, initSendOnlyBot };
