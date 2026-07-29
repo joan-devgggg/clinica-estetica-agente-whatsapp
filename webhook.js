@@ -362,18 +362,26 @@ app.put('/api/citas/:id', async (req, res) => {
         }
 
         if (req.body.estado === 'completed' && apt.contact_id) {
-            const visitCount = await db.incrementVisitCount(orgId, apt.contact_id);
-            const contact = await db.findById(orgId, apt.contact_id);
-            if (contact && !contact.is_vip) {
-                const agentCfg = await db.getAgentConfig(orgId);
-                const umbral = agentCfg?.business_info?.vip?.visitasParaSugerir ?? 3;
-                if (visitCount >= umbral) {
-                    await db.createPendingAction(orgId, {
-                        type: 'vip_suggestion',
-                        contactId: contact.id,
-                        payload: { nombre: contact.nombre, telefono: contact.telefono, visit_count: visitCount }
-                    });
+            // La sugerencia VIP es un efecto secundario: desde que createPendingAction lanza
+            // ante un error de Supabase (ver assertWrite en db.js), un fallo aquí devolvería
+            // un 500 en una petición cuyo UPDATE de la cita YA tuvo éxito. Se aísla para que
+            // el panel siga viendo el 200 que le corresponde; el fallo queda en los logs.
+            try {
+                const visitCount = await db.incrementVisitCount(orgId, apt.contact_id);
+                const contact = await db.findById(orgId, apt.contact_id);
+                if (contact && !contact.is_vip) {
+                    const agentCfg = await db.getAgentConfig(orgId);
+                    const umbral = agentCfg?.business_info?.vip?.visitasParaSugerir ?? 3;
+                    if (visitCount >= umbral) {
+                        await db.createPendingAction(orgId, {
+                            type: 'vip_suggestion',
+                            contactId: contact.id,
+                            payload: { nombre: contact.nombre, telefono: contact.telefono, visit_count: visitCount }
+                        });
+                    }
                 }
+            } catch (e) {
+                logger.error('error_vip_suggestion', { orgId, contactId: apt.contact_id, error: e.message });
             }
         }
 

@@ -30,6 +30,23 @@ function assertRead(error, tabla) {
     throw new Error(`Lectura de ${tabla} falló: ${error.message || error}`);
 }
 
+// Gemelo de assertRead para las ESCRITURAS del camino de escalada. Mismo bug, otra
+// dirección: `await supabase.from(…).insert(…)` sin mirar `error` convierte un INSERT
+// fallido (FK rota sobre contact_id, RLS, timeout, CHECK sobre type) en un `null` que el
+// llamante lee como "ya está". Una escalada la componen TRES escrituras —la fila en
+// pending_actions, bot_mode='manual' y escalation_reason— y si cualquiera se pierde en
+// silencio la promesa que se le hizo al cliente ("en breve te atiende nuestro equipo") no
+// tiene nada detrás: ni fila en el panel, y con bot_mode intacto la reconciliación revive
+// al bot encima de alguien que ya está esperando a un humano.
+//
+// OJO con el límite: un UPDATE cuyos .eq() no casan ninguna fila devuelve error=null. Esto
+// atrapa fallos de infraestructura, NO un "ese teléfono no existe en contacts".
+function assertWrite(error, tabla, op) {
+    if (!error) return;
+    logger.error('db_write_error', { tabla, op, error: error.message || String(error), code: error.code });
+    throw new Error(`Escritura (${op}) en ${tabla} falló: ${error.message || error}`);
+}
+
 function sanitizePhone(phone) {
     if (!phone || typeof phone !== 'string') return '';
     return phone.replace(/["'\s]/g, '').replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '').trim();
@@ -530,22 +547,24 @@ async function setLeadBotMode(orgId, telefono, mode) {
     const phone = sanitizePhone(telefono);
     const update = { bot_mode: mode, updated_at: now() };
     if (mode === 'auto') update.escalation_reason = null;
-    await supabase
+    const { error } = await supabase
         .from('contacts')
         .update(update)
         .eq('organization_id', oid)
         .eq('wa_phone', phone);
+    assertWrite(error, 'contacts', 'update bot_mode');
     return true;
 }
 
 async function setEscalationReason(orgId, telefono, reason) {
     const oid = resolveOrg(orgId);
     const phone = sanitizePhone(telefono);
-    await supabase
+    const { error } = await supabase
         .from('contacts')
         .update({ escalation_reason: reason, updated_at: now() })
         .eq('organization_id', oid)
         .eq('wa_phone', phone);
+    assertWrite(error, 'contacts', 'update escalation_reason');
 }
 
 // ─── Agent Config ─────────────────────────────────────────────────────────────
@@ -957,7 +976,7 @@ async function getBroadcastRecipients(orgId, { audience = 'todos', phones } = {}
 
 async function createPendingAction(orgId, { type, contactId, appointmentId, payload }) {
     const oid = resolveOrg(orgId);
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from('pending_actions')
         .insert({
             organization_id: oid,
@@ -968,6 +987,7 @@ async function createPendingAction(orgId, { type, contactId, appointmentId, payl
         })
         .select()
         .single();
+    assertWrite(error, 'pending_actions', 'insert');
     return data || null;
 }
 

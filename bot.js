@@ -605,12 +605,15 @@ async function escalateToHuman(session, userPhone, reason, ultimoMensaje) {
         const contactId = contact?.id || session.leadId;
         await setLeadBotMode(orgId, telefono, 'manual');
         await setEscalationReason(orgId, telefono, reason);
+        // El aviso al humano va ANTES del INSERT y es fire-and-forget: si la escritura falla
+        // y lanza, el salón se entera igual por Telegram en vez de quedarse a ciegas. En el
+        // camino feliz el orden no cambia nada (no se awaitea ninguna de las dos).
+        notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono }, ultimoMensaje, reason).catch(() => {});
         await createPendingAction(orgId, {
             type: 'escalation',
             contactId,
             payload: { motivo: reason, mensaje: ultimoMensaje || '' },
         });
-        notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono }, ultimoMensaje, reason).catch(() => {});
         logger.info('escalada_ejecutada', { orgId, telefono: userPhone, reason });
         return true;
     } catch (e) {
@@ -683,12 +686,13 @@ async function handleAppointmentAction(client, session, userPhone, accion, respu
             await setLeadBotMode(orgId, session.partialData.telefono, 'manual');
             await setEscalationReason(orgId, session.partialData.telefono, reason);
             const ultimoMensaje = session.history[session.history.length - 1]?.content || '';
+            // Notify antes del INSERT: ver escalateToHuman.
+            notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono: session.partialData.telefono }, ultimoMensaje, reason).catch(() => {});
             await createPendingAction(orgId, {
                 type: 'escalation',
                 contactId,
                 payload: { motivo: reason, mensaje: ultimoMensaje },
             });
-            notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono: session.partialData.telefono }, ultimoMensaje, reason).catch(() => {});
         } catch (e) { logger.error('error_escalar', { telefono: userPhone, error: e.message }); }
         if (respuesta) await sendWithDelay(client, userPhone, respuesta, orgId, session.partialData.telefono);
         return true;
@@ -730,6 +734,16 @@ async function finalizarReservaConBizum(client, session, userPhone) {
         if (apt) {
             session.appointmentId = apt.id;
             await updateLead(orgId, { leadId: session.leadId, appointment_id: apt.id });
+            // Telegram ANTES del INSERT (fire-and-forget, sin cambio en el camino feliz): si
+            // la fila de verificación no se puede escribir, Alberto tiene que enterarse igual
+            // del Bizum pendiente en vez de quedarse sin aviso.
+            notifyBizumPending(orgId, {
+                nombre: session.partialData.nombre,
+                telefono: session.partialData.telefono,
+                fecha, hora,
+                personas: session.partialData.personas,
+                ocasion: session.partialData.ocasion,
+            }).catch(() => {});
             await createPendingAction(orgId, {
                 type: 'bizum_review',
                 contactId: session.leadId,
@@ -742,13 +756,6 @@ async function finalizarReservaConBizum(client, session, userPhone) {
                     ocasion: session.partialData.ocasion,
                 },
             });
-            notifyBizumPending(orgId, {
-                nombre: session.partialData.nombre,
-                telefono: session.partialData.telefono,
-                fecha, hora,
-                personas: session.partialData.personas,
-                ocasion: session.partialData.ocasion,
-            }).catch(() => {});
         }
     } catch (e) {
         logger.error('error_finalizar_bizum', { telefono: userPhone, error: e.message });
@@ -1927,12 +1934,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     await setLeadBotMode(orgId, session.partialData.telefono, 'manual');
                     await setEscalationReason(orgId, session.partialData.telefono, 'lista_negra');
                     const contact = await findByPhone(orgId, session.partialData.telefono);
+                    // Notify antes del INSERT: ver escalateToHuman.
+                    notifyBlacklistAlert(orgId, { nombre: contact?.nombre || session.partialData.nombre, telefono: session.partialData.telefono, blacklist_reason: contact?.blacklist_reason }).catch(() => {});
                     await createPendingAction(orgId, {
                         type: 'escalation',
                         contactId: contact?.id || session.leadId,
                         payload: { motivo: 'lista_negra', mensaje: userText },
                     });
-                    notifyBlacklistAlert(orgId, { nombre: contact?.nombre || session.partialData.nombre, telefono: session.partialData.telefono, blacklist_reason: contact?.blacklist_reason }).catch(() => {});
                 } catch (e) { logger.error('error_blacklist_notify', { telefono: userPhone, error: e.message }); }
                 await _send('Gracias por tu mensaje 🙏 En breve te atenderá nuestro equipo.');
                 persistSession(orgId, userPhone, session);
@@ -2153,12 +2161,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     await setLeadBotMode(orgId, session.partialData.telefono, 'manual');
                     await setEscalationReason(orgId, session.partialData.telefono, consultaReason);
                     const contact = await findByPhone(orgId, session.partialData.telefono);
+                    // Notify antes del INSERT: ver escalateToHuman.
+                    notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono: session.partialData.telefono }, sanitized, consultaReason).catch(() => {});
                     await createPendingAction(orgId, {
                         type: 'escalation',
                         contactId: contact?.id || session.leadId,
                         payload: { motivo: consultaReason, mensaje: sanitized },
                     });
-                    notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono: session.partialData.telefono }, sanitized, consultaReason).catch(() => {});
                 } catch (e) { logger.error('error_consulta_escalar', { orgId, telefono: userPhone, type: pendingType, error: e.message }); }
                 const CONFIRM_YES = {
                     es: 'Perfecto 🙏 En breve una de nuestras especialistas se pondrá en contacto contigo.',
