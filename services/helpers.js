@@ -880,9 +880,20 @@ function extractGuestName(text) {
     return null;
 }
 
+// Sante exige nombre Y apellido (a diferencia de San Remo, que solo pide un
+// nombre para la mesa). "Nombre completo" aquí es un heurístico simple: dos o
+// más palabras. No intenta validar apellidos compuestos ni nombres de pila
+// compuestos ("Maria José") — ese margen de error es aceptable frente a la
+// alternativa de pedir explícitamente el apellido y fastidiar el flujo.
+function hasApellido(nombre) {
+    if (!nombre || typeof nombre !== 'string') return false;
+    return nombre.trim().split(/\s+/).filter(Boolean).length >= 2;
+}
+
 function getMissingFieldsSante(partialData) {
     const missing = [];
     if (!partialData?.nombre || partialData.nombre === 'desconocido') missing.push('nombre');
+    else if (!hasApellido(partialData.nombre)) missing.push('apellido');
     return missing;
 }
 
@@ -907,6 +918,19 @@ function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], tea
         }
         if (result.nombre && result.nombre !== 'desconocido') {
             result.nombre = filterServiceKeyword(result.nombre) || undefined;
+        }
+    } else if (!hasApellido(result.nombre) && !opts.stylistQuestionPending) {
+        // Ya tenemos nombre de pila pero el bot le acaba de pedir el apellido
+        // explícitamente (ver proximoPaso en openai.js). Si este turno es una
+        // respuesta corta (1-2 palabras) que parece un apellido válido y no es
+        // ni un servicio ni una estilista, se completa el nombre.
+        const trimmed = text.trim();
+        const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+        if (wordCount >= 1 && wordCount <= 2 && isValidName(trimmed)
+                && !isServiceName(trimmed, servicesCatalog)
+                && !resolveStylistMention(trimmed, teamList, { assumePersonName: true }).stylist) {
+            const completado = filterServiceKeyword(trimmed);
+            if (completado) result.nombre = `${result.nombre} ${completado}`;
         }
     }
 
@@ -1715,6 +1739,7 @@ module.exports = {
     extractStylistFromText,
     resolveStylistMention,
     getMissingFieldsSante,
+    hasApellido,
     extractQuickDataSante,
     extractDateSignalSante,
     detectNoPreferenceSignal,

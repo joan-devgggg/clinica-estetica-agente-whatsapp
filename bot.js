@@ -9,7 +9,7 @@ const {
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -3309,6 +3309,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         }
                     }
                     let canOverwrite = k === 'nombre' || !session.partialData[k] || session.partialData[k] === 'desconocido';
+                    // No dejar que el LLM sustituya un nombre+apellido ya completado
+                    // (por el merge determinista de extractQuickDataSante) por una
+                    // extracción más corta suya (ej. solo el apellido que acaba de oír).
+                    if (k === 'nombre' && orgType === 'salon'
+                            && hasApellido(session.partialData.nombre) && !hasApellido(v)) {
+                        canOverwrite = false;
+                    }
                     // `servicio` es sticky para no pisar la elección de la clienta con
                     // una mención de pasada del LLM. Pero si el valor guardado NO resuelve
                     // contra el catálogo es basura que atasca el flujo: la ruta de

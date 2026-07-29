@@ -3,7 +3,7 @@ require('dotenv').config();
 const config = require('../../config.json');
 const db = require('../db');
 const { getOrgType } = require('../org-registry');
-const { normalizeText, classifyLargoVariant } = require('../helpers');
+const { normalizeText, classifyLargoVariant, hasApellido } = require('../helpers');
 const logger = require('../../lib/logger');
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -392,7 +392,12 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
         if (guestBooking && !guestName) return 'La clienta quiere reservar OTRA cita para otra persona (un acompañante). Pregunta el nombre de esa persona antes de continuar.';
         if (guestBooking && guestName && !selectedService) return `Esta nueva cita es para ${guestName}. Pregunta qué servicio quiere ${guestName}.`;
         if (partialData.__clienteRecurrente && !selectedService) return 'Saluda con calidez y pregunta en qué puedes ayudarla.';
-        if (!partialData.nombre && !partialData.__clienteRecurrente) return 'Saluda y pregunta cómo se llama.';
+        if (!partialData.__clienteRecurrente) {
+            if (!partialData.nombre) return 'Saluda y pregunta cómo se llama.';
+            // Sante exige nombre Y apellido (San Remo no). Si solo dio el nombre de
+            // pila, no avances al servicio todavía: pide el apellido explícitamente.
+            if (!hasApellido(partialData.nombre)) return 'La clienta solo ha dado su nombre de pila. Agradéceselo y pídele también el apellido, con naturalidad ("¿Me dices también tu apellido, porfa?" o equivalente en su idioma). NO preguntes aún por el servicio ni sigas el flujo hasta tener el apellido.';
+        }
         if (partialData.__askLargoFirst) {
             const cat = partialData.__pendingLargoCategory || 'el servicio solicitado';
             if (normalizeText(cat) === 'mechas clasicas') {
