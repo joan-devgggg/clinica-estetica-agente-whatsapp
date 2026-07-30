@@ -3011,9 +3011,16 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 session.upsellingAccepted = [...new Set([...(session.upsellingAccepted || []), ...aiResponse.datos.upselling_aceptado])];
 
                 if (session.reservaConfirmada && session.appointmentId && session.selectedService) {
-                    const updServices = [session.selectedService.nombre, ...session.upsellingAccepted].filter(Boolean).join(' + ');
                     const cfgUp = await getAgentConfig(orgId);
                     const catUp = cfgUp?.services || [];
+                    // Nombre COMPLETO, igual que en la creación de la cita: el nombre crudo
+                    // ("Largo 2") casa con 4 entradas de catálogo de precios distintos y la
+                    // facturación no puede saber cuál era. buildFullServiceName lo desambigua
+                    // con la categoría ("Mechas Airtouch Largo 2").
+                    const updServices = [
+                        buildFullServiceName(session.selectedService, catUp),
+                        ...session.upsellingAccepted,
+                    ].filter(Boolean).join(' + ');
                     const upDur = session.upsellingAccepted.reduce(
                         (sum, name) => sum + resolveServiceDurationMin(name, catUp), 0);
                     const totalDur = (session.selectedService.duracion || 60) + upDur;

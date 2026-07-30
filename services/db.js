@@ -5,7 +5,7 @@
 
 const supabase = require('./supabase');
 const logger = require('../lib/logger');
-const { NO_STYLIST_KEY } = require('./helpers');
+const { NO_STYLIST_KEY, computeServiceBilling } = require('./helpers');
 
 const DEFAULT_ORG = process.env.ORGANIZATION_ID || 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
@@ -826,8 +826,9 @@ async function getAppointmentsByDateRange(orgId, desde, hasta) {
 }
 
 // Citas COMPLETED de un rango de fechas, con estilista y cliente, para el informe de
-// facturación por estilista. No devuelve precio (appointments no lo guarda): el importe
-// se recalcula en helpers a partir de `service` contra el catálogo.
+// facturación por estilista. Devuelve el importe CONGELADO al completar la cita
+// (precio_facturado/iva_rate/facturado_at); helpers solo recalcula desde el catálogo cuando
+// no hay snapshot — citas anteriores a la auditoría del 30/07/2026, o servicios no valorables.
 // stylistId opcional: UUID → solo esa estilista; NO_STYLIST_KEY → solo citas sin estilista
 // asignada; null/undefined → todas. El importe NO cambia por filtrar: solo entran menos
 // citas al mismo cálculo.
@@ -837,7 +838,7 @@ async function getCompletedAppointmentsForBilling(orgId, desde, hasta, stylistId
     const hastaTs = new Date(`${hasta}T23:59:59`).toISOString();
     let query = supabase
         .from('appointments')
-        .select('id, service, stylist_id, starts_at, contacts!contact_id(full_name), stylists!stylist_id(id, name)')
+        .select('id, service, stylist_id, starts_at, precio_facturado, iva_rate, facturado_at, stylist_name_facturado, contacts!contact_id(full_name), stylists!stylist_id(id, name)')
         .eq('organization_id', oid)
         .eq('status', 'completed')
         .gte('starts_at', desdeTs)
@@ -855,10 +856,65 @@ async function getCompletedAppointmentsForBilling(orgId, desde, hasta, stylistId
         appointment_id: row.id,
         service:        row.service,
         stylist_id:     row.stylist_id,
-        stylist_name:   row.stylists?.name || null,
+        // El nombre congelado manda sobre el del JOIN: renombrar a una estilista no debe
+        // reescribir su histórico de facturación.
+        stylist_name:   row.stylist_name_facturado || row.stylists?.name || null,
         starts_at:      row.starts_at,
         cliente:        row.contacts?.full_name || null,
+        precio_facturado: row.precio_facturado,
+        iva_rate:         row.iva_rate,
+        facturado_at:     row.facturado_at,
     }));
+}
+
+// Congela el importe de las citas indicadas. Se llama en la ÚNICA transición que importa: el
+// paso a 'completed'. A partir de ahí el informe lee este valor y deja de recalcular, así que
+// subir un precio en el catálogo —o que alguien edite el `service` de una cita pasada— ya no
+// reescribe la facturación de un periodo cerrado.
+// No pisa un snapshot existente (facturado_at != null): completar dos veces no revaloriza.
+// Si el servicio no es calculable (nombre ambiguo, sin precio, sin match) NO se inventa nada:
+// precio_facturado se queda a null y el informe la sigue contando como "sin poder calcular".
+async function stampBillingSnapshot(orgId, appointmentIds, { ivaRate = 0.21 } = {}) {
+    const ids = (appointmentIds || []).filter(Boolean);
+    if (!ids.length) return 0;
+    const oid = resolveOrg(orgId);
+
+    const { data: citas, error } = await supabase
+        .from('appointments')
+        .select('id, service, facturado_at, stylists!stylist_id(name)')
+        .eq('organization_id', oid)
+        .in('id', ids)
+        .is('facturado_at', null);
+    assertRead(error, 'appointments');
+    if (!citas?.length) return 0;
+
+    const cfg = await getAgentConfig(oid);
+    const catalogo = cfg?.services || [];
+    const sellado = now();
+    let n = 0;
+
+    for (const cita of citas) {
+        const { totalConIva, segments } = computeServiceBilling(cita.service, catalogo);
+        const calculable = segments.length > 0 && segments.every(s => s.status === 'ok');
+        const { error: errUpd } = await supabase
+            .from('appointments')
+            .update({
+                precio_facturado: calculable ? Math.round(totalConIva * 100) / 100 : null,
+                iva_rate: ivaRate,
+                facturado_at: sellado,
+                stylist_name_facturado: cita.stylists?.name || null,
+            })
+            .eq('id', cita.id)
+            .eq('organization_id', oid);
+        if (errUpd) {
+            // No se propaga: el snapshot es un extra sobre una cita que YA está completada.
+            // Sin él el informe recalcula como siempre, así que perderlo no rompe nada.
+            logger.error('db_write_error', { tabla: 'appointments', op: 'stampBillingSnapshot', error: errUpd.message, code: errUpd.code });
+            continue;
+        }
+        n++;
+    }
+    return n;
 }
 
 async function getAppointmentsByLead(orgId, contactId) {
@@ -1353,6 +1409,14 @@ async function autoCompleteAppointments(orgId) {
     for (const apt of data || []) {
         if (apt.contact_id) await incrementVisitCount(oid, apt.contact_id);
     }
+    // Congelar el importe en el mismo momento en que la cita entra en la facturación.
+    if (data?.length) {
+        try {
+            await stampBillingSnapshot(oid, data.map(a => a.id));
+        } catch (e) {
+            logger.error('error_snapshot_facturacion', { orgId: oid, error: e.message });
+        }
+    }
     return data || [];
 }
 
@@ -1421,6 +1485,7 @@ module.exports = {
     getAppointmentsByLead,
     getAppointmentsByDateRange,
     getCompletedAppointmentsForBilling,
+    stampBillingSnapshot,
     getAppointmentsPendientesRecordatorio,
     getReservasBizumPendiente,
     getAgentConfig,

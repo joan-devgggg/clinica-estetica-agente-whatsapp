@@ -375,6 +375,12 @@ app.put('/api/citas/:id', async (req, res) => {
             // ante un error de Supabase (ver assertWrite en db.js), un fallo aquí devolvería
             // un 500 en una petición cuyo UPDATE de la cita YA tuvo éxito. Se aísla para que
             // el panel siga viendo el 200 que le corresponde; el fallo queda en los logs.
+            // Congelar el importe: la cita acaba de entrar en la facturación.
+            try {
+                await db.stampBillingSnapshot(orgId, [apt.id]);
+            } catch (e) {
+                logger.error('error_snapshot_facturacion', { orgId, citaId: apt.id, error: e.message });
+            }
             try {
                 const visitCount = await db.incrementVisitCount(orgId, apt.contact_id);
                 const contact = await db.findById(orgId, apt.contact_id);

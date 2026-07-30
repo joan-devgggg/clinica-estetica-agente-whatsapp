@@ -1532,15 +1532,34 @@ function extractLargoPelo(text) {
 // Largo 2"); (b) nombre crudo de catálogo (cubre los upsells, ej. "K18"). Se usa aparte
 // del difuso porque es lo único fiable para decidir si un tramo que contiene " + " es UN
 // servicio de catálogo o dos servicios unidos por el separador.
-function resolveCatalogEntryExact(name, catalog) {
-    if (!name || !Array.isArray(catalog) || !catalog.length) return null;
+// Devuelve TODAS las entradas de catálogo que casan de forma exacta con el nombre, en el
+// mismo orden de preferencia que resolveCatalogEntryExact: primero las que casan por nombre
+// completo, y solo si ninguna casa, las que casan por nombre crudo. Se separa de la
+// resolución porque el nombre crudo NO es único en el catálogo real de Sante ("Largo 2"
+// existe en 4 categorías con precios 145/160/220/260) y facturar necesita saberlo.
+function findCatalogEntriesExact(name, catalog) {
+    if (!name || !Array.isArray(catalog) || !catalog.length) return [];
     const target = normalizeText(name);
     // (a) nombre completo generado
-    const byFull = catalog.find(svc => normalizeText(buildFullServiceName(svc, catalog)) === target);
-    if (byFull) return byFull;
+    const byFull = catalog.filter(svc => normalizeText(buildFullServiceName(svc, catalog)) === target);
+    if (byFull.length) return byFull;
     // (b) nombre crudo del catálogo
-    const byName = catalog.find(svc => normalizeText(svc.nombre) === target);
-    return byName || null;
+    return catalog.filter(svc => normalizeText(svc.nombre) === target);
+}
+
+function resolveCatalogEntryExact(name, catalog) {
+    return findCatalogEntriesExact(name, catalog)[0] || null;
+}
+
+// Precios DISTINTOS entre varias entradas que casan con el mismo nombre. Si todas cuestan
+// lo mismo ("Hombre" son 25 € tanto en Cortes como en Manicura/Pedicura) la ambigüedad no
+// afecta al importe y no hay nada que avisar; solo importa cuando el precio difiere.
+function distinctPrices(entries) {
+    return [...new Set(
+        (entries || [])
+            .map(e => Number(e?.precio))
+            .filter(n => Number.isFinite(n))
+    )];
 }
 
 // Resuelve la entrada de catálogo de UN nombre de servicio ya guardado. Cascada
@@ -1583,11 +1602,22 @@ function splitServiceNames(serviceString, catalog) {
 // Descompone el string appointments.service en segmentos y clasifica cada uno.
 // Devuelve { totalConIva, segments: [{ name, precio, status }] } donde status es
 // 'ok' (precio numérico, suma), 'unpriced' (matchea pero precio null, ej. Consulta —
-// NO suma) o 'unmatched' (sin entrada de catálogo — NO suma). totalConIva es la suma
+// NO suma), 'unmatched' (sin entrada de catálogo — NO suma) o 'ambiguous' (el nombre casa
+// con varias entradas de PRECIOS DISTINTOS — NO suma). totalConIva es la suma
 // de los segmentos 'ok' (el precio del catálogo ya incluye IVA).
+//
+// 'ambiguous' existe porque cobrar el primer match era peor que no cobrar: un "Largo 2"
+// suelto casa con 4 entradas (145/160/220/260 €) y se facturaba la primera —hasta 115 € de
+// desvío— marcada como cifra buena. Una cita con un segmento ambiguo cae al contador de
+// "sin poder calcular", que el panel ya muestra: un importe dudoso se comunica como dudoso.
 function computeServiceBilling(serviceString, catalog) {
     const segments = splitServiceNames(serviceString, catalog).map(name => {
-        const entry = resolveServiceCatalogEntry(name, catalog);
+        const exactas = findCatalogEntriesExact(name, catalog);
+        const precios = distinctPrices(exactas);
+        if (precios.length > 1) {
+            return { name, precio: null, status: 'ambiguous', precios: precios.sort((a, b) => a - b) };
+        }
+        const entry = exactas[0] || extractServiceFromText(name, catalog) || null;
         if (!entry) return { name, precio: null, status: 'unmatched' };
         if (entry.precio == null || !Number.isFinite(Number(entry.precio))) {
             return { name, precio: null, status: 'unpriced' };
@@ -1664,8 +1694,17 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
     for (const appt of (appointments || [])) {
         const key = appt.stylist_id || NO_STYLIST;
         const bucket = getBucket(key, appt.stylist_name);
-        const { totalConIva, segments } = computeServiceBilling(appt.service, catalog);
-        const calculable = segments.length > 0 && segments.every(s => s.status === 'ok');
+        const { totalConIva: recalculado, segments } = computeServiceBilling(appt.service, catalog);
+
+        // El importe CONGELADO al completar la cita manda sobre el recálculo. Sin él, subir un
+        // precio en el catálogo —o editar el `service` de una cita pasada— reescribía la
+        // facturación de un periodo ya cerrado. Solo se recalcula cuando no hay snapshot:
+        // citas anteriores a la auditoría, o servicios que no se pudieron valorar.
+        const congelado = Number(appt.precio_facturado);
+        const tieneSnapshot = !!appt.facturado_at && Number.isFinite(congelado);
+        const calculable = tieneSnapshot || (segments.length > 0 && segments.every(s => s.status === 'ok'));
+        const totalConIva = tieneSnapshot ? congelado : recalculado;
+
         bucket.numCitas += 1;
         if (calculable) {
             bucket.totalConIva += totalConIva;
@@ -1679,6 +1718,7 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
             starts_at: appt.starts_at || null,
             precio: calculable ? _round2(totalConIva) : null,
             calculable,
+            congelado: tieneSnapshot,
             segments,
         });
     }
@@ -1767,6 +1807,7 @@ module.exports = {
     detectConsultaValoracion,
     // Facturación por estilista
     resolveServiceCatalogEntry,
+    findCatalogEntriesExact,
     computeServiceBilling,
     buildStylistBillingReport,
     filterAppointmentsByStylist,
