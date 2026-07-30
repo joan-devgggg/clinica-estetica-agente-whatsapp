@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Cliente } from "@/lib/types";
-import { API, apiHeaders } from "@/lib/api";
+import { API, apiHeaders, apiMutate } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
 
 interface VipSuggestion {
@@ -90,26 +90,36 @@ export default function ListaVipPage() {
     }
   }
 
+  // Estas tres confirman por pantalla que se ha guardado algo, así que la respuesta hay que
+  // mirarla: antes un 500 —o un id que no existe— cantaba "Añadido a VIP" sin haber escrito.
   async function addVip(id: number) {
-    await fetch(`${API}/api/lista-vip/${id}`, { method: "POST", headers: await apiHeaders(orgId) });
-    toast.success("Añadido a VIP");
-    setResults((r) => r.filter((c) => c.id !== id));
+    try {
+      await apiMutate(`/api/lista-vip/${id}`, { method: "POST", orgId });
+      toast.success("Añadido a VIP");
+      setResults((r) => r.filter((c) => c.id !== id));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo añadir a VIP");
+    }
     await fetchAll();
   }
 
   async function removeVip(id: number) {
-    await fetch(`${API}/api/lista-vip/${id}`, { method: "DELETE", headers: await apiHeaders(orgId) });
-    toast.success("Eliminado de VIP");
+    try {
+      await apiMutate(`/api/lista-vip/${id}`, { method: "DELETE", orgId });
+      toast.success("Eliminado de VIP");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo quitar de VIP");
+    }
     await fetchAll();
   }
 
   async function resolveSuggestion(id: string, accion: "aceptar" | "rechazar") {
-    await fetch(`${API}/api/pending-actions/${id}/resolver`, {
-      method: "POST",
-      headers: await apiHeaders(orgId),
-      body: JSON.stringify({ accion }),
-    });
-    toast.success(accion === "aceptar" ? "Cliente añadido a VIP" : "Sugerencia descartada");
+    try {
+      await apiMutate(`/api/pending-actions/${id}/resolver`, { method: "POST", body: { accion }, orgId });
+      toast.success(accion === "aceptar" ? "Cliente añadido a VIP" : "Sugerencia descartada");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo resolver la sugerencia");
+    }
     await fetchAll();
   }
 

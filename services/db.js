@@ -47,6 +47,22 @@ function assertWrite(error, tabla, op) {
     throw new Error(`Escritura (${op}) en ${tabla} falló: ${error.message || error}`);
 }
 
+// Cierra justo el límite que documenta assertWrite: una escritura DIRIGIDA a una fila
+// concreta cuyos .eq() no casan nada devuelve error=null, y el llamante lo leía como éxito.
+// Así, `POST /api/lista-vip/<id inexistente o de otra org>` respondía 200 {ok:true} y el
+// panel cantaba "Añadido a VIP" sin haber escrito nada — la misma clase de fallo que el bug
+// de la ficha de cliente. Requiere que la sentencia lleve `.select('id')` para saber cuántas
+// filas tocó. Auditoría de integridad 29-30/07/2026.
+function assertRowsAffected(error, data, tabla, op) {
+    assertWrite(error, tabla, op);
+    const filas = Array.isArray(data) ? data.length : (data ? 1 : 0);
+    if (filas === 0) {
+        logger.error('db_write_sin_efecto', { tabla, op });
+        throw new Error(`Escritura (${op}) en ${tabla} no encontró la fila: nada guardado`);
+    }
+    return filas;
+}
+
 function sanitizePhone(phone) {
     if (!phone || typeof phone !== 'string') return '';
     return phone.replace(/["'\s]/g, '').replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '').trim();
@@ -220,7 +236,10 @@ async function saveLead(orgId, datos) {
         return existing.id;
     }
 
-    const { data } = await supabase
+    // allergies/preferences/formula_coloracion se descartaban en este INSERT (sí estaban en
+    // los dos UPDATE): el LLM tiene instrucción de extraer alergias y preferencias, y si el
+    // contacto se creaba en ese mismo turno se perdían sin rastro. Son datos clínicos.
+    const { data, error } = await supabase
         .from('contacts')
         .insert({
             organization_id:    oid,
@@ -233,12 +252,16 @@ async function saveLead(orgId, datos) {
             estado:             datos.estado_cita || 'pendiente',
             origen:             datos.origen || 'whatsapp',
             notas:              datos.notas || null,
+            allergies:          datos.allergies || null,
+            preferences:        datos.preferences || null,
+            formula_coloracion: datos.formula_coloracion || null,
             appointment_id:     datos.appointment_id || null,
             language:           datos.language || 'es',
             updated_at:         now(),
         })
         .select('id')
         .single();
+    assertWrite(error, 'contacts', 'insert saveLead');
     return data?.id ?? null;
 }
 
@@ -281,7 +304,15 @@ async function updateLead(orgId, datos) {
         existing = await findByPhone(oid, phone);
     }
 
-    if (!existing) return !!await saveLead(oid, datos);
+    // El leadId apunta a una fila que ya no existe (p.ej. el contacto se borró desde el panel
+    // con la sesión del bot aún viva). Se crea de nuevo, pero SIN reenviar el leadId muerto:
+    // saveLead delega en updateLead cuando recibe uno, y updateLead volvía a no encontrarlo →
+    // bucle asíncrono infinito entre las dos, machacando Supabase a lecturas para siempre.
+    // (No revienta la pila porque cada await cede el turno, así que no hay traza que lo delate.)
+    if (!existing) {
+        const { leadId: _muerto, ...sinLeadId } = datos;
+        return !!await saveLead(oid, sinLeadId);
+    }
 
     const updates = { updated_at: now() };
     if (datos.nombre !== undefined)              updates.full_name = datos.nombre;
@@ -295,10 +326,21 @@ async function updateLead(orgId, datos) {
     if (datos.appointment_id !== undefined)      updates.appointment_id = datos.appointment_id;
     if (datos.allergies !== undefined)           updates.allergies = datos.allergies;
     if (datos.preferences !== undefined)         updates.preferences = datos.preferences;
+    // formula_coloracion faltaba aquí (sí está en updateLeadById): los dos escritores de la
+    // misma columna tienen que aceptar los mismos campos o uno de ellos los tira en silencio.
+    if (datos.formula_coloracion !== undefined)  updates.formula_coloracion = datos.formula_coloracion;
 
     resetRecordatorioIfConfirmado(updates, datos.estado_cita);
     normalizeContactUpdates(updates);
-    await supabase.from('contacts').update(updates).eq('id', existing.id).eq('organization_id', oid);
+    // Mismo patrón que updateLeadById: sin mirar `error` este UPDATE devolvía `true` con la
+    // escritura perdida — el bug de la ficha de cliente, en el camino del bot.
+    const { data, error } = await supabase
+        .from('contacts')
+        .update(updates)
+        .eq('id', existing.id)
+        .eq('organization_id', oid)
+        .select('id');
+    assertRowsAffected(error, data, 'contacts', 'updateLead');
     return true;
 }
 
@@ -358,6 +400,9 @@ async function marcarRecordatorioSent(orgId, id) {
     return true;
 }
 
+// Excluye lista negra: un contacto bloqueado no recibe mensajes del negocio. El guard de
+// bot.js solo cubre la CONVERSACIÓN (lo que la clienta escribe); los salientes automáticos
+// —recordatorio 24 h y petición de reseña— salían igual porque nadie miraba is_blacklisted.
 async function getLeadsPendientesRecordatorio(orgId) {
     const oid = resolveOrg(orgId);
     const { data } = await supabase
@@ -366,7 +411,8 @@ async function getLeadsPendientesRecordatorio(orgId) {
         .eq('organization_id', oid)
         .eq('estado', 'confirmado')
         .eq('recordatorio_enviado', false)
-        .not('fecha_cita', 'is', null);
+        .not('fecha_cita', 'is', null)
+        .or('is_blacklisted.is.null,is_blacklisted.eq.false');
     return (data || []).map(rowToPublic);
 }
 
@@ -759,7 +805,15 @@ async function updateAppointment(orgId, appointmentId, campos) {
         .eq('organization_id', oid)
         .select()
         .single();
-    if (error) throw new Error(error.message);
+    // El `code` se propaga: PGRST116 (`.single()` sin filas) significa "esa cita no existe",
+    // mientras que cualquier otro código es un fallo de escritura con la cita aún viva. Quien
+    // reagenda necesita distinguirlos: crear una cita nueva es correcto en el primer caso y
+    // duplica la reserva en el segundo.
+    if (error) {
+        const err = new Error(error.message);
+        err.code = error.code;
+        throw err;
+    }
     return data || null;
 }
 
@@ -826,9 +880,8 @@ async function getAppointmentsByDateRange(orgId, desde, hasta) {
 }
 
 // Citas COMPLETED de un rango de fechas, con estilista y cliente, para el informe de
-// facturación por estilista. Devuelve el importe CONGELADO al completar la cita
-// (precio_facturado/iva_rate/facturado_at); helpers solo recalcula desde el catálogo cuando
-// no hay snapshot — citas anteriores a la auditoría del 30/07/2026, o servicios no valorables.
+// facturación por estilista. No devuelve precio (appointments no lo guarda): el importe
+// se recalcula en helpers a partir de `service` contra el catálogo.
 // stylistId opcional: UUID → solo esa estilista; NO_STYLIST_KEY → solo citas sin estilista
 // asignada; null/undefined → todas. El importe NO cambia por filtrar: solo entran menos
 // citas al mismo cálculo.
@@ -917,6 +970,23 @@ async function stampBillingSnapshot(orgId, appointmentIds, { ivaRate = 0.21 } = 
     return n;
 }
 
+// Una cita concreta. Necesaria para no derivar su horario de la sesión del bot: al aceptar
+// un upsell se recalculaba ends_at a partir de session.partialData.fecha_cita/hora_cita, que
+// puede haberse quedado atrás si la cita se movió desde el panel — y ends_at acababa en otro
+// día, rompiendo la disponibilidad y el worker de reseñas (que filtra por ends_at).
+async function getAppointmentById(orgId, appointmentId) {
+    if (!appointmentId) return null;
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('appointments')
+        .select('*')
+        .eq('id', appointmentId)
+        .eq('organization_id', oid)
+        .maybeSingle();
+    assertRead(error, 'appointments');
+    return data || null;
+}
+
 async function getAppointmentsByLead(orgId, contactId) {
     const oid = resolveOrg(orgId);
     const { data } = await supabase
@@ -946,47 +1016,59 @@ async function getReservasBizumPendiente(orgId) {
 
 // ─── Lista negra / VIP ────────────────────────────────────────────────────────
 
+// Bloquear/desbloquear y marcar VIP son acciones sobre las que el panel da confirmación
+// visual explícita ("Añadido a la lista negra"), así que no pueden fallar en silencio:
+// assertRowsAffected lanza tanto si Supabase da error como si el UPDATE no tocó ninguna fila.
 async function setBlacklist(orgId, contactId, reason) {
     const oid = resolveOrg(orgId);
-    await supabase
+    const { data, error } = await supabase
         .from('contacts')
         .update({ is_blacklisted: true, blacklist_reason: reason || null, updated_at: now() })
         .eq('id', contactId)
-        .eq('organization_id', oid);
+        .eq('organization_id', oid)
+        .select('id');
+    assertRowsAffected(error, data, 'contacts', 'update is_blacklisted=true');
     return true;
 }
 
 async function removeBlacklist(orgId, contactId) {
     const oid = resolveOrg(orgId);
-    await supabase
+    const { data, error } = await supabase
         .from('contacts')
         .update({ is_blacklisted: false, blacklist_reason: null, updated_at: now() })
         .eq('id', contactId)
-        .eq('organization_id', oid);
+        .eq('organization_id', oid)
+        .select('id');
+    assertRowsAffected(error, data, 'contacts', 'update is_blacklisted=false');
     return true;
 }
 
 async function setVip(orgId, contactId, value) {
     const oid = resolveOrg(orgId);
-    await supabase
+    const { data, error } = await supabase
         .from('contacts')
         .update({ is_vip: !!value, updated_at: now() })
         .eq('id', contactId)
-        .eq('organization_id', oid);
+        .eq('organization_id', oid)
+        .select('id');
+    assertRowsAffected(error, data, 'contacts', `update is_vip=${!!value}`);
     return true;
 }
 
+// Incremento ATÓMICO vía RPC: el read-modify-write anterior perdía visitas cuando dos
+// escrituras coincidían (autoCompleteAppointments corre cada 5 min por org y el panel puede
+// completar la misma cita a la vez), porque ambas leían el mismo valor y escribían el mismo +1.
+// La función SQL hace `visit_count = coalesce(visit_count,0) + 1` en una sola sentencia.
 async function incrementVisitCount(orgId, contactId) {
     const oid = resolveOrg(orgId);
-    const contact = await findById(oid, contactId);
-    if (!contact) return null;
-    const visitCount = (contact.visit_count || 0) + 1;
-    await supabase
-        .from('contacts')
-        .update({ visit_count: visitCount, updated_at: now() })
-        .eq('id', contactId)
-        .eq('organization_id', oid);
-    return visitCount;
+    const { data, error } = await supabase.rpc('increment_visit_count', {
+        p_contact_id: contactId,
+        p_organization_id: oid,
+    });
+    assertWrite(error, 'contacts', 'increment visit_count');
+    // null = ninguna fila casó (contacto inexistente o de otra org). No es un fallo de
+    // infraestructura: el llamante ya trataba ese caso devolviendo null.
+    return data == null ? null : Number(data);
 }
 
 async function getBlacklist(orgId) {
@@ -1000,14 +1082,19 @@ async function getBlacklist(orgId) {
     return (data || []).map(rowToPublic);
 }
 
-async function getVipList(orgId) {
+// excludeBlacklisted: para los ENVÍOS (broadcast VIP). Un contacto puede ser VIP y estar en
+// lista negra a la vez —el no-show de una clienta habitual la bloquea sin quitarle el VIP— y
+// el broadcast le escribía igual, porque solo getBroadcastRecipients filtraba. El listado del
+// panel NO lo filtra a propósito: ahí interesa ver que esa clienta está bloqueada.
+async function getVipList(orgId, { excludeBlacklisted = false } = {}) {
     const oid = resolveOrg(orgId);
-    const { data } = await supabase
+    let query = supabase
         .from('contacts')
         .select('*')
         .eq('organization_id', oid)
-        .eq('is_vip', true)
-        .order('updated_at', { ascending: false });
+        .eq('is_vip', true);
+    if (excludeBlacklisted) query = query.or('is_blacklisted.is.null,is_blacklisted.eq.false');
+    const { data } = await query.order('updated_at', { ascending: false });
     return (data || []).map(rowToPublic);
 }
 
@@ -1383,25 +1470,31 @@ async function getCompletedAppointmentsForReview(orgId, horasAfter) {
     const cutoff = new Date(Date.now() - horasAfter * 60 * 60 * 1000).toISOString();
     const { data } = await supabase
         .from('appointments')
-        .select('*, contacts!contact_id(id, full_name, wa_phone, language, metadata)')
+        .select('*, contacts!contact_id(id, full_name, wa_phone, language, metadata, is_blacklisted)')
         .eq('organization_id', oid)
         .eq('status', 'completed')
         .eq('resena_enviada', false)
         .lte('ends_at', cutoff)
         .order('ends_at', { ascending: true });
-    return data || [];
+    // El filtro va en JS y no en la query porque is_blacklisted vive en la tabla unida:
+    // pedirle una reseña de Google a alguien a quien acabas de bloquear no tiene sentido.
+    return (data || []).filter(row => !row.contacts?.is_blacklisted);
 }
 
 async function autoCompleteAppointments(orgId) {
     const oid = resolveOrg(orgId);
     const ahora = now();
-    const { data } = await supabase
+    // El error se comprobaba: sin él, un UPDATE fallido dejaba `data` undefined, el bucle
+    // recorría [] y el worker informaba "0 citas completadas" — indistinguible de una tarde
+    // sin citas. Esas citas no se completan nunca y por tanto no llegan a facturarse.
+    const { data, error } = await supabase
         .from('appointments')
         .update({ status: 'completed' })
         .eq('organization_id', oid)
         .eq('status', 'confirmed')
         .lte('ends_at', ahora)
         .select('id, contact_id');
+    assertWrite(error, 'appointments', 'autoComplete status=completed');
 
     // Mantener contacts.visit_count en sync con el COUNT de citas completadas
     // (el display usa total_visitas, pero la lógica VIP lee visit_count).
@@ -1482,6 +1575,7 @@ module.exports = {
     hasActiveAppointmentForSlot,
     updateAppointment,
     deleteAppointment,
+    getAppointmentById,
     getAppointmentsByLead,
     getAppointmentsByDateRange,
     getCompletedAppointmentsForBilling,

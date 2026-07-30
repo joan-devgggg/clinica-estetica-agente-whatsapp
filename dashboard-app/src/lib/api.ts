@@ -24,3 +24,27 @@ export async function apiHeaders(_orgId?: string): Promise<Record<string, string
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
+
+// Escritura contra la API que NO puede fallar en silencio. Varias pantallas hacían
+// `await fetch(...)` y a continuación `toast.success("Guardado")` sin mirar la respuesta:
+// un 500, un 404 o un contacto de otra organización se veían exactamente igual que un
+// guardado correcto. Lanza con el mensaje real del servidor para que el llamante muestre
+// un error en vez de un éxito inventado.
+export async function apiMutate(
+  path: string,
+  init: { method: string; body?: unknown; orgId?: string },
+): Promise<Response> {
+  const res = await fetch(`${API}${path}`, {
+    method: init.method,
+    headers: await apiHeaders(init.orgId),
+    ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+  });
+  if (!res.ok) {
+    const detalle = await res
+      .json()
+      .then((b) => b?.error as string | undefined)
+      .catch(() => undefined);
+    throw new Error(detalle || `El servidor respondió ${res.status}`);
+  }
+  return res;
+}

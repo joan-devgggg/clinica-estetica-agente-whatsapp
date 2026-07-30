@@ -70,7 +70,9 @@ const lastCall = () => mock.calls[mock.calls.length - 1];
 
     // ── Item 9: setBlacklist / removeBlacklist ──
     await test('9 · setBlacklist → contacts {is_blacklisted:true, blacklist_reason}', async () => {
-        mock.setResponder(() => ({ data: null, error: null }));
+        // Devuelve una fila porque estas escrituras llevan .select('id'): tienen que comprobar
+        // que el UPDATE tocó algo, no solo que Supabase no dio error.
+        mock.setResponder(() => ({ data: [{ id: 'c1' }], error: null }));
         const r = await db.setBlacklist('org', 'c1', 'No-show');
         const c = lastCall();
         assert.strictEqual(r, true);
@@ -129,7 +131,7 @@ const lastCall = () => mock.calls[mock.calls.length - 1];
     // a false, así que una clienta recurrente dejaba de recibir recordatorio en su 2ª visita.
     await test('updateLead(estado_cita: confirmado) resetea recordatorio_enviado a false', async () => {
         mock.setResponder((state) => {
-            if (state.op === 'update') return { data: null, error: null };
+            if (state.op === 'update') return { data: [{ id: 'contact-1' }], error: null };
             return { data: { id: 'contact-1', full_name: 'Ana' }, error: null }; // findById (select/maybeSingle)
         });
         await db.updateLead('org', { leadId: 'contact-1', estado_cita: 'confirmado' });
@@ -141,7 +143,7 @@ const lastCall = () => mock.calls[mock.calls.length - 1];
 
     await test('updateLead sin cambio de estado_cita NO toca recordatorio_enviado', async () => {
         mock.setResponder((state) => {
-            if (state.op === 'update') return { data: null, error: null };
+            if (state.op === 'update') return { data: [{ id: 'contact-1' }], error: null };
             return { data: { id: 'contact-1' }, error: null };
         });
         await db.updateLead('org', { leadId: 'contact-1', notas: 'x' });

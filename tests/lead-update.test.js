@@ -45,7 +45,9 @@ function makeFakeSupabase() {
                     }
                 }
                 for (const row of targets) Object.assign(row, q.payload);
-                return { data: null, error: null };
+                // Como el Supabase real con `.select('id')`: devuelve las filas afectadas, que
+                // es lo que mira assertRowsAffected para distinguir "guardado" de "no casó nada".
+                return { data: targets.map(r => ({ id: r.id })), error: null };
             }
             return { data: targets, error: null };
         }

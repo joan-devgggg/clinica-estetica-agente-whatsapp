@@ -80,7 +80,9 @@ function respond(state) {
     if (control.failWrites.has(`${table}:${op}`)) return { data: null, error: control.error };
 
     if (op === 'insert' || op === 'upsert') return { data: { id: `${table}-row-1` }, error: null };
-    if (op === 'update' || op === 'delete') return { data: single ? { id: `${table}-row-1` } : [], error: null };
+    // Un UPDATE con `.select('id')` devuelve las filas afectadas; devolver [] equivaldría a
+    // "no casó ninguna fila", que ahora es un error de escritura (assertRowsAffected).
+    if (op === 'update' || op === 'delete') return { data: single ? { id: `${table}-row-1` } : [{ id: `${table}-row-1` }], error: null };
 
     if (table === 'contacts') {
         const orgFilter = filters.find(f => f[1] === 'organization_id');

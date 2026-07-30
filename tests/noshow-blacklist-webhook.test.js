@@ -26,9 +26,15 @@ db.authenticateToken = async (token) => (token === 'test-secret' ? { userId: 'u1
 
 // Mock de la capa db que usa la ruta (mismo objeto de módulo que webhook.js).
 let blacklistCalls = [];
+let syncCalls = [];
 db.updateAppointment = async (orgId, id, body) => ({ id, contact_id: 'c1', status: body.estado });
 db.findById = async () => ({ id: 'c1', nombre: 'María', telefono: '34600000000' });
 db.setBlacklist = async (orgId, contactId, reason) => { blacklistCalls.push({ orgId, contactId, reason }); return true; };
+// La ruta lee el estado ANTERIOR (para no contar dos veces la visita) y sincroniza la ficha
+// del contacto (que es la que lee reminder.js). Sin estos dos stubs irían a Supabase real.
+db.getAppointmentById = async (orgId, id) => ({ id, contact_id: 'c1', status: 'confirmed' });
+db.updateLeadById = async (orgId, contactId, campos) => { syncCalls.push({ contactId, campos }); return { id: contactId }; };
+db.stampBillingSnapshot = async () => 1;
 
 function put(server, id, body) {
     const { port } = server.address();
@@ -74,6 +80,26 @@ async function test(name, fn) {
             const res = await put(server, 'apt-1', { estado: 'confirmed' });
             assert.strictEqual(res.status, 200);
             assert.strictEqual(blacklistCalls.length, 0, 'sin no_show no hay blacklist');
+        });
+
+        // Reagendar desde el panel dejaba contacts.fecha_cita/hora_cita con los valores viejos,
+        // y reminder.js lee esa tabla: el recordatorio salía con la hora antigua.
+        await test('reagendar desde el panel sincroniza la ficha del contacto', async () => {
+            syncCalls = [];
+            const res = await put(server, 'apt-1', { fecha: '2026-08-05', hora: '17:30', estado: 'confirmed' });
+            assert.strictEqual(res.status, 200);
+            assert.strictEqual(syncCalls.length, 1, 'sincroniza una vez');
+            assert.strictEqual(syncCalls[0].contactId, 'c1');
+            assert.strictEqual(syncCalls[0].campos.fecha_cita, '2026-08-05');
+            assert.strictEqual(syncCalls[0].campos.hora_cita, '17:30');
+            assert.strictEqual(syncCalls[0].campos.estado_cita, 'confirmado', 'traduce status→estado de contacto');
+        });
+
+        await test('cancelar una cita también deja la ficha en cancelado', async () => {
+            syncCalls = [];
+            const res = await put(server, 'apt-1', { estado: 'cancelled' });
+            assert.strictEqual(res.status, 200);
+            assert.strictEqual(syncCalls[0]?.campos.estado_cita, 'cancelado');
         });
 
         await test('9 · AUTH: sin token la ruta responde 401', async () => {

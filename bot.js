@@ -5,7 +5,7 @@ const {
     updateAppointment, setLeadBotMode, setEscalationReason, setBlacklist, createPendingAction,
     getAgentConfig, updateContactLanguage, updateContactPreferredStylist, updateContactLastStylist,
     getStylistsByOrg, getAllStylistSchedules, getLastCompletedAppointment, hasActiveAppointmentForSlot,
-    getScheduleBlocks, getBlockedDays, getAppointmentsByLead,
+    getScheduleBlocks, getBlockedDays, getAppointmentsByLead, getAppointmentById,
 } = require('./services/db');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
@@ -1562,15 +1562,23 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
             notas: notasCita,
         };
         // Reagendado: MOVER la cita existente (UPDATE in-place) en vez de crear una nueva y
-        // dejar la vieja huérfana. Si el update falla (cita borrada/no existe), fallback a
-        // INSERT para no dejar a la clienta sin reserva.
+        // dejar la vieja huérfana. El fallback a INSERT es SOLO para 'not_found' (la cita ya no
+        // existe): con 'db_error' la cita vieja sigue viva y crear otra dejaría dos reservas
+        // para la misma clienta, ambas facturables. Ahí es mejor fallar y que se escale.
         const reagendando = session.modoReagendamiento && session.reagendarAppointmentId;
         let result = reagendando
             ? await calendarSante.rescheduleAppointment(orgId, session.reagendarAppointmentId, slot, bookOpts)
             : await calendarSante.bookAppointment(orgId, slot, session.leadId, bookOpts);
         if (reagendando && !result.success) {
-            logger.warn('reagendar_update_fallido_fallback_insert', { orgId, telefono: userPhone, reagendarAppointmentId: session.reagendarAppointmentId });
-            result = await calendarSante.bookAppointment(orgId, slot, session.leadId, bookOpts);
+            if (result.reason === 'not_found') {
+                logger.warn('reagendar_cita_inexistente_fallback_insert', { orgId, telefono: userPhone, reagendarAppointmentId: session.reagendarAppointmentId });
+                result = await calendarSante.bookAppointment(orgId, slot, session.leadId, bookOpts);
+            } else {
+                logger.error('reagendar_fallido_sin_fallback', {
+                    orgId, telefono: userPhone, reagendarAppointmentId: session.reagendarAppointmentId,
+                    reason: result.reason || null, error: result.error || null,
+                });
+            }
         }
 
         logger.info('DIAG_finalizarCitaSante_bookAppointment_resultado', {
@@ -3024,12 +3032,24 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     const upDur = session.upsellingAccepted.reduce(
                         (sum, name) => sum + resolveServiceDurationMin(name, catUp), 0);
                     const totalDur = (session.selectedService.duracion || 60) + upDur;
-                    const startsAt = new Date(`${session.partialData.fecha_cita}T${session.partialData.hora_cita}:00`);
-                    const endsAt = new Date(startsAt.getTime() + totalDur * 60000);
-                    updateAppointment(orgId, session.appointmentId, {
-                        servicio: updServices,
-                        endsAt: endsAt.toISOString(),
-                    }).catch(e => logger.error('error_update_upselling', { orgId, error: e.message }));
+                    // El nuevo fin se mide desde el starts_at REAL de la cita, no desde la
+                    // fecha/hora de la sesión: si la cita se movió desde el panel, esos dos
+                    // valores ya no coinciden y ends_at acababa en otro día.
+                    // Y se hace con await: sin él, este UPDATE competía con la escritura de
+                    // cierre de la misma cita y ganaba cualquiera de los dos.
+                    try {
+                        const apt = await getAppointmentById(orgId, session.appointmentId);
+                        const base = apt?.starts_at
+                            ? new Date(apt.starts_at)
+                            : new Date(`${session.partialData.fecha_cita}T${session.partialData.hora_cita}:00`);
+                        const endsAt = new Date(base.getTime() + totalDur * 60000);
+                        await updateAppointment(orgId, session.appointmentId, {
+                            servicio: updServices,
+                            endsAt: endsAt.toISOString(),
+                        });
+                    } catch (e) {
+                        logger.error('error_update_upselling', { orgId, error: e.message });
+                    }
                 }
             }
             // upsellingSuggested se setea en la transición de confirmación (más abajo),
@@ -3472,6 +3492,25 @@ async function flushBuffer(sKey) {
     }
 }
 
+// ¿Está el contacto en lista negra AHORA MISMO? El guard de lista negra vive dentro de
+// processMessageCore, pero handleIncomingMessage responde por su cuenta antes de llegar allí
+// (audio que no se puede transcribir, foto/sticker/documento sin texto): un contacto
+// bloqueado seguía recibiendo esas respuestas automáticas, en los dos canales, sin escalada
+// ni alerta. La BD es la fuente de verdad; la sesión viva solo se usa como atajo cuando ya
+// sabe que está bloqueado. Si la lectura falla no se bloquea a nadie por sospecha: se
+// registra y se sigue, que es el comportamiento que ya tenía este camino.
+async function isBlacklistedNow(orgId, dbPhone, sKey) {
+    if (userSessions.get(sKey)?.isBlacklisted) return true;
+    if (!dbPhone) return false;
+    try {
+        const contact = await findByPhone(orgId, dbPhone);
+        return !!contact?.is_blacklisted;
+    } catch (e) {
+        logger.error('error_check_blacklist_media', { orgId, telefono: dbPhone, error: e.message });
+        return false;
+    }
+}
+
 // ─── Handler principal (con buffer de 5s) ────────────────────────────────────
 async function handleIncomingMessage(client, message, orgId) {
     try {
@@ -3525,6 +3564,12 @@ async function handleIncomingMessage(client, message, orgId) {
                 if (!userText) throw new Error('transcripción vacía');
             } catch (e) {
                 logger.error('error_transcripcion', { telefono: userPhone, error: e.message });
+                // Solo salón: este camino es código compartido y la regla de oro exige que el
+                // comportamiento observable de San Remo no cambie ni para un contacto bloqueado.
+                if (getOrgType(orgId) === 'salon' && await isBlacklistedNow(orgId, dbPhone, sKey)) {
+                    logger.info('media_ignorada_lista_negra', { orgId, telefono: userPhone, kind: 'audio' });
+                    return;
+                }
                 await sendWithDelay(client, userPhone, 'No pude escuchar el audio 😅 ¿Puedes escribirme lo que necesitas?', orgId, dbPhone);
                 return;
             }
@@ -3542,6 +3587,12 @@ async function handleIncomingMessage(client, message, orgId) {
                 logger.info('media_no_soportada', { orgId, telefono: userPhone, kind });
                 // Dejamos rastro en el panel: antes estos mensajes no existían en el historial.
                 saveMessage(orgId, { telefono: dbPhone, contenido: `[${kind}]`, direccion: 'entrante' }).catch(() => {});
+                // El rastro en el panel sí se guarda, la respuesta no sale: un contacto
+                // bloqueado no vuelve a hablar con el bot con normalidad.
+                if (await isBlacklistedNow(orgId, dbPhone, sKey)) {
+                    logger.info('media_ignorada_lista_negra', { orgId, telefono: userPhone, kind });
+                    return;
+                }
                 await sendWithDelay(client, userPhone, unsupportedMediaMsg(kind, language), orgId, dbPhone);
             } else if (message.hasMedia) {
                 // San Remo: literal exacto de siempre (regla de oro, comportamiento sin cambios).

@@ -160,6 +160,15 @@ app.post('/webhook/360dialog/:token', require360Token, (req, res) => {
 const AUTH_CACHE_TTL_MS = 60 * 1000;
 const authCache = new Map(); // token → { orgId, userId, exp }
 
+// appointments.status → contacts.estado. Las dos tablas nombran lo mismo distinto y la ficha
+// del contacto es la que leen los workers de recordatorio y reseña.
+const ESTADO_CITA_A_CONTACTO = {
+    confirmed: 'confirmado',
+    completed: 'completado',
+    cancelled: 'cancelado',
+    no_show:   'cancelado',
+};
+
 async function requireApiAuth(req, res, next) {
     const auth = req.headers['authorization'] || '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
@@ -218,7 +227,14 @@ app.post('/api/leads', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
         if (!req.body.telefono) return res.status(400).json({ error: 'El teléfono es obligatorio' });
-        const id = await db.saveLead(orgId, req.body);
+        // El diálogo de cita manual manda siempre { nombre, telefono }. Si ese teléfono ya
+        // existe, saveLead delega en updateLead y PISABA el nombre guardado con lo que se
+        // acabara de teclear. Aquí el nombre solo rellena un hueco vacío; para renombrar a
+        // alguien está PUT /api/leads/:id, que es la acción explícita de editar la ficha.
+        const datos = { ...req.body };
+        const existente = await db.findByPhone(orgId, datos.telefono);
+        if (existente?.nombre && datos.nombre) delete datos.nombre;
+        const id = await db.saveLead(orgId, datos);
         if (!id) return res.status(400).json({ error: 'No se pudo crear el contacto — verifica el teléfono' });
         const lead = await db.findById(orgId, id);
         if (!lead) return res.status(500).json({ error: 'Contacto creado pero no encontrado al releer' });
@@ -359,9 +375,30 @@ app.put('/api/citas/:id', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
         console.log('[DEBUG PUT /api/citas/:id] llegó petición', { id: req.params.id, orgId, body: req.body });
+        // Estado ANTERIOR: hace falta para no contar dos veces la misma visita si la cita ya
+        // estaba completada (el worker de auto-completar pudo adelantarse al panel).
+        const previo = await db.getAppointmentById(orgId, req.params.id);
         const apt = await db.updateAppointment(orgId, req.params.id, req.body);
         console.log('[DEBUG apt]', apt);
         if (!apt) return res.status(404).json({ error: 'No encontrada' });
+
+        // La ficha del contacto es la que lee reminder.js (no `appointments`), así que mover una
+        // cita desde el panel sin actualizarla mandaba el recordatorio con la hora antigua.
+        // POST /api/appointments ya lo hacía; el PUT no.
+        if (apt.contact_id) {
+            const sync = {};
+            if (req.body.fecha !== undefined) sync.fecha_cita = req.body.fecha;
+            if (req.body.hora !== undefined) sync.hora_cita = req.body.hora || null;
+            const estadoContacto = ESTADO_CITA_A_CONTACTO[req.body.estado];
+            if (estadoContacto) sync.estado_cita = estadoContacto;
+            if (Object.keys(sync).length) {
+                try {
+                    await db.updateLeadById(orgId, apt.contact_id, sync);
+                } catch (e) {
+                    logger.error('error_sync_contacto_cita', { orgId, citaId: req.params.id, error: e.message });
+                }
+            }
+        }
 
         if ((req.body.noShow === true || req.body.estado === 'no_show') && apt.contact_id) {
             console.log('[DEBUG no-show] ejecutando setBlacklist', { orgId, contact_id: apt.contact_id, noShow: req.body.noShow, estado: req.body.estado });
@@ -370,7 +407,7 @@ app.put('/api/citas/:id', async (req, res) => {
             notifyBlacklistAlert(orgId, { nombre: noShowContact?.nombre, telefono: noShowContact?.telefono, blacklist_reason: 'No-show' }).catch(() => {});
         }
 
-        if (req.body.estado === 'completed' && apt.contact_id) {
+        if (req.body.estado === 'completed' && apt.contact_id && previo?.status !== 'completed') {
             // La sugerencia VIP es un efecto secundario: desde que createPendingAction lanza
             // ante un error de Supabase (ver assertWrite en db.js), un fallo aquí devolvería
             // un 500 en una petición cuyo UPDATE de la cita YA tuvo éxito. Se aísla para que
@@ -401,17 +438,34 @@ app.put('/api/citas/:id', async (req, res) => {
         }
 
         res.json(apt);
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) {
+        if (e?.code === 'PGRST116') return res.status(404).json({ error: 'No encontrada' });
+        res.status(500).json({ error: e.message });
+    }
 });
 
+// Cancela (soft-delete), NO borra. Un DELETE físico destruía el histórico de facturación de
+// forma irreversible; el panel ya cancelaba en la práctica (el botón "eliminar" manda
+// PUT {estado:'cancelled'}), así que esta ruta solo quedaba como un pie de cañón.
+// Para borrar de verdad está db.deleteAppointment, sin exponer por HTTP.
 app.delete('/api/citas/:id', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
-        const result = await db.deleteAppointment(orgId, req.params.id);
-        if (!result.ok) return res.status(400).json({ error: result.error || 'No se pudo eliminar la cita' });
-        if (result.deleted === 0) return res.status(404).json({ error: 'No encontrada' });
-        res.json({ ok: true });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+        const apt = await db.updateAppointment(orgId, req.params.id, { estado: 'cancelled' });
+        if (!apt) return res.status(404).json({ error: 'No encontrada' });
+        if (apt.contact_id) {
+            try {
+                await db.updateLeadById(orgId, apt.contact_id, { estado_cita: 'cancelado' });
+            } catch (e) {
+                logger.error('error_sync_contacto_cita', { orgId, citaId: req.params.id, error: e.message });
+            }
+        }
+        res.json({ ok: true, cancelled: true });
+    } catch (e) {
+        // PGRST116 = el .single() de updateAppointment no encontró la fila.
+        if (e?.code === 'PGRST116') return res.status(404).json({ error: 'No encontrada' });
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // ─── API: Bizums ─────────────────────────────────────────────────────────────
@@ -510,7 +564,7 @@ app.post('/api/vip/broadcast', async (req, res) => {
         if (!mensaje) return res.status(400).json({ error: 'mensaje requerido' });
         const client = getOutboundClient(orgId);
         if (!client) return res.status(503).json({ error: 'WhatsApp no conectado' });
-        const vips = await db.getVipList(orgId);
+        const vips = await db.getVipList(orgId, { excludeBlacklisted: true });
         if (!vips.length) return res.json({ enviados: 0, omitidos: 0, fallos: [] });
         const { waSendMessage } = require('./bot');
         let enviados = 0;

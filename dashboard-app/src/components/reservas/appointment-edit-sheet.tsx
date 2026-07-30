@@ -95,7 +95,9 @@ export function AppointmentEditSheet({
           hora: form.hora,
           duracionMin: parseInt(form.duracion) || 60,
           estado: form.estado,
-          stylistId: form.stylistId || undefined,
+          // null explícito, no undefined: con undefined el backend no aplicaba el campo y
+          // vaciar el selector no desasignaba nunca a la estilista.
+          stylistId: form.stylistId || null,
           notas: form.notas,
           personas: form.personas,
         }),

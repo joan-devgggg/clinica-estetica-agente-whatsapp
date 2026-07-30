@@ -418,16 +418,29 @@ async function cancelAppointment(orgId, appointmentId) {
 // {fecha,hora,duracionMin} de db.updateAppointment, que recalcula starts_at/ends_at). No crea
 // una fila nueva: evita la cita huérfana/duplicada que dejaba el flujo anterior (creaba con
 // bookAppointment y no cancelaba la vieja). Simétrica con book/cancel para poder mockearla.
+// Devuelve `reason` cuando falla, porque no todos los fallos se arreglan igual:
+//   'not_found'    → la cita ya no existe; crear una nueva es lo correcto.
+//   'db_error'     → la escritura falló pero la cita vieja SIGUE VIVA; crear otra dejaría dos
+//                    reservas para la misma clienta, las dos facturables.
+//   'invalid_slot' → fecha/hora que updateAppointment rechaza; insertar no arregla nada.
 async function rescheduleAppointment(orgId, appointmentId, slot, { servicio, duracionMin, stylistId, notas } = {}) {
-    const result = await db.updateAppointment(orgId, appointmentId, {
-        servicio,
-        fecha: slot.fecha,
-        hora: slot.hora,
-        duracionMin: duracionMin || 60,
-        stylistId: stylistId || slot.stylistId,
-        notas,
-    });
-    return result ? { success: true, appointmentId: result.id, appointment: result } : { success: false };
+    let result;
+    try {
+        result = await db.updateAppointment(orgId, appointmentId, {
+            servicio,
+            fecha: slot.fecha,
+            hora: slot.hora,
+            duracionMin: duracionMin || 60,
+            stylistId: stylistId || slot.stylistId,
+            notas,
+        });
+    } catch (e) {
+        // updateAppointment usa .single(): sin filas, Supabase devuelve PGRST116.
+        const noExiste = e?.code === 'PGRST116';
+        return { success: false, reason: noExiste ? 'not_found' : 'db_error', error: e?.message };
+    }
+    if (!result) return { success: false, reason: 'invalid_slot' };
+    return { success: true, appointmentId: result.id, appointment: result };
 }
 
 module.exports = { getAvailableSlots, bookAppointment, cancelAppointment, rescheduleAppointment, formatSlotForMessage, CAUSAS_CERO };

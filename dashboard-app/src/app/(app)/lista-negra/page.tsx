@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Cliente } from "@/lib/types";
-import { API, apiHeaders } from "@/lib/api";
+import { API, apiHeaders, apiMutate } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
 
 function getInitials(nombre: string) {
@@ -73,21 +73,27 @@ export default function ListaNegraPage() {
     }
   }
 
+  // Bloquear a alguien no puede fallar en silencio: si el UPDATE no llega a la fila, el
+  // panel lo daba por bloqueado y el bot seguía atendiéndole con normalidad.
   async function addToBlacklist(id: number) {
     const motivo = window.prompt("Motivo (opcional):", "") ?? "";
-    await fetch(`${API}/api/lista-negra/${id}`, {
-      method: "POST",
-      headers: await apiHeaders(orgId),
-      body: JSON.stringify({ motivo }),
-    });
-    toast.success("Añadido a la lista negra");
-    setResults((r) => r.filter((c) => c.id !== id));
+    try {
+      await apiMutate(`/api/lista-negra/${id}`, { method: "POST", body: { motivo }, orgId });
+      toast.success("Añadido a la lista negra");
+      setResults((r) => r.filter((c) => c.id !== id));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo bloquear el contacto");
+    }
     await fetchItems();
   }
 
   async function removeFromBlacklist(id: number) {
-    await fetch(`${API}/api/lista-negra/${id}`, { method: "DELETE", headers: await apiHeaders(orgId) });
-    toast.success("Eliminado de la lista negra");
+    try {
+      await apiMutate(`/api/lista-negra/${id}`, { method: "DELETE", orgId });
+      toast.success("Eliminado de la lista negra");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo desbloquear el contacto");
+    }
     await fetchItems();
   }
 

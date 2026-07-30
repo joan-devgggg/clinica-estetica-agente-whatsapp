@@ -22,6 +22,10 @@ interface Props {
 
 export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onClose, onCreated }: Props) {
   const [saving, setSaving] = useState(false);
+  // Contacto en lista negra: se avisa y se pide confirmación, pero NO se bloquea — la
+  // recepcionista tiene la última palabra. Antes el alta manual ignoraba la lista negra
+  // por completo y se podía dar cita a alguien bloqueado sin enterarse.
+  const [avisoListaNegra, setAvisoListaNegra] = useState<{ nombre: string; motivo: string | null } | null>(null);
   const [form, setForm] = useState({
     nombre: "",
     telefono: "",
@@ -53,6 +57,14 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
       }
       const lead = await leadRes.json();
       if (!lead?.id) throw new Error("Respuesta inválida al crear contacto");
+
+      // Primera vez que se ve que está bloqueado: parar aquí y avisar. El contacto ya está
+      // creado/encontrado, así que un segundo envío continúa sin repetir el aviso.
+      if (lead.is_blacklisted && !avisoListaNegra) {
+        setAvisoListaNegra({ nombre: lead.nombre || form.nombre, motivo: lead.blacklist_reason ?? null });
+        setSaving(false);
+        return;
+      }
 
       // Then create appointment
       const apptRes = await fetch(`${API}/api/appointments`, {
@@ -87,6 +99,16 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
           <DialogTitle>Nueva cita manual</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
+          {avisoListaNegra && (
+            <div
+              role="alert"
+              className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            >
+              <strong>{avisoListaNegra.nombre}</strong> está en la lista negra
+              {avisoListaNegra.motivo ? ` (${avisoListaNegra.motivo})` : ""}. Pulsa de nuevo para
+              darle cita de todas formas.
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Nombre *</Label>
@@ -132,7 +154,9 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
-            <Button type="submit" disabled={saving}>{saving ? "Creando..." : "Crear cita"}</Button>
+            <Button type="submit" disabled={saving} variant={avisoListaNegra ? "destructive" : "default"}>
+              {saving ? "Creando..." : avisoListaNegra ? "Crear de todas formas" : "Crear cita"}
+            </Button>
           </div>
         </form>
       </DialogContent>
