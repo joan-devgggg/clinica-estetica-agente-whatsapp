@@ -1026,6 +1026,34 @@ function respondsWithInventedSlots(respuesta, availableSlots) {
     return !anyValid;
 }
 
+// El salón SOLO cierra los domingos (services/providers/openai.js, sección FECHA ACTUAL).
+// Cualquier "el salón está cerrado" para lunes-sábado es FALSO por definición — casi
+// siempre el LLM confunde "esta estilista no trabaja ese día" con "el negocio no abre"
+// (bug real 30/07: pedicura con Olgha un sábado → "el salón está cerrado", cuando Olgha
+// solo trabaja martes/jueves/viernes y el salón sí abre los sábados). El prompt ya lo
+// prohíbe explícitamente, pero un modelo pequeño no lo respeta siempre — esta es la
+// última barrera antes de enviar, igual que respondsWithInventedSlots de arriba.
+const CLOSURE_CLAIM_WORDS = [
+    'cerrado', 'cerrada', 'cerramos', 'no abrimos', 'no abre',
+    'closed', 'dont open', "don't open", 'were closed', "we're closed",
+    'закрыт', 'закрыто', 'не работаем', 'выходной',
+    'закрито', 'не працюємо', 'вихідний',
+];
+const SUNDAY_WORDS = ['domingo', 'sunday', 'воскресенье', 'неділя'];
+const NON_SUNDAY_DAY_WORDS = [
+    'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado',
+    'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday',
+    'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота',
+    'понеділок', 'вівторок', 'середа', 'четвер', "п'ятниця", 'субота',
+];
+function respondsWithFalseClosureClaim(respuesta) {
+    const t = normalizeText(respuesta);
+    if (!t) return false;
+    if (!CLOSURE_CLAIM_WORDS.some(w => t.includes(w))) return false;
+    if (SUNDAY_WORDS.some(w => t.includes(w))) return false; // domingo sí cierra: legítimo
+    return NON_SUNDAY_DAY_WORDS.some(w => t.includes(w));
+}
+
 // Mensaje de fallback cuando la red anti-invención bloquea una respuesta del LLM que
 // ofrecía fecha/hora sin huecos reales cargados. Pide el dato que falta en vez de
 // dejar salir horarios inventados. Es sensible al contexto: si aún no hay servicio,
@@ -3378,6 +3406,26 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 tieneServicio: !!session.selectedService,
             });
             aiResponse.respuesta = salonNoSlotsMsg(session);
+            aiResponse.reserva_confirmada = false;
+        }
+
+        // ─── Red anti-cierre-falso (Sante) ────────────────────────────────────
+        // Solo se comprueba cuando calendar-sante ya marcó que el día/semana pedidos no
+        // tenían hueco real (requestedDayUnavailable/weekPreferenceRelaxed): es la ventana
+        // exacta en la que el LLM tiende a decir "el salón está cerrado" en vez de "esa
+        // estilista no trabaja ese día". Se sustituye por el mensaje determinista que ya
+        // ofrece los huecos reales más cercanos, en vez de dejar salir la mentira.
+        if (orgType === 'salon' && !session.reservaConfirmada
+                && (session.slotsRequestedDayUnavailable || session.slotsWeekPreferenceRelaxed)
+                && respondsWithFalseClosureClaim(aiResponse.respuesta)) {
+            logger.warn('cita_sante_cierre_falso_bloqueado', {
+                orgId, telefono: userPhone,
+                respuestaOriginal: aiResponse.respuesta,
+                huecosReales: (session.availableSlots || []).length,
+            });
+            aiResponse.respuesta = session.availableSlots?.length
+                ? salonOfferSlotsMsg(session)
+                : salonNoSlotsMsg(session);
             aiResponse.reserva_confirmada = false;
         }
 

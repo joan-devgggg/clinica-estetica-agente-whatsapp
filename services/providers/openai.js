@@ -287,18 +287,37 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
         : (CERO_STR[causaCero]
             || 'AÚN NO SE HA CONSULTADO LA AGENDA porque falta concretar el servicio. NO digas que no tienes huecos, ni que no se cargan, ni que hay un problema: simplemente sigue preguntando con naturalidad lo que falta para poder buscar.');
 
+    // Selected service/stylist info — se calcula AQUÍ (antes de los avisos de abajo) porque
+    // los avisos de día/semana necesitan poder nombrar a la estilista concreta y sus días
+    // reales: darle al modelo la frase ya armada dejaba menos margen para que rellenara el
+    // hueco con su propia inventiva ("el salón está cerrado") — ver avisoDiaNoDisponible.
+    const selectedService = partialData.__selectedService;
+    const selectedStylist = partialData.__selectedStylist;
+    // Bug 2: cuando hay estilista elegida, recordamos AL LADO de los huecos qué días
+    // trabaja realmente, para que el LLM no ofrezca un día libre de ella razonando por
+    // su cuenta. Los días salen de stylist_schedules (scheduleInfo), no de inventiva.
+    const selectedStylistDias = (selectedStylist && Array.isArray(scheduleInfo))
+        ? (scheduleInfo.find(e => normalizeText(e.nombre) === normalizeText(selectedStylist.nombre))?.dias || null)
+        : null;
+    // Frase lista para usar cuando el día/semana pedidos no tienen hueco por culpa de la
+    // estilista (no del salón). Con nombre y días reales de por medio, el modelo tiene la
+    // respuesta correcta servida y ya no necesita "rellenar" la causa por su cuenta.
+    const causaRealNoCerrado = (selectedStylist && selectedStylistDias)
+        ? `La causa real es que ${selectedStylist.nombre} solo trabaja: ${selectedStylistDias}. Dilo así, con su nombre.`
+        : 'La causa real es que ninguna estilista con esa skill trabaja esos días, o está completo.';
+
     // El día concreto que pidió la clienta no tenía disponibilidad real: los huecos de
     // arriba son las alternativas más cercanas (calculadas de los horarios reales). El LLM
     // DEBE avisar de esto y NO afirmar que el día pedido está libre.
     const avisoDiaNoDisponible = partialData.__requestedDayUnavailable
-        ? '\nAVISO IMPORTANTE: El día exacto que pidió la clienta NO tiene disponibilidad (la estilista no trabaja ese día o está completo). Los huecos de arriba son las alternativas REALES más cercanas. Dile con amabilidad que ese día no hay hueco y ofrécele estas fechas. NUNCA confirmes ni propongas el día original.'
+        ? `\nAVISO IMPORTANTE: El día exacto que pidió la clienta NO tiene disponibilidad. Los huecos de arriba son las alternativas REALES más cercanas. Dile con amabilidad que ese día no hay hueco y ofrécele estas fechas. NUNCA confirmes ni propongas el día original. El salón NO está cerrado ese día (de lunes a sábado SIEMPRE abre) — PROHIBIDO decir "el salón está cerrado", "cerramos" o cualquier frase que implique que el salón no abre, salvo que el día sea domingo. ${causaRealNoCerrado}`
         : '';
 
     // La SEMANA que pidió la clienta no se ha podido honrar (ventana agotada — un viernes o
     // sábado "esta semana" deja 1-2 días — o sin huecos en ella). Los huecos de arriba caen
     // FUERA de esa semana: hay que decirlo, no colarlos como si fueran de la semana pedida.
     const avisoSemanaRelajada = partialData.__semanaRelajada
-        ? '\nAVISO IMPORTANTE: En la semana que pidió la clienta ya no queda disponibilidad para este servicio. Los huecos de arriba son de FUERA de esa semana (los más cercanos reales). Díselo con naturalidad ("esta semana ya no me queda hueco para X, lo más cercano que tengo es…") antes de proponérselos. NUNCA los presentes como si fueran de la semana que pidió.'
+        ? `\nAVISO IMPORTANTE: En la semana que pidió la clienta ya no queda disponibilidad para este servicio. Los huecos de arriba son de FUERA de esa semana (los más cercanos reales). Díselo con naturalidad ("esta semana ya no me queda hueco para X, lo más cercano que tengo es…") antes de proponérselos. NUNCA los presentes como si fueran de la semana que pidió. El salón NO está cerrado esos días (de lunes a sábado SIEMPRE abre) — PROHIBIDO decir "el salón está cerrado", "cerramos" o cualquier frase que implique que el salón no abre, salvo que se trate de un domingo. ${causaRealNoCerrado}`
         : '';
 
     // La clienta nombró a una estilista y el sistema NO pudo dársela tal cual. Antes
@@ -325,15 +344,6 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
         ? `\nNOTA: la clienta escribió "${partialData.__estilistaCorregida.mencion}" y se refiere a ${partialData.__estilistaCorregida.nombre}, que ya le has asignado. Nómbrala por su nombre correcto con naturalidad ("perfecto, con ${partialData.__estilistaCorregida.nombre}") y sigue el flujo normal. NO le pidas que lo confirme ni te disculpes por la corrección.`
         : '';
 
-    // Selected service info
-    const selectedService = partialData.__selectedService;
-    const selectedStylist = partialData.__selectedStylist;
-    // Bug 2: cuando hay estilista elegida, recordamos AL LADO de los huecos qué días
-    // trabaja realmente, para que el LLM no ofrezca un día libre de ella razonando por
-    // su cuenta. Los días salen de stylist_schedules (scheduleInfo), no de inventiva.
-    const selectedStylistDias = (selectedStylist && Array.isArray(scheduleInfo))
-        ? (scheduleInfo.find(e => normalizeText(e.nombre) === normalizeText(selectedStylist.nombre))?.dias || null)
-        : null;
     const lastStylist = partialData.__lastStylist || null;
     const clientLanguage = partialData.__clientLanguage || null;
     const langConstraint = clientLanguage
@@ -535,6 +545,7 @@ Tú: "Mientras el color actúa, ¿te apetece aprovechar para una manicura?"
 Hoy es ${currentDateMadrid()}.
 NUNCA propongas una fecha que ya haya pasado. Cualquier fecha que menciones debe ser estrictamente posterior a hoy.
 El salón abre de lunes a sábado (los domingos está cerrado): si la clienta pide un domingo, propón el siguiente día disponible de la lista.
+REGLA CRÍTICA — NO CONFUNDAS "CERRADO" CON "SIN TURNO ESE DÍA": el salón solo cierra los domingos. Si un día de lunes a sábado no tiene huecos, la causa NUNCA es que el salón esté cerrado: es que esa estilista concreta (o ninguna con esa skill) no trabaja ese día, o que está completo. Jamás digas "el salón está cerrado" ni nada equivalente para un lunes-sábado. Di en su lugar qué estilista no trabaja ese día (o que está completo) y ofrece los días reales más cercanos.
 
 CALENDARIO DE REFERENCIA (próximos 14 días):
 ${buildCalendarReference()}
