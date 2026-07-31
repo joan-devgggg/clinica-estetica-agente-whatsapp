@@ -5,11 +5,13 @@ const {
     updateAppointment, setLeadBotMode, setEscalationReason, setBlacklist, createPendingAction,
     getAgentConfig, updateContactLanguage, updateContactPreferredStylist, updateContactLastStylist,
     getStylistsByOrg, getAllStylistSchedules, getLastCompletedAppointment, hasActiveAppointmentForSlot,
-    getScheduleBlocks, getBlockedDays, getAppointmentsByLead, getAppointmentById,
+    getScheduleBlocks, getBlockedDays, getAppointmentsByLead, getAppointmentById, getUpcomingAppointments,
 } = require('./services/db');
+const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
+const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -232,6 +234,11 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         // Segunda reserva en la misma conversación (para un acompañante)
         guestBooking: false,
         guestName: null,
+        // Segunda reserva: categoría pedida sin resolver aún y ancla temporal respecto a
+        // la cita ya reservada ("un masaje ANTES de la pedicura").
+        pendingServiceCategory: null,
+        anchorAppointment: null,
+        anchorFilterVacio: false,
         // Avisos de mención de estilista (ver SERVICE_STATE_DEFAULTS)
         stylistMentionUnknown: null,
         stylistMentionCorrected: null,
@@ -480,6 +487,9 @@ async function loadAvailableSlots(session) {
                     assignStylistIfAppropriate(session, [{ id: slots[0].stylistId, name: slots[0].stylistName }]);
                 }
             }
+            // "Un masaje ANTES de la pedicura de las 16:00": único punto donde se recortan
+            // los huecos a la ventana pedida. No inventa nada — filtra huecos ya reales.
+            applyAnchorFilter(session);
         } else {
             const pref = session.partialData.preferencia_horaria || {};
             const slots = await calendar.getAvailableSlots(pref);
@@ -564,6 +574,10 @@ function buildSessionExtra(session) {
         proposedSlots: Array.isArray(session.proposedSlots) ? session.proposedSlots : [],
         spaPromoOffered:   !!session.spaPromoOffered,
         spaPromoNote:      session.spaPromoNote || null,
+        // Segunda reserva encadenada: la desambiguación de categoría y el ancla ocupan
+        // varios turnos, así que tienen que sobrevivir a una recarga desde SQLite.
+        pendingServiceCategory: session.pendingServiceCategory || null,
+        anchorAppointment: session.anchorAppointment || null,
     };
 }
 
@@ -968,28 +982,35 @@ function parseSlotSelection(text, slots) {
 // Sirve de red de seguridad: el LLM a menudo escribe "te he reservado" sin poner el
 // flag reserva_confirmada → si no lo cazamos, el bot miente y no persiste nada.
 // normalizeText quita acentos, así que comparamos sin tildes ("esta" por "está").
+//
+// Son REGEX, no subcadenas literales, por el bug del 30/07/2026: el mensaje real que
+// anunció una cita fantasma empezaba con "Citas reservadas para el jueves 6 de agosto"
+// y la lista solo tenía el singular 'cita reservada' → devolvía false y la mentira salió
+// entera. Cualquier afirmación de reserva en PLURAL es además la más peligrosa: significa
+// que el LLM está anunciando varias citas y el sistema solo guarda una por turno.
+const BOOKING_CLAIM_PATTERNS = [
+    // ES — verbo en 1ª persona
+    /\bte (?:la |lo |las |los )?(?:he )?(?:reservad[oa]s?|apuntad[oa]s?|anotad[oa]s?|agendad[oa]s?)\b/,
+    /\bte (?:la |lo |las |los )?(?:reservo|apunto|anoto|agendo)\b/,
+    // ES — "queda(n) confirmada(s)" / "está(n) reservada(s)"
+    /\bqueda(?:n)? (?:confirmad|reservad|agendad|fijad|apuntad|anotad)[oa]s?\b/,
+    /\bestan? (?:confirmad|reservad|agendad|apuntad|anotad)[oa]s?\b/,
+    // ES — "cita(s) reservada(s)" en cualquier orden
+    /\bcitas? (?:confirmad|reservad|agendad|apuntad|anotad)[oa]s?\b/,
+    /\breservas? confirmadas?\b/,
+    /\breservad[oa]s? para\b/,
+    /\bconfirmad[oa]s? (?:tu|la|las|tus) citas?\b/,
+    // EN — el apóstrofo puede venir recto o tipográfico; normalizeText no lo unifica.
+    /\byou['’]?re booked\b/, /\bi['’]?ve booked\b/, /\bbooked you\b/, /\bi have booked\b/, /\bi booked you\b/,
+    /\bappointments? (?:is|are) confirmed\b/, /\byou (?:are |['’]?re )?all set\b/, /\bsee you on\b/,
+    // RU/UK — sin \b: en JS el límite de palabra es ASCII y no funciona con cirílico.
+    /записал[аи]?/, /вы записаны/, /брон[ья] подтверждена/, /запись подтверждена/,
+    /записано/, /бронювання підтверджено/, /запис підтверджено/,
+];
 function llmClaimsBooked(text) {
     if (!text) return false;
     const t = normalizeText(text);
-    return [
-        // ES
-        'te he reservado', 'te la he reservado', 'te lo he reservado',
-        'te reservo', 'te la reservo', 'te lo reservo',
-        'te apunto', 'te anoto', 'te he apuntado', 'te he anotado',
-        'queda confirmada', 'queda reservada', 'queda agendada', 'queda fijada', 'queda apuntada', 'queda anotada',
-        'esta reservado', 'esta reservada', 'esta confirmada', 'esta confirmado',
-        'esta agendada', 'esta apuntada', 'esta anotada',
-        'cita confirmada', 'cita reservada', 'cita agendada', 'cita apuntada', 'cita anotada',
-        'reserva confirmada', 'reservada para', 'confirmada tu cita', 'confirmada la cita',
-        // EN
-        "you're booked", 'youre booked', "i've booked", 'ive booked', 'booked you',
-        'appointment is confirmed', "you're all set", 'youre all set', 'see you on',
-        'i have booked', 'i booked you',
-        // RU
-        'записала', 'записал', 'вы записаны', 'бронь подтверждена', 'запись подтверждена',
-        // UK
-        'записала вас', 'записано', 'бронювання підтверджено', 'запис підтверджено',
-    ].some(p => t.includes(p));
+    return BOOKING_CLAIM_PATTERNS.some(re => re.test(t));
 }
 
 // Mensaje de reintento (multiidioma) cuando no se pudo fijar el hueco. Se reutiliza en
@@ -1024,6 +1045,99 @@ function respondsWithInventedSlots(respuesta, availableSlots) {
         return m >= minR && m <= maxR;
     });
     return !anyValid;
+}
+
+// Horas HH:MM que el mensaje MENCIONA y que NO tienen una cita real detrás.
+// Complemento de respondsWithInventedSlots: aquella contrasta contra los huecos OFRECIDOS
+// (¿existe ese hueco?), esta contrasta contra las citas GUARDADAS (¿está escrito?).
+//
+// Bug del 30/07/2026: con una cita ya confirmada, el bot anunció "Citas reservadas: 15:00
+// masaje, 16:00 pedicura" y en Supabase solo existía la de las 16:00. `horasReales` viene
+// de db.getUpcomingAppointments, no de la sesión.
+//
+// Límite conocido y asumido: un mensaje que afirme reserva y además cite un horario
+// comercial ("abrimos de 10:00 a 19:00") marcará esas horas como no respaldadas. El coste
+// es un mensaje honesto de más; el coste de no mirar es una cita perdida en silencio.
+function unbackedBookingClaim(respuesta, horasReales) {
+    const horaRegex = /\b([01]?\d|2[0-3]):[0-5]\d\b/g;
+    const mencionadas = [...String(respuesta || '').matchAll(horaRegex)].map(m => normalizeHora(m[0]));
+    if (!mencionadas.length) return [];
+    const reales = new Set((Array.isArray(horasReales) ? horasReales : []).map(normalizeHora).filter(Boolean));
+    return [...new Set(mencionadas.filter(h => h && !reales.has(h)))];
+}
+
+// ¿El mensaje PIDE aprobación para reservar, en vez de dar la reserva por hecha?
+// "Perfecto, te apunto el jueves a las 10:00. ¿Te va bien?" contiene una frase de
+// llmClaimsBooked ("te apunto") pero es una PROPUESTA: no promete nada, espera un sí.
+// Distinguirlo importa porque la red anti-cita-fantasma rectifica y reinicia el flujo, y
+// hacerlo sobre una propuesta legítima descarrila la conversación (se vio en s6: el bot
+// contestaba "todavía no tengo ninguna cita apuntada" a mitad de su propia propuesta).
+// El cierre falso de verdad no pregunta si te va bien: lo da por cerrado y sigue.
+const BOOKING_APPROVAL_QUESTIONS = [
+    /¿\s*te (va|viene|parece) bien/, /¿\s*(lo|la|te lo|te la) (confirmo|reservo|apunto)/,
+    /¿\s*confirmo\b/, /¿\s*reservo\b/, /¿\s*quieres que (lo|la|te lo|te la) (confirme|reserve|apunte)/,
+    /\bshall i book\b/, /\bdoes that work\b/, /\bis that ok(ay)?\b/, /\bwould that work\b/,
+    /подойд[её]т/, /подтверждаю\?/, /підійде/,
+];
+function asksForBookingApproval(text) {
+    const t = normalizeText(text);
+    return BOOKING_APPROVAL_QUESTIONS.some(re => re.test(t));
+}
+
+// ─── Red anti-CITA FANTASMA (Sante) ─────────────────────────────────────────
+// El invariante duro: NINGÚN mensaje que afirme una reserva sale sin que esa reserva esté
+// escrita en Supabase. A diferencia de las otras cinco redes del salón, esta NO se apaga
+// con `reservaConfirmada` — apagarla ahí es exactamente el bug del 30/07/2026: con la
+// pedicura de las 16:00 ya confirmada, todas las demás barreras quedaron inactivas y el
+// LLM anunció "Citas reservadas: 15:00 masaje, 16:00 pedicura" habiendo escrito solo una.
+//
+// Se contrasta contra la BD, nunca contra la sesión. Si salta: se registra, se reabre el
+// flujo (con reservaConfirmada=false las otras redes vuelven a estar vivas y el turno
+// siguiente carga huecos REALES) y se sustituye el texto por uno que solo enumera las citas
+// que existen. Nunca toca las citas ya guardadas.
+//
+// Se llama DOS veces por turno: antes del despacho de acciones (que tiene rutas de salida
+// propias, p.ej. escalar_humano envía el texto del LLM y hace return) y al final, sobre el
+// mensaje ya definitivo. El coste extra es una lectura, y solo cuando el texto afirma
+// reservar. Devuelve true si bloqueó algo.
+async function blockPhantomBookingClaim(orgId, session, userPhone, aiResponse, sanitized) {
+    if (!llmClaimsBooked(aiResponse.respuesta)) return false;
+    // Una propuesta pendiente de aprobación no es una promesa incumplida: no hay nada que
+    // rectificar, y el turno siguiente (el "sí") sí pasa por aquí ya como afirmación.
+    if (asksForBookingApproval(aiResponse.respuesta)) return false;
+    try {
+        const citasReales = await getUpcomingAppointments(orgId, session.leadId);
+        const citasFmt = citasReales.map(c => ({
+            servicio: c.service,
+            fecha: toLocalDateStr(new Date(c.starts_at)),
+            hora: toLocalTimeStr(new Date(c.starts_at)),
+        }));
+        const sinRespaldo = unbackedBookingClaim(aiResponse.respuesta, citasFmt.map(c => c.hora));
+        if (!sinRespaldo.length) return false;
+        logger.error('cita_sante_confirmacion_fantasma', {
+            orgId, telefono: userPhone,
+            horasAnunciadasSinCita: sinRespaldo,
+            citasReales: citasFmt.map(c => `${c.fecha} ${c.hora} ${c.servicio}`),
+            respuestaBloqueada: aiResponse.respuesta,
+            reservaConfirmada: session.reservaConfirmada,
+        });
+        resetForSecondBooking(session, sanitized);
+        aiResponse.reserva_confirmada = false;
+        aiResponse.respuesta = buildCitaFantasmaMsg({ citasReales: citasFmt, language: session.language });
+        // El reset deja availableSlots vacío, así que el mensaje de rectificación —que cita
+        // la hora REAL de la cita guardada— dispararía respondsWithInventedSlots y acabaría
+        // sustituido por un genérico. La marca protege el texto ya verificado contra BD.
+        aiResponse._rectificadoPorRedFantasma = true;
+        return true;
+    } catch (e) {
+        // La lectura de citas lanzó (assertRead). No podemos verificar la promesa, así que
+        // no la dejamos salir: es preferible pedir que repita a mentirle a la clienta.
+        logger.error('cita_fantasma_verificacion_fallida', { orgId, telefono: userPhone, error: e.message });
+        aiResponse.reserva_confirmada = false;
+        aiResponse.respuesta = salonRetryMsg(session.language);
+        aiResponse._rectificadoPorRedFantasma = true;
+        return true;
+    }
 }
 
 // El salón SOLO cierra los domingos (services/providers/openai.js, sección FECHA ACTUAL).
@@ -1206,6 +1320,15 @@ const SERVICE_STATE_DEFAULTS = {
     // Mención desconocida sobre la que YA avisamos (normalizada). Evita repetir
     // "no tengo a ninguna Carmen" turno tras turno si el LLM la sigue devolviendo.
     stylistMentionRejected: null,
+    // Categoría pedida que aún no resuelve a un servicio concreto ("un masaje" → 9
+    // variantes). El turno siguiente resuelve DENTRO de ella: "completo" → "Relajante
+    // completo", que contra el catálogo entero empata con "Color completo largo N" y da null.
+    pendingServiceCategory: null,
+    // Cita ya reservada contra la que se ancla el nuevo servicio: { fecha, horaInicio,
+    // horaFin, rel: 'before'|'after' }. Filtra los huecos que se ofrecen.
+    anchorAppointment: null,
+    // El filtro por ancla dejó la lista vacía: hay huecos, pero no en la ventana pedida.
+    anchorFilterVacio: false,
 };
 // Campos de servicio anidados en partialData (se borran con delete).
 const SERVICE_PARTIAL_FIELDS = [
@@ -1362,6 +1485,53 @@ function resetForSecondBooking(session, sanitized) {
 
     logger.info('segunda_reserva_iniciada', {
         orgId: session.orgId, guestBooking: session.guestBooking, guestName: session.guestName || null,
+    });
+}
+
+// Cita REAL contra la que ancla un "antes de …" / "después de …": la próxima cita viva de
+// la clienta, leída de Supabase (no de la sesión: appointmentId no se persiste para salón).
+// Devuelve { fecha, horaInicio, horaFin } en hora local de negocio, o null.
+async function resolveAnchorAppointment(orgId, session) {
+    try {
+        const citas = await getUpcomingAppointments(orgId, session.leadId);
+        if (!citas.length) return null;
+        const c = citas[0]; // ordenadas por starts_at ascendente
+        return {
+            fecha: toLocalDateStr(new Date(c.starts_at)),
+            horaInicio: toLocalTimeStr(new Date(c.starts_at)),
+            horaFin: c.ends_at ? toLocalTimeStr(new Date(c.ends_at)) : null,
+        };
+    } catch (e) {
+        logger.error('error_resolver_cita_ancla', { orgId, error: e.message });
+        return null;
+    }
+}
+
+// Deja en `availableSlots` solo los huecos que encajan con el ancla ("un masaje ANTES de la
+// pedicura de las 16:00"): mismo día y sin solaparse con la cita que ya tiene.
+// Si el filtro se queda sin huecos NO devolvemos "no hay disponibilidad" —eso sería
+// mentira, los huecos existen fuera de la ventana pedida—: se conserva la lista completa y
+// se marca `anchorFilterVacio` para que el mensaje lo diga.
+function applyAnchorFilter(session) {
+    const anchor = session.anchorAppointment;
+    if (!anchor || !anchor.rel || !Array.isArray(session.availableSlots) || !session.availableSlots.length) return;
+    const toMin = hhmm => { const [H, M] = String(hhmm).split(':').map(Number); return H * 60 + M; };
+    const dur = session.selectedService?.duracion || 60;
+    const inicioAncla = toMin(anchor.horaInicio);
+    const finAncla = anchor.horaFin ? toMin(anchor.horaFin) : inicioAncla + 60;
+    const encajan = session.availableSlots.filter(s => {
+        if (s.fecha !== anchor.fecha) return false;
+        const ini = toMin(s.hora);
+        return anchor.rel === 'before' ? (ini + dur <= inicioAncla) : (ini >= finAncla);
+    });
+    session.anchorFilterVacio = !encajan.length;
+    if (encajan.length) {
+        session.availableSlots = encajan;
+        session.currentSlotIndex = 0;
+    }
+    logger.info('ancla_filtro_huecos', {
+        orgId: session.orgId, rel: anchor.rel, fecha: anchor.fecha,
+        huecosAntes: session.availableSlots.length, huecosQueEncajan: encajan.length,
     });
 }
 
@@ -1614,7 +1784,10 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
         });
 
         if (!result.success) {
-            logger.error('cita_sante_no_guardada', { orgId, telefono: userPhone, fecha, hora, stylistId, contactId: session.leadId });
+            logger.error('cita_sante_no_guardada', {
+                orgId, telefono: userPhone, fecha, hora, stylistId, contactId: session.leadId,
+                reason: result.reason || null, error: result.error || null,
+            });
             return false;
         }
 
@@ -1624,7 +1797,18 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
         session.modoReagendamiento = false;
         session.reagendarAppointmentId = null;
         session.partialData.estado_cita = 'confirmado';
-        await updateLead(orgId, { leadId: session.leadId, appointment_id: result.appointmentId, estado_cita: 'confirmado' });
+        // La cita YA está en Supabase. Sincronizar la ficha del contacto es contabilidad
+        // posterior: si falla (updateLead lanza vía assertRowsAffected cuando el leadId no
+        // casa ninguna fila), no puede tumbar el `return true` — antes caía al catch de abajo
+        // y el bot decía "no he podido fijar ese hueco" con la cita creada y cobrable.
+        try {
+            await updateLead(orgId, { leadId: session.leadId, appointment_id: result.appointmentId, estado_cita: 'confirmado' });
+        } catch (e) {
+            logger.error('cita_guardada_lead_no_sincronizado', {
+                orgId, telefono: userPhone, appointmentId: result.appointmentId,
+                leadId: session.leadId, error: e.message,
+            });
+        }
         // Update preferred stylist for returning visits
         if (stylistId && session.leadId) {
             updateContactPreferredStylist(orgId, session.leadId, stylistId).catch(() => {});
@@ -1854,6 +2038,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession.proposedSlots         = Array.isArray(ex.proposedSlots) ? ex.proposedSlots : [];
                     newSession.spaPromoOffered       = !!ex.spaPromoOffered;
                     newSession.spaPromoNote          = ex.spaPromoNote || null;
+                    newSession.pendingServiceCategory = ex.pendingServiceCategory || null;
+                    newSession.anchorAppointment     = ex.anchorAppointment || null;
 
                     const assistantTurns = newSession.history.filter(m => m.role === 'assistant').length;
                     const extraIncoherente =
@@ -2210,10 +2396,14 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // la guarda de reservaConfirmada impedía guardar → cita perdida en silencio.
             if (session.reservaConfirmada) {
                 let nuevaReserva = wantsAnotherBooking(sanitized);
+                // Categoría pedida que NO resuelve a un servicio concreto: se recuerda para
+                // resolverla en el turno siguiente ("¿qué tipo de masaje?" → "completo").
+                let categoriaNueva = null;
                 if (!nuevaReserva) {
                     try {
                         const cfgSecond = await getAgentConfig(orgId);
-                        const svcNuevo = extractServiceFromText(sanitized, cfgSecond?.services || []);
+                        const catalogSecond = cfgSecond?.services || [];
+                        const svcNuevo = extractServiceFromText(sanitized, catalogSecond);
                         // Guard: si el servicio detectado es el upselling que el bot ACABA de
                         // ofrecer (o uno ya aceptado en esta cita), la clienta lo está aceptando
                         // ("sí k18"), NO pidiendo una segunda reserva. Sin esto, extractServiceFromText
@@ -2233,6 +2423,26 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                                 if (styNuevo && styNuevo.id !== session.selectedStylist?.id) nuevaReserva = true;
                             }
                         }
+                        // Nivel CATEGORÍA: extractServiceFromText devuelve null a propósito
+                        // cuando la categoría es ambigua ("masaje" → 9 variantes), y sin esto
+                        // el detector no veía nada. Bug 30/07/2026: "quiero un masaje antes de
+                        // la pedicura" no disparaba el reset, la cita anterior seguía marcada
+                        // como confirmada, las redes anti-mentira quedaban apagadas y el LLM
+                        // anunció una cita que nunca se escribió.
+                        if (!nuevaReserva && !svcNuevo) {
+                            const catActual = normalizeText(session.selectedService?.categoria || '');
+                            const upsellPend = session._lastUpsellSuggestion || '';
+                            const catsPedidas = extractServiceCategoriesFromText(sanitized, catalogSecond)
+                                .filter(c => normalizeText(c) !== catActual)
+                                // No confundir con el upsell ofrecido: "sí, ponme el K18" nombra
+                                // la categoría Reconstrucción y no es una segunda reserva.
+                                .filter(c => !(upsellPend && matchesServiceName(c, upsellPend)))
+                                .filter(c => !(session.upsellingAccepted || []).some(u => matchesServiceName(c, u)));
+                            if (catsPedidas.length) {
+                                nuevaReserva = true;
+                                categoriaNueva = catsPedidas[0];
+                            }
+                        }
                     } catch (e) { logger.error('error_deteccion_segunda_reserva', { orgId, error: e.message }); }
                 }
                 // Refuerzo: una aceptación pura ("sí", "vale", "dale") con un upsell pendiente
@@ -2240,7 +2450,34 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 if (session.upsellingSuggested && session._lastUpsellSuggestion && isUpsellingAcceptance(sanitized)) {
                     nuevaReserva = false;
                 }
-                if (nuevaReserva) resetForSecondBooking(session, sanitized);
+                // Cancelar y reagendar operan sobre la cita EXISTENTE: reiniciar el flujo aquí
+                // borraría appointmentId y el reagendado acabaría creando una cita nueva
+                // dejando viva la vieja (dos reservas facturables).
+                if (intent === 'cancelar' || intent === 'cambiar') nuevaReserva = false;
+                if (nuevaReserva) {
+                    // El ancla se calcula ANTES del reset: clearServiceState lo limpiaría.
+                    const anchorRel = extractAnchorConstraint(sanitized);
+                    const citaAncla = anchorRel ? await resolveAnchorAppointment(orgId, session) : null;
+                    resetForSecondBooking(session, sanitized);
+                    session.pendingServiceCategory = categoriaNueva;
+                    session.anchorAppointment = citaAncla ? { ...citaAncla, rel: anchorRel } : null;
+                    if (session.anchorAppointment) {
+                        // El ancla fija también el DÍA. Sin esto el motor escanea desde
+                        // mañana, no encuentra nada del día de la cita ancla y el filtro se
+                        // queda vacío: el bot acaba ofreciendo otro día y la clienta pierde
+                        // el "antes de la pedicura" que había pedido.
+                        session.partialData.preferencia_horaria = applyDatePreference(
+                            session.partialData.preferencia_horaria,
+                            { fecha: session.anchorAppointment.fecha },
+                        );
+                    }
+                    if (categoriaNueva || citaAncla) {
+                        logger.info('segunda_reserva_contexto', {
+                            orgId, telefono: userPhone,
+                            categoria: categoriaNueva, ancla: session.anchorAppointment,
+                        });
+                    }
+                }
             }
             // Mientras esperamos el nombre del acompañante, intentamos capturarlo de
             // la respuesta (nombre suelto o "se llama X") sin pisar el nombre del titular.
@@ -2338,6 +2575,26 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         if (orgType === 'salon') {
             const agentCfgPre = await getAgentConfig(orgId);
             const stylistsPre = await getStylistsByOrg(orgId);
+
+            // ── Segunda reserva: resolver el servicio DENTRO de la categoría pedida ──
+            // La clienta pidió "un masaje" (categoría ambigua), el bot preguntó el tipo y
+            // ahora responde "completo". Contra el catálogo entero eso da null (empata con
+            // "Color completo largo N") y el flujo se quedaba sin servicio: sin servicio no
+            // hay huecos, y sin huecos el LLM improvisa. Restringido a la categoría resuelve.
+            if (session.pendingServiceCategory && !session.selectedService) {
+                const catNorm = normalizeText(session.pendingServiceCategory);
+                const enCategoria = (agentCfgPre?.services || []).filter(s => normalizeText(s.categoria) === catNorm);
+                const svcEnCat = extractServiceFromText(sanitized, enCategoria);
+                if (svcEnCat) {
+                    logger.info('servicio_resuelto_en_categoria', {
+                        orgId, telefono: userPhone,
+                        categoria: session.pendingServiceCategory, servicio: svcEnCat.nombre,
+                    });
+                    session.selectedService = svcEnCat;
+                    session.pendingServiceCategory = null;
+                }
+            }
+
             // ── Mechas clásicas resolution: coverage type, not hair length
             if (session.pendingLargoCategory && normalizeText(session.pendingLargoCategory) === 'mechas clasicas' && !session.selectedService) {
                 const tipo = extractMechasClasicasTipo(sanitized);
@@ -2691,6 +2948,14 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             partialDataWithCtx.__askDatePreferenceFirst = !!session.askDatePreferenceFirst;
             partialDataWithCtx.__askLargoFirst = !!session.pendingLargoCategory && !session.selectedService;
             partialDataWithCtx.__pendingLargoCategory = session.pendingLargoCategory || null;
+            // Segunda reserva en curso: la clienta nombró una CATEGORÍA que aún no resuelve a
+            // un servicio ("un masaje"). El modelo debe preguntar cuál de esa categoría, no
+            // dar la conversación por cerrada porque ya haya una cita confirmada.
+            partialDataWithCtx.__pendingServiceCategory = session.pendingServiceCategory || null;
+            // Ancla temporal respecto a la cita ya reservada, y si esa ventana se quedó sin
+            // huecos (los que se ofrecen son de fuera de ella y hay que decirlo).
+            partialDataWithCtx.__citaAncla = session.anchorAppointment || null;
+            partialDataWithCtx.__anclaSinHuecos = !!session.anchorFilterVacio;
             partialDataWithCtx.__eligibleStylistNames = session._eligibleStylistNames || [];
             // ─── Avisos de mención de estilista (one-shot) ───────────────────
             // Se consumen aquí y se limpian: el aviso se da UNA vez, en el turno
@@ -2924,6 +3189,11 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             aiResponse.accion = 'escalar_humano';
             aiResponse.motivo_escalado = aiResponse.motivo_escalado || 'escalado_bot';
         }
+
+        // Primera pasada anti-cita-fantasma: el despacho de acciones de abajo tiene rutas
+        // que envían el texto del LLM y hacen `return` (escalar_humano), saltándose todas
+        // las redes finales. Un "te he reservado… y te paso con una persona" saldría entero.
+        if (orgType === 'salon') await blockPhantomBookingClaim(orgId, session, userPhone, aiResponse, sanitized);
 
         // Handle actions (cancel, reschedule, escalate)
         if (aiResponse.accion && !(aiResponse.accion === 'cambiar' && session.modoReagendamiento)) {
@@ -3398,7 +3668,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // en que la hora ofrecida cae fuera del rango real de huecos. NO aplica cuando
         // la cita ya está confirmada (ahí el mensaje lleva la hora legítima) ni al
         // restaurante (San Remo intacto).
-        if (orgType === 'salon' && !session.reservaConfirmada
+        if (orgType === 'salon' && !session.reservaConfirmada && !aiResponse._rectificadoPorRedFantasma
                 && respondsWithInventedSlots(aiResponse.respuesta, session.availableSlots)) {
             logger.warn('cita_sante_disponibilidad_inventada_bloqueada', {
                 orgId, telefono: userPhone,
@@ -3415,7 +3685,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // exacta en la que el LLM tiende a decir "el salón está cerrado" en vez de "esa
         // estilista no trabaja ese día". Se sustituye por el mensaje determinista que ya
         // ofrece los huecos reales más cercanos, en vez de dejar salir la mentira.
-        if (orgType === 'salon' && !session.reservaConfirmada
+        if (orgType === 'salon' && !session.reservaConfirmada && !aiResponse._rectificadoPorRedFantasma
                 && (session.slotsRequestedDayUnavailable || session.slotsWeekPreferenceRelaxed)
                 && respondsWithFalseClosureClaim(aiResponse.respuesta)) {
             logger.warn('cita_sante_cierre_falso_bloqueado', {
@@ -3428,6 +3698,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 : salonNoSlotsMsg(session);
             aiResponse.reserva_confirmada = false;
         }
+
+        // Segunda pasada de la red anti-cita-fantasma: cubre el mensaje FINAL, incluido el
+        // determinista de buildSanteConfirmationMessage y todo lo que las redes anteriores
+        // hayan reescrito. La primera pasada corre antes del despacho de acciones (ver
+        // blockPhantomBookingClaim), que tiene rutas de salida propias.
+        if (orgType === 'salon') await blockPhantomBookingClaim(orgId, session, userPhone, aiResponse, sanitized);
 
         if (orgType === 'salon') {
             aiResponse.respuesta = stripMarkdown(aiResponse.respuesta);
@@ -3793,7 +4069,7 @@ module.exports = {
     isTransientWAError,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
-        respondsWithInventedSlots, salonNoSlotsMsg, salonOfferSlotsMsg,
+        respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:

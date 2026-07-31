@@ -103,6 +103,10 @@ test('la fuente de verdad coincide con la lista esperada (candado anti-drift)', 
         // reinicio del flujo (si la vuelve a pedir, se le vuelve a contestar).
         'stylistMentionUnknown', 'stylistMentionCorrected', 'stylistMentionNoSkill',
         'stylistMentionRejected',
+        // Segunda reserva encadenada. Se limpian con el servicio a propósito: la categoría
+        // pendiente y el ancla ("antes de la pedicura") describen LA petición en curso, y
+        // arrastrarlas a la siguiente filtraría huecos por una cita que ya no viene a cuento.
+        'pendingServiceCategory', 'anchorAppointment', 'anchorFilterVacio',
     ];
     const EXPECTED_PARTIAL = [
         'servicio', 'categoria_servicio', 'estilista_preferida',

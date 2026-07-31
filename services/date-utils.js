@@ -21,6 +21,14 @@ function toMinutes(date) {
     return Number(p.hour) * 60 + Number(p.minute);
 }
 
+// Hora de pared 'HH:MM' de un instante en la TZ de negocio. Gemelo de toLocalDateStr para
+// cuando hace falta el texto y no el minuto-del-día (comparar la hora de una cita guardada
+// con la que aparece escrita en un mensaje de WhatsApp).
+function toLocalTimeStr(date) {
+    const p = Object.fromEntries(_timeFmt.formatToParts(date).map(x => [x.type, x.value]));
+    return `${p.hour}:${p.minute}`;
+}
+
 // Formatea un instante como YYYY-MM-DD en la TZ de negocio (no UTC ni la del proceso).
 // Imprescindible: toISOString() da UTC y, en zonas adelantadas (España, UTC+1/+2), la
 // medianoche local cae el día anterior → desfase de un día. Y getFullYear/getDate usan la
@@ -76,4 +84,4 @@ function resolveWeekdayToDate(now, diaSemana, semana) {
     return null;
 }
 
-module.exports = { BUSINESS_TZ, toMinutes, toLocalDateStr, addDaysStr, mondayDow, resolveWeekdayToDate };
+module.exports = { BUSINESS_TZ, toMinutes, toLocalDateStr, toLocalTimeStr, addDaysStr, mondayDow, resolveWeekdayToDate };

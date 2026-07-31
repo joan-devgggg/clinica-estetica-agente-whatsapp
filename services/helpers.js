@@ -357,6 +357,58 @@ function normalizeService(value) {
     return s;
 }
 
+// Palabras coloquiales → categoría del catálogo. Vive a nivel de módulo (antes estaba
+// dentro de extractServiceFromText) porque hay dos consumidores con necesidades distintas:
+// extractServiceFromText quiere UN servicio concreto y devuelve null si la categoría es
+// ambigua; extractServiceCategoriesFromText quiere saber QUÉ CATEGORÍAS se nombran aunque
+// ninguna resuelva a un servicio. El orden importa: la primera coincidencia gana en la
+// resolución de servicio, así que 'pedicura' antes que 'masaje' es intencionado.
+const CATEGORY_KEYWORDS = [
+    { keywords: ['corte', 'cortar', 'corto', 'corta', 'degradado', 'haircut', 'cut'], categoria: 'Cortes' },
+    { keywords: ['color', 'tinte', 'teñir', 'raiz', 'raíz', 'dye'], categoria: 'Color Premium' },
+    { keywords: ['contouring'], categoria: 'Mechas Contouring' },
+    { keywords: ['balayage'], categoria: 'Mechas Balayage' },
+    { keywords: ['mecha', 'mechas', 'highlights'], categoria: 'Mechas Airtouch' },
+    { keywords: ['manicura', 'manicure', 'uñas', 'nails', 'pedicura', 'pedicure'], categoria: 'Manicura/Pedicura' },
+    { keywords: ['masaje', 'massage', 'spa', 'relajante', 'relax'], categoria: 'Masajes y SPA' },
+    { keywords: ['alisado', 'alisar', 'straighten', 'keratin'], categoria: 'Alisado vegano' },
+    { keywords: ['peinar', 'peinado', 'secar', 'blow', 'brushing'], categoria: 'Lavar y peinar' },
+    { keywords: ['tricolog', 'diagnostico', 'capilar', 'perdida', 'caida', 'hair loss'], categoria: 'Diagnóstico Capilar' },
+    { keywords: ['dermapen'], categoria: 'Dermapen Hair Loss' },
+    { keywords: ['k18', 'reconstruc', 'repair', 'pro-miracle', 'pro miracle'], categoria: 'Reconstrucción' },
+    { keywords: ['exfolia', 'peeling', 'pilling', 'cuero cabelludo', 'scalp'], categoria: 'Exfoliación cabeza' },
+    { keywords: ['brillo', 'glow', 'shine'], categoria: 'Brillo Glow' },
+    { keywords: ['matiz', 'toner', 'violeta'], categoria: 'Matiz mujer' },
+    { keywords: ['tratamiento', 'orising', 'hidrata'], categoria: 'Tratamiento Orgánico' },
+];
+
+// TODAS las categorías del catálogo que el texto nombra, resueltas por palabra coloquial o
+// por el nombre literal de la categoría. A diferencia de extractServiceFromText, NO exige
+// que la categoría resuelva a un servicio único: "quiero un masaje antes de la pedicura"
+// devuelve ['Manicura/Pedicura', 'Masajes y SPA'] aunque "Masajes y SPA" tenga 9 variantes.
+//
+// Existe por el bug del 30/07/2026: el detector de segunda reserva solo miraba
+// extractServiceFromText, que ante una categoría ambigua devuelve null a propósito, así que
+// "quiero un masaje antes de la pedicura" no disparaba el reset y la conversación siguió
+// con la cita anterior confirmada y todas las redes anti-mentira apagadas.
+function extractServiceCategoriesFromText(text, servicesCatalog) {
+    if (!text || !servicesCatalog?.length) return [];
+    const t = normalizeService(text);
+    const catsCatalogo = new Set(servicesCatalog.map(s => normalizeText(s.categoria)).filter(Boolean));
+    const encontradas = new Set();
+    // Vía 1: el nombre literal de la categoría aparece en el texto ("spa hair").
+    for (const svc of servicesCatalog) {
+        const cat = normalizeText(svc.categoria);
+        if (cat && t.includes(cat)) encontradas.add(svc.categoria);
+    }
+    // Vía 2: palabra coloquial → categoría, solo si esa categoría existe en el catálogo.
+    for (const { keywords, categoria } of CATEGORY_KEYWORDS) {
+        if (!catsCatalogo.has(normalizeText(categoria))) continue;
+        if (keywords.some(kw => t.includes(normalizeText(kw)))) encontradas.add(categoria);
+    }
+    return [...encontradas];
+}
+
 function extractServiceFromText(text, servicesCatalog) {
     if (!text || !servicesCatalog?.length) return null;
     const t = normalizeService(text);
@@ -422,26 +474,7 @@ function extractServiceFromText(text, servicesCatalog) {
 
     // Fuzzy: common keywords
     if (!bestMatch) {
-        const keywordMap = [
-            { keywords: ['corte', 'cortar', 'corto', 'corta', 'degradado', 'haircut', 'cut'], categoria: 'Cortes' },
-            { keywords: ['color', 'tinte', 'teñir', 'raiz', 'raíz', 'dye'], categoria: 'Color Premium' },
-            { keywords: ['contouring'], categoria: 'Mechas Contouring' },
-            { keywords: ['balayage'], categoria: 'Mechas Balayage' },
-            { keywords: ['mecha', 'mechas', 'highlights'], categoria: 'Mechas Airtouch' },
-            { keywords: ['manicura', 'manicure', 'uñas', 'nails', 'pedicura', 'pedicure'], categoria: 'Manicura/Pedicura' },
-            { keywords: ['masaje', 'massage', 'spa', 'relajante', 'relax'], categoria: 'Masajes y SPA' },
-            { keywords: ['alisado', 'alisar', 'straighten', 'keratin'], categoria: 'Alisado vegano' },
-            { keywords: ['peinar', 'peinado', 'secar', 'blow', 'brushing'], categoria: 'Lavar y peinar' },
-            { keywords: ['tricolog', 'diagnostico', 'capilar', 'perdida', 'caida', 'hair loss'], categoria: 'Diagnóstico Capilar' },
-            { keywords: ['dermapen'], categoria: 'Dermapen Hair Loss' },
-            { keywords: ['k18', 'reconstruc', 'repair', 'pro-miracle', 'pro miracle'], categoria: 'Reconstrucción' },
-            { keywords: ['exfolia', 'peeling', 'pilling', 'cuero cabelludo', 'scalp'], categoria: 'Exfoliación cabeza' },
-            { keywords: ['brillo', 'glow', 'shine'], categoria: 'Brillo Glow' },
-            { keywords: ['matiz', 'toner', 'violeta'], categoria: 'Matiz mujer' },
-            { keywords: ['tratamiento', 'orising', 'hidrata'], categoria: 'Tratamiento Orgánico' },
-        ];
-
-        for (const { keywords, categoria } of keywordMap) {
+        for (const { keywords, categoria } of CATEGORY_KEYWORDS) {
             if (keywords.some(kw => t.includes(normalizeText(kw)))) {
                 const catNorm = normalizeText(categoria);
                 const inCat = servicesCatalog.filter(s => normalizeText(s.categoria) === catNorm);
@@ -836,11 +869,30 @@ function wantsAnotherBooking(text) {
         'tambien quiero reservar', 'tambien reservar', 'tambien una cita',
         'tambien quiero una cita', 'quiero otra', 'reservar para', 'reservame otra',
         'apuntar otra', 'agendar otra', 'pedir otra cita',
+        // Añadir un servicio a lo ya reservado (bug 30/07/2026). Solo frases ADITIVAS
+        // inequívocas: "además/aparte/de paso" no pueden leerse como reagendar ni cancelar.
+        // Deliberadamente NO están aquí "antes de la"/"después de la": casan con "cambiar la
+        // cita para antes de las 5" y reiniciarían el flujo en mitad de un reagendado,
+        // perdiendo reagendarAppointmentId y duplicando la cita. El ancla temporal se usa
+        // para FILTRAR huecos (extractAnchorConstraint), no para detectar segunda reserva;
+        // quien detecta ese caso es la comparación de CATEGORÍAS en bot.js.
+        'ademas quiero', 'ademas me gustaria', 'aparte quiero', 'y de paso', 'de paso quiero',
         'another appointment', 'another booking', 'book another', 'one more appointment',
-        'also book', 'second appointment', 'second booking',
+        'also book', 'second appointment', 'second booking', 'i also want',
         'еще одну запись', 'ещё одну запись', 'ще один запис',
     ];
     return phrases.some(p => t.includes(normalizeText(p)));
+}
+
+// Ancla temporal de un servicio nuevo respecto a una cita YA confirmada: "un masaje ANTES
+// de la pedicura", "algo DESPUÉS de mi corte". Devuelve 'before' | 'after' | null.
+// Puro: la resolución de contra QUÉ cita ancla la hace bot.js con las citas reales.
+function extractAnchorConstraint(text) {
+    const t = normalizeText(text);
+    // Sin \b en las alternativas cirílicas: en JS el límite de palabra es ASCII.
+    if (/\bantes de\b|\bbefore\b|перед |до того/.test(t)) return 'before';
+    if (/\bdespues de\b|\bluego de\b|\bafter\b|после |після /.test(t)) return 'after';
+    return null;
 }
 
 // La clienta quiere reiniciar el flujo desde el principio ("empecemos desde 0",
@@ -1316,6 +1368,56 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
     return lines.join('\n');
 }
 
+// Mensaje de rectificación cuando la red anti-cita-fantasma pilla al bot afirmando una
+// reserva que NO está escrita en Supabase (bug 30/07/2026: "Citas reservadas: 15:00 masaje,
+// 16:00 pedicura" con solo la de las 16:00 guardada).
+//
+// Reglas de este mensaje: (1) enumera EXCLUSIVAMENTE las citas que existen de verdad en la
+// BD, nunca las que el LLM creía tener; (2) dice sin rodeos que lo demás no ha quedado
+// reservado; (3) reabre la conversación para apuntarlo bien. Nunca cancela ni toca la cita
+// que sí está guardada.
+// `citasReales`: [{ servicio, fecha, hora }] ya en hora local de negocio.
+function buildCitaFantasmaMsg({ citasReales = [], language } = {}) {
+    const lang = ['es', 'en', 'ru', 'uk'].includes(language) ? language : 'es';
+    const T = {
+        es: {
+            conCitas: 'Perdona, me he explicado mal 😅 De momento lo único que tengo apuntado es:',
+            sinCitas: 'Perdona, me he explicado mal 😅 Todavía no tengo ninguna cita apuntada a tu nombre.',
+            resto: 'Lo demás NO ha quedado reservado. ¿Te busco hueco ahora y lo dejamos cerrado?',
+        },
+        en: {
+            conCitas: "Sorry, I explained that badly 😅 Right now the only thing I have booked is:",
+            sinCitas: "Sorry, I explained that badly 😅 I don't have any appointment booked under your name yet.",
+            resto: "The rest was NOT booked. Shall I find you a time now and get it sorted?",
+        },
+        ru: {
+            conCitas: 'Извините, я неточно выразилась 😅 Пока у меня записано только это:',
+            sinCitas: 'Извините, я неточно выразилась 😅 Пока на ваше имя нет ни одной записи.',
+            resto: 'Остальное НЕ забронировано. Подобрать время сейчас и всё оформить?',
+        },
+        uk: {
+            conCitas: 'Вибач, я неточно висловилася 😅 Наразі записано лише це:',
+            sinCitas: 'Вибач, я неточно висловилася 😅 Наразі на твоє ім\'я немає жодного запису.',
+            resto: 'Решта НЕ заброньована. Підібрати час зараз і все оформити?',
+        },
+    };
+    const t = T[lang] || T.es;
+    const lines = [];
+    if (citasReales.length) {
+        lines.push(t.conCitas);
+        lines.push('');
+        for (const c of citasReales) {
+            lines.push(`📅 ${_formatFechaHora(c.fecha, c.hora, lang)} — ${c.servicio || ''}`.trim());
+        }
+        lines.push('');
+    } else {
+        lines.push(t.sinCitas);
+        lines.push('');
+    }
+    lines.push(t.resto);
+    return lines.join('\n');
+}
+
 // Clasifica una variante de largo de pelo a partir del NOMBRE del servicio.
 // Vía 1 (idéntica a la de siempre): sufijo numérico — "Largo 3", "Mechas 2",
 // "Color completo largo 1" → nivel = el dígito final. Cero cambio de comportamiento
@@ -1774,6 +1876,8 @@ module.exports = {
     isServiceName,
     // Salon-specific
     extractServiceFromText,
+    extractServiceCategoriesFromText,
+    extractAnchorConstraint,
     buildFullServiceName,
     humanizeLargoLabel,
     extractStylistFromText,
@@ -1792,6 +1896,7 @@ module.exports = {
     resolveServiceDurationMin,
     shouldDiscardUpsellForClosing,
     buildSanteConfirmationMessage,
+    buildCitaFantasmaMsg,
     isSpaPromoCategory,
     hasPreviousSpaOrMassage,
     buildSpaPromoNote,

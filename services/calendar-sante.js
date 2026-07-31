@@ -396,17 +396,28 @@ function formatSlotForMessage(slot) {
     return slot.texto || `el ${slot.diaNombre} ${slot.fecha} a las ${slot.hora} con ${slot.stylistName}`;
 }
 
+// Devuelve `reason` en el fallo, simétrico con rescheduleAppointment. Sin él, el bot no
+// podía distinguir "el hueco no es válido" de "Supabase está caído" y ambos acababan en el
+// mismo "no he podido fijar ese hueco", ocultando la avería:
+//   'db_error'     → saveAppointment lanzó (RLS, FK, timeout). Reintentable.
+//   'invalid_slot' → contacto/fecha/hora que saveAppointment rechaza. Reintentar no arregla.
 async function bookAppointment(orgId, slot, contactId, { servicio, duracionMin, stylistId, notas } = {}) {
-    const apt = await db.saveAppointment(orgId, contactId, {
-        servicio,
-        fecha: slot.fecha,
-        hora: slot.hora,
-        duracionMin: duracionMin || 60,
-        estado: 'confirmed',
-        stylistId: stylistId || slot.stylistId,
-        notas,
-    });
-    return apt ? { success: true, appointmentId: apt.id, appointment: apt } : { success: false };
+    let apt;
+    try {
+        apt = await db.saveAppointment(orgId, contactId, {
+            servicio,
+            fecha: slot.fecha,
+            hora: slot.hora,
+            duracionMin: duracionMin || 60,
+            estado: 'confirmed',
+            stylistId: stylistId || slot.stylistId,
+            notas,
+        });
+    } catch (e) {
+        return { success: false, reason: 'db_error', error: e?.message };
+    }
+    if (!apt) return { success: false, reason: 'invalid_slot' };
+    return { success: true, appointmentId: apt.id, appointment: apt };
 }
 
 async function cancelAppointment(orgId, appointmentId) {

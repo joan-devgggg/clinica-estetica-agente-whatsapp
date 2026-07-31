@@ -727,7 +727,7 @@ async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duraci
     // en vez de insertar un duplicado. Backstop a nivel de datos contra cualquier reintento,
     // race o red de seguridad que intente reservar el mismo hueco más de una vez.
     {
-        const { data: existing } = await supabase
+        const { data: existing, error: errExisting } = await supabase
             .from('appointments')
             .select('*')
             .eq('organization_id', oid)
@@ -735,6 +735,9 @@ async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duraci
             .eq('starts_at', startsAt.toISOString())
             .neq('status', 'cancelled')
             .maybeSingle();
+        // Si esta lectura falla en silencio damos por buena una agenda vacía y creamos el
+        // duplicado que la guarda existe justamente para evitar. Mejor lanzar y reintentar.
+        assertRead(errExisting, 'appointments');
         if (existing) {
             console.warn('[saveAppointment] cita duplicada evitada (ya existe activa)', { contactId, startsAt: startsAt.toISOString() });
             return existing;
@@ -763,11 +766,19 @@ async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duraci
         .select()
         .single();
 
-    if (error) {
-        console.error('[saveAppointment] error Supabase', { contactId, fecha, hora, error: error.message });
-        return null;
+    // La ÚNICA creación de citas del sistema. Hasta la auditoría del 31/07/2026 hacía
+    // `console.error` + `return null`, así que un fallo de Supabase (RLS, FK, timeout) era
+    // indistinguible de "hueco inválido" para el llamante: `bookAppointment` los colapsaba
+    // todos en `{success:false}` y el bot mandaba "no he podido fijar ese hueco" sin que
+    // nadie supiera que la BD estaba caída. Ahora lanza, como el resto de escrituras.
+    assertWrite(error, 'appointments', 'insert_cita');
+    // error=null y data=null no debería ocurrir con .select().single(), pero si ocurre NO
+    // es un éxito: devolver null aquí haría que el llamante lo trate como slot inválido.
+    if (!data) {
+        logger.error('db_write_sin_efecto', { tabla: 'appointments', op: 'insert_cita' });
+        throw new Error('Escritura (insert_cita) en appointments no devolvió fila: nada guardado');
     }
-    return data || null;
+    return data;
 }
 
 async function updateAppointment(orgId, appointmentId, campos) {
@@ -1518,7 +1529,7 @@ async function hasActiveAppointmentForSlot(orgId, contactId, fecha, hora) {
     const oid = resolveOrg(orgId);
     const startsAt = buildStartsAt(fecha, hora);
     if (!startsAt) return false;
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from('appointments')
         .select('id')
         .eq('organization_id', oid)
@@ -1526,7 +1537,29 @@ async function hasActiveAppointmentForSlot(orgId, contactId, fecha, hora) {
         .eq('starts_at', startsAt.toISOString())
         .neq('status', 'cancelled')
         .maybeSingle();
+    assertRead(error, 'appointments');
     return !!data;
+}
+
+// Citas FUTURAS y vivas de un contacto. La usa la red anti-cita-fantasma de bot.js para
+// contrastar lo que el mensaje del bot AFIRMA contra lo que hay realmente escrito: es la
+// única fuente de verdad admisible: session.bookedSlots es memoria del proceso y no
+// sobrevive a un reinicio ni al timeout de sesión.
+// Con assertRead: si esta lectura fallara en silencio devolveríamos [] y la red concluiría
+// que TODA cita anunciada es fantasma — reescribiendo mensajes correctos.
+async function getUpcomingAppointments(orgId, contactId) {
+    if (!contactId) return [];
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('appointments')
+        .select('id, service, starts_at, ends_at, status, stylist_id')
+        .eq('organization_id', oid)
+        .eq('contact_id', contactId)
+        .neq('status', 'cancelled')
+        .gte('starts_at', new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString())
+        .order('starts_at', { ascending: true });
+    assertRead(error, 'appointments');
+    return data || [];
 }
 
 // ─── Auth ───────────────────────────────────────────────────────────────────
@@ -1573,6 +1606,7 @@ module.exports = {
     deleteConversationMessages,
     saveAppointment,
     hasActiveAppointmentForSlot,
+    getUpcomingAppointments,
     updateAppointment,
     deleteAppointment,
     getAppointmentById,

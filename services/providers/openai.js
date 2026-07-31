@@ -361,8 +361,33 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
 MODO CITA CONFIRMADA:
 * La cita ya está confirmada. NO vuelvas a pedir datos.
 * Responde dudas con naturalidad.
-* Si quiere cancelar → accion: "cancelar". Si quiere cambiar → accion: "cambiar".`;
+* Si quiere cancelar → accion: "cancelar". Si quiere cambiar → accion: "cambiar".
+* Si pide OTRO servicio además del ya reservado: NO propongas horas ni digas que queda
+  apuntado. Pregunta qué servicio exacto quiere y espera; el sistema cargará los huecos
+  REALES en el turno siguiente. Una cita que anuncies sin que el sistema la haya cargado
+  NO se guarda y la clienta se presenta a una cita que no existe.`;
     }
+
+    // La clienta pidió una CATEGORÍA que aún no resuelve a un servicio concreto ("un
+    // masaje" → 9 variantes). Sin esto el modelo se saltaba la desambiguación y proponía
+    // horas de un servicio que el sistema no tenía seleccionado (nada que guardar).
+    const catPendiente = partialData.__pendingServiceCategory || null;
+    const modoCategoriaPendiente = catPendiente ? `
+MODO ELEGIR SERVICIO DENTRO DE UNA CATEGORÍA:
+* La clienta ha pedido "${catPendiente}" pero esa categoría tiene varias opciones.
+* Pregúntale CUÁL quiere, nombrando las del catálogo con su precio. Una sola pregunta.
+* NO propongas fecha ni hora todavía: hasta que no elija, no hay huecos que ofrecer.` : '';
+
+    // Ancla temporal respecto a la cita ya reservada ("un masaje ANTES de la pedicura").
+    const ancla = partialData.__citaAncla || null;
+    const modoAncla = ancla ? `
+MODO CITA ENCADENADA:
+* Este servicio nuevo va ${ancla.rel === 'before' ? 'ANTES' : 'DESPUÉS'} de su cita ya reservada del ${ancla.fecha} (${ancla.horaInicio}${ancla.horaFin ? `–${ancla.horaFin}` : ''}).
+* Los huecos de DISPONIBILIDAD ya están filtrados para encajar ahí. Ofrece SOLO esos.
+* Ya sabes el día: NO preguntes "¿te va bien ese día?". Lista directamente las HORAS
+  concretas de la lista y pide que elija una. Una pregunta abierta aquí alarga el flujo y
+  el sistema no puede guardar nada hasta que haya elegido una hora real.
+${partialData.__anclaSinHuecos ? `* AVISO: no queda ningún hueco ${ancla.rel === 'before' ? 'antes' : 'después'} de esa cita. Díselo con claridad y ofrécele los huecos de la lista, que son de OTRO momento.` : ''}` : '';
 
     const modoSegundaCita = guestBooking ? `
 MODO SEGUNDA CITA (ACOMPAÑANTE):
@@ -675,7 +700,7 @@ SIGUIENTE PASO: ${proximoPaso}
 10. NUNCA asumas ni propongas un día sin que la clienta lo haya indicado primero. Siempre pregunta qué día le va mejor antes de mostrar huecos disponibles.
 11. Si llega solo con "hola", pregunta qué necesita.
 12. NUNCA inventes ni asumas el nombre del cliente. Solo usa el nombre en datos.nombre si el cliente lo ha dicho explícitamente en esta conversación. Si no lo ha dicho, deja datos.nombre como null y saluda sin usar nombre.
-13. NUNCA confirmes dos citas distintas en el mismo mensaje. Si la clienta quiere reservar dos citas, confirma y guarda la primera (cita_confirmada: true) y en ese mismo mensaje pregunta los detalles de la segunda por separado. El sistema solo puede guardar una cita por turno: si confirmas dos a la vez, la segunda se perderá.
+13. NUNCA confirmes dos citas distintas en el mismo mensaje. Si la clienta quiere reservar dos citas, confirma y guarda la primera (cita_confirmada: true) y en ese mismo mensaje pregunta los detalles de la segunda por separado. El sistema solo puede guardar una cita por turno: si confirmas dos a la vez, la segunda se perderá. Tampoco resumas "tus citas son X y Y" como si ambas estuvieran hechas: menciona solo la que el sistema acaba de guardar en este turno.
 14. REGLA CRÍTICA — VALIDACIÓN DE FECHA: Antes de poner fecha_cita en tu respuesta, verifica que esa fecha EXACTA (formato YYYY-MM-DD) aparece literalmente en el campo "fecha" de algún elemento de la sección DISPONIBILIDAD que se te ha proporcionado. NUNCA calcules ni inventes una fecha por tu cuenta basándote en el día de la semana. Usa siempre la fecha literal del hueco que la clienta ha elegido de la lista de huecos reales. Si no estás seguro de qué fecha corresponde al día que la clienta mencionó, no la confirmes — pregunta de nuevo o usa el hueco exacto de la lista.
 
 # ── REGLA — REFERENCIAS AMBIGUAS AL ELEGIR HUECO ───────────────────────────
@@ -768,6 +793,8 @@ Para cancelar o reagendar una cita, avisa con al menos 48 horas de antelación.
 # ── MODOS ESPECIALES ──────────────────────────────────────────────────────
 ${modoCita}
 ${modoSegundaCita}
+${modoCategoriaPendiente}
+${modoAncla}
 ${modoReagendamiento}
 ${modoClienteRecurrente}
 

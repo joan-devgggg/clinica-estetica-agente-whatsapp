@@ -226,6 +226,68 @@ const SCENARIOS = {
         assert(ivanApt, 'la segunda cita debe anotar al acompañante Ivan');
     },
 
+    // Reproduce, palabra por palabra, la conversación del bug del 30/07/2026: un SEGUNDO
+    // servicio pedido en el mismo hilo con una cita ya confirmada. El bot anunció dos citas
+    // y solo escribió una. Dos invariantes: (1) se guardan las dos citas; (2) —y esto es lo
+    // no negociable— ningún mensaje afirma una reserva que no esté en Supabase.
+    async s6b_segundo_servicio_misma_conversacion() {
+        const phone = '34600000363';
+        await cleanupPhone(phone);
+        const c = new Convo(phone);
+        let m;
+        m = await c.send('hola soy Joan Gascon quiero una pedicura'); logTurn('inicio', 'pedicura', m); assertQuality(m, 's6b');
+        m = await c.send('la japonesa'); logTurn('tipo', 'la japonesa', m); assertQuality(m, 's6b');
+        m = await c.send('el jueves'); logTurn('dia', 'el jueves', m); assertQuality(m, 's6b');
+        // El LLM a veces repregunta ("¿te va bien el jueves a las 12:00?") en vez de cerrar.
+        // Insistimos hasta `intentos` veces; lo que se verifica es el estado en BD, no cuántos
+        // turnos tarda. Sin esto el escenario es intermitente por la temperatura del modelo.
+        // Insistimos con la MISMA elección concreta (nunca un "sí" a ciegas: si el bot ha
+        // vuelto a listar horas, un "sí" no elige ninguna y el flujo se atasca).
+        const confirmarHasta = async (esperadas, eleccion, intentos = 3) => {
+            for (let i = 0; i < intentos; i++) {
+                const r = await getAppointments(phone);
+                if (r.appts.length >= esperadas) return r;
+                const resp = await c.send(eleccion);
+                logTurn(`confirmar#${i + 1}`, eleccion, resp); assertQuality(resp, 's6b');
+                await sleep(1200);
+            }
+            return getAppointments(phone);
+        };
+
+        m = await c.send('la última, confírmala'); logTurn('confirma1', 'la última', m); assertQuality(m, 's6b');
+        await sleep(1000);
+        const trasPrimera = await confirmarHasta(1, 'la última de la lista, confírmala');
+        assert(trasPrimera.appts.length === 1, `la pedicura debe quedar guardada (encontradas: ${trasPrimera.appts.length})`);
+
+        m = await c.send('Quiero un masaje antes de la pedicura'); logTurn('2o servicio', 'masaje antes de la pedicura', m); assertQuality(m, 's6b');
+        m = await c.send('completo'); logTurn('tipo masaje', 'completo', m); assertQuality(m, 's6b');
+        m = await c.send('el primero, confirma'); logTurn('confirma2', 'el primero', m); assertQuality(m, 's6b');
+        await sleep(1500);
+
+        const { appts } = await confirmarHasta(2, 'el primer hueco de la lista, confírmalo');
+        const horasGuardadas = appts.map(a => new Date(a.starts_at).toLocaleTimeString('es-ES', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }));
+        console.log(`   📌 Citas guardadas: ${appts.length} → ${appts.map((a, i) => `${horasGuardadas[i]} ${a.service} (${a.stylists?.name})`).join(' | ')}`);
+
+        // INVARIANTE DURO: ninguna hora anunciada como reservada puede faltar en la BD.
+        const { llmClaimsBooked, unbackedBookingClaim } = bot._internals;
+        for (const texto of c.allBotMsgs) {
+            if (!llmClaimsBooked(texto)) continue;
+            const sinRespaldo = unbackedBookingClaim(texto, horasGuardadas);
+            assert(sinRespaldo.length === 0,
+                `mensaje que afirma reservar ${sinRespaldo.join(', ')} sin cita en BD → "${texto.replace(/\n/g, ' ⏎ ').slice(0, 220)}"`);
+        }
+
+        assert(appts.length === 2, `deben guardarse las DOS citas (encontradas: ${appts.length})`);
+        const masaje = appts.find(a => /masaj|relajante|espalda|deportivo|holistic/i.test(a.service || ''));
+        assert(masaje, `la 2ª cita debe ser el masaje (servicios: ${appts.map(a => a.service).join(', ')})`);
+        // Olgha solo hace Manicura/Pedicura: el masaje tiene que ir a Larisa, no a ella.
+        assert(masaje.stylists?.name === 'Larisa', `el masaje debe asignarse a Larisa, no a ${masaje.stylists?.name}`);
+        // Y no puede solaparse con la pedicura ya reservada.
+        const pedicura = appts.find(a => a.id !== masaje.id);
+        assert(new Date(masaje.ends_at) <= new Date(pedicura.starts_at) || new Date(masaje.starts_at) >= new Date(pedicura.ends_at),
+            'las dos citas no pueden solaparse');
+    },
+
     async s15_cancelacion() {
         const phone = '34600000315';
         await cleanupPhone(phone);
@@ -305,7 +367,7 @@ const SCENARIOS = {
         await scenario(k, SCENARIOS[k]);
     }
     // limpieza final
-    for (const p of ['34600000031','34600000034','34600000038','34600000039','34600000310','34600000035','34600000036','34600000315','34600000037','34600000314','34600000318','34600000302','34600000303']) {
+    for (const p of ['34600000031','34600000034','34600000038','34600000039','34600000310','34600000035','34600000036','34600000363','34600000315','34600000037','34600000314','34600000318','34600000302','34600000303']) {
         await cleanupPhone(p).catch(() => {});
     }
     console.log(`\n═══ RESUMEN LLM flows: ${pass} ✅  /  ${fail} ❌ ═══`);
