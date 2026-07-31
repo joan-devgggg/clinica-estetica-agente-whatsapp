@@ -558,6 +558,63 @@ async function getMessages(orgId, telefono, { limit = 200 } = {}) {
     }));
 }
 
+// Ventana de servicio de WhatsApp Cloud API: 24 h desde el último mensaje ENTRANTE.
+const VENTANA_24H_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Timestamp (ISO) del último mensaje ENTRANTE de un contacto, o null si nunca escribió.
+ *
+ * No existe ningún `last_inbound_at` persistido: el webhook de Cloud API descarta el
+ * `timestamp` de Meta, así que la única fuente es messages.direction='inbound'. Ojo:
+ * `conversations.last_message_at` NO sirve — no distingue dirección, y un saliente
+ * nuestro lo refrescaría, reabriendo una ventana que Meta considera cerrada.
+ *
+ * Usa assertRead: si la BD falla, debe reventar. Devolver null aquí haría creer que el
+ * contacto está fuera de ventana y mandaría plantilla de más (coste real por conversación).
+ */
+async function getLastInboundAt(orgId, telefono) {
+    const oid = resolveOrg(orgId);
+    const phone = sanitizePhone(telefono);
+    if (!phone) return null;
+
+    const contact = await findByPhone(oid, phone);
+    if (!contact) return null;
+
+    const { data: conv, error: convErr } = await supabase
+        .from('conversations')
+        .select('id')
+        .eq('organization_id', oid)
+        .eq('contact_id', contact.id)
+        .maybeSingle();
+    assertRead(convErr, 'conversations');
+    if (!conv) return null;
+
+    const { data, error } = await supabase
+        .from('messages')
+        .select('created_at')
+        .eq('conversation_id', conv.id)
+        .eq('direction', 'inbound')
+        .order('created_at', { ascending: false })
+        .limit(1);
+    assertRead(error, 'messages');
+
+    return data?.[0]?.created_at || null;
+}
+
+/**
+ * ¿Sigue abierta la ventana de 24 h? Pura y con `now` inyectable para el test.
+ * Sin entrante conocido → false: fuera de ventana, que es el lado seguro (una plantilla
+ * se entrega igual dentro de la ventana; el texto libre fuera se pierde en silencio).
+ */
+function isWithin24hWindow(lastInboundAt, now = Date.now()) {
+    if (!lastInboundAt) return false;
+    const ts = lastInboundAt instanceof Date ? lastInboundAt.getTime() : Date.parse(lastInboundAt);
+    if (!Number.isFinite(ts)) return false;
+    const transcurrido = now - ts;
+    if (transcurrido < 0) return true; // desfase de reloj: cuenta como dentro
+    return transcurrido < VENTANA_24H_MS;
+}
+
 async function deleteConversationMessages(orgId, telefono) {
     const oid = resolveOrg(orgId);
     const phone = sanitizePhone(telefono);
@@ -1604,6 +1661,8 @@ module.exports = {
     setLeadBotMode,
     setEscalationReason,
     deleteConversationMessages,
+    getLastInboundAt,
+    isWithin24hWindow,
     saveAppointment,
     hasActiveAppointmentForSlot,
     getUpcomingAppointments,

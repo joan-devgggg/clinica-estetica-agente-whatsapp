@@ -50,17 +50,19 @@ function getWAClient(orgId) {
     return _waClients;
 }
 
-// Cliente SALIENTE consciente del proveedor. Si la org tiene canal 360dialog
-// configurado (hoy: solo Sante con SANTE_360_API_KEY), devuelve el cliente de
-// Cloud API — que expone la misma superficie (`sendMessage`/`getChatById`) que
-// consume waSendMessage. El resto de orgs (San Remo) siguen por whatsapp-web.js
-// SIN cambios: get360Config devuelve null → getWAClient. Lo usan todos los
-// envíos que dispara el panel (/api/send y los broadcasts).
-const { get360Config, build360Client } = require('./services/providers/threesixty-dialog');
+// Cliente SALIENTE consciente del proveedor. Si la org tiene canal 360dialog,
+// devuelve el cliente de Cloud API — que expone la misma superficie
+// (`sendMessage`/`getChatById`) que consume waSendMessage. El resto de orgs
+// (San Remo) siguen por whatsapp-web.js SIN cambios. Lo usan todos los envíos
+// que dispara el panel (/api/send y los broadcasts).
+//
+// La resolución vive en services/outbound.js para que el panel y los workers
+// (reminder/review) usen LA MISMA: dos criterios distintos de "por dónde sale
+// esto" es como se abre una segunda entrada sobre el mismo número.
+const { resolveOutboundClient } = require('./services/outbound');
 const { CHANNEL_WWEBJS } = require('./services/org-registry');
 function getOutboundClient(orgId) {
-    if (get360Config(orgId)) return build360Client(orgId);
-    return getWAClient(orgId);
+    return resolveOutboundClient(orgId, getWAClient(orgId));
 }
 
 app.use(express.json());

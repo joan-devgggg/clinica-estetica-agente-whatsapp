@@ -5,6 +5,7 @@
  */
 
 const { getCompletedAppointmentsForReview, getConfigValue, getAgentConfig, updateAppointment } = require('./db');
+const { resolveOutboundClient, resolveAutomatedSend } = require('./outbound');
 const logger = require('../lib/logger');
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -36,23 +37,59 @@ function resolveChatId(telefono, waJid) {
     return digits.length >= 14 ? `${digits}@lid` : `${digits}@c.us`;
 }
 
-async function sendReviewMessage(orgId, telefono, mensaje, waJid) {
+/**
+ * Envía la petición de reseña por la vía que corresponda. La reseña sale 2 h DESPUÉS de la
+ * cita, así que en Cloud API está fuera de la ventana de 24 h siempre que la clienta no
+ * haya escrito ese mismo día: sin plantilla, Meta devuelve 200 y el mensaje no llega,
+ * pero `resena_enviada` quedaba en true y esa reseña no se pedía nunca más.
+ *
+ * @returns {'enviado'|'fallo'|'sin_plantilla'}
+ */
+async function sendReviewMessage(orgId, { telefono, language, waJid }, { mensaje, templateParams }) {
     const entry = waClients?.get(orgId);
     if (!entry?.client) {
         logger.warn('review_wa_no_disponible', { orgId });
-        return false;
+        return 'fallo';
     }
     const chatId = resolveChatId(telefono, waJid);
     if (!chatId) {
         logger.warn('review_sin_chatid', { orgId, telefono });
-        return false;
+        return 'fallo';
     }
+
+    const client = resolveOutboundClient(orgId, entry.client);
+    if (!client) {
+        logger.warn('review_wa_no_disponible', { orgId });
+        return 'fallo';
+    }
+
     try {
-        await entry.client.sendMessage(chatId, mensaje);
-        return true;
+        const decision = await resolveAutomatedSend(orgId, {
+            telefono,
+            language: language || 'es',
+            plantillaClave: 'plantilla_resena',
+        });
+
+        if (decision.mode === 'sin_plantilla') {
+            // No marcamos resena_enviada: la cita sigue pendiente hasta que haya plantilla.
+            logger.warn('resena_sin_plantilla_configurada', { orgId, telefono, language: language || 'es' });
+            return 'sin_plantilla';
+        }
+
+        if (decision.mode === 'template') {
+            await client.sendTemplate(chatId, {
+                name: decision.template.name,
+                language: decision.template.language,
+                params: templateParams, // [{{1}} nombre, {{2}} enlace]
+            });
+            logger.info('resena_por_plantilla', { orgId, telefono, plantilla: decision.template.name });
+        } else {
+            await client.sendMessage(chatId, mensaje);
+        }
+        return 'enviado';
     } catch (e) {
         logger.error('review_error_envio', { orgId, telefono, chatId, error: e.message });
-        return false;
+        return 'fallo';
     }
 }
 
@@ -81,9 +118,12 @@ async function checkAndSendReviews() {
                 if (!phone) continue;
 
                 const mensaje = buildReviewMessage(nombre, companyName, googleLink, language);
-                const sent = await sendReviewMessage(orgId, phone, mensaje, waJid);
+                const resultado = await sendReviewMessage(orgId, { telefono: phone, language, waJid }, {
+                    mensaje,
+                    templateParams: [nombre || '', googleLink],
+                });
 
-                if (sent) {
+                if (resultado === 'enviado') {
                     await updateAppointment(orgId, apt.id, { resenaEnviada: true });
                     logger.info('resena_enviada', { orgId, nombre, telefono: phone });
                 }
@@ -94,11 +134,17 @@ async function checkAndSendReviews() {
     }
 }
 
-function startReviewWorker(clients) {
+// Inyecta el Map de clientes. Separado de startReviewWorker para que el test pueda
+// ejercitar el motor real (checkAndSendReviews) sin arrancar los timers.
+function setClients(clients) {
     waClients = clients;
+}
+
+function startReviewWorker(clients) {
+    setClients(clients);
     logger.info('review_worker_iniciado');
     setInterval(checkAndSendReviews, CHECK_INTERVAL_MS);
     setTimeout(checkAndSendReviews, 2 * 60 * 1000);
 }
 
-module.exports = { startReviewWorker, buildReviewMessage };
+module.exports = { startReviewWorker, buildReviewMessage, checkAndSendReviews, setClients };

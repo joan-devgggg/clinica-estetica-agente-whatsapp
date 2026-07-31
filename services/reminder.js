@@ -5,6 +5,7 @@
  */
 
 const { getAppointmentsPendientesRecordatorio, marcarRecordatorioSent, getConfigValue, getAgentConfig, autoCompleteAppointments } = require('./db');
+const { resolveOutboundClient, resolveAutomatedSend } = require('./outbound');
 const logger = require('../lib/logger');
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -49,23 +50,66 @@ function resolveChatId(telefono, waJid) {
     return digits.length >= 14 ? `${digits}@lid` : `${digits}@c.us`;
 }
 
-async function sendReminderMessage(orgId, telefono, mensaje, waJid) {
+/**
+ * Envía el recordatorio por la vía que corresponda.
+ *
+ * En Cloud API (Sante) el texto libre SOLO se entrega dentro de las 24 h desde el último
+ * mensaje entrante de la clienta, y entre reservar y la visita pasan días: el recordatorio
+ * cae fuera casi siempre. Antes se mandaba igual, Meta respondía 200, y el worker marcaba
+ * `recordatorio_enviado = true` sobre un mensaje que nadie recibió — y ya no se reintentaba.
+ * Fuera de ventana va por plantilla aprobada.
+ *
+ * @returns {'enviado'|'fallo'|'sin_plantilla'}
+ */
+async function sendReminderMessage(orgId, record, { mensaje, templateParams }) {
     const entry = waClients?.get(orgId);
     if (!entry?.client) {
         logger.warn('reminder_wa_no_disponible', { orgId });
-        return false;
+        return 'fallo';
     }
-    const chatId = resolveChatId(telefono, waJid);
+    const chatId = resolveChatId(record.telefono, record.wa_jid);
     if (!chatId) {
-        logger.warn('reminder_sin_chatid', { orgId, telefono });
-        return false;
+        logger.warn('reminder_sin_chatid', { orgId, telefono: record.telefono });
+        return 'fallo';
     }
+
+    const client = resolveOutboundClient(orgId, entry.client);
+    if (!client) {
+        logger.warn('reminder_wa_no_disponible', { orgId });
+        return 'fallo';
+    }
+
     try {
-        await entry.client.sendMessage(chatId, mensaje);
-        return true;
+        const decision = await resolveAutomatedSend(orgId, {
+            telefono: record.telefono,
+            language: record.language || 'es',
+            plantillaClave: 'plantilla_recordatorio',
+        });
+
+        if (decision.mode === 'sin_plantilla') {
+            // No marcamos enviado: queda pendiente y saldrá solo en cuanto se configure.
+            logger.warn('recordatorio_sin_plantilla_configurada', {
+                orgId, telefono: record.telefono, language: record.language || 'es',
+            });
+            return 'sin_plantilla';
+        }
+
+        if (decision.mode === 'template') {
+            await client.sendTemplate(chatId, {
+                name: decision.template.name,
+                language: decision.template.language,
+                params: templateParams, // [{{1}} nombre, {{2}} hora]
+            });
+            logger.info('recordatorio_por_plantilla', {
+                orgId, telefono: record.telefono, plantilla: decision.template.name,
+            });
+        } else {
+            await client.sendMessage(chatId, mensaje);
+        }
+        return 'enviado';
     } catch (e) {
-        logger.error('reminder_error_envio', { orgId, telefono, chatId, error: e.message });
-        return false;
+        logger.error('reminder_error_envio', { orgId, telefono: record.telefono, chatId, error: e.message });
+        return 'fallo';
     }
 }
 
@@ -77,9 +121,16 @@ async function checkAndSendReminders() {
             // Auto-completar citas pasadas
             await autoCompleteAppointments(orgId);
 
-            // Recordatorios
+            // Recordatorios.
+            // Se leen las DOS claves porque las orgs no las escriben igual: San Remo tiene
+            // `minutos_recordatorio`, Sante `horas_recordatorio`. Mirando solo la primera, el
+            // 24 de Sante era una config muerta —funcionaba por el default de 1440— y
+            // cambiarla no habría surtido ningún efecto.
             const minutosDb = await getConfigValue(orgId, 'minutos_recordatorio');
-            const minutosAntes = minutosDb !== null ? Number(minutosDb) : 1440;
+            const horasDb   = minutosDb === null ? await getConfigValue(orgId, 'horas_recordatorio') : null;
+            const minutosAntes = minutosDb !== null ? Number(minutosDb)
+                               : horasDb !== null ? Number(horasDb) * 60
+                               : 1440;
 
             const agentCfg = await getAgentConfig(orgId);
             const info = agentCfg?.business_info || {};
@@ -95,9 +146,12 @@ async function checkAndSendReminders() {
                 if (minutosRestantes < 0 || minutosRestantes > minutosAntes) continue;
 
                 const mensaje = buildReminderMessage(record.nombre, companyName, record.hora_cita, record.language);
-                const sent = await sendReminderMessage(orgId, record.telefono, mensaje, record.wa_jid);
+                const resultado = await sendReminderMessage(orgId, record, {
+                    mensaje,
+                    templateParams: [record.nombre || '', record.hora_cita || ''],
+                });
 
-                if (sent) {
+                if (resultado === 'enviado') {
                     await marcarRecordatorioSent(orgId, record.id);
                     logger.info('recordatorio_enviado', { orgId, nombre: record.nombre, telefono: record.telefono, minutos_restantes: Math.round(minutosRestantes) });
                 }
@@ -108,11 +162,17 @@ async function checkAndSendReminders() {
     }
 }
 
-function startReminderWorker(clients) {
+// Inyecta el Map de clientes. Separado de startReminderWorker para que el test pueda
+// ejercitar el motor real (checkAndSendReminders) sin arrancar los timers.
+function setClients(clients) {
     waClients = clients;
+}
+
+function startReminderWorker(clients) {
+    setClients(clients);
     logger.info('reminder_worker_iniciado');
     setInterval(checkAndSendReminders, CHECK_INTERVAL_MS);
     setTimeout(checkAndSendReminders, 60 * 1000);
 }
 
-module.exports = { startReminderWorker, buildReminderMessage };
+module.exports = { startReminderWorker, buildReminderMessage, checkAndSendReminders, setClients };

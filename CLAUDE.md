@@ -20,6 +20,7 @@ server.js              ← Punto de entrada: crea N clientes WA, arranca workers
 ├── dashboard-app/     ← Dashboard Next.js (puerto 3001)
 └── services/
     ├── org-registry.js    ← Mapeo teléfono → orgId, tipo de org, CANAL de WhatsApp
+    ├── outbound.js        ← Resolución ÚNICA del cliente saliente + reglas ventana 24h/plantillas
     ├── db.js              ← Capa de datos Supabase (TODAS las funciones reciben orgId)
     ├── supabase.js        ← Cliente Supabase
     ├── calendar.js        ← Mock de mesas (San Remo)
@@ -46,7 +47,22 @@ Cada org tiene UN canal, declarado en `services/org-registry.js` (`getOrgChannel
 
 Rollback sin deploy: `SANTE_CHANNEL=wwebjs`.
 
-⚠️ **Ventana de 24 h (Cloud API)**: el texto libre solo se entrega dentro de las 24 h desde el último mensaje *entrante* de la clienta. Recordatorios y reseñas caen fuera casi siempre (entre reservar y la visita pasan días) → necesitan **plantilla aprobada de Meta**, que aún no está implementada (`build360Client` solo envía `type: 'text'`).
+⚠️ **Ventana de 24 h (Cloud API)**: el texto libre solo se entrega dentro de las 24 h desde el último mensaje *entrante* de la clienta. Meta responde 200 igualmente, así que un envío fuera de ventana no se distingue de uno entregado.
+
+`reminder.js` y `review.js` lo resuelven con `resolveAutomatedSend` (`services/outbound.js`), que decide por contacto:
+
+| Caso | Vía |
+|---|---|
+| Canal wwebjs (San Remo) | texto libre, sin cambios |
+| Dentro de 24 h (`db.getLastInboundAt` + `isWithin24hWindow`) | texto libre |
+| Fuera de 24 h, con plantilla en `config` | `client.sendTemplate` |
+| Fuera de 24 h, **sin** plantilla | log `*_sin_plantilla_configurada` y **no** se marca enviado (reintenta) |
+
+La ventana se calcula sobre `messages.direction = 'inbound'` — nunca sobre `conversations.last_message_at`, que un saliente nuestro refrescaría reabriendo una ventana que Meta considera cerrada.
+
+Plantillas aprobadas (Sante): `sante_recordatorio_cita` ({{1}}=nombre, {{2}}=hora) y `sante_solicitud_resena` ({{1}}=nombre, {{2}}=enlace). Los nombres viven en `config` (`plantilla_recordatorio`, `plantilla_resena`), no en el código. `sanitizeTemplateParam` limpia saltos de línea/tabuladores/espacios múltiples: Meta rechaza el mensaje entero (132000) si un parámetro los lleva.
+
+**La resolución de proveedor saliente es única**: `services/outbound.js` → `resolveOutboundClient(orgId, fallback)`, que enruta por `getOrgChannel` (registry), no por `SANTE_360_API_KEY`. La usan el panel (`webhook.js` → `getOutboundClient`) y los dos workers.
 
 ## Multi-tenancy
 
@@ -99,7 +115,7 @@ getScheduleBlocks(orgId, stylistId, from, to)
 | `messages` | Mensajes WA (inbound/outbound) |
 | `appointments` | Citas/reservas (service, starts_at, ends_at, stylist_id, status) |
 | `agent_configs` | System prompt, tone, business_info, services, business_hours por org |
-| `config` | Key-value por org (bot_activo, horas_resena, telegram_admins) |
+| `config` | Key-value por org (bot_activo, horas_resena, telegram_admins, plantilla_recordatorio, plantilla_resena) |
 | `pending_actions` | Cola de verificaciones Telegram (bizum_review, vip_suggestion, escalation) |
 | `stylists` | Equipo del salón (name, role, skills JSONB) |
 | `stylist_schedules` | Horario semanal por estilista (day_of_week, start_time, end_time) |

@@ -14,6 +14,7 @@ const {
     build360Client,
     buildInboundAdapters,
     process360Webhook,
+    sanitizeTemplateParam,
 } = require('../services/providers/threesixty-dialog');
 
 const tests = [];
@@ -104,6 +105,105 @@ test('client.sendMessage lanza si la respuesta no es ok (para reintento)', async
     try {
         const client = build360Client(SANTE_ORG_ID);
         await assert.rejects(() => client.sendMessage('34600111222@c.us', 'x'), /360dialog send 500/);
+    } finally {
+        global.fetch = original;
+    }
+});
+
+// ─── build360Client.sendTemplate: plantillas aprobadas (fuera de ventana 24h) ──
+async function captureSend(fn) {
+    const original = global.fetch;
+    let captured = null;
+    global.fetch = async (url, opts) => {
+        captured = { url, opts };
+        return { ok: true, json: async () => ({ messages: [{ id: 'wamid.OUT' }] }) };
+    };
+    try { await fn(build360Client(SANTE_ORG_ID)); }
+    finally { global.fetch = original; }
+    return captured;
+}
+
+test('sendTemplate: payload type=template con nombre, idioma y params en orden', async () => {
+    const captured = await captureSend(client => client.sendTemplate('34600111222@c.us', {
+        name: 'sante_recordatorio_cita',
+        language: 'es',
+        params: ['María López', '17:30'],
+    }));
+
+    assert.strictEqual(captured.url, 'https://waba-v2.360dialog.io/messages');
+    assert.strictEqual(captured.opts.method, 'POST');
+    assert.strictEqual(captured.opts.headers['D360-API-KEY'], 'test-key-360');
+    const body = JSON.parse(captured.opts.body);
+    assert.strictEqual(body.messaging_product, 'whatsapp');
+    assert.strictEqual(body.recipient_type, 'individual');
+    assert.strictEqual(body.to, '34600111222');
+    assert.strictEqual(body.type, 'template');
+    assert.strictEqual(body.text, undefined, 'una plantilla no lleva bloque text');
+    assert.strictEqual(body.template.name, 'sante_recordatorio_cita');
+    assert.deepStrictEqual(body.template.language, { code: 'es' });
+    assert.strictEqual(body.template.components.length, 1);
+    assert.strictEqual(body.template.components[0].type, 'body');
+    // El ORDEN es el contrato con Meta: {{1}} nombre, {{2}} hora.
+    assert.deepStrictEqual(body.template.components[0].parameters, [
+        { type: 'text', text: 'María López' },
+        { type: 'text', text: '17:30' },
+    ]);
+});
+
+test('sendTemplate: la plantilla de reseña lleva el enlace como {{2}}', async () => {
+    const captured = await captureSend(client => client.sendTemplate('34600111222@c.us', {
+        name: 'sante_solicitud_resena',
+        language: 'es',
+        params: ['María López', 'https://maps.app.goo.gl/PGdw5KeetLKbbdk18'],
+    }));
+    const body = JSON.parse(captured.opts.body);
+    assert.strictEqual(body.template.name, 'sante_solicitud_resena');
+    assert.deepStrictEqual(body.template.components[0].parameters, [
+        { type: 'text', text: 'María López' },
+        { type: 'text', text: 'https://maps.app.goo.gl/PGdw5KeetLKbbdk18' },
+    ]);
+});
+
+// Meta rechaza el mensaje ENTERO (132000/131008) si un parámetro trae salto de línea,
+// tabulador o 4+ espacios seguidos — y {{1}} es el nombre que escribió la clienta.
+test('sendTemplate: sanea saltos de línea, tabuladores y espacios múltiples', async () => {
+    assert.strictEqual(sanitizeTemplateParam('María\nLópez'), 'María López');
+    assert.strictEqual(sanitizeTemplateParam('María\t\tLópez'), 'María López');
+    assert.strictEqual(sanitizeTemplateParam('María     López'), 'María López');
+    assert.strictEqual(sanitizeTemplateParam('  María  '), 'María');
+    assert.strictEqual(sanitizeTemplateParam(null), '');
+
+    const captured = await captureSend(client => client.sendTemplate('34600111222@c.us', {
+        name: 'sante_recordatorio_cita', language: 'es', params: ['Ana\nMaría', '17:30'],
+    }));
+    const body = JSON.parse(captured.opts.body);
+    assert.strictEqual(body.template.components[0].parameters[0].text, 'Ana María');
+    assert.ok(!captured.opts.body.includes('\\n'), 'no debe viajar ningún \\n en los params');
+});
+
+test('sendTemplate: sin nombre de plantilla lanza (nunca un POST a medias)', async () => {
+    const original = global.fetch;
+    let llamado = false;
+    global.fetch = async () => { llamado = true; return { ok: true, json: async () => ({}) }; };
+    try {
+        const client = build360Client(SANTE_ORG_ID);
+        await assert.rejects(() => client.sendTemplate('34600111222@c.us', { params: ['x'] }),
+            /sin nombre de plantilla/);
+    } finally {
+        global.fetch = original;
+    }
+    assert.strictEqual(llamado, false, 'no debe salir ninguna petición');
+});
+
+test('sendTemplate: propaga el error HTTP igual que sendMessage (para reintento)', async () => {
+    const original = global.fetch;
+    global.fetch = async () => ({ ok: false, status: 400, text: async () => '{"error":{"code":132001}}' });
+    try {
+        const client = build360Client(SANTE_ORG_ID);
+        await assert.rejects(
+            () => client.sendTemplate('34600111222@c.us', { name: 'sante_recordatorio_cita', params: [] }),
+            /360dialog send 400/
+        );
     } finally {
         global.fetch = original;
     }

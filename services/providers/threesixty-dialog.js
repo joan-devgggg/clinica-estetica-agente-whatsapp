@@ -44,36 +44,87 @@ function digitsFromJid(jid) {
 }
 
 /**
+ * POST a /messages. Único punto de salida HTTP del canal: texto libre y plantilla
+ * comparten URL, headers y política de error, así que un cambio (base url, auth,
+ * reintentos) no puede aplicarse a la mitad de los envíos.
+ */
+async function post360(cfg, payload) {
+    const res = await fetch(`${cfg.baseUrl}/messages`, {
+        method: 'POST',
+        headers: {
+            'D360-API-KEY': cfg.apiKey,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+        // Lanzar deja que waSendMessage reintente ante errores transitorios.
+        const errText = await res.text().catch(() => '');
+        throw new Error(`360dialog send ${res.status}: ${errText}`);
+    }
+    return res.json().catch(() => ({}));
+}
+
+/**
+ * Limpia un parámetro de plantilla. Meta RECHAZA el mensaje entero (132000/131008) si
+ * un parámetro lleva salto de línea, tabulador o 4+ espacios seguidos — y {{1}} es el
+ * nombre, que viene de texto que escribió la clienta. Sin esto, un nombre pegado con
+ * un salto de línea tumba el recordatorio y el worker lo da por enviado.
+ */
+function sanitizeTemplateParam(value) {
+    return String(value ?? '')
+        .replace(/[\r\n\t]+/g, ' ')
+        .replace(/ {4,}/g, ' ')
+        .trim();
+}
+
+/**
  * Cliente saliente que imita la superficie mínima de whatsapp-web.js que usa
  * bot.js (`sendMessage`, `getChatById().sendStateTyping`). Enviar por aquí hace
  * que flushBuffer / waSendMessage / sendWithDelay funcionen SIN cambios.
+ *
+ * `sendTemplate` no tiene equivalente en wwebjs a propósito: es la vía para hablar
+ * FUERA de la ventana de 24 h de Cloud API, algo que solo existe en este canal.
  */
 function build360Client(orgId) {
     return {
         async sendMessage(jid, text) {
             const cfg = get360Config(orgId);
             if (!cfg) throw new Error(`360dialog no configurado para org ${orgId}`);
-            const to = digitsFromJid(jid);
-            const res = await fetch(`${cfg.baseUrl}/messages`, {
-                method: 'POST',
-                headers: {
-                    'D360-API-KEY': cfg.apiKey,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    messaging_product: 'whatsapp',
-                    recipient_type: 'individual',
-                    to,
-                    type: 'text',
-                    text: { body: text },
-                }),
+            return post360(cfg, {
+                messaging_product: 'whatsapp',
+                recipient_type: 'individual',
+                to: digitsFromJid(jid),
+                type: 'text',
+                text: { body: text },
             });
-            if (!res.ok) {
-                // Lanzar deja que waSendMessage reintente ante errores transitorios.
-                const errText = await res.text().catch(() => '');
-                throw new Error(`360dialog send ${res.status}: ${errText}`);
-            }
-            return res.json().catch(() => ({}));
+        },
+        /**
+         * Envía una plantilla aprobada por Meta. `params` es POSICIONAL: params[0] es
+         * {{1}}, params[1] es {{2}}. El orden lo fija quien llama y debe coincidir con
+         * el aprobado en el Manager — Meta no valida el significado, solo la cantidad.
+         *
+         * @param {string} jid
+         * @param {{ name: string, language?: string, params?: Array<string|number> }} opts
+         */
+        async sendTemplate(jid, { name, language = 'es', params = [] } = {}) {
+            const cfg = get360Config(orgId);
+            if (!cfg) throw new Error(`360dialog no configurado para org ${orgId}`);
+            if (!name) throw new Error('360dialog sendTemplate sin nombre de plantilla');
+            const parameters = (params || []).map(p => ({ type: 'text', text: sanitizeTemplateParam(p) }));
+            return post360(cfg, {
+                messaging_product: 'whatsapp',
+                recipient_type: 'individual',
+                to: digitsFromJid(jid),
+                type: 'template',
+                template: {
+                    name,
+                    // El código debe ser EXACTAMENTE el de la plantilla aprobada ('es' ≠ 'es_ES'):
+                    // si no casa, Cloud API devuelve 132001 y no se entrega nada.
+                    language: { code: language },
+                    ...(parameters.length ? { components: [{ type: 'body', parameters }] } : {}),
+                },
+            });
         },
         // Cloud API no tiene "escribiendo…" por chat; no-op (bot.js lo trata como best-effort).
         getChatById(_jid) {
@@ -207,6 +258,7 @@ async function process360Webhook(body, { resolveOrgByPhone, isBotActivo, handleI
 module.exports = {
     get360Config,
     build360Client,
+    sanitizeTemplateParam,
     buildInboundAdapters,
     download360Media,
     process360Webhook,
