@@ -13,6 +13,9 @@ interface Props {
   onSelectEntry: (entry: ServiceCatalogEntry | null, servicioText: string) => void;
   labelClassName?: string;
   placeholder?: string;
+  // Lo usa ServiceListField para numerar las filas ("Servicio 1", "Servicio 2"). Por defecto
+  // "Servicio", que es lo que ve quien usa el campo suelto.
+  label?: string;
 }
 
 // Desplegable del catálogo real de la organización. Camino normal: elegir un servicio
@@ -24,7 +27,7 @@ interface Props {
 // nada de useEffect. `manualMode` solo guarda que la recepcionista TOCÓ el toggle; si el
 // componente se reutiliza para OTRA cita (parent debe pasar `key` distinta por cita) React
 // lo remonta y el override se pierde, que es justo lo que queremos.
-export function ServiceField({ catalog, servicio, onSelectEntry, labelClassName, placeholder }: Props) {
+export function ServiceField({ catalog, servicio, onSelectEntry, labelClassName, placeholder, label = "Servicio" }: Props) {
   const matched = findCatalogEntryByFullName(catalog, servicio);
   const [manualFreeText, setManualFreeText] = useState<boolean | null>(null);
   const defaultFreeText = !matched && !!servicio;
@@ -33,7 +36,7 @@ export function ServiceField({ catalog, servicio, onSelectEntry, labelClassName,
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2">
-        <Label className={labelClassName}>Servicio</Label>
+        <Label className={labelClassName}>{label}</Label>
         {catalog.length > 0 && (
           <button
             type="button"

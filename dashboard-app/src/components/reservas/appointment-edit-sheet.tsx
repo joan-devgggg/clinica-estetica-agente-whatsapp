@@ -24,8 +24,8 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { API, apiHeaders } from "@/lib/api";
-import { ServiceField } from "@/components/agenda/service-field";
-import { useServiceCatalog, stylistsForCategoria, findCatalogEntryByFullName, type ServiceCatalogEntry } from "@/lib/service-catalog";
+import { ServiceListField } from "@/components/agenda/service-list-field";
+import { useServiceCatalog, stylistsForCategoria, splitServiceNames, servicesAllInCatalog } from "@/lib/service-catalog";
 
 interface Props {
   reserva: Reserva | null;
@@ -86,15 +86,17 @@ export function AppointmentEditSheet({
 
   const appointmentId = reserva.appointment_id;
 
-  function handleSelectServiceEntry(entry: ServiceCatalogEntry | null, servicioText: string) {
+  function handleServicesChange(servicioText: string, totalDuracion: number, categoriaPrimera: string | null) {
     setForm((f) => {
       const next = { ...f, servicio: servicioText };
-      if (entry) {
-        next.duracion = String(entry.duracion);
-        if (!f.stylistId) {
-          const eligibles = stylistsForCategoria(stylists, entry.categoria);
-          if (eligibles.length === 1) next.stylistId = eligibles[0].id;
-        }
+      if (totalDuracion > 0) next.duracion = String(totalDuracion);
+      // La preselección de estilista solo tiene sentido con UN servicio: con varios, cada uno
+      // puede pedir una estilista distinta (Contouring → colorista, manicura → Olgha) y
+      // autoasignar por el primero sería elegir mal en silencio.
+      const unSoloServicio = splitServiceNames(servicioText, catalog).length === 1;
+      if (unSoloServicio && !f.stylistId && categoriaPrimera) {
+        const eligibles = stylistsForCategoria(stylists, categoriaPrimera);
+        if (eligibles.length === 1) next.stylistId = eligibles[0].id;
       }
       return next;
     });
@@ -182,11 +184,11 @@ export function AppointmentEditSheet({
 
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
           {isSalon ? (
-            <ServiceField
+            <ServiceListField
               key={appointmentId}
               catalog={catalog}
               servicio={form.servicio}
-              onSelectEntry={handleSelectServiceEntry}
+              onChange={handleServicesChange}
               labelClassName="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground"
               placeholder="Ej: Corte mujer"
             />
@@ -254,7 +256,7 @@ export function AppointmentEditSheet({
                 className="h-9"
                 min={15}
                 step={15}
-                disabled={isSalon && !!findCatalogEntryByFullName(catalog, form.servicio)}
+                disabled={isSalon && servicesAllInCatalog(catalog, form.servicio)}
               />
             </div>
           </div>

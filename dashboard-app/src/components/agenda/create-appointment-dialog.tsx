@@ -7,12 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TimePickerSelect } from "@/components/ui/time-picker-select";
-import { ServiceField } from "@/components/agenda/service-field";
+import { ServiceListField } from "@/components/agenda/service-list-field";
 import { toast } from "sonner";
 import { API, apiHeaders } from "@/lib/api";
 import { ymd } from "@/lib/date";
 import type { Stylist } from "@/lib/types";
-import { useServiceCatalog, stylistsForCategoria, findCatalogEntryByFullName, type ServiceCatalogEntry } from "@/lib/service-catalog";
+import { useServiceCatalog, stylistsForCategoria, splitServiceNames, servicesAllInCatalog } from "@/lib/service-catalog";
 
 interface Props {
   stylists: Stylist[];
@@ -39,15 +39,17 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
   });
   const { catalog } = useServiceCatalog(orgId, true);
 
-  function handleSelectServiceEntry(entry: ServiceCatalogEntry | null, servicioText: string) {
+  function handleServicesChange(servicioText: string, totalDuracion: number, categoriaPrimera: string | null) {
     setForm((f) => {
       const next = { ...f, servicio: servicioText };
-      if (entry) {
-        next.duracion = String(entry.duracion);
-        if (!f.stylistId) {
-          const eligibles = stylistsForCategoria(stylists, entry.categoria);
-          if (eligibles.length === 1) next.stylistId = eligibles[0].id;
-        }
+      if (totalDuracion > 0) next.duracion = String(totalDuracion);
+      // La preselección de estilista solo tiene sentido con UN servicio: con varios, cada uno
+      // puede pedir una estilista distinta (Contouring → colorista, manicura → Olgha) y
+      // autoasignar por el primero sería elegir mal en silencio.
+      const unSoloServicio = splitServiceNames(servicioText, catalog).length === 1;
+      if (unSoloServicio && !f.stylistId && categoriaPrimera) {
+        const eligibles = stylistsForCategoria(stylists, categoriaPrimera);
+        if (eligibles.length === 1) next.stylistId = eligibles[0].id;
       }
       return next;
     });
@@ -136,10 +138,10 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
               <Input value={form.telefono} onChange={e => setForm(f => ({ ...f, telefono: e.target.value }))} />
             </div>
           </div>
-          <ServiceField
+          <ServiceListField
             catalog={catalog}
             servicio={form.servicio}
-            onSelectEntry={handleSelectServiceEntry}
+            onChange={handleServicesChange}
             placeholder="Ej: Corte mujer"
           />
           <div className="grid grid-cols-3 gap-3">
@@ -157,7 +159,7 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
                 type="number"
                 value={form.duracion}
                 onChange={e => setForm(f => ({ ...f, duracion: e.target.value }))}
-                disabled={!!findCatalogEntryByFullName(catalog, form.servicio)}
+                disabled={servicesAllInCatalog(catalog, form.servicio)}
               />
             </div>
           </div>

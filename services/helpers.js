@@ -1802,8 +1802,15 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
         // precio en el catálogo —o editar el `service` de una cita pasada— reescribía la
         // facturación de un periodo ya cerrado. Solo se recalcula cuando no hay snapshot:
         // citas anteriores a la auditoría, o servicios que no se pudieron valorar.
+        // precio_facturado null NO es un snapshot: stampBillingSnapshot sella facturado_at
+        // igualmente cuando el servicio no se pudo valorar, para no reintentar. Sin el
+        // `!= null`, Number(null) → 0 pasaba el isFinite y esa cita se presentaba como
+        // calculada a 0,00 € en vez de caer al contador de "sin poder calcular" — un
+        // importe inventado comunicado como cifra buena.
         const congelado = Number(appt.precio_facturado);
-        const tieneSnapshot = !!appt.facturado_at && Number.isFinite(congelado);
+        const tieneSnapshot = !!appt.facturado_at
+            && appt.precio_facturado != null
+            && Number.isFinite(congelado);
         const calculable = tieneSnapshot || (segments.length > 0 && segments.every(s => s.status === 'ok'));
         const totalConIva = tieneSnapshot ? congelado : recalculado;
 
@@ -1913,6 +1920,8 @@ module.exports = {
     // Facturación por estilista
     resolveServiceCatalogEntry,
     findCatalogEntriesExact,
+    // Exportado para el test de paridad con la copia del panel (dashboard-app/src/lib/service-names.ts).
+    splitServiceNames,
     computeServiceBilling,
     buildStylistBillingReport,
     filterAppointmentsByStylist,

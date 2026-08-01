@@ -108,6 +108,29 @@ test('un precio_facturado sin facturado_at NO cuenta como snapshot', () => {
     assert.strictEqual(buildStylistBillingReport(citas, CATALOG_SUBIDA).totales.totalConIva, 60);
 });
 
+test('un facturado_at sin precio_facturado NO cuenta como snapshot (no factura 0 €)', () => {
+    // Caso real (Paloma, 01/08/2026): la cita se completó cuando su `service` no era
+    // resoluble, así que stampBillingSnapshot selló facturado_at con precio_facturado null.
+    // Number(null) → 0 pasaba el isFinite y la cita salía como CALCULADA a 0,00 €.
+    const citas = [{
+        appointment_id: 'a1', service: 'K18', stylist_id: 's1', stylist_name: 'Yulia',
+        precio_facturado: null, iva_rate: 0.21, facturado_at: '2026-08-01T12:12:56.000Z',
+    }];
+    const report = buildStylistBillingReport(citas, CATALOG_BARATO);
+    assert.strictEqual(report.estilistas[0].citas[0].congelado, false, 'no hay snapshot que congelar');
+    assert.strictEqual(report.totales.totalConIva, 45, 'recalcula desde el catálogo');
+});
+
+test('facturado_at sin precio y con servicio irresoluble cae a "sin poder calcular"', () => {
+    const citas = [{
+        appointment_id: 'a1', service: 'Counturing largo1 160, Matiz plus 65', stylist_id: 's1', stylist_name: 'Yulia',
+        precio_facturado: null, iva_rate: 0.21, facturado_at: '2026-08-01T12:12:56.000Z',
+    }];
+    const report = buildStylistBillingReport(citas, CATALOG_BARATO);
+    assert.strictEqual(report.sinCalcularTotal, 1, 'se avisa, no se factura a 0 en silencio');
+    assert.strictEqual(report.estilistas[0].citas[0].precio, null);
+});
+
 test('el IVA sigue cuadrando con importes congelados (base + iva = total)', () => {
     const citas = [{
         appointment_id: 'a1', service: 'K18', stylist_id: 's1', stylist_name: 'Yulia',
