@@ -24,6 +24,8 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { API, apiHeaders } from "@/lib/api";
+import { ServiceField } from "@/components/agenda/service-field";
+import { useServiceCatalog, stylistsForCategoria, findCatalogEntryByFullName, type ServiceCatalogEntry } from "@/lib/service-catalog";
 
 interface Props {
   reserva: Reserva | null;
@@ -56,6 +58,7 @@ export function AppointmentEditSheet({
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const isSalon = orgType === "salon";
+  const { catalog } = useServiceCatalog(orgId, isSalon);
 
   function formFromReserva(r: Reserva | null) {
     return {
@@ -82,6 +85,20 @@ export function AppointmentEditSheet({
   if (!reserva) return null;
 
   const appointmentId = reserva.appointment_id;
+
+  function handleSelectServiceEntry(entry: ServiceCatalogEntry | null, servicioText: string) {
+    setForm((f) => {
+      const next = { ...f, servicio: servicioText };
+      if (entry) {
+        next.duracion = String(entry.duracion);
+        if (!f.stylistId) {
+          const eligibles = stylistsForCategoria(stylists, entry.categoria);
+          if (eligibles.length === 1) next.stylistId = eligibles[0].id;
+        }
+      }
+      return next;
+    });
+  }
 
   async function handleSave() {
     setSaving(true);
@@ -164,17 +181,28 @@ export function AppointmentEditSheet({
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
-          <div className="space-y-1.5">
-            <Label className="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground">
-              {isSalon ? "Servicio" : "Descripción"}
-            </Label>
-            <Input
-              value={form.servicio}
-              onChange={e => setForm(f => ({ ...f, servicio: e.target.value }))}
-              className="h-9"
-              placeholder={isSalon ? "Ej: Corte mujer" : "Reserva mesa"}
+          {isSalon ? (
+            <ServiceField
+              key={appointmentId}
+              catalog={catalog}
+              servicio={form.servicio}
+              onSelectEntry={handleSelectServiceEntry}
+              labelClassName="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground"
+              placeholder="Ej: Corte mujer"
             />
-          </div>
+          ) : (
+            <div className="space-y-1.5">
+              <Label className="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground">
+                Descripción
+              </Label>
+              <Input
+                value={form.servicio}
+                onChange={e => setForm(f => ({ ...f, servicio: e.target.value }))}
+                className="h-9"
+                placeholder="Reserva mesa"
+              />
+            </div>
+          )}
 
           <div className="space-y-1.5">
             <Label className="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground">
@@ -226,6 +254,7 @@ export function AppointmentEditSheet({
                 className="h-9"
                 min={15}
                 step={15}
+                disabled={isSalon && !!findCatalogEntryByFullName(catalog, form.servicio)}
               />
             </div>
           </div>

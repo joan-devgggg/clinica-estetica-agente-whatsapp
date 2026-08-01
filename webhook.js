@@ -736,6 +736,28 @@ app.patch('/api/agent-config', async (req, res) => {
     catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Catálogo de servicios para desplegables del panel (alta/edición manual de citas).
+// `fullName` usa el MISMO buildFullServiceName que resuelve las citas del bot y la
+// facturación por estilista, para que el nombre guardado desde el panel case exacto
+// contra el catálogo (ver auditoría de facturación: nombres ambiguos como "Largo 2").
+app.get('/api/service-catalog', async (req, res) => {
+    try {
+        const orgId = extractOrgId(req);
+        const { buildFullServiceName } = require('./services/helpers');
+        const agentConfig = await db.getAgentConfig(orgId);
+        const catalog = Array.isArray(agentConfig?.services) ? agentConfig.services : [];
+        const entries = catalog.map(svc => ({
+            key: `${svc.categoria || ''}|${svc.nombre || ''}`,
+            nombre: svc.nombre,
+            categoria: svc.categoria ?? null,
+            precio: svc.precio ?? null,
+            duracion: svc.duracion ?? 60,
+            fullName: buildFullServiceName(svc, catalog),
+        }));
+        res.json(entries);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ─── API: Messages ───────────────────────────────────────────────────────────
 app.get('/api/messages/:telefono', async (req, res) => {
     try {

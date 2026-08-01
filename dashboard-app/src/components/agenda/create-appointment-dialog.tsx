@@ -7,10 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TimePickerSelect } from "@/components/ui/time-picker-select";
+import { ServiceField } from "@/components/agenda/service-field";
 import { toast } from "sonner";
 import { API, apiHeaders } from "@/lib/api";
 import { ymd } from "@/lib/date";
 import type { Stylist } from "@/lib/types";
+import { useServiceCatalog, stylistsForCategoria, findCatalogEntryByFullName, type ServiceCatalogEntry } from "@/lib/service-catalog";
 
 interface Props {
   stylists: Stylist[];
@@ -35,6 +37,21 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
     duracion: "60",
     stylistId: defaultStylistId || "",
   });
+  const { catalog } = useServiceCatalog(orgId, true);
+
+  function handleSelectServiceEntry(entry: ServiceCatalogEntry | null, servicioText: string) {
+    setForm((f) => {
+      const next = { ...f, servicio: servicioText };
+      if (entry) {
+        next.duracion = String(entry.duracion);
+        if (!f.stylistId) {
+          const eligibles = stylistsForCategoria(stylists, entry.categoria);
+          if (eligibles.length === 1) next.stylistId = eligibles[0].id;
+        }
+      }
+      return next;
+    });
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -119,10 +136,12 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
               <Input value={form.telefono} onChange={e => setForm(f => ({ ...f, telefono: e.target.value }))} />
             </div>
           </div>
-          <div>
-            <Label>Servicio</Label>
-            <Input value={form.servicio} onChange={e => setForm(f => ({ ...f, servicio: e.target.value }))} placeholder="Ej: Corte mujer" />
-          </div>
+          <ServiceField
+            catalog={catalog}
+            servicio={form.servicio}
+            onSelectEntry={handleSelectServiceEntry}
+            placeholder="Ej: Corte mujer"
+          />
           <div className="grid grid-cols-3 gap-3">
             <div>
               <Label>Fecha *</Label>
@@ -134,7 +153,12 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
             </div>
             <div>
               <Label>Duración (min)</Label>
-              <Input type="number" value={form.duracion} onChange={e => setForm(f => ({ ...f, duracion: e.target.value }))} />
+              <Input
+                type="number"
+                value={form.duracion}
+                onChange={e => setForm(f => ({ ...f, duracion: e.target.value }))}
+                disabled={!!findCatalogEntryByFullName(catalog, form.servicio)}
+              />
             </div>
           </div>
           <div>
