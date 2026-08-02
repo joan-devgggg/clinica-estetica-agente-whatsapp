@@ -72,15 +72,33 @@ function parseTemplateConfig(raw, language = 'es') {
  * `db` se requiere aquí dentro (no arriba) siguiendo la convención de requires perezosos
  * del proyecto: así webhook.js puede cargar este módulo solo para resolver el cliente.
  */
-async function resolveAutomatedSend(orgId, { telefono, language = 'es', plantillaClave }) {
+async function resolveAutomatedSend(orgId, {
+    telefono,
+    language = 'es',
+    plantillaClave,
+    // Opcionales, para el camino de CAMPAÑA: una tanda de 250 destinatarios resuelve la
+    // ventana de todos de golpe (getLastInboundAtBulk) y lee la config UNA vez, en vez de
+    // pagar 3 consultas + 1 por contacto. Si no vienen, se buscan como siempre — reminder.js
+    // y review.js no cambian ni una línea.
+    lastInboundAt: lastInboundAtPrecargado,
+    plantillaConfig: plantillaConfigPrecargada,
+} = {}) {
     if (!isCloudChannel(orgId)) return { mode: 'free_text' };
 
     const { getLastInboundAt, isWithin24hWindow, getConfigValue } = require('./db');
 
-    const lastInboundAt = await getLastInboundAt(orgId, telefono);
+    // `undefined` = no me lo han pasado, búscalo. `null` = ya se buscó y no hay entrante:
+    // distinguirlos importa porque null es un valor legítimo y volver a consultarlo por
+    // contacto anularía justo el ahorro que busca la precarga.
+    const lastInboundAt = lastInboundAtPrecargado !== undefined
+        ? lastInboundAtPrecargado
+        : await getLastInboundAt(orgId, telefono);
     if (isWithin24hWindow(lastInboundAt)) return { mode: 'free_text', lastInboundAt };
 
-    const template = parseTemplateConfig(await getConfigValue(orgId, plantillaClave), language);
+    const raw = plantillaConfigPrecargada !== undefined
+        ? plantillaConfigPrecargada
+        : await getConfigValue(orgId, plantillaClave);
+    const template = parseTemplateConfig(raw, language);
     if (!template) return { mode: 'sin_plantilla', lastInboundAt };
 
     return { mode: 'template', template, lastInboundAt };

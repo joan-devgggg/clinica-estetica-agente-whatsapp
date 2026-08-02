@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Sparkles, Send, Megaphone, Users, Info } from "lucide-react";
+import { Sparkles, Send, Megaphone, Users, Info, Layers, RefreshCw } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -27,15 +27,61 @@ const AUDIENCE_LABELS: Record<Audience, string> = {
   nunca_reservado: "Solo clientes que nunca han reservado",
 };
 
+// Campañas disponibles. Sólo la etiqueta y la CLAVE de config viven aquí; los nombres
+// reales de las plantillas aprobadas (y su variante por idioma) están en `config`, no en
+// el código — igual que plantilla_recordatorio y plantilla_resena.
+const CAMPAIGNS = [
+  {
+    key: "verano_tratamientos",
+    label: "Verano · tratamientos",
+    plantillaClave: "plantilla_campana",
+  },
+] as const;
+
+type CampaignStatus = {
+  total_audiencia: number;
+  ya_enviados: number;
+  pendientes: number;
+  enviados_24h: number;
+  cupo_24h_restante: number;
+  proxima_tanda: number;
+  max_por_24h: number;
+};
+
 export default function CampanasPage() {
   const { orgId } = useOrg();
   const [promoIdea, setPromoIdea] = useState("");
   const [promoMensaje, setPromoMensaje] = useState("");
   const [audience, setAudience] = useState<Audience>("todos");
-  const [useTemplate, setUseTemplate] = useState(false);
-  const [templateName, setTemplateName] = useState("");
+  const [useTemplate, setUseTemplate] = useState(true);
+  const [campaignKey, setCampaignKey] = useState<string>(CAMPAIGNS[0].key);
   const [generating, setGenerating] = useState(false);
   const [sending, setSending] = useState(false);
+  const [status, setStatus] = useState<CampaignStatus | null>(null);
+  const [loadingStatus, setLoadingStatus] = useState(false);
+
+  const campaign = CAMPAIGNS.find((c) => c.key === campaignKey) ?? CAMPAIGNS[0];
+
+  // Estado de la campaña: cuántas faltan y cuánto cupo queda hoy. Se consulta antes de
+  // enviar para que la tanda no se dispare a ciegas, y se refresca tras cada envío.
+  const loadStatus = useCallback(async () => {
+    if (!useTemplate) { setStatus(null); return; }
+    setLoadingStatus(true);
+    try {
+      const qs = new URLSearchParams({ audience, campaignKey });
+      const res = await fetch(`${API}/api/campaigns/status?${qs}`, {
+        headers: await apiHeaders(orgId),
+      });
+      if (!res.ok) throw new Error("status");
+      setStatus(await res.json());
+    } catch {
+      setStatus(null);
+    } finally {
+      setLoadingStatus(false);
+    }
+  }, [orgId, audience, campaignKey, useTemplate]);
+
+  useEffect(() => { loadStatus(); }, [loadStatus]);
 
   async function generateMessage() {
     if (!promoIdea.trim()) return;
@@ -62,12 +108,14 @@ export default function CampanasPage() {
     try {
       const body: Record<string, unknown> = { audience };
       if (useTemplate) {
-        if (!templateName) {
-          toast.error("Selecciona una plantilla");
-          setSending(false);
-          return;
-        }
-        body.templateName = templateName;
+        // La plantilla se elige por CLAVE de config, no por nombre suelto: un nombre
+        // crudo no sabe de idiomas y le mandaría la versión española a las clientas
+        // rusas y ucranianas.
+        body.plantillaClave = campaign.plantillaClave;
+        body.campaignKey = campaign.key;
+        // El texto libre sigue siendo útil: es lo que reciben las que están dentro de
+        // la ventana de 24 h, donde no hace falta plantilla.
+        if (promoMensaje.trim()) body.mensaje = promoMensaje;
       } else {
         body.mensaje = promoMensaje;
       }
@@ -78,18 +126,25 @@ export default function CampanasPage() {
       });
       if (!res.ok) throw new Error("Error enviando mensajes");
       const data = await res.json();
-      if (data.pendiente_plantilla) {
-        toast.info(
-          "El envío por plantilla aprobada requiere 360dialog (aún no conectado)."
+
+      const enviados = data.enviados ?? 0;
+      const restantes = data.restantes ?? 0;
+      const omitidos = data.omitidos ?? 0;
+
+      if (enviados === 0 && restantes > 0) {
+        toast.warning(
+          data.cupo_24h_restante === 0
+            ? `Cupo diario agotado. Quedan ${restantes} por enviar: vuelve mañana.`
+            : `No se envió a nadie · ${omitidos} omitido${omitidos !== 1 ? "s" : ""}`
         );
       } else {
-        const enviados = data.enviados ?? 0;
-        const omitidos = data.omitidos ?? 0;
         toast.success(
-          `Mensaje enviado a ${enviados} cliente${enviados !== 1 ? "s" : ""}` +
-            (omitidos ? ` · ${omitidos} omitido${omitidos !== 1 ? "s" : ""}` : "")
+          `Enviado a ${enviados} cliente${enviados !== 1 ? "s" : ""}` +
+            (omitidos ? ` · ${omitidos} omitido${omitidos !== 1 ? "s" : ""}` : "") +
+            (restantes ? ` · quedan ${restantes} para la próxima tanda` : " · campaña completada")
         );
       }
+      await loadStatus();
     } catch {
       toast.error("No se pudo enviar el mensaje");
     } finally {
@@ -171,7 +226,7 @@ export default function CampanasPage() {
             </CardContent>
           </Card>
 
-          {/* Plantilla aprobada (360dialog) */}
+          {/* Plantilla aprobada (360dialog) + tandas */}
           <Card className="border-border/60 shadow-sm">
             <CardContent className="p-4 space-y-3">
               <div className="flex items-center justify-between">
@@ -185,22 +240,71 @@ export default function CampanasPage() {
                 </div>
                 <Switch checked={useTemplate} onCheckedChange={setUseTemplate} />
               </div>
+
               {useTemplate && (
-                <div className="space-y-2 pt-1">
+                <div className="space-y-3 pt-1">
                   <Select
-                    value={templateName}
-                    onValueChange={(v) => setTemplateName(v ?? "")}
-                    disabled
+                    value={campaignKey}
+                    onValueChange={(v) => setCampaignKey(v ?? CAMPAIGNS[0].key)}
                   >
                     <SelectTrigger className="h-9 w-full text-[13px]">
-                      <SelectValue placeholder="No hay plantillas disponibles todavía" />
+                      <SelectValue />
                     </SelectTrigger>
-                    <SelectContent />
+                    <SelectContent>
+                      {CAMPAIGNS.map((c) => (
+                        <SelectItem key={c.key} value={c.key}>
+                          {c.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
                   </Select>
-                  <p className="text-[11.5px] text-amber-600 dark:text-amber-500 flex items-center gap-1.5">
-                    <Info size={12} className="flex-shrink-0" />
-                    Requiere plantilla aprobada en 360dialog (próximamente).
-                  </p>
+
+                  {status && (
+                    <div className="rounded-md border border-border/60 bg-muted/30 p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-muted-foreground flex items-center gap-1.5">
+                          <Layers size={12} /> Progreso de la campaña
+                        </p>
+                        <button
+                          type="button"
+                          onClick={loadStatus}
+                          disabled={loadingStatus}
+                          className="text-muted-foreground hover:text-foreground disabled:opacity-50"
+                          aria-label="Actualizar progreso"
+                        >
+                          <RefreshCw size={12} className={loadingStatus ? "animate-spin" : ""} />
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        <div>
+                          <p className="text-[17px] font-semibold tabular-nums text-foreground">
+                            {status.ya_enviados}
+                          </p>
+                          <p className="text-[10.5px] text-muted-foreground">Ya enviados</p>
+                        </div>
+                        <div>
+                          <p className="text-[17px] font-semibold tabular-nums text-foreground">
+                            {status.pendientes}
+                          </p>
+                          <p className="text-[10.5px] text-muted-foreground">Pendientes</p>
+                        </div>
+                        <div>
+                          <p className="text-[17px] font-semibold tabular-nums text-foreground">
+                            {status.cupo_24h_restante}
+                          </p>
+                          <p className="text-[10.5px] text-muted-foreground">Cupo hoy</p>
+                        </div>
+                      </div>
+                      <p className="text-[11.5px] text-muted-foreground flex items-start gap-1.5">
+                        <Info size={12} className="flex-shrink-0 mt-0.5" />
+                        {status.pendientes === 0
+                          ? "Campaña completada: no queda nadie por recibirla."
+                          : status.proxima_tanda === 0
+                          ? `Cupo diario agotado (${status.enviados_24h}/${status.max_por_24h} en las últimas 24 h). Vuelve mañana para seguir.`
+                          : `Se enviará a ${status.proxima_tanda} de ${status.pendientes} pendientes. El resto, en la siguiente tanda.`}
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
             </CardContent>
@@ -211,13 +315,17 @@ export default function CampanasPage() {
             onClick={broadcast}
             disabled={
               sending ||
-              (useTemplate ? !templateName : !promoMensaje.trim())
+              (useTemplate
+                ? !status || status.proxima_tanda === 0
+                : !promoMensaje.trim())
             }
             className="w-full"
           >
             <Send size={14} className="mr-1.5" />
             {sending
               ? "Enviando..."
+              : useTemplate
+              ? `Enviar tanda de ${status?.proxima_tanda ?? 0}`
               : `Enviar a ${AUDIENCE_LABELS[audience].toLowerCase()}`}
           </Button>
         </div>

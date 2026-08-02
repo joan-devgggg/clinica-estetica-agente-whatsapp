@@ -562,30 +562,24 @@ app.post('/api/vip/generate-message', async (req, res) => {
 app.post('/api/vip/broadcast', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
-        const { mensaje } = req.body;
-        if (!mensaje) return res.status(400).json({ error: 'mensaje requerido' });
+        const { mensaje, plantillaClave, campaignKey, limit } = req.body;
+        if (!mensaje && !plantillaClave) {
+            return res.status(400).json({ error: 'mensaje o plantillaClave requerido' });
+        }
         const client = getOutboundClient(orgId);
         if (!client) return res.status(503).json({ error: 'WhatsApp no conectado' });
         const vips = await db.getVipList(orgId, { excludeBlacklisted: true });
-        if (!vips.length) return res.json({ enviados: 0, omitidos: 0, fallos: [] });
-        const { waSendMessage } = require('./bot');
-        let enviados = 0;
-        const fallos = [];
-        for (const vip of vips) {
-            // Preferir el JID canónico guardado (metadata.wa_jid, p.ej. @lid); solo si
-            // no existe, reconstruir el WID clásico a partir del teléfono.
-            const digits = (vip.telefono || '').replace(/\D/g, '');
-            const chatId = vip.wa_jid || (digits ? `${digits}@c.us` : null);
-            if (!chatId) { fallos.push({ telefono: vip.telefono, jid: null, error: 'sin teléfono ni JID' }); continue; }
-            try {
-                await waSendMessage(client, chatId, mensaje);
-                enviados++;
-            } catch (e) {
-                console.error('[vip/broadcast] fallo envío', { telefono: vip.telefono, jid: chatId, error: e.message });
-                fallos.push({ telefono: vip.telefono, jid: chatId, error: e.message });
-            }
-        }
-        res.json({ enviados, omitidos: fallos.length, fallos });
+
+        const { runBroadcast } = require('./services/broadcast');
+        const resumen = await runBroadcast(orgId, {
+            client,
+            destinatarios: vips,
+            mensaje: mensaje || null,
+            plantillaClave: plantillaClave || null,
+            campaignKey: campaignKey || null,
+            limit: Number.isFinite(limit) ? limit : null,
+        });
+        res.json(resumen);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -620,51 +614,71 @@ app.post('/api/campaigns/generate-message', async (req, res) => {
     }
 });
 
+/**
+ * Envío masivo por tandas.
+ *
+ * `plantillaClave` sustituyó al antiguo `templateName` (nombre crudo de plantilla) a
+ * propósito y SIN vía degradada: un nombre suelto no puede elegir idioma, así que habría
+ * mandado la plantilla española a las clientas ru/uk. La clave apunta a un mapa por idioma
+ * en `config`, igual que plantilla_recordatorio y plantilla_resena.
+ *
+ * `campaignKey` es lo que permite continuar mañana donde se dejó hoy: sin ella no hay
+ * registro ni deduplicación (comportamiento histórico, el que conserva San Remo).
+ */
 app.post('/api/campaigns/broadcast', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
-        const { mensaje, audience = 'todos', templateName, templateParams, phones } = req.body;
+        const { mensaje, audience = 'todos', plantillaClave, campaignKey, phones, limit } = req.body;
+
+        if (!mensaje && !plantillaClave) {
+            return res.status(400).json({ error: 'mensaje o plantillaClave requerido' });
+        }
 
         // phones: allowlist explícito de teléfonos (prueba segura). Si viene, apunta
         // SOLO a esos números e ignora la audiencia.
         const destinatarios = await db.getBroadcastRecipients(orgId, { audience, phones });
-        const total = destinatarios.length;
 
-        // Ruta plantilla aprobada (360dialog) — estructura lista, aún no operativa.
-        if (templateName) {
-            return res.json({
-                enviados: 0,
-                total,
-                omitidos: total,
-                pendiente_plantilla: true,
-                nota: 'El envío por plantilla aprobada requiere 360dialog (aún no conectado).',
-            });
-        }
-
-        // Ruta mensaje libre — mismo patrón que /api/vip/broadcast.
-        if (!mensaje) return res.status(400).json({ error: 'mensaje requerido' });
         const client = getOutboundClient(orgId);
         if (!client) return res.status(503).json({ error: 'WhatsApp no conectado' });
-        if (!total) return res.json({ enviados: 0, total: 0, omitidos: 0 });
 
-        const { waSendMessage } = require('./bot');
-        let enviados = 0;
-        const fallos = [];
-        for (const c of destinatarios) {
-            // Preferir el JID canónico guardado (metadata.wa_jid, p.ej. @lid); solo si
-            // no existe, reconstruir el WID clásico a partir del teléfono.
-            const digits = (c.telefono || '').replace(/\D/g, '');
-            const chatId = c.wa_jid || (digits ? `${digits}@c.us` : null);
-            if (!chatId) { fallos.push({ telefono: c.telefono, jid: null, error: 'sin teléfono ni JID' }); continue; }
-            try {
-                await waSendMessage(client, chatId, mensaje);
-                enviados++;
-            } catch (e) {
-                console.error('[campaigns/broadcast] fallo envío', { telefono: c.telefono, jid: chatId, error: e.message });
-                fallos.push({ telefono: c.telefono, jid: chatId, error: e.message });
-            }
-        }
-        res.json({ enviados, total, omitidos: total - enviados, fallos });
+        const { runBroadcast } = require('./services/broadcast');
+        const resumen = await runBroadcast(orgId, {
+            client,
+            destinatarios,
+            mensaje: mensaje || null,
+            plantillaClave: plantillaClave || null,
+            campaignKey: campaignKey || null,
+            limit: Number.isFinite(limit) ? limit : null,
+        });
+        res.json(resumen);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/**
+ * Estado de una campaña SIN enviar nada: cuántos faltan y cuánto cupo queda hoy.
+ * El panel lo pinta antes de lanzar la tanda, para que la dueña no dispare a ciegas.
+ */
+app.get('/api/campaigns/status', async (req, res) => {
+    try {
+        const orgId = extractOrgId(req);
+        const { audience = 'todos', campaignKey } = req.query;
+        const { MAX_DESTINATARIOS_24H } = require('./services/broadcast');
+
+        const destinatarios = await db.getBroadcastRecipients(orgId, { audience });
+        const yaEnviados = campaignKey ? await db.getBroadcastSentPhones(orgId, campaignKey) : new Set();
+        const pendientes = destinatarios.filter(c => !yaEnviados.has(db.sanitizePhone(c.telefono)));
+        const enviados24h = await db.countBroadcastSendsLast24h(orgId);
+        const cupo = Math.max(0, MAX_DESTINATARIOS_24H - enviados24h);
+
+        res.json({
+            total_audiencia: destinatarios.length,
+            ya_enviados: yaEnviados.size,
+            pendientes: pendientes.length,
+            enviados_24h: enviados24h,
+            cupo_24h_restante: cupo,
+            proxima_tanda: Math.min(pendientes.length, cupo),
+            max_por_24h: MAX_DESTINATARIOS_24H,
+        });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

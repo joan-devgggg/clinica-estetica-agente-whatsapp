@@ -620,6 +620,65 @@ async function getLastInboundAt(orgId, telefono) {
 }
 
 /**
+ * Versión EN BLOQUE de getLastInboundAt: Map<wa_phone normalizado, ISO|null>.
+ *
+ * getLastInboundAt cuesta 3 consultas secuenciales por contacto (findByPhone +
+ * conversations + messages). Una tanda de campaña de 250 destinatarios serían ~750
+ * round-trips —medio minuto largo solo en DECIDIR el modo de envío, antes de mandar
+ * nada— y la petición HTTP del panel se cae antes. Aquí son 3 consultas en total.
+ *
+ * Los teléfonos que no existan como contacto, o que no tengan ningún entrante, no
+ * aparecen en el Map: el llamador los trata como `null` → fuera de ventana, el mismo
+ * lado seguro que la función unitaria.
+ */
+async function getLastInboundAtBulk(orgId, telefonos = []) {
+    const oid = resolveOrg(orgId);
+    const phones = [...new Set((telefonos || []).map(sanitizePhone).filter(Boolean))];
+    const resultado = new Map();
+    if (!phones.length) return resultado;
+
+    const { data: contactos, error: contactosErr } = await supabase
+        .from('contacts')
+        .select('id, wa_phone')
+        .eq('organization_id', oid)
+        .in('wa_phone', phones);
+    assertRead(contactosErr, 'contacts');
+    if (!contactos?.length) return resultado;
+
+    const phonePorContacto = new Map(contactos.map(c => [c.id, c.wa_phone]));
+
+    const { data: convs, error: convsErr } = await supabase
+        .from('conversations')
+        .select('id, contact_id')
+        .eq('organization_id', oid)
+        .in('contact_id', [...phonePorContacto.keys()]);
+    assertRead(convsErr, 'conversations');
+    if (!convs?.length) return resultado;
+
+    const phonePorConversacion = new Map(
+        convs.map(cv => [cv.id, phonePorContacto.get(cv.contact_id)]).filter(([, p]) => p)
+    );
+    if (!phonePorConversacion.size) return resultado;
+
+    // Sin .limit(1) por conversación (Supabase no hace DISTINCT ON): traemos los entrantes
+    // ordenados y nos quedamos con el primero de cada hilo, que es el más reciente.
+    const { data: mensajes, error: mensajesErr } = await supabase
+        .from('messages')
+        .select('conversation_id, created_at')
+        .eq('organization_id', oid)
+        .eq('direction', 'inbound')
+        .in('conversation_id', [...phonePorConversacion.keys()])
+        .order('created_at', { ascending: false });
+    assertRead(mensajesErr, 'messages');
+
+    for (const m of mensajes || []) {
+        const phone = phonePorConversacion.get(m.conversation_id);
+        if (phone && !resultado.has(phone)) resultado.set(phone, m.created_at);
+    }
+    return resultado;
+}
+
+/**
  * ¿Sigue abierta la ventana de 24 h? Pura y con `now` inyectable para el test.
  * Sin entrante conocido → false: fuera de ventana, que es el lado seguro (una plantilla
  * se entrega igual dentro de la ventana; el texto libre fuera se pierde en silencio).
@@ -1213,6 +1272,117 @@ async function getBroadcastRecipients(orgId, { audience = 'todos', phones } = {}
     return (data || []).map(rowToPublic);
 }
 
+// ─── Broadcast sends (campañas por tandas) ───────────────────────────────────
+//
+// Registro de a quién se le mandó cada campaña. Existe por dos motivos que el resto del
+// esquema no cubría: continuar una campaña al día siguiente sin repetir destinatarios, y
+// contar los envíos de las últimas 24 h para no pasarse del tope del número.
+
+const CLAIM_CADUCA_MS = 15 * 60 * 1000;
+
+/** Teléfonos que YA recibieron esta campaña (solo 'sent'; un fallo debe poder reintentarse). */
+async function getBroadcastSentPhones(orgId, campaignKey) {
+    const oid = resolveOrg(orgId);
+    if (!campaignKey) return new Set();
+    const { data, error } = await supabase
+        .from('broadcast_sends')
+        .select('wa_phone')
+        .eq('organization_id', oid)
+        .eq('campaign_key', campaignKey)
+        .eq('status', 'sent');
+    assertRead(error, 'broadcast_sends');
+    return new Set((data || []).map(r => r.wa_phone));
+}
+
+/**
+ * Libera reservas que no llegaron a convertirse en envío, para que la siguiente tanda
+ * pueda reintentarlas: las 'failed' y las 'pending' abandonadas (proceso caído a media
+ * tanda). Sin esto el UNIQUE las bloquearía para siempre — getBroadcastSentPhones las
+ * daría por no enviadas, pero el INSERT de reserva chocaría en cada intento.
+ */
+async function resetStaleBroadcastClaims(orgId, campaignKey) {
+    const oid = resolveOrg(orgId);
+    if (!campaignKey) return 0;
+    const caducadas = new Date(Date.now() - CLAIM_CADUCA_MS).toISOString();
+    const { data, error } = await supabase
+        .from('broadcast_sends')
+        .delete()
+        .eq('organization_id', oid)
+        .eq('campaign_key', campaignKey)
+        .neq('status', 'sent')
+        .or(`status.eq.failed,created_at.lt.${caducadas}`)
+        .select('id');
+    assertWrite(error, 'broadcast_sends', 'delete claims caducadas');
+    return (data || []).length;
+}
+
+/**
+ * RESERVA un destinatario antes de enviarle nada. Devuelve el id de la fila, o null si
+ * otro proceso ya lo tenía (violación del UNIQUE, código 23505).
+ *
+ * El SELECT previo de getBroadcastSentPhones no basta como exclusión: dos pestañas del
+ * panel pulsando "enviar" a la vez lo pasan las dos. Quien decide es este INSERT.
+ */
+async function claimBroadcastRecipient(orgId, { campaignKey, contactId = null, telefono }) {
+    const oid = resolveOrg(orgId);
+    const phone = sanitizePhone(telefono);
+    if (!campaignKey || !phone) return null;
+    const { data, error } = await supabase
+        .from('broadcast_sends')
+        .insert({
+            organization_id: oid,
+            campaign_key:    campaignKey,
+            contact_id:      contactId,
+            wa_phone:        phone,
+            status:          'pending',
+        })
+        .select('id')
+        .single();
+    if (error) {
+        if (error.code === '23505') return null; // ya reservado por otro → no es un fallo
+        assertWrite(error, 'broadcast_sends', 'insert claim');
+    }
+    return data?.id ?? null;
+}
+
+/** Cierra una reserva: 'sent' (con el modo y la plantilla reales) o 'failed' (con el error). */
+async function finishBroadcastSend(orgId, claimId, { status, mode = null, templateName = null, error: errMsg = null }) {
+    const oid = resolveOrg(orgId);
+    if (!claimId) return false;
+    const { data, error } = await supabase
+        .from('broadcast_sends')
+        .update({
+            status,
+            mode,
+            template_name: templateName,
+            error:         errMsg ? String(errMsg).slice(0, 500) : null,
+            sent_at:       status === 'sent' ? now() : null,
+        })
+        .eq('organization_id', oid)
+        .eq('id', claimId)
+        .select('id');
+    assertRowsAffected(error, data, 'broadcast_sends', 'update finish');
+    return true;
+}
+
+/**
+ * Envíos EFECTIVOS de la org en las últimas 24 h, todas las campañas incluidas: el tope
+ * lo impone Meta sobre el número, no sobre la campaña. Alimenta el recorte automático de
+ * la tanda — el 01/08/2026 este número ya se llevó un bloqueo.
+ */
+async function countBroadcastSendsLast24h(orgId, now_ = Date.now()) {
+    const oid = resolveOrg(orgId);
+    const desde = new Date(now_ - VENTANA_24H_MS).toISOString();
+    const { count, error } = await supabase
+        .from('broadcast_sends')
+        .select('id', { count: 'exact', head: true })
+        .eq('organization_id', oid)
+        .eq('status', 'sent')
+        .gte('sent_at', desde);
+    assertRead(error, 'broadcast_sends');
+    return count || 0;
+}
+
 // ─── Pending actions ─────────────────────────────────────────────────────────
 
 async function createPendingAction(orgId, { type, contactId, appointmentId, payload }) {
@@ -1681,6 +1851,7 @@ module.exports = {
     setEscalationReason,
     deleteConversationMessages,
     getLastInboundAt,
+    getLastInboundAtBulk,
     isWithin24hWindow,
     saveAppointment,
     hasActiveAppointmentForSlot,
@@ -1703,6 +1874,11 @@ module.exports = {
     getBlacklist,
     getVipList,
     getBroadcastRecipients,
+    getBroadcastSentPhones,
+    resetStaleBroadcastClaims,
+    claimBroadcastRecipient,
+    finishBroadcastSend,
+    countBroadcastSendsLast24h,
     createPendingAction,
     getPendingActions,
     resolvePendingAction,
