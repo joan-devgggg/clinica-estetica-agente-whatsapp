@@ -790,7 +790,15 @@ app.put('/api/leads/:id/bot-mode', async (req, res) => {
 app.post('/api/send', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
-        const { telefono, mensaje } = req.body;
+        // `pausarBot` (por defecto true): escribir a mano en un chat significa que una
+        // persona está atendiendo, así que el bot se aparta de ESA conversación — y solo
+        // de esa. El 01/08/2026 Yulia escribió a Valeria y el bot, que seguía en 'auto',
+        // volvió a hablar encima ("Nos vemos pronto" a una clienta sin cita). Reactivarlo
+        // es explícito: el botón del propio chat.
+        //
+        // La excepción es el mensaje de reactivación tras quitar de lista negra, que acaba
+        // de poner bot_mode='auto' a propósito: ese pasa pausarBot=false para no deshacerlo.
+        const { telefono, mensaje, pausarBot = true } = req.body;
         if (!telefono || !mensaje) return res.status(400).json({ error: 'telefono y mensaje requeridos' });
         const client = getOutboundClient(orgId);
         if (!client) return res.status(503).json({ error: 'WhatsApp no conectado — reconecta el bot e inténtalo de nuevo' });
@@ -833,7 +841,25 @@ app.post('/api/send', async (req, res) => {
             }
         }
         await db.saveMessage(orgId, { telefono: digits, contenido: mensaje, direccion: 'saliente', esManual: true });
-        res.json({ ok: true });
+
+        // Solo si el envío salió bien: si falló, la persona no ha atendido a nadie y no
+        // tiene sentido dejar el bot apagado en esa conversación. Mismo par de llamadas que
+        // PUT /api/leads/:id/bot-mode — el estado vive en Supabase (setLeadBotMode) y en la
+        // sesión en memoria/SQLite (_setConvMode), y desincronizarlos deja al bot
+        // respondiendo hasta el siguiente reinicio.
+        let botPausado = false;
+        if (pausarBot) {
+            try {
+                await db.setLeadBotMode(orgId, digits, 'manual');
+                if (_setConvMode) _setConvMode(digits, false);
+                botPausado = true;
+                logger.info('bot_pausado_por_envio_manual', { orgId, telefono: digits });
+            } catch (e) {
+                // El mensaje ya se envió: no se devuelve error, pero hay que poder verlo.
+                logger.error('bot_pausar_tras_envio_error', { orgId, telefono: digits, error: e.message });
+            }
+        }
+        res.json({ ok: true, botPausado });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

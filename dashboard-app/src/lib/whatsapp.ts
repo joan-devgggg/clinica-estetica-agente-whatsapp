@@ -85,16 +85,33 @@ export async function toggleLeadBotMode(orgId: string, leadId: number, mode: Bot
   });
 }
 
-export async function sendManualMessage(orgId: string, telefono: string, mensaje: string): Promise<void> {
+/**
+ * Envía un mensaje escrito a mano. Por defecto el backend pausa el bot en ESA conversación
+ * (bot_mode='manual'): si una persona está atendiendo, el bot no debe hablar encima.
+ * Reactivarlo es explícito, con el botón del propio chat.
+ *
+ * `pausarBot: false` es solo para el mensaje de reactivación tras quitar de lista negra,
+ * que acaba de poner el modo en 'auto' y no debe deshacerlo.
+ *
+ * Devuelve si el bot quedó pausado, para que la UI no diga una cosa y la BD otra.
+ */
+export async function sendManualMessage(
+  orgId: string,
+  telefono: string,
+  mensaje: string,
+  opts: { pausarBot?: boolean } = {}
+): Promise<{ botPausado: boolean }> {
   const res = await fetch(`${API}/api/send`, {
     method: "POST",
     headers: await apiHeaders(orgId),
-    body: JSON.stringify({ telefono, mensaje }),
+    body: JSON.stringify({ telefono, mensaje, pausarBot: opts.pausarBot ?? true }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error((err as { error?: string }).error || "Error enviando mensaje");
   }
+  const body = (await res.json().catch(() => ({}))) as { botPausado?: boolean };
+  return { botPausado: body.botPausado === true };
 }
 
 // ─── Helpers de formato ───────────────────────────────────────────────────────

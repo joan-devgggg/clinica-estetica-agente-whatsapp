@@ -52,6 +52,11 @@ db.authenticateToken = async (token) => {
 db.getContactWaJid = async () => null; // sin JID persistido → heurística @c.us
 let savedMessages = [];
 db.saveMessage = async (orgId, msg) => { savedMessages.push({ orgId, ...msg }); };
+// Escribir a mano pausa el bot en ESA conversación (bot_mode='manual').
+let botModeCalls = [];
+db.setLeadBotMode = async (orgId, telefono, mode) => { botModeCalls.push({ orgId, telefono, mode }); };
+// Registro de la otra mitad del par: la sesión en memoria/SQLite.
+let convModeCalls = [];
 
 // Cliente wwebjs FALSO para San Remo (registra los envíos; ningún Puppeteer real).
 let wwebSends = [];
@@ -59,7 +64,11 @@ const fakeWwebClient = {
     getChatById: async () => ({ sendStateTyping: async () => {} }),
     sendMessage: async (jid, text) => { wwebSends.push({ jid, text }); return { id: 'wweb-out' }; },
 };
-setWAClient(new Map([[SANREMO_ORG, { client: fakeWwebClient, slug: 'sanremo' }]]), () => {}, () => {});
+setWAClient(
+    new Map([[SANREMO_ORG, { client: fakeWwebClient, slug: 'sanremo' }]]),
+    (telefono, activo) => { convModeCalls.push({ telefono, activo }); },
+    () => {}
+);
 
 function request(server, { method = 'POST', path = '/', headers = {}, body = null }) {
     const { port } = server.address();
@@ -136,6 +145,70 @@ async function test(name, fn) {
             assert.strictEqual(wwebSends.length, 1, 'usa el cliente wwebjs');
             assert.strictEqual(wwebSends[0].jid, '34600999888@c.us');
             assert.strictEqual(wwebSends[0].text, 'Reserva confirmada');
+        });
+
+        // ─── Pausa por envío manual ──────────────────────────────────────────────────
+        // 01/08/2026: Yulia escribió a Valeria desde el panel y el bot, que seguía en
+        // 'auto', volvió a hablar encima ("Nos vemos pronto" a una clienta sin cita).
+        // Escribir a mano tiene que apartar al bot de ESA conversación, y de ninguna más.
+
+        await test('escribir a mano pausa el bot SOLO en esa conversación', async () => {
+            botModeCalls = []; convModeCalls = []; savedMessages = [];
+            const originalFetch = global.fetch;
+            global.fetch = async () => ({ ok: true, json: async () => ({ messages: [{ id: 'wamid.OUT' }] }) });
+            try {
+                const res = await request(server, {
+                    path: '/api/send',
+                    headers: { Authorization: 'Bearer sante-token' },
+                    body: { telefono: '34600111222', mensaje: 'Te atiendo yo' },
+                });
+                assert.strictEqual(res.status, 200);
+                assert.strictEqual(res.body.botPausado, true, 'la respuesta informa de la pausa');
+            } finally {
+                global.fetch = originalFetch;
+            }
+            assert.deepStrictEqual(botModeCalls, [
+                { orgId: SANTE_ORG, telefono: '34600111222', mode: 'manual' },
+            ], 'un solo contacto, modo manual — nunca la org entera');
+            assert.deepStrictEqual(convModeCalls, [{ telefono: '34600111222', activo: false }],
+                'también se apaga la sesión en memoria: si no, el bot sigue hasta el reinicio');
+        });
+
+        await test('pausarBot:false (reactivar tras lista negra) NO pausa', async () => {
+            botModeCalls = []; convModeCalls = [];
+            const originalFetch = global.fetch;
+            global.fetch = async () => ({ ok: true, json: async () => ({ messages: [{ id: 'wamid.OUT' }] }) });
+            try {
+                const res = await request(server, {
+                    path: '/api/send',
+                    headers: { Authorization: 'Bearer sante-token' },
+                    body: { telefono: '34600111222', mensaje: 'Hemos revisado tu caso', pausarBot: false },
+                });
+                assert.strictEqual(res.status, 200);
+                assert.strictEqual(res.body.botPausado, false);
+            } finally {
+                global.fetch = originalFetch;
+            }
+            assert.strictEqual(botModeCalls.length, 0, 'no debe deshacer el auto recién puesto');
+            assert.strictEqual(convModeCalls.length, 0);
+        });
+
+        await test('si el envío FALLA no se pausa el bot (nadie ha atendido)', async () => {
+            botModeCalls = []; convModeCalls = []; savedMessages = [];
+            const originalFetch = global.fetch;
+            global.fetch = async () => ({ ok: false, status: 500, text: async () => 'boom', json: async () => ({}) });
+            try {
+                const res = await request(server, {
+                    path: '/api/send',
+                    headers: { Authorization: 'Bearer sante-token' },
+                    body: { telefono: '34600111222', mensaje: 'no sale' },
+                });
+                assert.notStrictEqual(res.status, 200, 'el envío fallido no responde 200');
+            } finally {
+                global.fetch = originalFetch;
+            }
+            assert.strictEqual(botModeCalls.length, 0, 'sin envío no hay pausa');
+            assert.strictEqual(savedMessages.length, 0, 'ni mensaje guardado');
         });
     } finally {
         server.close();

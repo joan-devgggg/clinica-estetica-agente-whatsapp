@@ -173,7 +173,17 @@ export default function WhatsAppPage() {
       sendingRef.current = true;
       setSendingMessage(true);
       try {
-        await sendManualMessage(orgId, telefono, mensaje);
+        const { botPausado } = await sendManualMessage(orgId, telefono, mensaje);
+        if (!mountedRef.current) return;
+        // El backend acaba de poner bot_mode='manual' en esta conversación. Lo reflejamos
+        // aquí para que el interruptor del chat no siga diciendo "auto": si la UI y la BD
+        // no coinciden, quien atiende cree que el bot está activo cuando no lo está.
+        if (botPausado) {
+          setConversations((prev) =>
+            prev.map((c) => (c.telefono === telefono ? { ...c, bot_mode: "manual" } : c))
+          );
+          toast("Bot pausado en esta conversación — reactívalo cuando termines");
+        }
       } catch (e) {
         if (!mountedRef.current) return;
         toast.error((e as Error).message || "Error enviando mensaje");
@@ -199,10 +209,13 @@ export default function WhatsAppPage() {
           headers: await apiHeaders(orgId),
         });
         await toggleLeadBotMode(orgId, leadId, "auto");
+        // pausarBot:false — este saludo REACTIVA al cliente; si pausara, desharía el
+        // 'auto' que acabamos de poner y el bot se quedaría mudo con la UI diciendo auto.
         await sendManualMessage(
           orgId,
           telefono,
-          "Hola 😊 Hemos revisado tu caso. ¿En qué puedo ayudarte?"
+          "Hola 😊 Hemos revisado tu caso. ¿En qué puedo ayudarte?",
+          { pausarBot: false }
         );
         setConversations((prev) =>
           prev.map((c) =>
