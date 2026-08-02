@@ -25,7 +25,7 @@ import {
 import { toast } from "sonner";
 import { API, apiHeaders } from "@/lib/api";
 import { ServiceListField } from "@/components/agenda/service-list-field";
-import { useServiceCatalog, stylistsForCategoria, splitServiceNames, servicesAllInCatalog } from "@/lib/service-catalog";
+import { useServiceCatalog, stylistsForCategoria, splitServiceNames, catalogDurationTotal } from "@/lib/service-catalog";
 
 interface Props {
   reserva: Reserva | null;
@@ -65,6 +65,9 @@ export function AppointmentEditSheet({
       servicio: r?.service || "",
       fecha: r?.fecha_cita || "",
       hora: r?.hora_cita || "",
+      // Duración MANUAL: solo se usa cuando la cita no tiene una suma de catálogo (texto
+      // libre, o San Remo). Con servicios de catálogo manda `duracionCatalogo`, derivada más
+      // abajo — este valor de la BD puede estar obsoleto respecto a los servicios guardados.
       duracion: r?.starts_at && r?.ends_at
         ? String(Math.round((new Date(r.ends_at).getTime() - new Date(r.starts_at).getTime()) / 60000))
         : "60",
@@ -86,10 +89,16 @@ export function AppointmentEditSheet({
 
   const appointmentId = reserva.appointment_id;
 
-  function handleServicesChange(servicioText: string, totalDuracion: number, categoriaPrimera: string | null) {
+  // Duración derivada de los servicios en CADA render, no en el estado: así una cita
+  // multi-servicio reabierta muestra y guarda la suma real (Paloma: 320 min) en vez del
+  // ends_at viejo de la BD (60 min). Mientras el catálogo aún no ha cargado devuelve null y
+  // se cae al valor manual, que es el de la BD — nunca a un número inventado.
+  const duracionCatalogo = isSalon ? catalogDurationTotal(form.servicio, catalog) : null;
+  const duracionEfectiva = duracionCatalogo != null ? String(duracionCatalogo) : form.duracion;
+
+  function handleServicesChange(servicioText: string, categoriaPrimera: string | null) {
     setForm((f) => {
       const next = { ...f, servicio: servicioText };
-      if (totalDuracion > 0) next.duracion = String(totalDuracion);
       // La preselección de estilista solo tiene sentido con UN servicio: con varios, cada uno
       // puede pedir una estilista distinta (Contouring → colorista, manicura → Olgha) y
       // autoasignar por el primero sería elegir mal en silencio.
@@ -112,7 +121,7 @@ export function AppointmentEditSheet({
           servicio: form.servicio,
           fecha: form.fecha,
           hora: form.hora,
-          duracionMin: parseInt(form.duracion) || 60,
+          duracionMin: parseInt(duracionEfectiva) || 60,
           estado: form.estado,
           // null explícito, no undefined: con undefined el backend no aplicaba el campo y
           // vaciar el selector no desasignaba nunca a la estilista.
@@ -251,12 +260,12 @@ export function AppointmentEditSheet({
               </Label>
               <Input
                 type="number"
-                value={form.duracion}
+                value={duracionEfectiva}
                 onChange={e => setForm(f => ({ ...f, duracion: e.target.value }))}
                 className="h-9"
                 min={15}
                 step={15}
-                disabled={isSalon && servicesAllInCatalog(catalog, form.servicio)}
+                disabled={duracionCatalogo != null}
               />
             </div>
           </div>

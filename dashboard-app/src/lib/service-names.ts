@@ -69,6 +69,41 @@ export function joinServiceNames(names: (string | null | undefined)[]): string {
   return (names || []).map((n) => String(n || "").trim()).filter(Boolean).join(" + ");
 }
 
+// Entrada con duración conocida: el mismo shape que sirve /api/service-catalog.
+export interface DurationEntry extends SplittableEntry {
+  duracion?: number | null;
+}
+
+// Duración total de una cita a partir de su string de servicios, o `null` si no se puede
+// saber (algún servicio es texto libre, o su duración no es un número útil).
+//
+// Es la ÚNICA fuente de la duración en el formulario: se deriva de `servicio` en cada
+// render, no se guarda en el estado. Antes vivía en el estado y solo se refrescaba al tocar
+// el desplegable, así que al REABRIR una cita multi-servicio el campo enseñaba la duración
+// vieja de la BD (Paloma: resumen "3 servicios · 320 min" y campo en 60) y al guardar el PUT
+// mandaba ese 60, recortando ends_at a una hora para una visita de más de cinco.
+//
+// El lookup es ESTRICTO por nombre completo, nunca por el `nombre` crudo del catálogo: el
+// catálogo real repite nombres ("Largo" sale 4 veces, de 120 a 360 min según la categoría),
+// y resolver por el crudo elegiría uno al azar — un número plausible y equivocado. Sin
+// duración fiable devolvemos null y el panel deja el campo editable.
+export function catalogDurationTotal<T extends DurationEntry>(
+  servicio: string | null | undefined,
+  catalog: T[]
+): number | null {
+  const nombres = splitServiceNames(servicio, catalog);
+  if (!nombres.length) return null;
+  let total = 0;
+  for (const nombre of nombres) {
+    const target = normalizeServiceName(nombre);
+    const entry = catalog.find((e) => normalizeServiceName(e.fullName) === target);
+    const min = Number(entry?.duracion);
+    if (!entry || !Number.isFinite(min) || min <= 0) return null;
+    total += min;
+  }
+  return total;
+}
+
 // ─── Filas del formulario multi-servicio ──────────────────────────────────────────────
 // El estado de ServiceListField es {servicio, numFilas}: los NOMBRES no se duplican en
 // estado local (viven en el `servicio` del formulario padre, la fuente de verdad) y lo único

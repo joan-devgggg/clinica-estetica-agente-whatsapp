@@ -56,12 +56,18 @@ require.cache[supabasePath] = { id: supabasePath, filename: supabasePath, loaded
 
 const db = require('../services/db');
 const { computeServiceBilling, buildStylistBillingReport, buildFullServiceName } = require('../services/helpers');
-const { splitServiceNames, joinServiceNames } = require(
+const { splitServiceNames, joinServiceNames, catalogDurationTotal } = require(
     path.join(__dirname, '..', 'dashboard-app', 'src', 'lib', 'service-names.ts')
 );
 
 const CATALOGO = require('./fixtures/sante-catalog.json');
-const CAT_CLIENTE = CATALOGO.map(s => ({ nombre: s.nombre, fullName: buildFullServiceName(s, CATALOGO) }));
+// Mismo shape que sirve /api/service-catalog (webhook.js), incluida la duración: es la que
+// el formulario suma para derivar el campo "Duración".
+const CAT_CLIENTE = CATALOGO.map(s => ({
+    nombre: s.nombre,
+    fullName: buildFullServiceName(s, CATALOGO),
+    duracion: s.duracion ?? 60,
+}));
 const ORG = 'b2c3d4e5-f6a7-8901-bcde-f12345678901';
 
 // Las tres filas que la recepcionista elegiría en el desplegable para la cita de Paloma.
@@ -171,6 +177,66 @@ const callsTo = (table, op) => mock.calls.filter(c => c.table === table && c.op 
 
     await test('reabrir la cita reconstruye las MISMAS 3 filas del formulario', () => {
         assert.deepStrictEqual(splitServiceNames(SERVICE_STR, CAT_CLIENTE), FILAS);
+    });
+
+    // ─── Reabrir la cita: el campo "Duración" se DERIVA, no se hereda de la BD ────────────
+    // La cita de Paloma quedó en la BD con ends_at a 60 min (starts 10:30 → 11:30) pese a
+    // llevar tres servicios. Al reabrirla, el resumen decía "3 servicios · 320 min" pero el
+    // campo Duración seguía enseñando ese 60, y Guardar mandaba 60: la cita se registraba
+    // como cinco horas más corta de lo que dura. Estas pruebas fijan que la duración sale
+    // siempre de los servicios, no del ends_at guardado.
+    const duracionMostrada = (servicio, manual) => {
+        const derivada = catalogDurationTotal(servicio, CAT_CLIENTE);
+        return derivada != null ? String(derivada) : manual;
+    };
+
+    await test('reabrir la cita de Paloma: el campo Duración enseña 320, no el 60 de la BD', () => {
+        // `manual` = lo que formFromReserva saca de starts_at/ends_at de la fila real.
+        assert.strictEqual(duracionMostrada(SERVICE_STR, '60'), '320');
+        assert.strictEqual(catalogDurationTotal(SERVICE_STR, CAT_CLIENTE), DURACION);
+    });
+
+    await test('guardar sin tocar nada reescribe ends_at con los 320 min', async () => {
+        mock.reset();
+        mock.setResponder((state) => ({ data: { id: 'apt-1', ...state.payload }, error: null }));
+
+        // Exactamente el PUT que manda el sheet: duracionMin = duración derivada.
+        await db.updateAppointment(ORG, 'apt-1', {
+            servicio: SERVICE_STR, fecha: '2026-08-01', hora: '10:30',
+            duracionMin: parseInt(duracionMostrada(SERVICE_STR, '60')),
+        });
+
+        const p = callsTo('appointments', 'update')[0].payload;
+        const mins = (new Date(p.ends_at) - new Date(p.starts_at)) / 60000;
+        assert.strictEqual(mins, DURACION, `ends_at debe cubrir ${DURACION} min, cubre ${mins}`);
+    });
+
+    await test('quitar un servicio al reabrir baja la duración mostrada en el acto', () => {
+        assert.strictEqual(duracionMostrada(joinServiceNames(['Mechas Contouring', 'Matiz plus']), '320'), '260');
+        assert.strictEqual(duracionMostrada('K18', '320'), '60');
+    });
+
+    await test('sin suma fiable NO se inventa duración: manda el valor manual', () => {
+        // Texto libre: el campo se rehabilita y conserva lo que hubiera.
+        assert.strictEqual(catalogDurationTotal('Peinado de novia a domicilio', CAT_CLIENTE), null);
+        assert.strictEqual(duracionMostrada('Peinado de novia a domicilio', '90'), '90');
+        // Mezcla de catálogo y texto libre: tampoco hay total, no se guarda una suma parcial.
+        assert.strictEqual(catalogDurationTotal(joinServiceNames(['K18', 'Algo raro']), CAT_CLIENTE), null);
+        // Catálogo aún cargando (fetch en vuelo): null, y el campo se queda con el valor de
+        // la BD en lugar de enseñar un 0 o un parcial.
+        assert.strictEqual(catalogDurationTotal(SERVICE_STR, []), null);
+        // Cita vacía / San Remo.
+        assert.strictEqual(catalogDurationTotal('', CAT_CLIENTE), null);
+    });
+
+    await test('nombre ambiguo del catálogo: no se resuelve por el nombre crudo', () => {
+        // "Largo" existe en varias categorías con duraciones distintas (120, 240, 300, 360);
+        // elegir una al azar daría un número plausible y equivocado. Sin el nombre completo
+        // (buildFullServiceName) no hay suma, y el campo se deja editable.
+        const ambiguos = CATALOGO.filter(s => String(s.nombre).trim().toLowerCase() === 'largo');
+        assert.ok(ambiguos.length > 1, 'el catálogo real debe tener "Largo" repetido');
+        assert.ok(new Set(ambiguos.map(s => s.duracion)).size > 1, 'y con duraciones distintas');
+        assert.strictEqual(catalogDurationTotal('Largo', CAT_CLIENTE), null);
     });
 
     await test('un servicio con " + " en el nombre no se trocea al reabrir', () => {

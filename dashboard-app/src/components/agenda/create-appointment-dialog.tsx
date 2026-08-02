@@ -12,7 +12,7 @@ import { toast } from "sonner";
 import { API, apiHeaders } from "@/lib/api";
 import { ymd } from "@/lib/date";
 import type { Stylist } from "@/lib/types";
-import { useServiceCatalog, stylistsForCategoria, splitServiceNames, servicesAllInCatalog } from "@/lib/service-catalog";
+import { useServiceCatalog, stylistsForCategoria, splitServiceNames, catalogDurationTotal } from "@/lib/service-catalog";
 
 interface Props {
   stylists: Stylist[];
@@ -34,15 +34,19 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
     servicio: "",
     fecha: ymd(new Date()),
     hora: "10:00",
+    // Duración MANUAL: solo cuenta cuando los servicios no dan una suma de catálogo (texto
+    // libre). Con servicios de catálogo manda `duracionCatalogo`, derivada de `servicio`.
     duracion: "60",
     stylistId: defaultStylistId || "",
   });
   const { catalog } = useServiceCatalog(orgId, true);
 
-  function handleServicesChange(servicioText: string, totalDuracion: number, categoriaPrimera: string | null) {
+  const duracionCatalogo = catalogDurationTotal(form.servicio, catalog);
+  const duracionEfectiva = duracionCatalogo != null ? String(duracionCatalogo) : form.duracion;
+
+  function handleServicesChange(servicioText: string, categoriaPrimera: string | null) {
     setForm((f) => {
       const next = { ...f, servicio: servicioText };
-      if (totalDuracion > 0) next.duracion = String(totalDuracion);
       // La preselección de estilista solo tiene sentido con UN servicio: con varios, cada uno
       // puede pedir una estilista distinta (Contouring → colorista, manicura → Olgha) y
       // autoasignar por el primero sería elegir mal en silencio.
@@ -94,7 +98,7 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
           servicio: form.servicio || "Cita manual",
           fecha: form.fecha,
           hora: form.hora,
-          duracionMin: parseInt(form.duracion),
+          duracionMin: parseInt(duracionEfectiva) || 60,
           stylistId: form.stylistId || undefined,
         }),
       });
@@ -157,9 +161,9 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
               <Label>Duración (min)</Label>
               <Input
                 type="number"
-                value={form.duracion}
+                value={duracionEfectiva}
                 onChange={e => setForm(f => ({ ...f, duracion: e.target.value }))}
-                disabled={servicesAllInCatalog(catalog, form.servicio)}
+                disabled={duracionCatalogo != null}
               />
             </div>
           </div>

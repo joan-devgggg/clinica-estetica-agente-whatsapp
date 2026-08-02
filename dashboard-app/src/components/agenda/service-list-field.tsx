@@ -17,7 +17,10 @@ import {
 interface Props {
   catalog: ServiceCatalogEntry[];
   servicio: string;
-  onChange: (servicioText: string, totalDuracion: number, categoriaPrimera: string | null) => void;
+  // La duración NO viaja por aquí: el padre la deriva de `servicio` con catalogDurationTotal.
+  // Cuando se pasaba en el callback, el padre solo se enteraba al TOCAR el desplegable y una
+  // cita reabierta se quedaba con la duración vieja de la BD.
+  onChange: (servicioText: string, categoriaPrimera: string | null) => void;
   labelClassName?: string;
   placeholder?: string;
 }
@@ -47,12 +50,11 @@ export function ServiceListField({ catalog, servicio, onChange, labelClassName, 
 
   function aplicar(next: ServiceRowsState) {
     setNumFilas(next.numFilas);
-    const nombres = serviceRows(next, catalog).filter(Boolean);
-    const resueltas = nombres.map((n) => findCatalogEntryByFullName(catalog, n));
-    // Un servicio fuera de catálogo no aporta duración conocida; el padre rehabilita el input
-    // de duración en ese caso para poder ponerla a mano.
-    const totalDuracion = resueltas.reduce((sum, e) => sum + (e?.duracion ?? 0), 0);
-    onChange(next.servicio, totalDuracion, resueltas[0]?.categoria ?? null);
+    // La categoría de la PRIMERA fila es lo único que el padre necesita además del texto:
+    // le sirve para sugerir estilista.
+    const primera = serviceRows(next, catalog).filter(Boolean)[0];
+    const entrada = primera ? findCatalogEntryByFullName(catalog, primera) : null;
+    onChange(next.servicio, entrada?.categoria ?? null);
   }
 
   // Los servicios sin precio (ej. Consulta, "se confirma en salón") NO suman 0 en silencio: se
