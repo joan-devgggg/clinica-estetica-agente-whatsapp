@@ -1033,6 +1033,52 @@ function detectNoPreferenceSignal(text) {
     };
 }
 
+// ─── "No tengo estilista": la respuesta LITERAL a la pregunta de estilista ────
+// El bot pregunta "¿Tienes estilista de confianza o prefieres que te busque el hueco más
+// cercano?" y la clienta contesta "No tengo estilista". El 01/08/2026 eso no lo reconocía
+// nadie: SIN_PREFERENCIA_RE cubre "no tengo preferencia" pero no "no tengo estilista".
+//
+// Va SEPARADO de SIN_PREFERENCIA_RE a propósito. Ese flag lo consume también
+// extractDateSignalSante para emitir `asapWeak`, y "no tengo estilista" no dice NADA sobre
+// cuándo: responde a QUIÉN. Meterlo allí convertiría "no tengo estilista" en una señal
+// temporal de "lo antes posible" y contaminaría la preferencia de fecha.
+//
+// Por eso este detector no lo usa extractDateSignalSante, y en bot.js solo se consulta
+// cuando el turno anterior dejó la pregunta de estilista abierta
+// (session.stylistQuestionPending): fuera de ese contexto, "es mi primera vez" o "ninguna"
+// pueden estar contestando a otra cosa.
+// Los patrones se pasan por normalizeText antes de compilar porque el texto de entrada
+// también va normalizado, y NFD descompone la «й» cirílica (и + breve combinante, que el
+// filtro de diacríticos borra): "первый" acaba siendo "первыи". Escribirlos a mano en su
+// forma descompuesta sería ilegible y frágil.
+const SIN_ESTILISTA_RE = new RegExp([
+    // ES
+    'no tengo (?:una |un |a )?(?:estilista|peluquer[ao]|manicurista|masajista|chica|persona)',
+    'no tengo (?:ningun[ao]|nadie|a nadie)',
+    'ningun[ao] en (?:particular|concreto|especial)',
+    'no conozco a (?:nadie|ningun[ao])',
+    'primera vez',
+    'nunca he (?:venido|estado|ido)',
+    'soy nueva',
+    // EN
+    "(?:don'?t|do not) have (?:a )?(?:stylist|hairdresser)",
+    'no stylist',
+    'first time',
+    "(?:don'?t|do not) know anyone",
+    // RU
+    'нет мастера', 'без мастера', 'первый раз', 'никого не знаю',
+    // UK
+    'немає майстра', 'без майстра', 'перший раз', 'вперше',
+].map(normalizeText).join('|'));
+
+/**
+ * ¿Este mensaje dice "no tengo estilista de confianza"? Solo tiene sentido preguntarlo
+ * cuando la pregunta de estilista está pendiente. Devuelve boolean; NO toca fecha ni hora.
+ */
+function detectNoStylistPreference(text) {
+    return SIN_ESTILISTA_RE.test(normalizeText(text));
+}
+
 // Extrae la SEÑAL de fecha/hora que expresa ESTE mensaje (sin estado previo, sin mutar nada).
 // Devuelve un objeto plano con solo los campos detectados:
 //   { asap?, asapWeak?, fecha?, diaSemana?, semana?, semanaWeak?, periodo? }
@@ -1894,6 +1940,7 @@ module.exports = {
     extractQuickDataSante,
     extractDateSignalSante,
     detectNoPreferenceSignal,
+    detectNoStylistPreference,
     wantsAnotherBooking,
     wantsRestart,
     detectGuestBooking,

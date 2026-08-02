@@ -11,7 +11,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -2841,7 +2841,18 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // escribía "el mas cercano" sin tilde no la activaba, la pregunta de estilista no
             // se cerraba nunca y el flujo se quedaba sin cargar huecos (28/07).
             const noPref = detectNoPreferenceSignal(sanitized);
-            const meDaIgual = noPref.asapTemporal || noPref.sinPreferencia;
+            // La respuesta LITERAL a la pregunta de estilista ("No tengo estilista") no la
+            // reconocía nadie: SIN_PREFERENCIA_RE cubre "no tengo preferencia" pero no esa.
+            // El 01/08/2026 una clienta contestó exactamente eso y el flujo se quedó sin
+            // saber qué hacer con su respuesta.
+            //
+            // Solo se consulta si el turno ANTERIOR dejó la pregunta abierta: aquí
+            // session.stylistQuestionPending todavía tiene el valor del turno previo (se
+            // reescribe más abajo, al calcular el gating). Fuera de ese contexto "ninguna"
+            // o "es mi primera vez" pueden estar contestando a otra cosa.
+            const respondeQueNoTieneEstilista =
+                !!session.stylistQuestionPending && detectNoStylistPreference(sanitized);
+            const meDaIgual = noPref.asapTemporal || noPref.sinPreferencia || respondeQueNoTieneEstilista;
 
             // Estilistas que pueden hacer el servicio (por skills). La decisión de FIJAR
             // (o no) una estilista está centralizada en assignStylistIfAppropriate: si solo
