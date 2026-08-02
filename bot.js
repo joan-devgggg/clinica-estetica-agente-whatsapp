@@ -11,7 +11,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveK18ComplementIfNeeded, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -2740,7 +2740,17 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             }
 
             if (!session.selectedService) {
-                const matchedSvc = extractServiceFromText(sanitized, agentCfgPre?.services || []);
+                let matchedSvc = extractServiceFromText(sanitized, agentCfgPre?.services || []);
+                // Mención genérica de K18 ("k18", "reconstrucción k18"). Tras la migración 026
+                // no existe una entrada llamada exactamente "K18": extractServiceFromText cae a
+                // null para "k18" y al complemento de 15 min para "reconstrucción k18". Aquí no
+                // hay servicio principal aún, así que no hay color donde engancharlo → resuelve
+                // al suelto de 60 min. Solo se pisa un match de la propia categoría Reconstrucción:
+                // en "balayage y k18" el principal es el balayage y el K18 llega luego por upsell.
+                const k18Svc = resolveK18ServiceFromText(sanitized, session.selectedService?.categoria, agentCfgPre?.services || []);
+                if (k18Svc && (!matchedSvc || normalizeText(matchedSvc.categoria || '') === 'reconstruccion')) {
+                    matchedSvc = k18Svc;
+                }
                 if (matchedSvc) {
                     session.selectedService = matchedSvc;
                     // Cliente cambió de servicio (nombró otro por keyword): descartamos

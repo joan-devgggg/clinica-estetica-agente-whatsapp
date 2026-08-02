@@ -71,7 +71,10 @@ const CAT_CLIENTE = CATALOGO.map(s => ({
 const ORG = 'b2c3d4e5-f6a7-8901-bcde-f12345678901';
 
 // Las tres filas que la recepcionista elegiría en el desplegable para la cita de Paloma.
-const FILAS = ['Mechas Contouring', 'Matiz plus', 'K18'];
+// El tercero es el K18 suelto, que tras la migración 026 se llama "Reconstrucción K18 +
+// lavar y peinar": lleva " + " DENTRO del nombre, así que esta cita ejercita de paso la
+// recomposición por longest match (3 filas, no 4).
+const FILAS = ['Mechas Contouring', 'Matiz plus', 'Reconstrucción K18 + lavar y peinar'];
 const SERVICE_STR = joinServiceNames(FILAS);
 // Duración = suma, que es lo que ServiceListField manda como duracionMin.
 const DURACION = FILAS.reduce((s, n) => s + Number(CATALOGO.find(c => c.nombre === n).duracion), 0);
@@ -84,7 +87,7 @@ const callsTo = (table, op) => mock.calls.filter(c => c.table === table && c.op 
 
 (async () => {
     await test('el formulario produce UN string con los 3 servicios unidos por " + "', () => {
-        assert.strictEqual(SERVICE_STR, 'Mechas Contouring + Matiz plus + K18');
+        assert.strictEqual(SERVICE_STR, 'Mechas Contouring + Matiz plus + Reconstrucción K18 + lavar y peinar');
         assert.strictEqual(DURACION, 200 + 60 + 60);
     });
 
@@ -144,8 +147,9 @@ const callsTo = (table, op) => mock.calls.filter(c => c.table === table && c.op 
         assert.ok(segments.every(s => s.status === 'ok'), 'los 3 deben resolver contra el catálogo');
         assert.strictEqual(totalConIva, 285);
         // Lo que se facturaba antes del formulario multi-servicio: solo el del desplegable.
-        // K18 suelto (sin color asociado) = 60 €, distinto del complemento "Aplicación K18" (35 €).
-        assert.strictEqual(computeServiceBilling('K18', CATALOGO).totalConIva, 60);
+        // K18 suelto (sin color asociado) = 60 €, distinto del complemento "Reconstrucción K18" (35 €).
+        assert.strictEqual(computeServiceBilling('Reconstrucción K18 + lavar y peinar', CATALOGO).totalConIva, 60);
+        assert.strictEqual(computeServiceBilling('Reconstrucción K18', CATALOGO).totalConIva, 35);
     });
 
     await test('al completar, el snapshot congela los 285 € (no el precio de un servicio suelto)', async () => {
@@ -214,7 +218,8 @@ const callsTo = (table, op) => mock.calls.filter(c => c.table === table && c.op 
 
     await test('quitar un servicio al reabrir baja la duración mostrada en el acto', () => {
         assert.strictEqual(duracionMostrada(joinServiceNames(['Mechas Contouring', 'Matiz plus']), '320'), '260');
-        assert.strictEqual(duracionMostrada('K18', '320'), '60');
+        assert.strictEqual(duracionMostrada('Reconstrucción K18 + lavar y peinar', '320'), '60');
+        assert.strictEqual(duracionMostrada('Reconstrucción K18', '320'), '15');
     });
 
     await test('sin suma fiable NO se inventa duración: manda el valor manual', () => {
@@ -222,7 +227,7 @@ const callsTo = (table, op) => mock.calls.filter(c => c.table === table && c.op 
         assert.strictEqual(catalogDurationTotal('Peinado de novia a domicilio', CAT_CLIENTE), null);
         assert.strictEqual(duracionMostrada('Peinado de novia a domicilio', '90'), '90');
         // Mezcla de catálogo y texto libre: tampoco hay total, no se guarda una suma parcial.
-        assert.strictEqual(catalogDurationTotal(joinServiceNames(['K18', 'Algo raro']), CAT_CLIENTE), null);
+        assert.strictEqual(catalogDurationTotal(joinServiceNames(['Reconstrucción K18', 'Algo raro']), CAT_CLIENTE), null);
         // Catálogo aún cargando (fetch en vuelo): null, y el campo se queda con el valor de
         // la BD en lugar de enseñar un 0 o un parcial.
         assert.strictEqual(catalogDurationTotal(SERVICE_STR, []), null);
@@ -241,9 +246,14 @@ const callsTo = (table, op) => mock.calls.filter(c => c.table === table && c.op 
     });
 
     await test('un servicio con " + " en el nombre no se trocea al reabrir', () => {
-        const s = joinServiceNames(['Pedicura + esmaltado', 'K18']);
-        assert.deepStrictEqual(splitServiceNames(s, CAT_CLIENTE), ['Pedicura + esmaltado', 'K18']);
+        const s = joinServiceNames(['Pedicura + esmaltado', 'Reconstrucción K18']);
+        assert.deepStrictEqual(splitServiceNames(s, CAT_CLIENTE), ['Pedicura + esmaltado', 'Reconstrucción K18']);
         assert.strictEqual(computeServiceBilling(s, CATALOGO).segments.length, 2);
+        // Dos nombres con " + " dentro en el mismo string: el longest match debe recomponer
+        // los dos, no trocearlos en cuatro.
+        const s2 = joinServiceNames(['Pedicura + esmaltado', 'Reconstrucción K18 + lavar y peinar']);
+        assert.deepStrictEqual(splitServiceNames(s2, CAT_CLIENTE), ['Pedicura + esmaltado', 'Reconstrucción K18 + lavar y peinar']);
+        assert.strictEqual(computeServiceBilling(s2, CATALOGO).segments.length, 2);
     });
 
     await test('San Remo (catálogo vacío) no se ve afectado: el texto libre pasa entero', () => {

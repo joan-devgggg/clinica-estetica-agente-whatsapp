@@ -1727,18 +1727,47 @@ const K18_COLOR_CONTEXT_CATEGORIES = [
     'mechas balayage', 'mechas airtouch', 'mechas contouring', 'mechas clasicas', 'deco total blond',
 ];
 
-// Si el nombre resuelto es el K18 SUELTO ("K18", catálogo actual: 60€/60min) pero el servicio
-// PRINCIPAL de la sesión ya es una técnica de color, lo que la clienta realmente quiere es el
-// complemento ("Aplicación K18", 35€/15min) — no son los mismos 60 minutos porque el lavado y
-// el peinado ya van incluidos en el color. extractServiceFromText no tiene contexto de sesión:
-// resuelve por texto y ante un "K18" a secas siempre gana el nombre corto (es sustring de
-// cualquier variante más larga, nunca al revés), así que esta corrección se aplica DESPUÉS,
-// con la categoría del servicio principal ya elegido en la sesión.
+// Nombres de catálogo de las dos variantes de K18 (migración 026). El complemento son solo
+// los 15 min de aplicar producto; el suelto incluye lavar y peinar (60 min).
+const K18_COMPLEMENTO_NOMBRE = 'Reconstrucción K18';
+const K18_SUELTO_NOMBRE = 'Reconstrucción K18 + lavar y peinar';
+
+// ¿Es una mención GENÉRICA de K18? La clienta no conoce la distinción complemento/suelto:
+// escribe "k18", "k-18" o "reconstrucción k18" y quiere "el K18". Solo el nombre completo
+// del suelto (lleva "lavar y peinar") es una elección explícita que NO se reinterpreta.
+// Tras la migración 026 ya no hay entrada llamada exactamente "K18", así que sin esta
+// detección extractServiceFromText devuelve null para "k18" y devuelve el complemento de
+// 15 min para "reconstrucción k18" — cobrar 35€ y reservar 15 min para una hora de trabajo.
+function isBareK18Mention(value) {
+    const t = normalizeText(value || '');
+    if (t.includes('lavar y peinar')) return false;
+    const compact = t.replace(/[\s-]/g, '');
+    return compact === 'k18' || compact === 'reconstruccionk18';
+}
+
+// Decide CUÁL de las dos entradas de K18 quiere la clienta, a partir de la categoría del
+// servicio PRINCIPAL ya elegido en la sesión. Con un color ya seleccionado el lavado y el
+// peinado van incluidos, así que lo que se añade es el complemento (35€/15min); sin color
+// no hay nada donde engancharlo y el K18 es el suelto (60€/60min).
+// El default sin contexto es el SUELTO a propósito: es el lado seguro — reservar 60 min y
+// cobrar 60€ para un trabajo de 15 min se corrige en el salón, pero reservar 15 min para
+// una hora de trabajo descuadra la agenda del día y cobra de menos.
+// Un nombre que NO sea una mención genérica se devuelve intacto.
 function resolveK18ComplementIfNeeded(nombreServicio, mainCategoria, catalog) {
-    if (normalizeText(nombreServicio || '') !== 'k18') return nombreServicio;
-    if (!K18_COLOR_CONTEXT_CATEGORIES.includes(normalizeText(mainCategoria || ''))) return nombreServicio;
-    const complemento = (catalog || []).find(s => normalizeText(s.nombre) === 'aplicacion k18');
-    return complemento ? complemento.nombre : nombreServicio;
+    if (!isBareK18Mention(nombreServicio)) return nombreServicio;
+    const conColor = K18_COLOR_CONTEXT_CATEGORIES.includes(normalizeText(mainCategoria || ''));
+    const target = conColor ? K18_COMPLEMENTO_NOMBRE : K18_SUELTO_NOMBRE;
+    const entry = (catalog || []).find(s => normalizeText(s.nombre) === normalizeText(target));
+    return entry ? entry.nombre : nombreServicio;
+}
+
+// Misma decisión que resolveK18ComplementIfNeeded pero devolviendo la ENTRADA de catálogo,
+// para la resolución del servicio PRINCIPAL (que necesita precio y duración, no solo el
+// nombre). Devuelve null si el texto no es una mención genérica de K18.
+function resolveK18ServiceFromText(text, mainCategoria, catalog) {
+    if (!isBareK18Mention(text)) return null;
+    const nombre = resolveK18ComplementIfNeeded('k18', mainCategoria, catalog);
+    return (catalog || []).find(s => normalizeText(s.nombre) === normalizeText(nombre)) || null;
 }
 
 // Parte el string de appointments.service en NOMBRES de servicio. No basta con partir por
@@ -1990,6 +2019,8 @@ module.exports = {
     resolveServiceCatalogEntry,
     findCatalogEntriesExact,
     resolveK18ComplementIfNeeded,
+    resolveK18ServiceFromText,
+    isBareK18Mention,
     // Exportado para el test de paridad con la copia del panel (dashboard-app/src/lib/service-names.ts).
     splitServiceNames,
     computeServiceBilling,

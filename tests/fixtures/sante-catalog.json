@@ -354,19 +354,19 @@
     "duracion": 200
   },
   {
-    "nombre": "Pro Miracle Repair TEMPTING",
-    "categoria": "Reconstrucción",
-    "precio": 65,
-    "duracion": 60
-  },
-  {
-    "nombre": "K18",
+    "nombre": "Reconstrucción Pro Miracle",
     "categoria": "Reconstrucción",
     "precio": 60,
     "duracion": 60
   },
   {
-    "nombre": "Aplicación K18",
+    "nombre": "Reconstrucción K18 + lavar y peinar",
+    "categoria": "Reconstrucción",
+    "precio": 60,
+    "duracion": 60
+  },
+  {
+    "nombre": "Reconstrucción K18",
     "categoria": "Reconstrucción",
     "precio": 35,
     "duracion": 15
@@ -478,12 +478,6 @@
     "categoria": "Mechas Balayage",
     "precio": 230,
     "duracion": 300
-  },
-  {
-    "nombre": "Reconstrucción",
-    "categoria": "Reconstrucción",
-    "precio": 35,
-    "duracion": 60
   },
   {
     "nombre": "Consulta",
