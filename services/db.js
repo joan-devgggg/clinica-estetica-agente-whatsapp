@@ -63,9 +63,27 @@ function assertRowsAffected(error, data, tabla, op) {
     return filas;
 }
 
+// Móvil español escrito sin prefijo internacional: 9 dígitos empezando por 6 o 7.
+// Se deja fuera a los fijos (8…/9…) A PROPÓSITO: WhatsApp es móvil, y un 9 dígitos que
+// empieza por 9 choca con numeraciones de otros países — prefijar mal mandaría el mensaje
+// a un número ajeno, que es peor que no prefijar.
+const MOVIL_ES_SIN_PREFIJO = /^[67]\d{8}$/;
+
+// Normaliza a E.164 sin '+': solo dígitos, con prefijo de país.
+//
+// La clave de identidad de un contacto es `contacts.wa_phone` y findByPhone hace un
+// .eq() EXACTO. Sin este prefijado, "611209542" (tecleado en el panel) y "34611209542"
+// (el que llega por WhatsApp) son dos personas distintas: el 01/08/2026 eso creó un
+// contacto duplicado con la cita colgando de él, invisible para el bot.
+//
+// COMPARTIDO CON SAN REMO. La normalización es un no-op para todo lo que existe hoy en
+// la base de datos (San Remo 2/2 y Sante 701/705 ya son '34' + 9 dígitos) y para los JID
+// y LID del pipeline de entrada. Cubierto por tests/sanitize-phone.test.js, cuya primera
+// mitad es un candado de regresión sobre esas formas.
 function sanitizePhone(phone) {
     if (!phone || typeof phone !== 'string') return '';
-    return phone.replace(/["'\s]/g, '').replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '').trim();
+    const digits = phone.replace(/["'\s]/g, '').replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '').trim();
+    return MOVIL_ES_SIN_PREFIJO.test(digits) ? `34${digits}` : digits;
 }
 
 function now() { return new Date().toISOString(); }
@@ -1638,6 +1656,7 @@ async function authenticateToken(accessToken) {
 }
 
 module.exports = {
+    sanitizePhone,
     authenticateToken,
     saveLead,
     updateLead,
