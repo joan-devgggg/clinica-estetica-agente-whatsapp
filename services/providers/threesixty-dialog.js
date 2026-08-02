@@ -15,6 +15,7 @@
 
 const { SANTE_ORG_ID } = require('../org-registry');
 const logger = require('../../lib/logger');
+const { notePausedDrop } = require('../bot-pause-alert');
 
 const DEFAULT_BASE_URL = 'https://waba-v2.360dialog.io';
 
@@ -217,9 +218,15 @@ function buildInboundAdapters(valueMessage, valueMeta, orgId) {
  * handleIncomingMessage — el MISMO pipeline exacto que usa whatsapp-web.js.
  *
  * Recibe deps inyectadas (resolveOrgByPhone, isBotActivo, handleIncomingMessage)
- * para evitar el ciclo de require con bot.js y facilitar el test.
+ * para evitar el ciclo de require con bot.js y facilitar el test. `onPausedDrop` es
+ * opcional y por defecto avisa de verdad; el test lo sustituye para comprobar el aviso.
  */
-async function process360Webhook(body, { resolveOrgByPhone, isBotActivo, handleIncomingMessage }) {
+async function process360Webhook(body, {
+    resolveOrgByPhone,
+    isBotActivo,
+    handleIncomingMessage,
+    onPausedDrop = notePausedDrop,
+}) {
     const entries = Array.isArray(body?.entry) ? body.entry : [];
     for (const entry of entries) {
         const changes = Array.isArray(entry?.changes) ? entry.changes : [];
@@ -242,7 +249,11 @@ async function process360Webhook(body, { resolveOrgByPhone, isBotActivo, handleI
                         continue;
                     }
                     if (!isBotActivo(orgId)) {
-                        logger.info('360d_msg_ignorado_bot_pausado', { orgId });
+                        // Pausa de ORGANIZACIÓN. Aquí se cortan TODAS las clientas de la org:
+                        // es el punto donde el 01/08 se tiraron ~4 h de mensajes en silencio.
+                        const from = msg?.from || null;
+                        logger.warn('360d_msg_ignorado_bot_pausado', { orgId, telefono: from });
+                        onPausedDrop(orgId, from, '360dialog_webhook');
                         continue;
                     }
                     const { message, client } = buildInboundAdapters(msg, value.metadata, orgId);

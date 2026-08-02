@@ -4,23 +4,13 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { toast } from "sonner";
 import { useOrg } from "@/lib/org-context";
+import Link from "next/link";
 import { ConversationList } from "@/components/whatsapp/ConversationList";
 import { ChatView } from "@/components/whatsapp/ChatView";
-import { BotToggle } from "@/components/whatsapp/BotToggle";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
 import {
   getConversations,
   getMessages,
   getBotActivo,
-  toggleGlobalBot,
   toggleLeadBotMode,
   sendManualMessage,
 } from "@/lib/whatsapp";
@@ -31,13 +21,12 @@ export default function WhatsAppPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  // Solo de LECTURA en esta pantalla. El interruptor que apaga el bot de TODA la
+  // organización vive únicamente en Configuración: tenerlo aquí, junto al de "modo manual"
+  // de cada conversación, hizo que el 01/08 se apagara Sante entera 4 h creyendo que se
+  // pausaba una sola clienta (los dos controles se llamaban parecido y estaban a 30 cm).
   const [botActivo, setBotActivo] = useState(true);
-  const [loadingBot, setLoadingBot] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
-  const [confirmDialog, setConfirmDialog] = useState<{
-    open: boolean;
-    nextValue: boolean;
-  }>({ open: false, nextValue: true });
 
   const { orgId, orgName } = useOrg();
   const selectedConv = conversations.find((c) => c.id === selectedId) ?? null;
@@ -63,6 +52,18 @@ export default function WhatsAppPage() {
       setConversations(convs);
       setBotActivo(active);
     });
+  }, [orgId]);
+
+  // El bot de la org se apaga desde Configuración (u otra pestaña), así que el aviso de
+  // "pausado" hay que refrescarlo aquí: es la pantalla donde se nota que no contesta.
+  useEffect(() => {
+    if (!orgId) return;
+    const id = setInterval(() => {
+      getBotActivo(orgId).then((active) => {
+        if (mountedRef.current) setBotActivo(active);
+      });
+    }, 30000);
+    return () => clearInterval(id);
   }, [orgId]);
 
   // Cargar mensajes al seleccionar conversación
@@ -141,31 +142,6 @@ export default function WhatsAppPage() {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgId, selectedConv?.id, selectedConv?.telefono]);
-
-  const handleBotToggleRequest = (next: boolean) => {
-    setConfirmDialog({ open: true, nextValue: next });
-  };
-
-  const handleBotToggleConfirm = async () => {
-    const next = confirmDialog.nextValue;
-    setConfirmDialog((prev) => ({ ...prev, open: false }));
-    setLoadingBot(true);
-    try {
-      await toggleGlobalBot(orgId, next);
-      if (!mountedRef.current) return;
-      setBotActivo(next);
-      toast(
-        next
-          ? "Bot reactivado correctamente"
-          : "Bot desactivado — modo manual activado"
-      );
-    } catch {
-      if (!mountedRef.current) return;
-      toast.error("Error al cambiar el estado del bot");
-    } finally {
-      if (mountedRef.current) setLoadingBot(false);
-    }
-  };
 
   const handleConvBotModeToggle = useCallback(
     async (leadId: number, mode: "auto" | "manual") => {
@@ -255,13 +231,29 @@ export default function WhatsAppPage() {
             Conversaciones en tiempo real · {orgName || "Cargando…"}
           </p>
         </div>
-
-        <BotToggle
-          active={botActivo}
-          onToggleRequest={handleBotToggleRequest}
-          loading={loadingBot}
-        />
       </header>
+
+      {/* Aviso persistente: mientras la org esté pausada el bot DESCARTA todo lo que entra,
+          de todas las clientas. El 01/08 estuvo así 4 h sin que nadie lo notara. */}
+      {!botActivo && (
+        <div
+          role="alert"
+          className="shrink-0 flex flex-wrap items-center gap-x-2 gap-y-1 px-6 py-2.5 border-b border-destructive/30 bg-destructive/10 text-[13px] text-destructive"
+        >
+          <span className="font-semibold">
+            Bot pausado para TODAS las clientas de {orgName || "esta organización"}.
+          </span>
+          <span className="text-destructive/85">
+            Los mensajes que lleguen no se responden ni se contestan después.
+          </span>
+          <Link
+            href="/configuracion"
+            className="font-semibold underline underline-offset-2 hover:no-underline"
+          >
+            Reactivar en Configuración
+          </Link>
+        </div>
+      )}
 
       {/* Main content: two-column WhatsApp layout */}
       <div className="flex flex-1 overflow-hidden">
@@ -288,46 +280,6 @@ export default function WhatsAppPage() {
         </div>
       </div>
 
-      {/* Confirmation dialog for global bot toggle */}
-      <Dialog
-        open={confirmDialog.open}
-        onOpenChange={(open) =>
-          setConfirmDialog((prev) => ({ ...prev, open }))
-        }
-      >
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="font-heading text-[17px]">
-              {confirmDialog.nextValue ? "¿Reactivar el bot?" : "¿Desactivar el bot?"}
-            </DialogTitle>
-            <DialogDescription className="text-[13px] leading-relaxed">
-              {confirmDialog.nextValue
-                ? "El agente de IA volverá a responder automáticamente a todos los clientes."
-                : "Los clientes no recibirán respuestas automáticas hasta que lo reactives."}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-[13px]"
-              onClick={() =>
-                setConfirmDialog((prev) => ({ ...prev, open: false }))
-              }
-            >
-              Cancelar
-            </Button>
-            <Button
-              size="sm"
-              className="text-[13px]"
-              variant={confirmDialog.nextValue ? "default" : "destructive"}
-              onClick={handleBotToggleConfirm}
-            >
-              {confirmDialog.nextValue ? "Reactivar bot" : "Desactivar bot"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

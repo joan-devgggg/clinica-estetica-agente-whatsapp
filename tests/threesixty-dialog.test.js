@@ -234,8 +234,47 @@ test('process360Webhook respeta el gate isBotActivo (pausado → no procesa)', a
         resolveOrgByPhone,
         isBotActivo: () => false,
         handleIncomingMessage: async () => { calls.push(1); },
+        onPausedDrop: () => {},
     });
     assert.strictEqual(calls.length, 0);
+});
+
+// El 01/08/2026 se pausó el bot de toda la org creyendo que se pausaba una conversación y
+// se tiraron ~4 h de mensajes sin que nadie se enterara. Descartar en silencio es el bug:
+// cada mensaje tirado tiene que avisar, con el teléfono de quien se quedó sin respuesta.
+test('process360Webhook avisa (con teléfono) de cada mensaje descartado por bot pausado', async () => {
+    const avisos = [];
+    await process360Webhook(textPayload(), {
+        resolveOrgByPhone,
+        isBotActivo: () => false,
+        handleIncomingMessage: async () => {},
+        onPausedDrop: (orgId, telefono, origen) => avisos.push({ orgId, telefono, origen }),
+    });
+    assert.strictEqual(avisos.length, 1);
+    assert.strictEqual(avisos[0].orgId, SANTE_ORG_ID);
+    assert.strictEqual(avisos[0].origen, '360dialog_webhook');
+    assert.ok(avisos[0].telefono, 'el aviso debe llevar el teléfono de la clienta');
+});
+
+// El throttle no puede tragarse el PRIMER aviso tras reactivar: si se pausa otra vez, el
+// siguiente mensaje descartado debe avisar ya.
+test('resetPauseAlert deja avisar de inmediato tras reactivar el bot', () => {
+    const { notePausedDrop, resetPauseAlert } = require('../services/bot-pause-alert');
+    const orgId = 'org-test-pausa';
+    let enviados = 0;
+    const telegram = require('../services/telegram');
+    const original = telegram.notifyOrgAdmin;
+    telegram.notifyOrgAdmin = () => { enviados++; };
+    try {
+        notePausedDrop(orgId, '34600000000', 'test');
+        notePausedDrop(orgId, '34600000000', 'test'); // dentro de la ventana → no avisa
+        assert.strictEqual(enviados, 1, 'el throttle debe silenciar el segundo');
+        resetPauseAlert(orgId);
+        notePausedDrop(orgId, '34600000000', 'test');
+        assert.strictEqual(enviados, 2, 'tras reactivar debe volver a avisar');
+    } finally {
+        telegram.notifyOrgAdmin = original;
+    }
 });
 
 test('process360Webhook ignora payloads de statuses (entrega), no los trata como mensaje', async () => {

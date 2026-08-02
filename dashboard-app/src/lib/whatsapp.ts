@@ -72,13 +72,10 @@ export async function getBotActivo(orgId: string): Promise<boolean> {
   }
 }
 
-export async function toggleGlobalBot(orgId: string, active: boolean): Promise<void> {
-  await fetch(`${API}/api/config/bot_activo`, {
-    method: "PUT",
-    headers: await apiHeaders(orgId),
-    body: JSON.stringify({ valor: active }),
-  });
-}
+// No hay helper para apagar el bot de la organización: se hace desde Configuración, que
+// escribe `bot_activo` con putConfig. Tener aquí un `toggleGlobalBot` importable desde el
+// Monitor de WhatsApp es lo que permitió apagar Sante entera creyendo que se pausaba una
+// conversación (01/08). Para una sola conversación, toggleLeadBotMode.
 
 export async function toggleLeadBotMode(orgId: string, leadId: number, mode: BotMode): Promise<void> {
   await fetch(`${API}/api/leads/${leadId}/bot-mode`, {

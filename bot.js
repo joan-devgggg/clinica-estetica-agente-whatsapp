@@ -15,6 +15,7 @@ const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante,
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
+const { notePausedDrop, resetPauseAlert } = require('./services/bot-pause-alert');
 const { summarizeHistory } = require('./services/providers/openai');
 const { notifyBizumPending, notifyEscalation, notifyBlacklistAlert } = require('./services/telegram');
 const { getOrgType, getOrgChannel, CHANNEL_WWEBJS } = require('./services/org-registry');
@@ -77,6 +78,9 @@ function isBotActivo(orgId) {
 // arrancar, o cuando el panel ya escribió en config antes de avisar al proceso).
 function setBotActivo(orgId, v, persist = true) {
     _botActivoByOrg.set(orgId, !!v);
+    // Al REACTIVAR limpiamos el throttle del aviso: si se vuelve a pausar, el siguiente
+    // mensaje descartado debe avisar ya, no esperar a que caduque la ventana anterior.
+    if (v) resetPauseAlert(orgId);
     if (persist) {
         const { setConfigValue } = require('./services/db');
         setConfigValue(orgId, 'bot_activo', !!v);
@@ -1969,7 +1973,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
     const _send = (text) => sendWithDelay(client, userPhone, text, orgId, _dbPhone);
     logger.info('process_core_inicio', { orgId, telefono: userPhone, textoLength: userText?.length || 0 });
     try {
-        if (!isBotActivo(orgId)) { logger.info('process_core_bot_inactivo', { orgId }); return; }
+        if (!isBotActivo(orgId)) {
+            // Pausa de ORGANIZACIÓN: se tira el mensaje de TODAS las clientas, no solo de
+            // esta. Era un info silencioso y así pasaron 4 h sin que nadie lo viera (01/08).
+            logger.warn('process_core_bot_inactivo', { orgId, telefono: _dbPhone || userPhone });
+            notePausedDrop(orgId, _dbPhone || userPhone, 'process_core');
+            return;
+        }
 
         const sKey = sessionKey(orgId, userPhone);
         const orgType = getOrgType(orgId);
