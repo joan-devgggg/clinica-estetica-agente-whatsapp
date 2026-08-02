@@ -362,8 +362,14 @@
   {
     "nombre": "K18",
     "categoria": "Reconstrucción",
-    "precio": 45,
+    "precio": 60,
     "duracion": 60
+  },
+  {
+    "nombre": "Aplicación K18",
+    "categoria": "Reconstrucción",
+    "precio": 35,
+    "duracion": 15
   },
   {
     "nombre": "Retocar mujer",

@@ -1719,6 +1719,28 @@ function resolveServiceCatalogEntry(name, catalog) {
     return resolveCatalogEntryExact(name, catalog) || extractServiceFromText(name, catalog) || null;
 }
 
+// Categorías de decoloración tras las que el K18 se aplica como complemento (15 min: solo
+// aplicar producto, porque el lavado y peinado ya van incluidos en el color) en vez de como
+// tratamiento suelto (60 min: lavar + aplicar + secar + peinar). Mismo listado que las reglas
+// de upselling "cuidado_decoloracion" (migración 018/024).
+const K18_COLOR_CONTEXT_CATEGORIES = [
+    'mechas balayage', 'mechas airtouch', 'mechas contouring', 'mechas clasicas', 'deco total blond',
+];
+
+// Si el nombre resuelto es el K18 SUELTO ("K18", catálogo actual: 60€/60min) pero el servicio
+// PRINCIPAL de la sesión ya es una técnica de color, lo que la clienta realmente quiere es el
+// complemento ("Aplicación K18", 35€/15min) — no son los mismos 60 minutos porque el lavado y
+// el peinado ya van incluidos en el color. extractServiceFromText no tiene contexto de sesión:
+// resuelve por texto y ante un "K18" a secas siempre gana el nombre corto (es sustring de
+// cualquier variante más larga, nunca al revés), así que esta corrección se aplica DESPUÉS,
+// con la categoría del servicio principal ya elegido en la sesión.
+function resolveK18ComplementIfNeeded(nombreServicio, mainCategoria, catalog) {
+    if (normalizeText(nombreServicio || '') !== 'k18') return nombreServicio;
+    if (!K18_COLOR_CONTEXT_CATEGORIES.includes(normalizeText(mainCategoria || ''))) return nombreServicio;
+    const complemento = (catalog || []).find(s => normalizeText(s.nombre) === 'aplicacion k18');
+    return complemento ? complemento.nombre : nombreServicio;
+}
+
 // Parte el string de appointments.service en NOMBRES de servicio. No basta con partir por
 // " + ": hay servicios de catálogo que llevan ese separador dentro del nombre ("Pedicura +
 // esmaltado", "Manicura + gel"). Un split ciego los trocea, el trozo suelto queda unmatched
@@ -1967,6 +1989,7 @@ module.exports = {
     // Facturación por estilista
     resolveServiceCatalogEntry,
     findCatalogEntriesExact,
+    resolveK18ComplementIfNeeded,
     // Exportado para el test de paridad con la copia del panel (dashboard-app/src/lib/service-names.ts).
     splitServiceNames,
     computeServiceBilling,

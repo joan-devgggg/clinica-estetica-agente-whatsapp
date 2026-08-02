@@ -11,7 +11,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveK18ComplementIfNeeded, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -3335,11 +3335,18 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 
             // Upselling tracking
             if (aiResponse.datos?.upselling_aceptado?.length > 0) {
+                // K18 suelto vs complemento: si el servicio PRINCIPAL ya es una técnica de
+                // color, un "K18" a secas nombrado como upselling es el complemento
+                // (35€/15min), no el suelto (60€/60min) — el LLM y extractServiceFromText no
+                // tienen ese contexto de sesión, así que se corrige aquí antes de persistir.
+                const cfgK18 = await getAgentConfig(orgId);
+                aiResponse.datos.upselling_aceptado = aiResponse.datos.upselling_aceptado.map(nombre =>
+                    resolveK18ComplementIfNeeded(nombre, session.selectedService?.categoria, cfgK18?.services || []));
+
                 session.upsellingAccepted = [...new Set([...(session.upsellingAccepted || []), ...aiResponse.datos.upselling_aceptado])];
 
                 if (session.reservaConfirmada && session.appointmentId && session.selectedService) {
-                    const cfgUp = await getAgentConfig(orgId);
-                    const catUp = cfgUp?.services || [];
+                    const catUp = cfgK18?.services || [];
                     // Nombre COMPLETO, igual que en la creación de la cita: el nombre crudo
                     // ("Largo 2") casa con 4 entradas de catálogo de precios distintos y la
                     // facturación no puede saber cuál era. buildFullServiceName lo desambigua

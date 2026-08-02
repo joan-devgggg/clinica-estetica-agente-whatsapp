@@ -138,16 +138,17 @@ const callsTo = (table, op) => mock.calls.filter(c => c.table === table && c.op 
         assert.strictEqual((new Date(p.ends_at) - new Date(p.starts_at)) / 60000, 260);
     });
 
-    await test('la facturación cobra los TRES servicios (270 €), no solo uno', () => {
+    await test('la facturación cobra los TRES servicios (285 €), no solo uno', () => {
         const { totalConIva, segments } = computeServiceBilling(SERVICE_STR, CATALOGO);
         assert.strictEqual(segments.length, 3);
         assert.ok(segments.every(s => s.status === 'ok'), 'los 3 deben resolver contra el catálogo');
-        assert.strictEqual(totalConIva, 270);
+        assert.strictEqual(totalConIva, 285);
         // Lo que se facturaba antes del formulario multi-servicio: solo el del desplegable.
-        assert.strictEqual(computeServiceBilling('K18', CATALOGO).totalConIva, 45);
+        // K18 suelto (sin color asociado) = 60 €, distinto del complemento "Aplicación K18" (35 €).
+        assert.strictEqual(computeServiceBilling('K18', CATALOGO).totalConIva, 60);
     });
 
-    await test('al completar, el snapshot congela los 270 € (no el precio de un servicio suelto)', async () => {
+    await test('al completar, el snapshot congela los 285 € (no el precio de un servicio suelto)', async () => {
         mock.reset();
         mock.setResponder((state) => {
             if (state.table === 'agent_configs') return { data: { services: CATALOGO }, error: null };
@@ -160,7 +161,7 @@ const callsTo = (table, op) => mock.calls.filter(c => c.table === table && c.op 
         const n = await db.stampBillingSnapshot(ORG, ['apt-1']);
         assert.strictEqual(n, 1);
         const p = callsTo('appointments', 'update')[0].payload;
-        assert.strictEqual(p.precio_facturado, 270);
+        assert.strictEqual(p.precio_facturado, 285);
         assert.strictEqual(p.stylist_name_facturado, 'Irina');
     });
 
