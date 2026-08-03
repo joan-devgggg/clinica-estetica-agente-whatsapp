@@ -214,6 +214,54 @@ test('catálogo real: cada servicio se resuelve a sí mismo (ida y vuelta, 81 en
     assert.deepStrictEqual(desajustes, [], 'servicios que no se resuelven a sí mismos');
 });
 
+// ── Palabra ambigua entre categorías → preguntar, no cobrar de más ────────────
+// Incidente 02/08/2026: la clienta escribió "Hidratación" a secas y se le reservó la de
+// 110 € sin preguntarle. Había TRES servicios con esa palabra (45 / 85 / 110 €) y el
+// desempate por prefijo de la pasada de último recurso elegía el que EMPIEZA por ella.
+// O sea: el orden de las palabras dentro del nombre decidía el precio, siempre hacia
+// arriba. Renombrarlo a "Spa Hidratación 60min" NO lo arregla —"spa" tiene 3 letras y el
+// filtro de tokens distintivos exige 5, así que "hidratacion" sigue encabezando—; el
+// arreglo es no aplicar el desempate cuando el empate cruza categorías.
+test('catálogo real: una palabra que varias CATEGORÍAS comparten no resuelve sola', () => {
+    for (const [frase, servicios] of [['hidratacion', '45/85/110 €'], ['detox', '35/115 €']]) {
+        assert.strictEqual(extractServiceFromText(frase, CATALOGO_REAL), null,
+            `"${frase}" es ambigua (${servicios}): el bot debe preguntar, no elegir`);
+    }
+    assert.strictEqual(extractServiceFromText('quiero una hidratación', CATALOGO_REAL), null);
+});
+
+test('catálogo real: con un discriminador, la misma palabra sí resuelve', () => {
+    const casos = [
+        ['fresh hidratacion', 'Fresh Hidratación', 45],
+        ['orising hidratacion intensa', 'Orising hidratación intensa', 85],
+        ['spa hidratacion 60min', 'Spa Hidratación 60min', 110],
+        ['green purity detox', 'Green Purity Detox', 35],
+        ['detox 60min', 'Detox 60min', 115],
+    ];
+    for (const [frase, nombre, precio] of casos) {
+        const got = extractServiceFromText(frase, CATALOGO_REAL);
+        assert.ok(got, `"${frase}" debe resolver`);
+        assert.strictEqual(got.nombre, nombre, `"${frase}"`);
+        assert.strictEqual(got.precio, precio, `"${frase}" al precio correcto`);
+    }
+});
+
+test('catálogo real: el desempate por prefijo sigue vivo DENTRO de una categoría', () => {
+    // Es el caso que la pasada de último recurso existe para rescatar. Solo se anula
+    // cuando el empate cruza categorías, que es cuando cambia el precio de verdad.
+    const casos = [
+        ['aromaterapia', 'Aromaterapia relax'],
+        ['espalda y hombros', 'Espalda y hombros'],
+        ['quiero un masaje relajante', 'Relajante completo'],
+        ['pro miracle', 'Reconstrucción Pro Miracle'],
+    ];
+    for (const [frase, nombre] of casos) {
+        const got = extractServiceFromText(frase, CATALOGO_REAL);
+        assert.ok(got, `"${frase}" NO debe devolver null: un null aquí se paga en repreguntas`);
+        assert.strictEqual(got.nombre, nombre, `"${frase}"`);
+    }
+});
+
 test('catálogo real: los pares prefijo no se resuelven a ciegas', () => {
     // Los únicos pares donde un nombre es prefijo de otro. La regla de especificidad
     // sólo debe promover el largo cuando el texto trae su discriminador.

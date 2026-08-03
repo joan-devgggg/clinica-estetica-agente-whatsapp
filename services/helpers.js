@@ -683,32 +683,49 @@ function extractServiceFromText(text, servicesCatalog) {
             ? servicesCatalog.filter(s => catsMencionadas.includes(normalizeText(s.categoria)))
             : servicesCatalog;
         if (textTokens.size) {
-            let best = null;
-            let bestScore = 0;
-            let bestIsPrefix = false;
-            let tied = false;
+            const conMatch = [];
             for (const svc of candidatos) {
                 const distintivos = tokenize(normalizeService(svc.nombre)).filter(w =>
                     w.length >= MIN_DISTINCTIVE_TOKEN && !SERVICE_MATCH_STOPWORDS.has(w) && !/^\d+$/.test(w)
                 );
                 const matched = distintivos.filter(w => textTokens.has(w));
                 if (!matched.length) continue;
-                // Un token que ENCABEZA el nombre identifica el servicio mucho mejor que
-                // uno accesorio: "masaje relajante" debe caer en "Relajante completo",
-                // no en "Holistic relajante Premium". Es el desempate, no el criterio.
-                const isPrefix = matched.includes(distintivos[0]);
-                if (matched.length > bestScore || (matched.length === bestScore && isPrefix && !bestIsPrefix)) {
-                    bestScore = matched.length;
-                    best = svc;
-                    bestIsPrefix = isPrefix;
-                    tied = false;
-                } else if (matched.length === bestScore && isPrefix === bestIsPrefix) {
-                    tied = true;
-                }
+                conMatch.push({
+                    svc,
+                    score: matched.length,
+                    // Un token que ENCABEZA el nombre identifica el servicio mucho mejor que
+                    // uno accesorio: "masaje relajante" debe caer en "Relajante completo",
+                    // no en "Holistic relajante Premium". Es el desempate, no el criterio.
+                    isPrefix: matched.includes(distintivos[0]),
+                    clave: [...new Set(matched)].sort().join('|'),
+                    cat: normalizeText(svc.categoria || ''),
+                });
             }
-            // Empate que el prefijo no rompe → mejor seguir sin match que arriesgar
-            // un servicio equivocado (precio y duración distintos).
-            if (best && !tied) bestMatch = best;
+            const maxScore = Math.max(0, ...conMatch.map(c => c.score));
+            const top = conMatch.filter(c => c.score === maxScore);
+
+            // Empate entre CATEGORÍAS distintas casando EXACTAMENTE los mismos tokens: aquí
+            // el desempate por prefijo no está identificando el servicio, sólo está premiando
+            // el orden de las palabras dentro del nombre. Y con precios de categorías
+            // distintas eso se traduce en dinero: "hidratación" casaba igual de bien con tres
+            // servicios (45 / 85 / 110 €) y ganaba el de 110 € por empezar por esa palabra;
+            // "detox" elige entre 35 € y 115 € por lo mismo. Preguntar es más barato que
+            // cobrar de más en silencio — y desde la fase E un null se recupera con el menú
+            // de rescate en vez de convertirse en bucle de repregunta.
+            //
+            // Dentro de UNA categoría el desempate sigue vivo: ahí las variantes comparten
+            // precio y duración de forma razonable, y es el caso que la pasada rescata.
+            const mismosTokens = top.length > 1 && top.every(c => c.clave === top[0].clave);
+            const variasCategorias = new Set(top.map(c => c.cat)).size > 1;
+
+            if (top.length === 1) {
+                bestMatch = top[0].svc;
+            } else if (!(mismosTokens && variasCategorias)) {
+                // Empate que el prefijo no rompe → mejor seguir sin match que arriesgar
+                // un servicio equivocado (precio y duración distintos).
+                const conPrefijo = top.filter(c => c.isPrefix);
+                if (conPrefijo.length === 1) bestMatch = conPrefijo[0].svc;
+            }
         }
     }
 
