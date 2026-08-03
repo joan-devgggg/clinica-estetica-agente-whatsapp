@@ -212,6 +212,65 @@ function isNegative(text) {
 
 // ─── Validación de nombre ─────────────────────────────────────────────────────
 
+// Palabras que NUNCA identifican a una persona. Se comprueban TOKEN A TOKEN porque el
+// bug de "rubia pero" (03/08/2026) existía justamente por lo contrario: isValidName
+// comparaba `invalidWords.includes(lower)` contra la CADENA ENTERA, así que un candidato
+// de dos palabras no podía chocar jamás con la lista. La clienta escribió "Soy rubia pero
+// me han hecho mechas..." y "rubia pero" acabó en contacts.full_name.
+//
+// No incluye nombres propios reales que también son palabras comunes (Rosa, Alba, Mar,
+// Sol, Luz, Consuelo...): esos deben seguir pasando.
+const NAME_STOPWORDS = new Set([
+    // artículos, preposiciones, conjunciones, pronombres
+    'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'lo', 'de', 'del', 'al',
+    'y', 'e', 'o', 'u', 'pero', 'sino', 'porque', 'pues', 'que', 'si', 'no', 'ni',
+    'con', 'sin', 'para', 'por', 'en', 'a', 'ante', 'bajo', 'desde', 'hasta', 'hacia',
+    'sobre', 'tras', 'entre', 'segun', 'como', 'cuando', 'donde', 'cual', 'quien',
+    'mi', 'mis', 'tu', 'tus', 'su', 'sus', 'me', 'te', 'se', 'le', 'les', 'nos', 'os',
+    'yo', 'ella', 'ellos', 'ellas', 'usted', 'ustedes', 'nosotros', 'nosotras',
+    'vosotros', 'vosotras', 'este', 'esta', 'esto', 'ese', 'esa', 'eso', 'aquel',
+    'muy', 'mas', 'menos', 'tan', 'tanto', 'todo', 'toda', 'todos', 'todas', 'algo',
+    'nada', 'alguien', 'nadie', 'otro', 'otra', 'otros', 'otras', 'mismo', 'misma',
+    // auxiliares y verbos frecuentes en 1ª persona (los que siguen a "soy"/"me llamo")
+    'soy', 'eres', 'es', 'somos', 'sois', 'son', 'era', 'fue', 'sera', 'sido', 'ser',
+    'estoy', 'estas', 'esta', 'estamos', 'estan', 'estaba', 'estuve', 'estar',
+    'he', 'has', 'ha', 'hemos', 'habeis', 'han', 'habia', 'hubo', 'haber',
+    'hago', 'haces', 'hace', 'hacen', 'hacer', 'hecho', 'hice', 'hicieron',
+    'tengo', 'tienes', 'tiene', 'tenemos', 'tienen', 'tener', 'tenia',
+    'quiero', 'quieres', 'quiere', 'queria', 'querer', 'necesito', 'necesita',
+    'puedo', 'puede', 'pueden', 'podria', 'poder', 'gustaria', 'gusta', 'encanta',
+    'voy', 'vas', 'va', 'vamos', 'van', 'ir', 'vine', 'vino', 'venir', 'vengo',
+    'llevo', 'llevar', 'busco', 'buscar', 'pedir', 'pido', 'dar', 'doy',
+    'ver', 'veo', 've', 'saber', 'se', 'sabe', 'digo', 'dice', 'decir', 'dijeron',
+    // tiempo
+    'hoy', 'ayer', 'manana', 'tarde', 'noche', 'madrugada', 'ano', 'anos', 'mes',
+    'meses', 'semana', 'semanas', 'dia', 'dias', 'hora', 'horas', 'minuto', 'minutos',
+    'ahora', 'antes', 'despues', 'luego', 'pronto', 'siempre', 'nunca', 'vez', 'veces',
+    'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo',
+    // descripción capilar y de la clienta — el dominio que produjo "rubia"
+    'rubia', 'rubio', 'morena', 'moreno', 'castana', 'castano', 'pelirroja', 'pelirrojo',
+    'canas', 'cana', 'pelo', 'cabello', 'melena', 'raiz', 'raices', 'puntas', 'flequillo',
+    'largo', 'larga', 'corto', 'corta', 'medio', 'media', 'liso', 'lisa', 'rizado',
+    'rizada', 'ondulado', 'ondulada', 'seco', 'seca', 'graso', 'grasa', 'danado',
+    'danada', 'tenido', 'tenida', 'decolorado', 'decolorada', 'natural', 'oscuro',
+    'oscura', 'claro', 'clara', 'brillante', 'suave', 'tieso', 'tiesa', 'desastre',
+    // cortesía y conversación
+    'hola', 'buenas', 'buenos', 'gracias', 'vale', 'ok', 'perfecto', 'genial', 'bien',
+    'mal', 'adios', 'porfa', 'favor', 'disculpa', 'perdona', 'perdon', 'oye', 'mira',
+    'espana', 'cita', 'reserva', 'precio', 'euros',
+]);
+
+// Un token individual plausible como nombre o apellido.
+function isNameToken(word) {
+    const w = normalizeText(word);
+    if (w.length < 2 || w.length > 20) return false;
+    if (!/^[a-zñ]+$/.test(w)) return false;
+    if (!/[aeiou]/.test(w)) return false;
+    if (NAME_STOPWORDS.has(w)) return false;
+    if (w.length > 8 && w.endsWith('me')) return false;   // "recomiendame", "ayudame"
+    return true;
+}
+
 function isValidName(name) {
     if (!name || typeof name !== 'string') return false;
     const cleaned = name.replace(/^(soy|me llamo|mi nombre es|es|llámame)\s*/i, '').trim();
@@ -235,7 +294,46 @@ function isValidName(name) {
     // Rechazar verbos con clítico "-me" (ej: "recomiéndame", "ayúdame")
     if (lower.length > 8 && lower.endsWith('me')) return false;
 
-    return /[aeiouáéíóú]/i.test(cleaned);
+    if (!/[aeiouáéíóú]/i.test(cleaned)) return false;
+
+    // Cada palabra debe ser plausible POR SEPARADO. La lista `invalidWords` de arriba
+    // sólo mira la cadena entera, así que "rubia pero" la esquivaba entera.
+    const tokens = cleaned.split(/\s+/).filter(Boolean);
+    return tokens.length > 0 && tokens.every(isNameToken);
+}
+
+// Presentación ("soy X", "me llamo X") anclada al inicio del mensaje o de una frase
+// dentro de él, admitiendo un saludo delante ("Hola, buenas tardes, soy Ana").
+//
+// El anclaje es la mitad del arreglo: `indexOf('soy ')` encontraba el patrón en cualquier
+// posición, así que "Soy rubia pero me han hecho mechas" y "yo no soy la titular" entraban
+// igual. La otra mitad es no calcular índices: antes `idx` se medía sobre
+// normalizeText(text) —que colapsa espacios— pero el substring se aplicaba al text CRUDO,
+// así que "Hola   ,   me llamo   Lucia" devolvía "amo Lucia". Una sola regex sobre el texto
+// crudo elimina los dos sistemas de coordenadas que podían divergir.
+const NAME_INTRO_RE = new RegExp(
+    '(?:^|[.!?;\\n,])\\s*'
+    + '(?:(?:hola|buenas|buenos)\\s*(?:tardes|noches|dias|días)?[\\s,.!¡]*)?'
+    + '(?:soy|me\\s+llamo|mi\\s+nombre\\s+es|ll[aá]mame|my\\s+name\\s+is|i\\s*am|i\'m)\\s+'
+    + '(.+)',
+    'i'
+);
+
+// Conectores que CIERRAN el nombre: "Soy Ana y quiero mechas", "Soy rubia pero…".
+const NAME_TAIL_BREAK = /\s+(?:y|e|o|pero|sino|porque|aunque|que|para|con|de|desde|hace|cuando|si|and|but)\s+/i;
+
+function extractNameAfterIntro(text) {
+    if (!text) return null;
+    const m = String(text).match(NAME_INTRO_RE);
+    if (!m) return null;
+    const clause = m[1].split(/[.,;:!?¡¿\n()]/)[0].split(NAME_TAIL_BREAK)[0];
+    const words = clause.trim().split(/\s+/).filter(Boolean).slice(0, 2);
+    if (!words.length) return null;
+    // Si la 2ª palabra no es plausible nos quedamos con la 1ª: así "Soy Ana mañana" da
+    // "Ana" (sin apellido → el bot lo pide) en vez de descartar un nombre bueno.
+    const kept = (words.length === 2 && !isNameToken(words[1])) ? words.slice(0, 1) : words;
+    const cand = kept.join(' ');
+    return isValidName(cand) ? cand : null;
 }
 
 function isServiceName(name, servicesCatalog) {
@@ -303,16 +401,8 @@ function extractQuickData(text, partialData = {}) {
 
     // Nombre: solo si el usuario lo dice explícitamente
     if (!result.nombre || result.nombre === 'desconocido') {
-        const lower = normalizeText(text);
-        const namePatterns = ['soy ', 'me llamo ', 'mi nombre es ', 'llámame '];
-        for (const pattern of namePatterns) {
-            const idx = lower.indexOf(pattern);
-            if (idx !== -1) {
-                const afterPattern = text.substring(idx + pattern.length).trim();
-                const words = afterPattern.split(/\s+/).slice(0, 2).join(' ');
-                if (isValidName(words)) { result.nombre = words; break; }
-            }
-        }
+        const cand = extractNameAfterIntro(text);
+        if (cand) result.nombre = cand;
         // Mensaje de una sola palabra que parece nombre
         if (!result.nombre && text.trim().split(/\s+/).length === 1) {
             const word = text.trim();
@@ -347,6 +437,11 @@ const SERVICE_SYNONYMS = [
 // términos que de verdad identifican ("aromaterapia", "relajante", "deportivo",
 // "espalda") y quedan fuera los conectores y las colas cortas de nombre.
 const MIN_DISTINCTIVE_TOKEN = 5;
+
+// Partición en palabras completas de un texto YA normalizado. Vive a nivel de módulo
+// porque lo usan dos pasadas de extractServiceFromText (la de especificidad y la de
+// último recurso) y deben partir exactamente igual.
+const tokenizeService = s => String(s || '').split(/[^a-z0-9]+/).filter(Boolean);
 
 // normalizeText + canonicalización de sinónimos de servicio. Se aplica por igual
 // al texto de consulta y a los nombres del catálogo dentro de extractServiceFromText
@@ -459,6 +554,50 @@ function extractServiceFromText(text, servicesCatalog) {
         }
     }
 
+    // Pasada 1a-bis: ESPECIFICIDAD. Un nombre de catálogo que es prefijo de otro más largo
+    // ("Consulta" ⊂ "Consulta tricológica con Yulia") gana siempre en la pasada 1a, porque es
+    // literalmente un substring de casi cualquier frase que pida el largo — y las pasadas que
+    // sí saben distinguirlos (1b y el fuzzy por CATEGORY_KEYWORDS) sólo corren `if (!bestMatch)`,
+    // así que nunca se alcanzan. Eso reservaba el bloque de 300 min sin precio en vez de la
+    // consulta tricológica de 85€/60min, y de paso excluía a la única tricóloga del salón,
+    // porque el filtro de skills pasaba a ser la categoría equivocada (incidente 02/08/2026).
+    //
+    // Regla general, no caso especial: promovemos el nombre largo sólo si el texto trae su
+    // DISCRIMINADOR — el primer token distintivo de la cola, o una palabra coloquial que
+    // apunte a su categoría cuando esa categoría tiene un único servicio. Si la clienta no ha
+    // dicho la parte que los distingue, gana el corto (que es lo que hay hoy).
+    //
+    // Sólo PREFIJO, nunca contención genérica: los pares sufijo del catálogo real
+    // ("largo" ⊂ "cabello largo") harían saltar de categoría, que es el error que la pasada
+    // de último recurso documenta como inaceptable.
+    if (bestMatch) {
+        const textTokens = new Set(tokenizeService(t));
+        const base = normalizeService(bestMatch.nombre);
+        const masEspecificos = [];
+        for (const svc of servicesCatalog) {
+            const n = normalizeService(svc.nombre);
+            if (n === base || !n.startsWith(base + ' ')) continue;
+            if (nameGroups[n].length !== 1) continue;   // nombre compartido → ya es ambiguo
+            const cola = tokenizeService(n.slice(base.length)).filter(w =>
+                w.length >= 4 && !SERVICE_MATCH_STOPWORDS.has(w) && !/^\d+$/.test(w));
+            if (!cola.length) continue;
+            let discrimina = textTokens.has(cola[0]);
+            if (!discrimina) {
+                const catN = normalizeText(svc.categoria || '');
+                if (catCounts[catN] === 1) {
+                    const kw = CATEGORY_KEYWORDS.find(k => normalizeText(k.categoria) === catN);
+                    if (kw && kw.keywords.some(k2 => t.includes(normalizeText(k2)))) discrimina = true;
+                }
+            }
+            if (discrimina) masEspecificos.push(svc);
+        }
+        // Más de uno → ambiguo, mejor quedarse con lo que ya había que arriesgar el precio.
+        if (masEspecificos.length === 1) {
+            bestMatch = masEspecificos[0];
+            bestLen = normalizeService(bestMatch.nombre).length;
+        }
+    }
+
     // Pass 1b: category name match — ONLY for single-service categories.
     // Multi-service categories (e.g. "Alisado vegano" with Largo 1/2/3) are ambiguous
     // and must NOT pick the first service arbitrarily.
@@ -529,7 +668,7 @@ function extractServiceFromText(text, servicesCatalog) {
         // Palabras completas, no substring: las pasadas anteriores usan includes()
         // sobre la frase entera, demasiado laxo para un criterio tan permisivo como
         // "una sola palabra del nombre basta".
-        const tokenize = s => s.split(/[^a-z0-9]+/).filter(Boolean);
+        const tokenize = tokenizeService;
         const textTokens = new Set(tokenize(t).filter(w => w.length >= MIN_DISTINCTIVE_TOKEN));
         // Si el texto nombra una CATEGORÍA del catálogo, la búsqueda no puede salirse de
         // ella: "Deco Total Blond" (categoría con variantes por largo, ambigua a
@@ -939,7 +1078,14 @@ function extractGuestName(text) {
 // alternativa de pedir explícitamente el apellido y fastidiar el flujo.
 function hasApellido(nombre) {
     if (!nombre || typeof nombre !== 'string') return false;
-    return nombre.trim().split(/\s+/).filter(Boolean).length >= 2;
+    const tokens = nombre.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length < 2) return false;
+    // No basta con contar palabras: "rubia pero" tenía dos, así que el bot daba el nombre
+    // por completo, dejaba de pedir el apellido Y bot.js impedía al LLM corregirlo con un
+    // nombre real de una sola palabra. Dos candados que se abren aquí a la vez.
+    // Se exige la PRIMERA plausible y ALGUNA posterior también, para que "María del
+    // Carmen Ruiz" siga contando pese al "del".
+    return isNameToken(tokens[0]) && tokens.slice(1).some(isNameToken);
 }
 
 function getMissingFieldsSante(partialData) {
@@ -954,16 +1100,8 @@ function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], tea
 
     // Name extraction (reuse existing logic)
     if (!result.nombre || result.nombre === 'desconocido') {
-        const lower = normalizeText(text);
-        const namePatterns = ['soy ', 'me llamo ', 'mi nombre es ', 'my name is ', 'i am ', 'i\'m '];
-        for (const pattern of namePatterns) {
-            const idx = lower.indexOf(pattern);
-            if (idx !== -1) {
-                const afterPattern = text.substring(idx + pattern.length).trim();
-                const words = afterPattern.split(/\s+/).slice(0, 2).join(' ');
-                if (isValidName(words)) { result.nombre = words; break; }
-            }
-        }
+        const cand = extractNameAfterIntro(text);
+        if (cand) result.nombre = cand;
         if (!result.nombre && text.trim().split(/\s+/).length === 1) {
             const word = text.trim();
             if (isValidName(word) && word.length >= 3) result.nombre = word;
@@ -1977,6 +2115,8 @@ module.exports = {
     isAffirmative,
     isNegative,
     isValidName,
+    isNameToken,
+    extractNameAfterIntro,
     isServiceName,
     // Salon-specific
     extractServiceFromText,

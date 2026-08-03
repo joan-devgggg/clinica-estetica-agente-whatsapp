@@ -2,7 +2,10 @@
 // Covers the extraction gaps fixed in the anti-regression pass.
 
 const assert = require('assert');
-const { extractServiceFromText, extractLargoPelo, extractQuickDataSante } = require('../services/helpers');
+const {
+    extractServiceFromText, extractLargoPelo, extractQuickDataSante, buildFullServiceName,
+} = require('../services/helpers');
+const CATALOGO_REAL = require('./fixtures/sante-catalog.json');
 
 function test(name, fn) {
     try {
@@ -192,4 +195,38 @@ test('extractServiceFromText: un token corto/no distintivo no basta para resolve
     assert.strictEqual(extractServiceFromText('a las cinco', catalog), null);
     assert.strictEqual(extractServiceFromText('mañana', catalog), null);
     assert.strictEqual(extractServiceFromText('me llamo Ana', catalog), null);
+});
+
+// ── Red de propiedad sobre el catálogo REAL completo ──────────────────────────
+// Es la Fase 1 de `npm run verify:sante` pero offline, sobre el fixture: entra en
+// `npm test` y detecta cualquier regresión de la resolución sin credenciales de
+// Supabase. La añadió el incidente 02/08/2026: la pasada de especificidad toca la
+// función más delicada del salón, y "5 diffs medidos" sólo vale si algo lo vigila.
+test('catálogo real: cada servicio se resuelve a sí mismo (ida y vuelta, 81 entradas)', () => {
+    const desajustes = [];
+    for (const svc of CATALOGO_REAL) {
+        const full = buildFullServiceName(svc, CATALOGO_REAL);
+        const got = extractServiceFromText(full, CATALOGO_REAL);
+        if (!got || got.nombre !== svc.nombre || got.categoria !== svc.categoria) {
+            desajustes.push(`${full} → ${got ? `${got.categoria} / ${got.nombre}` : 'null'}`);
+        }
+    }
+    assert.deepStrictEqual(desajustes, [], 'servicios que no se resuelven a sí mismos');
+});
+
+test('catálogo real: los pares prefijo no se resuelven a ciegas', () => {
+    // Los únicos pares donde un nombre es prefijo de otro. La regla de especificidad
+    // sólo debe promover el largo cuando el texto trae su discriminador.
+    const casos = [
+        ['quiero un matiz', 'Matiz'],
+        ['matiz plus', 'Matiz plus'],
+        ['reconstruccion k18', 'Reconstrucción K18'],                        // complemento 35€/15min
+        ['reconstruccion k18 lavar y peinar', 'Reconstrucción K18 + lavar y peinar'], // suelto 60€/60min
+        ['quiero un cambio importante', 'XL / cambio importante'],
+    ];
+    for (const [frase, esperado] of casos) {
+        const got = extractServiceFromText(frase, CATALOGO_REAL);
+        assert.ok(got, `"${frase}" debe resolver`);
+        assert.strictEqual(got.nombre, esperado, `"${frase}"`);
+    }
 });

@@ -17,11 +17,14 @@ function test(name, fn) {
 }
 
 // Catálogo mínimo con la entrada Consulta (igual forma que agent_configs.services).
+// Incluye la consulta tricológica porque las dos COLISIONAN por nombre: ver bloque 2-bis.
 const CATALOG = [
     { categoria: 'Cortes', nombre: 'Corte mujer', precio: 35, duracion: 60 },
     { categoria: 'Consulta', nombre: 'Consulta', precio: null, duracion: 300 },
+    { categoria: 'Diagnóstico Capilar', nombre: 'Consulta tricológica con Yulia', precio: 85, duracion: 60 },
 ];
 const CONSULTA = CATALOG.find(s => s.categoria === 'Consulta');
+const TRICO = CATALOG.find(s => s.categoria === 'Diagnóstico Capilar');
 
 // Estilistas: las 4 de pelo general tienen la skill "Consulta"; las demás no.
 const VERONIKA = { id: '0101', name: 'Veronika', skills: ['Cortes', 'Consulta'] };
@@ -62,6 +65,49 @@ test('2 · stylistCanDoService: las 4 de pelo general sí, las demás no', () =>
     assert.ok(!stylistCanDoService(OLGHA, CONSULTA));
     assert.ok(!stylistCanDoService(YULIA_T, CONSULTA));
     assert.ok(!stylistCanDoService(TETIANA, CONSULTA));
+});
+
+// ─── 2-bis: la colisión "Consulta" ⊂ "Consulta tricológica con Yulia" ─────────────────
+// Incidente 34624184532 (02/08/2026). La pasada 1a de extractServiceFromText es
+// `t.includes(svcName)` puro, y "consulta" es substring de casi cualquier forma de pedir la
+// tricológica. Las pasadas que sí distinguen (1b y el fuzzy por CATEGORY_KEYWORDS, que mapea
+// tricolog/diagnostico/capilar → Diagnóstico Capilar) sólo corren `if (!bestMatch)`, así que
+// nunca se alcanzaban: se reservaba el bloque de 300 min sin precio en vez de los 85€/60min,
+// Y el filtro de skills pasaba a ser la categoría "Consulta", que excluye a la tricóloga.
+test('2-bis · pedir la tricológica resuelve a la tricológica, no al bloque de 300 min', () => {
+    for (const frase of ['consulta tricologica', 'quiero una consulta tricológica',
+        'quiero una consulta capilar', 'consulta por caída del pelo',
+        'quiero la consulta tricologica con Yulia', 'diagnóstico capilar']) {
+        const r = extractServiceFromText(frase, CATALOG);
+        assert.ok(r, `"${frase}" debe resolver`);
+        assert.strictEqual(r.categoria, 'Diagnóstico Capilar', `"${frase}"`);
+        assert.strictEqual(r.precio, 85, `"${frase}" cobra 85€, no un precio a confirmar`);
+        assert.strictEqual(r.duracion, 60, `"${frase}" bloquea 60 min, no 300`);
+    }
+});
+
+test('2-bis · la Consulta reactiva SIGUE resolviendo cuando no hay discriminador', () => {
+    // La regla de especificidad sólo promueve el nombre largo si la clienta ha dicho la
+    // parte que los distingue. Sin ella, gana el corto (comportamiento de siempre).
+    for (const frase of ['consulta', 'quiero una consulta', 'necesito una consulta']) {
+        const r = extractServiceFromText(frase, CATALOG);
+        assert.ok(r && r.categoria === 'Consulta', `"${frase}" → Consulta reactiva`);
+        assert.strictEqual(r.duracion, 300);
+    }
+});
+
+test('2-bis · "una consulta con Yulia" NO basta para cobrar 85€', () => {
+    // Hay DOS Yulia en el equipo (colorista y tricóloga): el nombre de pila no es
+    // discriminador suficiente. Conservador a propósito.
+    const r = extractServiceFromText('me gustaría una consulta con Yulia', CATALOG);
+    assert.ok(r && r.categoria === 'Consulta', 'se queda en la reactiva');
+});
+
+test('2-bis · con la tricológica seleccionada, Yulia-Tricóloga SÍ puede hacerla', () => {
+    // El efecto en cadena del bug: con categoría "Consulta" la especialista quedaba fuera
+    // y el bot ofrecía a Veronika/Natalia para un diagnóstico capilar.
+    assert.ok(stylistCanDoService(YULIA_T, TRICO), 'la tricóloga puede con su propio servicio');
+    assert.ok(!stylistCanDoService(NATALIA, TRICO), 'una colorista sin la skill, no');
 });
 
 // ─── 3: asignación de estilista ───────────────────────────────────────────────────────
