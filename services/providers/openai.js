@@ -3,7 +3,7 @@ require('dotenv').config();
 const config = require('../../config.json');
 const db = require('../db');
 const { getOrgType } = require('../org-registry');
-const { normalizeText, classifyLargoVariant, hasApellido } = require('../helpers');
+const { normalizeText, classifyLargoVariant, hasApellido, isReactiveOnlyCategory } = require('../helpers');
 const logger = require('../../lib/logger');
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -232,15 +232,15 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
     const horario = info.horario || '';
     const cancelacion = info.cancelacion || 'Avisar con 48 horas de antelación';
 
-    // Services catalog
-    const categorias = [...new Set(services.map(s => s.categoria))];
+    // Services catalog. Las categorías REACTIVAS se excluyen a propósito: si el modelo las ve
+    // en el menú, las ofrece. El 02/08/2026 ofreció la "Consulta de valoración" y además la
+    // fusionó con la "Consulta tricológica con Yulia" (85€/60min, otra fila) inventando un
+    // servicio híbrido. Se siguen pudiendo reservar: las selecciona el detector determinista
+    // de bot.js, y la sección CONSULTA DE VALORACIÓN de más abajo le explica al modelo cómo.
+    const categorias = [...new Set(services.map(s => s.categoria))]
+        .filter(cat => !isReactiveOnlyCategory(cat));
     const catalogoStr = categorias.map(cat => {
         const items = services.filter(s => s.categoria === cat);
-        // Consulta / servicios sin precio fijo: nunca mostrar un número ni la duración
-        // interna del bloque; el precio se confirma en el salón.
-        if (String(cat).toLowerCase() === 'consulta') {
-            return `${cat}:\n  • Consulta de valoración — 20 min de asesoramiento; precio a confirmar en el salón`;
-        }
         return `${cat}:\n` + items.map(s => {
             const precioStr = (s.precio == null) ? 'precio a confirmar en el salón' : `${s.precio}€`;
             return `  • ${s.nombre} — ${precioStr} (${s.duracion} min)`;
@@ -729,6 +729,17 @@ ofrécele una CONSULTA DE VALORACIÓN. Se reserva como cualquier servicio (categ
 IMPORTANTE: ofrécela SOLO si la clienta pide asesoramiento o dice no saber qué quiere. Si nombra un
 servicio concreto (aunque dude del largo, ej. "no sé si corto o medio"), NO es una consulta: sigue
 con ese servicio.
+- Este servicio NO aparece en el catálogo de arriba a propósito. NO lo menciones cuando te
+  pregunten "¿qué servicios tenéis?" ni lo enumeres junto a otros: sólo existe como respuesta a
+  que la clienta diga que no sabe qué quiere.
+- NUNCA lo mezcles con la "Consulta tricológica con Yulia" (categoría Diagnóstico Capilar, 85€,
+  60 min). Son DOS servicios distintos y no existe ningún híbrido entre ellos:
+    · caída del pelo, cuero cabelludo, alopecia, diagnóstico capilar → Consulta tricológica con
+      Yulia (85€, 60 min, la hace Yulia-Tricóloga). Ésta SÍ está en el catálogo y tiene precio.
+    · "no sé qué hacerme", quiere que la asesoren sobre qué servicio elegir → Consulta de
+      valoración (20 min, precio a confirmar en el salón).
+  Si dudas entre las dos, PREGUNTA cuál quiere. Nunca inventes un nombre que combine ambas ni
+  atribuyas a una el precio, la duración o la profesional de la otra.
 
 # ── ESCALADA A HUMANO (accion: "escalar_humano") ─────────────────────────
 

@@ -107,6 +107,12 @@ test('la fuente de verdad coincide con la lista esperada (candado anti-drift)', 
         // pendiente y el ancla ("antes de la pedicura") describen LA petición en curso, y
         // arrastrarlas a la siguiente filtraría huecos por una cita que ya no viene a cuento.
         'pendingServiceCategory', 'anchorAppointment', 'anchorFilterVacio',
+        // Consulta de valoración (categoría reactiva) y rescate del bucle "no sé qué
+        // servicio quieres". Se limpian con el servicio a propósito: los tres describen
+        // LA petición en curso. Arrastrar consultaValoracionDetectada dejaría abierta para
+        // siempre la puerta por la que el LLM puede fijar el servicio reactivo, y una racha
+        // heredada mandaría al menú de rescate en la primera pregunta de la 2ª reserva.
+        'consultaValoracionDetectada', 'sinServicioStreak', 'consultaOfrecida',
     ];
     const EXPECTED_PARTIAL = [
         'servicio', 'categoria_servicio', 'estilista_preferida',

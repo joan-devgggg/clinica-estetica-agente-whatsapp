@@ -1750,6 +1750,25 @@ function detectConsultaService(text) {
     return null;
 }
 
+// Categorías REACTIVAS: están en el catálogo (hay que poder reservarlas) pero el bot NUNCA
+// las ofrece por iniciativa propia — sólo las selecciona el detector determinista.
+//
+// Hasta el 03/08/2026 esto era sólo prosa del prompt, y el modelo la ignoró: vio
+// "Consulta de valoración — 20 min" en el menú del catálogo, la ofreció, y además la FUSIONÓ
+// con la "Consulta tricológica con Yulia" (85€/60min, otra fila, otra categoría, otra
+// profesional) inventando un híbrido que no existe. Ahora es un dato: openai.js excluye estas
+// categorías del catálogo que ve el modelo, y bot.js descarta el servicio si llega por la vía
+// del LLM sin que el detector haya disparado.
+const REACTIVE_ONLY_CATEGORIES = new Set(['consulta']);
+
+function isReactiveOnlyCategory(categoria) {
+    return REACTIVE_ONLY_CATEGORIES.has(normalizeText(categoria || ''));
+}
+
+function isReactiveOnlyService(svc) {
+    return !!svc && isReactiveOnlyCategory(svc.categoria);
+}
+
 // Detecta la intención REACTIVA de "quiero que me asesoren / no sé qué servicio quiero".
 // Solo intención de ELECCIÓN DE SERVICIO — NUNCA de largo de pelo. El gating (que solo
 // se llame cuando no hay servicio concreto detectado ni flujo de largo/corte pendiente)
@@ -1772,6 +1791,18 @@ function detectConsultaValoracion(text) {
         /me ayud(en|eis|ais|e|as) a (decidir|elegir|escoger)/,
         /consulta de valoracion/,
         /pedir (una |la )?consulta/,
+        // ES — "que me evalúen / valoren / vean el pelo". Faltaban por completo: la clienta
+        // del 02/08/2026 lo pidió dos veces ("Me gustaría que me evaluarán bien y me dijeran
+        // que necesito", "Me tienen que evaluar"), selectedService se quedó en null y el bot
+        // le repitió "primero necesito saber qué servicio quieres" hasta que se rindió.
+        // Ojo al orden con extractServiceFromText en bot.js: corre ANTES que este gate, así
+        // que una señal capilar ("caída", "diagnóstico", "capilar") ya se lleva la consulta
+        // tricológica de 85€ y aquí sólo cae lo genérico. Esa bifurcación es deliberada.
+        /\b(evaluar|evaluarme|evaluame|evaluen|evaluenme|evalue|evaluaran|evaluacion)\b/,
+        /\b(valorar|valorarme|valorame|valoren|valorenme|valoraran|valoracion)\b/,
+        /me (tienen|teneis|tienes|hay) que (evaluar|valorar|ver|mirar|revisar)/,
+        /que me (vean|veais|miren|mireis|revisen|reviseis|echen un vistazo)/,
+        /(me digan|decirme|me digais|que me diga) (que|qu) (necesito|me hace falta|me conviene)/,
         // ES — que lo valoren en persona
         /ver(lo)? en persona/,
         /que lo ve(ais|an)/,
@@ -1780,12 +1811,16 @@ function detectConsultaValoracion(text) {
         /not sure what i (want|need)/,
         /can you (recommend|advise|suggest)/,
         /\b(recommend me|need advice|a consultation)\b/,
+        /\b(evaluate|assess) my hair\b/,
+        /\b(look at|check) my hair\b/,
         // RU
         /не знаю что (мне )?(сделать|выбрать|хочу)/,
         /(посоветуйте|консультаци|порекоменд)/,
+        /(оцените|оценить|посмотрите) (мои |мой )?волос/,
         // UK
         /не знаю що (мені )?(зробити|вибрати|хочу)/,
         /(порадьте|консультаці|порекоменд)/,
+        /(оцініть|оцінити|подивіться) (моє |мої )?волосс/,
     ];
     return patterns.some(re => re.test(t));
 }
@@ -2155,6 +2190,8 @@ module.exports = {
     detectCorteNinoTipo,
     detectConsultaService,
     detectConsultaValoracion,
+    isReactiveOnlyCategory,
+    isReactiveOnlyService,
     // Facturación por estilista
     resolveServiceCatalogEntry,
     findCatalogEntriesExact,

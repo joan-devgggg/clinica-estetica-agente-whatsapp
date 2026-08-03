@@ -11,7 +11,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, isReactiveOnlyService, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -243,6 +243,11 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         pendingServiceCategory: null,
         anchorAppointment: null,
         anchorFilterVacio: false,
+        // Consulta de valoración: categoría reactiva y rescate del bucle "no sé qué
+        // servicio quieres" (ver SERVICE_STATE_DEFAULTS).
+        consultaValoracionDetectada: false,
+        sinServicioStreak: 0,
+        consultaOfrecida: false,
         // Avisos de mención de estilista (ver SERVICE_STATE_DEFAULTS)
         stylistMentionUnknown: null,
         stylistMentionCorrected: null,
@@ -1176,9 +1181,46 @@ function respondsWithFalseClosureClaim(respuesta) {
 // ofrecía fecha/hora sin huecos reales cargados. Pide el dato que falta en vez de
 // dejar salir horarios inventados. Es sensible al contexto: si aún no hay servicio,
 // pregunta por el servicio; si ya lo hay, pregunta por el día.
+// Nivel 2 del "no sé qué servicio quieres": en vez de repetir la pregunta abierta, cerrar
+// el abanico a las categorías grandes y poner la consulta de valoración sobre la mesa —que
+// es justo lo que la clienta estaba pidiendo cuando el bot no la entendía—. Deja
+// consultaOfrecida armado para que un "sí" en el turno siguiente la seleccione.
+function salonPickServiceMenuMsg(session) {
+    session.consultaOfrecida = true;
+    const msgs = {
+        es: 'Perdona, no te he entendido bien 😊 Te lo pongo fácil, ¿qué buscas?\n'
+            + '• Color o mechas\n• Corte o peinado\n• Tratamiento para el cabello\n'
+            + '• Manicura o pedicura\n• Masaje o spa\n\n'
+            + 'Y si lo que prefieres es que te lo veamos en persona y te recomendemos, te reservo '
+            + 'una consulta de valoración de 20 minutos. ¿Te la reservo?',
+        en: 'Sorry, I didn\'t quite get that 😊 Let me make it easy — what are you after?\n'
+            + '• Colour or highlights\n• Cut or styling\n• Hair treatment\n'
+            + '• Manicure or pedicure\n• Massage or spa\n\n'
+            + 'And if you\'d rather we take a look in person and advise you, I can book you a '
+            + '20-minute consultation. Shall I?',
+        ru: 'Извини, я тебя не совсем поняла 😊 Давай проще — что тебя интересует?\n'
+            + '• Окрашивание или мелирование\n• Стрижка или укладка\n• Уход за волосами\n'
+            + '• Маникюр или педикюр\n• Массаж или спа\n\n'
+            + 'А если хочешь, чтобы мы посмотрели вживую и посоветовали, запишу тебя на '
+            + 'консультацию на 20 минут. Записать?',
+        uk: 'Вибач, я тебе не зовсім зрозуміла 😊 Давай простіше — що тебе цікавить?\n'
+            + '• Фарбування або мелірування\n• Стрижка або укладка\n• Догляд за волоссям\n'
+            + '• Манікюр або педикюр\n• Масаж або спа\n\n'
+            + 'А якщо хочеш, щоб ми подивилися наживо і порадили, запишу тебе на '
+            + 'консультацію на 20 хвилин. Записати?',
+    };
+    return msgs[session.language] || msgs.es;
+}
+
 function salonNoSlotsMsg(session) {
     const language = session.language;
     if (!session.selectedService) {
+        // Segunda vez seguida con el mismo mensaje = bucle. El 02/08/2026 una clienta
+        // contestó DOS veces en lenguaje natural ("me tienen que evaluar") y recibió la
+        // misma frase las dos; acabó pidiendo un servicio que no quería. Repetir una
+        // pregunta que la clienta ya ha respondido no es una respuesta.
+        session.sinServicioStreak = (session.sinServicioStreak || 0) + 1;
+        if (session.sinServicioStreak >= 2) return salonPickServiceMenuMsg(session);
         const askService = {
             en: 'To check availability I first need to know which service you\'d like 😊 What are you after?',
             ru: 'Чтобы посмотреть свободное время, мне нужно знать, какая услуга тебя интересует 😊 Что бы ты хотела?',
@@ -1186,6 +1228,7 @@ function salonNoSlotsMsg(session) {
         };
         return (language && askService[language]) || 'Para mirarte los huecos primero necesito saber qué servicio quieres 😊 ¿Qué te apetece hacerte?';
     }
+    session.sinServicioStreak = 0;
 
     // El día/fecha que pidió la clienta no tenía hueco real, pero calendar-sante ya
     // buscó y devolvió (en session.availableSlots) los huecos reales más cercanos —
@@ -1333,6 +1376,18 @@ const SERVICE_STATE_DEFAULTS = {
     anchorAppointment: null,
     // El filtro por ancla dejó la lista vacía: hay huecos, pero no en la ventana pedida.
     anchorFilterVacio: false,
+    // ─── Consulta de valoración (categoría REACTIVA) ───────────────────────────
+    // La pone a true SÓLO el detector determinista (detectConsultaValoracion). Sin ella,
+    // un servicio reactivo que llegue por la vía del LLM se descarta: el 02/08/2026 el
+    // modelo ofreció la Consulta por su cuenta —fusionada con la tricológica— y ninguna
+    // capa lo impedía porque "reactivo" era prosa del prompt, no un dato.
+    consultaValoracionDetectada: false,
+    // Veces seguidas que hemos tenido que responder "no sé qué servicio quieres". A la
+    // segunda dejamos de repetir la misma frase (ver salonNoSlotsMsg).
+    sinServicioStreak: 0,
+    // El menú de rescate ya ofreció explícitamente la consulta de valoración: un "sí" en
+    // el turno siguiente la selecciona.
+    consultaOfrecida: false,
 };
 // Campos de servicio anidados en partialData (se borran con delete).
 const SERVICE_PARTIAL_FIELDS = [
@@ -2778,10 +2833,17 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // servicio nunca cae aquí. Se agenda como bloque "Consulta" (300 min).
             if (!session.selectedService && !session.pendingLargoCategory &&
                 !session.pendingCorteGenero && !session.pendingCorteMujerTipo &&
-                !session.pendingCorteNinoTipo && detectConsultaValoracion(sanitized)) {
-                const consultaSvc = (agentCfgPre?.services || [])
-                    .find(s => normalizeText(s.categoria) === 'consulta');
-                if (consultaSvc) session.selectedService = consultaSvc;
+                !session.pendingCorteNinoTipo
+                && (detectConsultaValoracion(sanitized)
+                    || (session.consultaOfrecida && isAffirmative(sanitized)))) {
+                const consultaSvc = (agentCfgPre?.services || []).find(isReactiveOnlyService);
+                if (consultaSvc) {
+                    session.selectedService = consultaSvc;
+                    // Única vía legítima. Marca que el servicio reactivo viene del detector
+                    // y no de una ocurrencia del LLM (ver el descarte en la vía LLM).
+                    session.consultaValoracionDetectada = true;
+                    session.consultaOfrecida = false;
+                }
             }
             // Recuperar el servicio desde partialData.servicio (capturado por el LLM en
             // un turno previo) ANTES del filtro de estilistas, para que la asignación de
@@ -2800,6 +2862,14 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     recovered = matchesPartial.find(s => normalizeText(s.categoria) === partialCatNorm) || null;
                 }
                 if (!recovered) recovered = extractServiceFromText(session.partialData.servicio, catalog);
+                // partialData.servicio lo rellena el LLM: un servicio reactivo por esta vía
+                // sigue siendo una oferta suya, no una petición de la clienta.
+                if (recovered && isReactiveOnlyService(recovered) && !session.consultaValoracionDetectada) {
+                    logger.info('servicio_reactivo_llm_descartado', {
+                        orgId, telefono: userPhone, servicio: recovered.nombre, via: 'partialData',
+                    });
+                    recovered = null;
+                }
                 if (recovered) {
                     session.selectedService = recovered;
                     logger.info('selectedService_recovered_from_partialData', { orgId, telefono: userPhone, servicio: recovered.nombre });
@@ -3277,6 +3347,16 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     matched = matchesLLM.find(s => normalizeText(s.categoria) === llmCatNorm) || null;
                 }
                 if (!matched) matched = extractServiceFromText(servicioLLM, servicesCatalog);
+                // Un servicio REACTIVO sólo se fija por la vía determinista. Si el modelo lo
+                // devuelve sin que detectConsultaValoracion haya disparado en esta conversación,
+                // es una ocurrencia suya: se descarta. Es la mitad ejecutable de "el bot no
+                // ofrece la Consulta"; la otra mitad es no enseñársela en el catálogo.
+                if (matched && isReactiveOnlyService(matched) && !session.consultaValoracionDetectada) {
+                    logger.info('servicio_reactivo_llm_descartado', {
+                        orgId, telefono: userPhone, servicio: matched.nombre, via: 'llm',
+                    });
+                    matched = null;
+                }
                 // Nueva selección (aún sin servicio) O corrección de largo dentro de la
                 // MISMA categoría ya elegida — nunca un salto libre a otra categoría.
                 // "Mechas clásicas" excluida: sus variantes numeradas son tipo de
@@ -4107,7 +4187,7 @@ module.exports = {
     isTransientWAError,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
-        respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg,
+        respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:
