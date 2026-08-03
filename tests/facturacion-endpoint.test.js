@@ -40,7 +40,7 @@ const STYLISTS = [
 const CATALOG = [
     { nombre: 'Mujer y secado', precio: 35, duracion: 60, categoria: 'Cortes' },
     { nombre: 'Manicura + gel', precio: 35, duracion: 90, categoria: 'Manicura/Pedicura' },
-    { nombre: 'Consulta', precio: null, duracion: 300, categoria: 'Consulta' },
+    { nombre: 'Consulta', precio: null, duracion: 60, categoria: 'Consulta' },
 ];
 
 const CITAS = [

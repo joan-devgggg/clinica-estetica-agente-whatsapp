@@ -190,6 +190,11 @@ function mockEquipoSante() {
         await withMockedNow(MARTES_0140, async () => {
             let pd = extractQuickDataSante('El sabado', {});
             pd = extractQuickDataSante('El mas cercano', pd, [], [], { stylistQuestionPending: true });
+            // 300 min es la duración que la Consulta tenía el día del incidente; hoy son 60
+            // (029_consulta_60min.sql). Se conserva a propósito: lo que este test fija es el
+            // PARSEO de "El sabado" + "El mas cercano", y los 8 huecos de 10:00 a 13:30 son la
+            // huella exacta de aquel bug. Con 60 min serían 16 y la regresión dejaría de ser
+            // comparable con lo que Eva no llegó a ver.
             const slots = await calendarSante.getAvailableSlots('org', {
                 serviceDuration: 300, serviceCategory: 'Consulta',
                 preferredStylistId: null, preferencia: pd.preferencia_horaria,

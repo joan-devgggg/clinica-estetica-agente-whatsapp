@@ -64,7 +64,7 @@ test('D · la bifurcación capilar vs genérico se decide antes, en el catálogo
     // bot.js corre extractServiceFromText ANTES del gate de la consulta, así que una señal
     // capilar se lleva la tricológica de 85€ y sólo lo genérico cae en la reactiva.
     const CAT = [
-        { categoria: 'Consulta', nombre: 'Consulta', precio: null, duracion: 300 },
+        { categoria: 'Consulta', nombre: 'Consulta', precio: null, duracion: 60 },
         { categoria: 'Diagnóstico Capilar', nombre: 'Consulta tricológica con Yulia', precio: 85, duracion: 60 },
     ];
     assert.strictEqual(extractServiceFromText('tengo caída del pelo', CAT).precio, 85,
@@ -143,7 +143,7 @@ test('C · el catálogo del prompt NO enseña la categoría reactiva al modelo',
         business_info: { companyName: 'Sante', direccion: 'X', horario: 'Y' },
         services: [
             { categoria: 'Cortes', nombre: 'Corte mujer', precio: 35, duracion: 60 },
-            { categoria: 'Consulta', nombre: 'Consulta', precio: null, duracion: 300 },
+            { categoria: 'Consulta', nombre: 'Consulta', precio: null, duracion: 60 },
             { categoria: 'Diagnóstico Capilar', nombre: 'Consulta tricológica con Yulia', precio: 85, duracion: 60 },
         ],
     };

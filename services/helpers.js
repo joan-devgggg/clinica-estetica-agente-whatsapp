@@ -1493,7 +1493,6 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
             spaPromo: '✨ Y una novedad para nuestras clientas: ahora tenemos Spa Hair Capilar y Masajes. En tu primera visita a cualquiera de los dos tienes un 10% de descuento, por si te apetece probarlo algún día 💛',
             consultaSvc: 'Consulta de valoración (20 min)',
             consultaPrice: 'El precio se confirma en el salón según lo que decidas',
-            consultaNote: 'Si tras la consulta decides hacerte el servicio que te recomiende, ya tendrás tiempo reservado a continuación sin esperar.',
         },
         en: {
             header: n => `✅ Perfect, ${n}. Appointment booked:`,
@@ -1504,7 +1503,6 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
             spaPromo: "✨ And something new for our clients: we now offer Spa Hair treatments and Massages. You get 10% off your first visit to either one, in case you'd like to try it someday 💛",
             consultaSvc: 'Assessment consultation (20 min)',
             consultaPrice: 'The price is confirmed at the salon based on what you decide',
-            consultaNote: "If after the consultation you decide to get the recommended service, you'll already have time reserved right after, no waiting.",
         },
         ru: {
             header: n => `✅ Отлично, ${n}. Запись подтверждена:`,
@@ -1515,7 +1513,6 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
             spaPromo: '✨ И новинка для наших клиенток: теперь у нас есть Spa Hair (уход за волосами) и Массажи. На первое посещение любого из них — скидка 10%, если захотите попробовать 💛',
             consultaSvc: 'Консультация-оценка (20 мин)',
             consultaPrice: 'Цена подтверждается в салоне в зависимости от вашего решения',
-            consultaNote: 'Если после консультации вы решите сделать рекомендованную услугу, у вас уже будет зарезервировано время сразу после, без ожидания.',
         },
         uk: {
             header: n => `✅ Чудово, ${n}. Запис підтверджено:`,
@@ -1526,7 +1523,6 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
             spaPromo: '✨ І новинка для наших клієнток: тепер у нас є Spa Hair (догляд за волоссям) і Масажі. На перший візит до будь-якого з них — знижка 10%, якщо захочете спробувати 💛',
             consultaSvc: 'Консультація-оцінка (20 хв)',
             consultaPrice: 'Ціна підтверджується в салоні залежно від вашого рішення',
-            consultaNote: 'Якщо після консультації ви вирішите зробити рекомендовану послугу, у вас вже буде зарезервовано час одразу після, без очікування.',
         },
     };
     const t = T[lang] || T.es;
@@ -1544,10 +1540,12 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
     lines.push(`${emoji} ${svcLine}`);
     if (priceLine) lines.push(`💰 ${priceLine}`);
     if (dir) lines.push(`📍 ${dir}`);
-    if (isConsulta) {
-        lines.push('');
-        lines.push(t.consultaNote);
-    }
+    // Aquí iba la nota "si tras la consulta decides el servicio, ya tendrás tiempo reservado a
+    // continuación sin esperar". Se retiró con 029_consulta_60min.sql: era cierta cuando la
+    // Consulta bloqueaba 300 min (20 de consulta + la tarde por delante), pero con 60 min quedan
+    // 40 de margen, que no dan para un color ni un balayage. Prometerlo generaba en el salón la
+    // expectativa exacta que provoca la queja. Lo que sigue siendo cierto —20 min y precio a
+    // confirmar— ya está en svcLine y priceLine.
     lines.push('');
     lines.push(t.cancel);
     // La promo va ANTES de la pregunta de upselling y redactada como afirmación (sin

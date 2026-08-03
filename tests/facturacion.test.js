@@ -35,7 +35,7 @@ const CATALOG = [
     // propio nombre. Un split ciego los troceaba y la cita entera quedaba "sin calcular".
     { nombre: 'Manicura + gel', precio: 35, duracion: 90, categoria: 'Manicura/Pedicura' },
     { nombre: 'Pedicura + esmaltado', precio: 45, duracion: 120, categoria: 'Manicura/Pedicura' },
-    { nombre: 'Consulta', precio: null, duracion: 300, categoria: 'Consulta' },
+    { nombre: 'Consulta', precio: null, duracion: 60, categoria: 'Consulta' },
 ];
 
 // ─── resolveServiceCatalogEntry: cascada de matching ─────────────────────────────
