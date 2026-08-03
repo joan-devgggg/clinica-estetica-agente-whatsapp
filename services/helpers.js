@@ -11,6 +11,34 @@ function normalizeText(value) {
         .toLowerCase();
 }
 
+// ─── Patrones cirílicos: cómo escribirlos para que casen ─────────────────────
+//
+// Un patrón cirílico escrito "como se escribe" no casa NUNCA contra texto normalizado. Hay
+// dos causas independientes y las dos han mordido ya en producción:
+//
+//   1) normalizeText descompone en NFD y borra los diacríticos combinantes. En cirílico eso
+//      no es un acento decorativo, es parte de la letra:
+//        й = и + breve  → и      ё = е + diéresis → е
+//        ї = і + diéresis → і    ў = у + breve   → у
+//      Así que el texto de la clienta llega como 'посоветуите', y un patrón que diga
+//      'посоветуйте' no lo encuentra jamás.
+//
+//   2) \b en JavaScript es ASCII: \b(любое время)\b no casa aunque el texto sea exactamente
+//      "любое время", porque no hay frontera de palabra ASCII junto a una letra cirílica.
+//      Esto mata también los literales BIEN escritos si están dentro de un \b(...)\b.
+//
+// Regla: todo patrón cirílico se compila con este helper, que normaliza cada literal y no
+// pone \b. Nunca se escriben a mano en su forma descompuesta — sería ilegible y frágil.
+//
+// Recibe LITERALES, no fragmentos de regex: se escapan los metacaracteres. Sin eso, un
+// '¿подійде?' colado en la lista convertiría la letra anterior en opcional en vez de buscar
+// el signo, que es justo el tipo de fallo silencioso que este helper existe para evitar.
+function buildCyrillicRe(literales) {
+    const escapar = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const alternativas = [...new Set(literales.map(normalizeText).filter(Boolean))];
+    return new RegExp(alternativas.map(escapar).join('|'));
+}
+
 // ─── Detección de idioma (heurística, salón) ────────────────────────────────
 // Defensa para BUG 4: fija el idioma a partir del texto de la clienta ANTES de llamar
 // al LLM, para que los mensajes de fallback/límite salgan en su idioma aunque OpenAI
@@ -1175,16 +1203,28 @@ function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], tea
 //   - SIN PREFERENCIA ("el más cercano", "cualquiera"): responde a una PREGUNTA DE ELECCIÓN.
 //     Implica "me da igual quién", y solo implica "cuanto antes" si lo que se preguntaba era
 //     la fecha. El reducer lo trata como asap DÉBIL (no borra un día ya pedido).
-const ASAP_TEMPORAL_RE = /\b(lo antes posible|cuanto antes|cu[aá]nto antes|el primer hueco|primer hueco|primera disponibilidad|lo m[aá]s pronto|lo mas pronto|lo m[aá]s r[aá]pido|lo mas rapido|cuando antes|cuanto antes puedas|lo antes que puedas|antes posible|el primero disponible|primer disponible|cualquier hueco|lo m[aá]s pronto posible|lo antes posible que puedas|as soon as possible|asap|earliest|как можно скорее|якомога швидше)\b/;
-const SIN_PREFERENCIA_RE = /\b(el m[aá]s cercano|la m[aá]s cercana|mas cercano disponible|hueco m[aá]s cercano|el hueco m[aá]s cercano|me da igual|me es igual|cualquiera|la que sea|el que sea|no tengo preferencia|sin preferencia|whoever|anyone|any of them|любой|любую|любое время|ближайшее время|ближайший|будь-хто|будь-який)\b/;
+const ASAP_TEMPORAL_RE = /\b(lo antes posible|cuanto antes|cu[aá]nto antes|el primer hueco|primer hueco|primera disponibilidad|lo m[aá]s pronto|lo mas pronto|lo m[aá]s r[aá]pido|lo mas rapido|cuando antes|cuanto antes puedas|lo antes que puedas|antes posible|el primero disponible|primer disponible|cualquier hueco|lo m[aá]s pronto posible|lo antes posible que puedas|as soon as possible|asap|earliest)\b/;
+const SIN_PREFERENCIA_RE = /\b(el m[aá]s cercano|la m[aá]s cercana|mas cercano disponible|hueco m[aá]s cercano|el hueco m[aá]s cercano|me da igual|me es igual|cualquiera|la que sea|el que sea|no tengo preferencia|sin preferencia|whoever|anyone|any of them)\b/;
+// Las alternativas RU/UK vivían dentro de los \b(...)\b de arriba, así que NINGUNA casaba:
+// unas por la й descompuesta y las demás por el \b ASCII (ver buildCyrillicRe). Una clienta
+// rusa que contestaba "любой" o "как можно скорее" a la pregunta de estilista no activaba
+// ni sinPreferencia ni asapTemporal, y el bot volvía a preguntarle a quién quería.
+const ASAP_TEMPORAL_CIRILICO_RE = buildCyrillicRe(['как можно скорее', 'якомога швидше']);
+const SIN_PREFERENCIA_CIRILICO_RE = buildCyrillicRe([
+    'любой', 'любую', 'любое время', 'ближайшее время', 'ближайший', 'будь-хто', 'будь-який',
+]);
+// Franja del día en RU/UK. Mismo problema y mismo arreglo: "утром" ("por la mañana") no
+// fijaba la franja, así que a una clienta que pedía mañana se le ofrecían huecos de tarde.
+const PERIODO_MANANA_CIRILICO_RE = buildCyrillicRe(['утром', 'вранці', 'зранку']);
+const PERIODO_TARDE_CIRILICO_RE = buildCyrillicRe(['днем', 'днём', 'вдень', 'ввечері', 'увечері', 'вечером']);
 
 // Devuelve { asapTemporal, sinPreferencia } para un texto libre. Ambos flags se evalúan
 // SIEMPRE sobre texto normalizado (sin tildes, minúsculas), que es lo que arregla el bug.
 function detectNoPreferenceSignal(text) {
     const t = normalizeText(text);
     return {
-        asapTemporal: ASAP_TEMPORAL_RE.test(t),
-        sinPreferencia: SIN_PREFERENCIA_RE.test(t),
+        asapTemporal: ASAP_TEMPORAL_RE.test(t) || ASAP_TEMPORAL_CIRILICO_RE.test(t),
+        sinPreferencia: SIN_PREFERENCIA_RE.test(t) || SIN_PREFERENCIA_CIRILICO_RE.test(t),
     };
 }
 
@@ -1273,9 +1313,10 @@ function extractDateSignalSante(text) {
     if (!signal.semana && /\bmanana\b/.test(t)) signal.semanaWeak = 'esta';
 
     // Periodo del día (franja) — expresiones inequívocas (t va sin acentos).
-    if (/\b(por la manana|en la manana|de manana|la manana|morning|утром|вранці)\b/.test(t)) {
+    // Las franjas RU/UK van fuera del \b(...)\b: dentro no casaba ninguna (ver buildCyrillicRe).
+    if (/\b(por la manana|en la manana|de manana|la manana|morning)\b/.test(t) || PERIODO_MANANA_CIRILICO_RE.test(t)) {
         signal.periodo = 'mañana';
-    } else if (/\b(por la tarde|en la tarde|de tarde|la tarde|afternoon|evening|днем|днём|вдень|ввечері)\b/.test(t)) {
+    } else if (/\b(por la tarde|en la tarde|de tarde|la tarde|afternoon|evening)\b/.test(t) || PERIODO_TARDE_CIRILICO_RE.test(t)) {
         signal.periodo = 'tarde';
     }
 
@@ -1830,12 +1871,18 @@ function detectConsultaValoracion(text) {
         /\b(look at|check) my hair\b/,
         // RU
         /не знаю что (мне )?(сделать|выбрать|хочу)/,
-        /(посоветуйте|консультаци|порекоменд)/,
-        /(оцените|оценить|посмотрите) (мои |мой )?волос/,
+        // 'посовету', no 'посоветуйте': la й se descompone al normalizar (ver buildCyrillicRe)
+        // y el literal completo no casaba nunca. El resto de la familia sí funcionaba, así que
+        // una clienta rusa que escribía sólo "Посоветуйте, пожалуйста" no activaba la consulta.
+        /(посовету|консультаци|порекоменд)/,
+        // Pronombre posesivo opcional como "una palabra que empieza por мо-", no enumerado:
+        // 'мой' y 'мої' se descomponen al normalizar (й, ї) y como alternativas literales
+        // estaban muertas. Cubre мой/мои/моє/мої/моего… sin depender de la ortografía.
+        /(оцените|оценить|посмотрите)( мо\S+)? волос/,
         // UK
         /не знаю що (мені )?(зробити|вибрати|хочу)/,
         /(порадьте|консультаці|порекоменд)/,
-        /(оцініть|оцінити|подивіться) (моє |мої )?волосс/,
+        /(оцініть|оцінити|подивіться)( мо\S+)? волосс/,
     ];
     return patterns.some(re => re.test(t));
 }
@@ -1953,7 +2000,9 @@ function extractLargoPelo(text) {
     if (/\b(medio|media|normal|medium|espalda|escapula|mid)\b/.test(t)) return 2;
     if (/(до лопаток|средн|середн)/.test(t)) return 2;
     if (/\b(corto|short|hombros)\b/.test(t)) return 1;
-    if (/(до плечей|коротк)/.test(t)) return 1;
+    // 'до плеч', no 'до плечей': la й se descompone al normalizar. Sin esto, "до плечей"
+    // ("hasta los hombros") no daba largo y el bot repreguntaba — y el largo fija el precio.
+    if (/(до плеч|коротк)/.test(t)) return 1;
     return null;
 }
 
@@ -2307,6 +2356,9 @@ module.exports = {
     detectConsultaValoracion,
     detectHairProblemDescription,
     namesConcreteService,
+    // Todo patrón cirílico se compila con esto (ver su comentario): normaliza los literales
+    // y no pone \b. Escribirlos a mano es el bug que ha reaparecido tres veces.
+    buildCyrillicRe,
     isReactiveOnlyCategory,
     isReactiveOnlyService,
     // Facturación por estilista

@@ -11,7 +11,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -292,6 +292,11 @@ function stripMarkdown(text) {
         .replace(/`(.+?)`/g, '$1');
 }
 
+// "Додай" (uk, «añádelo») aceptando un upsell. Va por buildCyrillicRe porque la й se
+// descompone al normalizar: escrito a mano no casaba nunca y el K18 o la manicura ofrecidos
+// a una clienta ucraniana no se añadían a la cita aunque dijera que sí.
+const UK_ANADE_RE = buildCyrillicRe(['додай']);
+
 function isUpsellingAcceptance(text) {
     if (!text || typeof text !== 'string') return false;
     const t = normalizeText(text).trim();
@@ -302,7 +307,7 @@ function isUpsellingAcceptance(text) {
         /s[ií].*por favor/i, /s[ií].*a[nñ]ade/i,
         /^yes$/i, /^yeah$/i, /^yep$/i, /^sure$/i, /^please$/i, /^go ahead$/i, /add it/i,
         /^[дД][аА]$/i, /^[кК]онечно$/i, /[дД]обавь/i, /^[хХ]орошо$/i,
-        /^[тТ]ак$/i, /[дД]одай/i,
+        /^[тТ]ак$/i, UK_ANADE_RE,
     ];
     return patterns.some(p => p.test(t));
 }
@@ -1087,7 +1092,13 @@ const BOOKING_APPROVAL_QUESTIONS = [
     /¿\s*te (va|viene|parece) bien/, /¿\s*(lo|la|te lo|te la) (confirmo|reservo|apunto)/,
     /¿\s*confirmo\b/, /¿\s*reservo\b/, /¿\s*quieres que (lo|la|te lo|te la) (confirme|reserve|apunte)/,
     /\bshall i book\b/, /\bdoes that work\b/, /\bis that ok(ay)?\b/, /\bwould that work\b/,
-    /подойд[её]т/, /подтверждаю\?/, /підійде/,
+    // RU/UK por buildCyrillicRe: 'подойдёт' y 'підійде' llevan й y escritos a mano no casaban
+    // NUNCA. Consecuencia: para una clienta rusa o ucraniana, una PROPUESTA legítima del bot
+    // ("Записал тебя на четверг в 10:00. Тебе подойдёт?") la leía la red anti-cita-fantasma
+    // como una reserva dada por hecha —llmClaimsBooked sí reconoce el cirílico— y rectificaba
+    // y reiniciaba el flujo en mitad de su propia propuesta.
+    buildCyrillicRe(['подойдет', 'подойдёт', 'підійде']),
+    /подтверждаю\?/,
 ];
 function asksForBookingApproval(text) {
     const t = normalizeText(text);
@@ -1157,19 +1168,24 @@ async function blockPhantomBookingClaim(orgId, session, userPhone, aiResponse, s
 // solo trabaja martes/jueves/viernes y el salón sí abre los sábados). El prompt ya lo
 // prohíbe explícitamente, pero un modelo pequeño no lo respeta siempre — esta es la
 // última barrera antes de enviar, igual que respondsWithInventedSlots de arriba.
+// Las tres listas se comparan con .includes contra texto YA normalizado, así que los
+// literales tienen que estar normalizados también. 'выходной' y 'вихідний' ("día libre")
+// llevan й y no casaban nunca: la red dejaba pasar el cierre falso justo cuando el LLM lo
+// decía con la palabra más natural en ruso o ucraniano. Se mapean las tres —no solo la que
+// falla hoy— para que añadir mañana un día con й no vuelva a romperlas en silencio.
 const CLOSURE_CLAIM_WORDS = [
     'cerrado', 'cerrada', 'cerramos', 'no abrimos', 'no abre',
     'closed', 'dont open', "don't open", 'were closed', "we're closed",
     'закрыт', 'закрыто', 'не работаем', 'выходной',
     'закрито', 'не працюємо', 'вихідний',
-];
-const SUNDAY_WORDS = ['domingo', 'sunday', 'воскресенье', 'неділя'];
+].map(normalizeText);
+const SUNDAY_WORDS = ['domingo', 'sunday', 'воскресенье', 'неділя'].map(normalizeText);
 const NON_SUNDAY_DAY_WORDS = [
     'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado',
     'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday',
     'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота',
     'понеділок', 'вівторок', 'середа', 'четвер', "п'ятниця", 'субота',
-];
+].map(normalizeText);
 function respondsWithFalseClosureClaim(respuesta) {
     const t = normalizeText(respuesta);
     if (!t) return false;
@@ -4279,7 +4295,7 @@ module.exports = {
     isTransientWAError,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
-        respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
+        respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:
