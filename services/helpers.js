@@ -1840,6 +1840,106 @@ function detectConsultaValoracion(text) {
     return patterns.some(re => re.test(t));
 }
 
+// ─── Descripción del ESTADO del cabello (03/08/2026, petición de Yulia) ──────
+//
+// La clienta describe su problema ("tengo el pelo seco y sin brillo") sin nombrar ningún
+// servicio. El bot NO debe adivinar el tratamiento: contesta con el rango de precios y
+// recomienda la consulta (ver salonHairTreatmentRangeMsg en bot.js).
+//
+// Por qué un detector propio y no más patrones en detectConsultaValoracion: esa función
+// significa "pídeme asesoramiento" y su consumidor selecciona la Consulta DIRECTAMENTE, sin
+// pronunciar precios. Aquí hace falta lo contrario: hablar primero (muchos tratamientos,
+// 45-115 €) y ofrecer la consulta después.
+//
+// Por qué no basta con el prompt: el daño ocurre ANTES del LLM. "sin brillo" contiene
+// 'brillo', que es palabra de categoría (CATEGORY_KEYWORDS → Brillo Glow, con un único
+// servicio), así que extractServiceFromText resolvía "tengo el pelo sin brillo" a
+// "Brillo intensivo" — 120 € — y lo reservaba sin preguntar. Los síntomas que no chocan con
+// ninguna categoría ("seco y estropeado", "apagado y sin vida") caían al otro extremo:
+// null → salonNoSlotsMsg → bucle. Las dos mitades del fallo de anoche.
+//
+// La CAÍDA del pelo queda fuera a propósito: 'caida'/'anticaida'/'alopecia' siguen yendo a
+// Diagnóstico Capilar / consulta tricológica, la bifurcación deliberada que documenta el
+// comentario de detectConsultaValoracion.
+//
+// Ojo con el cirílico: normalizeText descompone en NFD y borra los diacríticos, así que
+// й→и y ё→е. Los patrones RU/UK de aquí se escriben YA normalizados ('поврежденные', no
+// 'повреждённые') porque si no nunca casan.
+const HAIR_PROBLEM_NOUN_RE = /(pelo|cabello|melena|puntas|hair|волос)/;
+
+// Cada patrón describe UN síntoma. Además de decidir el disparo, sus coincidencias se borran
+// del texto para construir el `residual` con el que se comprueba si la clienta nombró de
+// verdad un servicio (ver detectHairProblemDescription).
+const HAIR_PROBLEM_PATTERNS = [
+    // ES — sequedad / deshidratación
+    /\b(muy |bastante |super |bien |tan )*(seco|seca|secos|secas|reseco|reseca|resecos|resecas|deshidratado|deshidratada|deshidratados|deshidratadas)\b/,
+    /\bsin hidratacion\b/,
+    // ES — daño
+    /\b(estropeado|estropeada|estropeados|estropeadas|danado|danada|danados|danadas|maltratado|maltratada|maltratados|maltratadas|quemado|quemada|quemados|quemadas|castigado|castigada|castigados|castigadas)\b/,
+    // ES — falta de brillo. Es el patrón que desactiva el falso 'brillo' de Brillo Glow.
+    /\b(sin|poco|poca|falta de|nada de) brillo\b/,
+    /\b(apagado|apagada|apagados|apagadas|opaco|opaca|opacos|opacas|sin luz)\b/,
+    // ES — falta de fuerza / vida
+    /\bsin (vida|fuerza|cuerpo|volumen)\b/,
+    /\b(debil|debiles|fino y|finito|sin densidad)\b/,
+    // ES — rotura
+    /\b(quebradizo|quebradiza|quebradizos|quebradizas)\b/,
+    /\bse me (rompe|parte|quiebra|rompen|parten|quiebran)\b/,
+    /\b(puntas) (abiertas|rotas|estropeadas|dobles)\b/,
+    // ES — encrespamiento / porosidad
+    /\b(encrespado|encrespada|encrespados|encrespadas|encrespamiento|frizz|poroso|porosa|porosos|porosas)\b/,
+    // ES — valoraciones genéricas (solo cuentan junto al sustantivo capilar, ver el guard)
+    /\b(hecho polvo|un desastre|fatal|horrible|un asco|muy mal|fatalmente)\b/,
+    // EN
+    /\b(very |really |super )*(dry|damaged|brittle|dull|lifeless|frizzy|straw ?like)\b/,
+    /\bsplit ends\b/,
+    /\b(no|lacks?|lacking|without) (shine|life|body)\b/,
+    // RU (ya normalizado: sin й ni ё)
+    /(сухие|сухая|сухое|пересушен|поврежден|ломкие|ломкое|тусклые|тусклое|безжизненн|секутся|пушатся|испорчен)/,
+    // UK (ya normalizado: sin й ni ї)
+    /(сухе|сухи|пошкоджен|ламке|ламки|тьмяне|тьмяни|безживн|сiчеться|січеться|пухнасте|зiпсован|зіпсован)/,
+];
+
+// Palabras de LARGO. Se ignoran al comprobar si el residual nombra un servicio: 'corto' es
+// palabra de la categoría Cortes en CATEGORY_KEYWORDS, así que sin esto un "tengo el pelo
+// corto y seco" contaría como "ha pedido un corte" y se comería el caso. El largo ya tiene
+// su propia maquinaria (detectLargoCategory / pendingLargoCategory).
+const LARGO_WORDS_RE = /\b(corto|corta|cortos|cortas|largo|larga|largos|largas|medio|media|medios|medias)\b/g;
+
+// ¿El texto nombra un servicio o categoría CONCRETOS del catálogo? Deliberadamente laxo: usa
+// extractServiceCategoriesFromText además de extractServiceFromText, porque una categoría
+// ambigua ("hidratación", que existe a 45/85/110 €) devuelve null en la primera pero SÍ es
+// un servicio nombrado — ahí la clienta debe seguir el flujo normal de reserva, que le
+// preguntará cuál de las tres quiere.
+function namesConcreteService(text, servicesCatalog) {
+    if (!text || !servicesCatalog?.length) return false;
+    const t = normalizeText(text).replace(LARGO_WORDS_RE, ' ');
+    if (extractServiceFromText(t, servicesCatalog)) return true;
+    return extractServiceCategoriesFromText(t, servicesCatalog).length > 0;
+}
+
+// Devuelve null, o { residual } con el texto normalizado y los tramos de síntoma borrados.
+// El residual es lo que se pasa a namesConcreteService: así "tengo el pelo seco, quiero una
+// hidratación" sigue el flujo de reserva (queda "quiero una hidratacion"), mientras que
+// "quiero algo para el pelo seco y sin brillo" dispara (no queda ningún servicio).
+function detectHairProblemDescription(text) {
+    if (!text) return null;
+    const t = normalizeText(text);
+    // Exigir el sustantivo capilar es lo que impide que "está fatal" o "es un desastre"
+    // conviertan cualquier queja de la conversación en una descripción del cabello.
+    if (!HAIR_PROBLEM_NOUN_RE.test(t)) return null;
+    let residual = t;
+    let matched = false;
+    for (const re of HAIR_PROBLEM_PATTERNS) {
+        const rx = new RegExp(re.source, 'g');
+        const limpio = residual.replace(rx, ' ');
+        if (limpio !== residual) matched = true;
+        residual = limpio;
+    }
+    if (!matched) return null;
+    return { residual: residual.replace(/\s+/g, ' ').trim() };
+}
+
 // Extracts hair length from user response.
 // Returns 1 (short/hombros), 2 (medium/espalda), 3 (long/cintura), 4 (very long), or null.
 function extractLargoPelo(text) {
@@ -2205,6 +2305,8 @@ module.exports = {
     detectCorteNinoTipo,
     detectConsultaService,
     detectConsultaValoracion,
+    detectHairProblemDescription,
+    namesConcreteService,
     isReactiveOnlyCategory,
     isReactiveOnlyService,
     // Facturación por estilista

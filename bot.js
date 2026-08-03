@@ -11,7 +11,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, isReactiveOnlyService, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -248,6 +248,7 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         consultaValoracionDetectada: false,
         sinServicioStreak: 0,
         consultaOfrecida: false,
+        rangoTratamientosOfrecido: false,
         // Avisos de mención de estilista (ver SERVICE_STATE_DEFAULTS)
         stylistMentionUnknown: null,
         stylistMentionCorrected: null,
@@ -1212,6 +1213,46 @@ function salonPickServiceMenuMsg(session) {
     return msgs[session.language] || msgs.es;
 }
 
+// ─── Descripción del estado del cabello → rango + consulta (Yulia, 03/08/2026) ────
+// Rango pedido por Yulia. NO se deriva del catálogo a propósito: es su cifra comercial,
+// no el min/max real (los tratamientos van de 35 € —Green Purity Detox, Reconstrucción
+// K18— a 120 € —Brillo intensivo—, y Anti-encrespamiento llega a 180 €). Cambiarlo es
+// editar estas dos constantes.
+const TRATAMIENTOS_PRECIO_MIN = 45;
+const TRATAMIENTOS_PRECIO_MAX = 115;
+
+// Los tratamientos se nombran por FAMILIA, nunca con el nombre exacto de una entrada del
+// catálogo: esos nombres cambian (K18 → "Reconstrucción K18" en la migración 026,
+// "Hidratación 60min" → "Spa Hidratación 60min" en la 028) y un texto acoplado a ellos se
+// queda obsoleto sin que nadie lo note.
+function salonHairTreatmentRangeMsg(session) {
+    // Deja armada la oferta de consulta: un "sí" en el turno siguiente la selecciona por
+    // la vía legítima (mismo gate que consume salonPickServiceMenuMsg).
+    session.consultaOfrecida = true;
+    const min = TRATAMIENTOS_PRECIO_MIN;
+    const max = TRATAMIENTOS_PRECIO_MAX;
+    const msgs = {
+        es: `Tenemos muchos tratamientos para el cabello 😊 reconstrucción, hidratación, detox `
+            + `del cuero cabelludo, tratamientos orgánicos… Van de ${min}€ a ${max}€ según lo que `
+            + `necesite tu pelo.\n\nPara acertar, lo mejor es que te lo veamos en persona: en la `
+            + `consulta te hacemos un diagnóstico y elegimos juntas el tratamiento adecuado para `
+            + `tu caso. ¿Te la reservo?`,
+        en: `We have lots of hair treatments 😊 reconstruction, hydration, scalp detox, organic `
+            + `treatments… They range from ${min}€ to ${max}€ depending on what your hair needs.\n\n`
+            + `To get it right it's best if we see it in person: at the consultation we do a proper `
+            + `diagnosis and choose the right treatment for your case together. Shall I book you one?`,
+        ru: `У нас много уходов для волос 😊 реконструкция, увлажнение, детокс кожи головы, `
+            + `органические уходы… Они стоят от ${min}€ до ${max}€ — зависит от того, что нужно `
+            + `твоим волосам.\n\nЧтобы не ошибиться, лучше посмотреть вживую: на консультации мы `
+            + `делаем диагностику и вместе подбираем подходящий уход. Записать тебя?`,
+        uk: `У нас багато доглядів для волосся 😊 реконструкція, зволоження, детокс шкіри голови, `
+            + `органічні догляди… Вони коштують від ${min}€ до ${max}€ — залежить від того, що `
+            + `потрібно твоєму волоссю.\n\nЩоб не помилитися, краще подивитися наживо: на `
+            + `консультації ми робимо діагностику і разом добираємо відповідний догляд. Записати тебе?`,
+    };
+    return msgs[session.language] || msgs.es;
+}
+
 function salonNoSlotsMsg(session) {
     const language = session.language;
     if (!session.selectedService) {
@@ -1388,6 +1429,10 @@ const SERVICE_STATE_DEFAULTS = {
     // El menú de rescate ya ofreció explícitamente la consulta de valoración: un "sí" en
     // el turno siguiente la selecciona.
     consultaOfrecida: false,
+    // Ya le hemos dado el rango de tratamientos (45-115 €) por describir el estado de su
+    // cabello. Si vuelve a describirlo sin nombrar servicio NO se repite el párrafo: se
+    // selecciona la consulta y se sigue (misma lección que sinServicioStreak).
+    rangoTratamientosOfrecido: false,
 };
 // Campos de servicio anidados en partialData (se borran con delete).
 const SERVICE_PARTIAL_FIELDS = [
@@ -2630,6 +2675,53 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 await _send(msg);
                 persistSession(orgId, userPhone, session);
                 return;
+            }
+        }
+
+        // ─── Salon: describe el ESTADO de su cabello → rango + consulta ──
+        // Petición de Yulia (03/08/2026) tras el fallo de la noche anterior: si la clienta
+        // describe su problema ("tengo el pelo seco y sin brillo") sin nombrar un servicio,
+        // el bot NO adivina el tratamiento. Dice que hay muchos, da el rango y recomienda
+        // la consulta, que es donde se hace el diagnóstico.
+        //
+        // Va ANTES del bloque de detección de servicio a propósito: corriendo después,
+        // extractServiceFromText ya habría fijado "Brillo intensivo" (120 €) para un
+        // "tengo el pelo sin brillo", porque 'brillo' es palabra de categoría. Y va DESPUÉS
+        // del bloque de servicios bajo consulta, para que extensiones / permanente /
+        // eliminación de pigmento sigan ganando: esos escalan a una especialista.
+        if (orgType === 'salon' && !session.selectedService && !session.reservaConfirmada
+                && !session.pendingLargoCategory && !session.pendingCorteGenero
+                && !session.pendingCorteMujerTipo && !session.pendingCorteNinoTipo) {
+            const problema = detectHairProblemDescription(sanitized);
+            // getAgentConfig está cacheado 60 s: leerlo aquí no añade una consulta por turno.
+            const catalogoPre = problema ? ((await getAgentConfig(orgId))?.services || []) : [];
+            // El residual es el mensaje sin los tramos de síntoma: si ahí queda un servicio
+            // o categoría del catálogo, la clienta SÍ nombró lo que quiere ("tengo el pelo
+            // seco, quiero una hidratación") y sigue el flujo normal de reserva.
+            if (problema && !namesConcreteService(problema.residual, catalogoPre)) {
+                if (!session.rangoTratamientosOfrecido) {
+                    session.rangoTratamientosOfrecido = true;
+                    const msg = salonHairTreatmentRangeMsg(session);
+                    logger.info('tratamiento_generico_rango_ofrecido', {
+                        orgId, telefono: userPhone, intento: 1,
+                    });
+                    session.history.push({ role: 'assistant', content: msg, ts: Date.now() });
+                    await _send(msg);
+                    persistSession(orgId, userPhone, session);
+                    return;
+                }
+                // Segunda descripción sin nombrar servicio: repetir el mismo párrafo sería
+                // el bucle del 02/08. Se selecciona la Consulta por la vía legítima (igual
+                // que el gate de detectConsultaValoracion) y el turno sigue: huecos + LLM.
+                const consultaSvc = catalogoPre.find(isReactiveOnlyService);
+                if (consultaSvc) {
+                    session.selectedService = consultaSvc;
+                    session.consultaValoracionDetectada = true;
+                    session.consultaOfrecida = false;
+                    logger.info('tratamiento_generico_rango_ofrecido', {
+                        orgId, telefono: userPhone, intento: 2, accion: 'consulta_seleccionada',
+                    });
+                }
             }
         }
 
@@ -4187,7 +4279,7 @@ module.exports = {
     isTransientWAError,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
-        respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg,
+        respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:

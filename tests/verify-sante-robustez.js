@@ -18,6 +18,8 @@
  *     A4  Errores de BD → ¿se degradan a "no hay huecos" o a disponibilidad fantasma?
  *     A5  Media que no es audio por Cloud API → ¿responde algo o silencio?
  *         (el recorrido completo por el motor real vive en tests/inbound-media-engine.test.js)
+ *     A6  Describe el estado de su cabello → ¿rango + consulta, o el bot vuelve a adivinar?
+ *         (contra el catálogo REAL: vigila el guard cuando Yulia toca el catálogo)
  *
  *   NIVEL B (tests/verify-sante-robustez-llm.js, con LLM real)
  *     Escenarios conversacionales completos, incluida la repro de la sesión de Eva.
@@ -46,7 +48,12 @@ const {
     normalizeText,
     classifyIncomingMedia,
     unsupportedMediaMsg,
+    detectHairProblemDescription,
+    namesConcreteService,
+    extractServiceFromText,
+    isReactiveOnlyService,
 } = require('../services/helpers');
+const { TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX } = require('../bot')._internals;
 const { buildSystemPrompt } = require('../services/providers/openai');
 const { applyDatePreference } = require('../services/date-preference');
 const { resolveWeekdayToDate } = require('../services/date-utils');
@@ -537,6 +544,84 @@ const ANCHORS = [
         }
     }
 
+    // ═══ A6 — Describe el estado de su cabello (rango + consulta) ═════════════════════
+    // Contra el catálogo REAL de Supabase, no un recorte: lo que este bloque vigila es que
+    // el guard "¿ha nombrado un servicio?" siga siendo correcto cuando Yulia añade, renombra
+    // o borra entradas. tests/tratamiento-generico.test.js congela la lógica con un catálogo
+    // fijo; aquí se comprueba contra el catálogo que hay hoy en producción.
+    console.log('\n▶ A6 · Estado del cabello → rango de tratamientos + consulta');
+    {
+        const cfgReal = await db.getAgentConfig(ORG);
+        const catalogo = cfgReal?.services || [];
+        const disparaReal = (frase) => {
+            const p = detectHairProblemDescription(frase);
+            return !!p && !namesConcreteService(p.residual, catalogo);
+        };
+        if (!catalogo.length) {
+            bug('A6', 'catálogo real vacío', 'sin catálogo no se puede validar el guard');
+        }
+
+        // Las frases del incidente del 02→03/08/2026.
+        const DEBE_DISPARAR = [
+            'tengo el pelo muy seco y estropeado',
+            'tengo el pelo sin brillo',
+            'lo tengo apagado y sin vida el pelo',
+            'tengo las puntas abiertas',
+            'mi pelo está muy dañado',
+            'my hair is very dry and damaged',
+            'у меня сухие и поврежденные волосы',
+        ];
+        for (const frase of DEBE_DISPARAR) {
+            if (disparaReal(frase)) {
+                ok('A6', `"${frase.slice(0, 38)}…" → rango + consulta`);
+            } else {
+                const p = detectHairProblemDescription(frase);
+                const svc = p ? extractServiceFromText(p.residual, catalogo) : null;
+                bug('A6', `"${frase.slice(0, 38)}…" NO dispara`,
+                    p ? `residual "${p.residual}" resuelve a ${svc?.nombre || 'una categoría'} — el bot volvería a adivinar`
+                      : 'el detector no reconoce el síntoma');
+            }
+        }
+
+        // Si nombra el servicio, flujo normal de reserva: esto NO debe dispararse.
+        const NO_DEBE = [
+            'tengo el pelo seco, quiero una hidratación',
+            'quiero un balayage, lo tengo estropeado',
+            'me han hecho mechas y mi cabello es un desastre',
+            'se me cae el pelo',
+        ];
+        for (const frase of NO_DEBE) {
+            if (!disparaReal(frase)) ok('A6', `"${frase.slice(0, 38)}…" → flujo normal de reserva`);
+            else bug('A6', `"${frase.slice(0, 38)}…" dispara de más`, 'nombra un servicio: le toca reservar, no el rango');
+        }
+
+        // La consulta reactiva debe existir en el catálogo real: es lo que se selecciona a la
+        // segunda descripción sin servicio. Sin ella el camino se queda a medias.
+        if (catalogo.some(isReactiveOnlyService)) {
+            ok('A6', 'la categoría reactiva "Consulta" sigue en el catálogo real');
+        } else {
+            bug('A6', 'no hay categoría reactiva en el catálogo real',
+                'la 2ª descripción sin servicio no podría seleccionar la consulta');
+        }
+
+        // El rango 45-115 € es la cifra comercial de Yulia, no el min/max del catálogo. No es
+        // un fallo que no coincidan, pero si se descuelga mucho conviene que se vea.
+        const CATS_TRATAMIENTO = ['Reconstrucción', 'Spa Hair', 'Tratamiento Orgánico', 'Brillo Glow'];
+        const precios = catalogo
+            .filter(s => CATS_TRATAMIENTO.includes(s.categoria) && s.precio != null)
+            .map(s => Number(s.precio));
+        if (precios.length) {
+            const [min, max] = [Math.min(...precios), Math.max(...precios)];
+            const detalle = `catálogo ${min}-${max} € · mensaje ${TRATAMIENTOS_PRECIO_MIN}-${TRATAMIENTOS_PRECIO_MAX} €`;
+            if (min >= TRATAMIENTOS_PRECIO_MIN && max <= TRATAMIENTOS_PRECIO_MAX) {
+                ok('A6', 'el rango del mensaje cubre los tratamientos del catálogo', detalle);
+            } else {
+                gap('A6', 'el rango del mensaje no coincide con el catálogo',
+                    `${detalle} — es la cifra que pidió Yulia (03/08/2026), no un cálculo`);
+            }
+        }
+    }
+
     // ─── Resumen ──────────────────────────────────────────────────────────────────────
     console.log('\n' + '═'.repeat(78));
     const porBloque = {};
@@ -544,7 +629,7 @@ const ANCHORS = [
         (porBloque[r.bloque] ||= { OK: 0, GAP: 0, BUG: 0 })[r.estado]++;
     }
     console.log('RESUMEN POR BLOQUE');
-    const nombres = { A1: 'Estilistas', A2: 'Fecha/hora', A3: 'Causas de cero', A4: 'Errores de BD', A5: 'Media Cloud API' };
+    const nombres = { A1: 'Estilistas', A2: 'Fecha/hora', A3: 'Causas de cero', A4: 'Errores de BD', A5: 'Media Cloud API', A6: 'Estado cabello' };
     for (const [b, c] of Object.entries(porBloque)) {
         console.log(`  ${b} ${(nombres[b] || '').padEnd(16)} OK ${String(c.OK).padStart(3)} · GAP ${String(c.GAP).padStart(3)} · BUG ${String(c.BUG).padStart(3)}`);
     }

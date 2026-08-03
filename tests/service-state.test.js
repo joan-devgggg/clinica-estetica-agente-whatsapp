@@ -113,6 +113,10 @@ test('la fuente de verdad coincide con la lista esperada (candado anti-drift)', 
         // siempre la puerta por la que el LLM puede fijar el servicio reactivo, y una racha
         // heredada mandaría al menú de rescate en la primera pregunta de la 2ª reserva.
         'consultaValoracionDetectada', 'sinServicioStreak', 'consultaOfrecida',
+        // Rango de tratamientos ya dado por describir el estado del cabello. Se limpia con
+        // el servicio a propósito: en una 2ª reserva la clienta puede volver a describir su
+        // pelo, y arrastrar el flag la mandaría directa a la consulta sin oír el rango.
+        'rangoTratamientosOfrecido',
     ];
     const EXPECTED_PARTIAL = [
         'servicio', 'categoria_servicio', 'estilista_preferida',
