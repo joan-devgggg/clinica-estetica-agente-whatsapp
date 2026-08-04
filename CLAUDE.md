@@ -169,32 +169,38 @@ cd dashboard-app && npm run dev
 pm2 start server.js --name antigravity-bot
 ```
 
-### ⚠️ `verify:robustez` NO termina solo — no esperes a que salga
+### Los timers de arranque van con `.unref()` — no los quites
 
 ```bash
-script -q /dev/null node tests/verify-sante-robustez.js > /tmp/robustez.log 2>&1 &
-until grep -q "TOTAL" /tmp/robustez.log; do sleep 5; done
-grep -E "TOTAL|BUG" /tmp/robustez.log
-pkill -f verify-sante-robustez        # hay que matarlo: no sale por su cuenta
+npm run verify:robustez     # sale solo, con exit code. Nada de script -q ni pkill.
 ```
 
-Dos cosas, las dos aprendidas perdiendo casi una hora (04/08/2026):
+**El problema (04/08/2026, casi una hora perdida):** `verify:robustez` importa `bot.js`, y al
+importarse `bot.js` registraba tres `setInterval` (GC de sesiones, limpieza del dedupe,
+barrido de abandono) más un cuarto en `services/metrics.js` (flush a disco). Cuatro timers
+referenciados = el event loop nunca se vacía. El script hacía **todo** su trabajo, imprimía
+el resumen y se quedaba vivo indefinidamente: 48 minutos en una ocasión, con ~0,5 s de CPU
+acumulada. Y como Node bloquea el buffer de stdout cuando no es un TTY, redirigido a fichero
+no escribía nada hasta terminar — y como no terminaba, no escribía nunca. Cero salida era
+indistinguible de cero progreso.
 
-1. **Hace TODO el trabajo, imprime el resumen y luego se queda vivo para siempre.** No se
-   cuelga a mitad: los resultados están completos en el log y el proceso sigue ahí, con
-   ~0,5 s de CPU acumulada después de 40 minutos. Algún handle abierto (cliente de Supabase,
-   timer, SQLite) mantiene vivo el event loop. Por eso el bucle de arriba espera a la línea
-   `TOTAL` y mata: esperar al exit es esperar a algo que no va a pasar.
-2. **Node bloquea el buffer de stdout cuando no es un TTY.** Sin `script -q /dev/null`, un
-   `npm run verify:robustez` redirigido no escribe **nada** hasta terminar — y como no
-   termina, no escribe nunca. Cero salida no significa cero progreso.
+**Por qué `.unref()` y no otra cosa:** un timer con unref se dispara EXACTAMENTE igual
+mientras el proceso siga vivo por cualquier otro motivo; lo único que pierde es la capacidad
+de ser él la razón de que siga vivo. En producción el proceso lo mantienen el Express de
+`server.js` y los clientes de WhatsApp, así que GC, dedupe, barrido y flush corren igual.
+Comprobado: un intervalo unref de 100 ms dispara 5 veces en 600 ms si hay otro handle vivo.
 
-Para distinguir "trabajando" de "acabado y sin salir": `ps -o time,%cpu,etime -p <pid>`.
-Décimas de segundo de CPU acumulada = ya no está trabajando.
+Contrapartida cubierta: un proceso corto que ahora sí termina ya no espera al siguiente tic
+de métricas, así que `metrics.js` vacía en `beforeExit` (que admite trabajo asíncrono, al
+revés que `exit`). Los handlers de SIGINT/SIGTERM siguen cubriendo la muerte por señal.
 
-Línea base con la que comparar: **OK 82 · GAP 11 · BUG 0**. Los GAP son deficiencias
-medidas, no regresiones. `verify:sante` arrastra **4 fallos preexistentes** (roster de
-Tetiana/Natalia/Yulia-Tricóloga y el nombre completo de "Corte hombre").
+Si alguien vuelve a añadir un `setInterval` de módulo, que lo pase por `unrefTimer()`
+(`bot.js`) o le ponga `.unref()`: si no, todo esto vuelve.
+
+Línea base con la que comparar: **OK 82 · GAP 11 · BUG 0** (idéntica antes y después del
+unref). Los GAP son deficiencias medidas, no regresiones. `verify:sante` arrastra **4 fallos
+preexistentes** (roster de Tetiana/Natalia/Yulia-Tricóloga y el nombre completo de
+"Corte hombre") y sale con código 1 por ellos.
 
 ## Regla de oro
 

@@ -4960,7 +4960,27 @@ async function handleIncomingMessage(client, message, orgId) {
 }
 
 // ─── GC ───────────────────────────────────────────────────────────────────────
-setInterval(() => {
+//
+// Los tres timers de este fichero van con .unref() — ver unrefTimer() abajo.
+//
+// Un timer con unref sigue disparándose EXACTAMENTE igual mientras el proceso siga vivo por
+// cualquier otra razón. Lo único que cambia es que deja de ser una razón por sí mismo. En
+// producción el proceso lo mantienen vivo el servidor Express de server.js y los clientes de
+// WhatsApp, así que el GC, la limpieza de dedupe y el barrido de abandono corren igual.
+//
+// Lo que arregla: `require('./bot.js')` registraba estos tres intervalos y el proceso ya no
+// terminaba nunca. verify:robustez importa bot.js, así que hacía todo su trabajo, imprimía el
+// resumen y se quedaba colgado indefinidamente — 48 minutos en una ocasión, con ~0,5 s de CPU
+// acumulada. Eso obligaba a lanzarlo con `script -q` y matarlo a mano al ver la línea TOTAL, y
+// hacía imposible engancharlo a un hook de pre-push.
+function unrefTimer(t) {
+    // En Node devuelve un Timeout con .unref(); el guard es por si algún entorno de test
+    // sustituye setInterval por algo que devuelve un id numérico.
+    if (t && typeof t.unref === 'function') t.unref();
+    return t;
+}
+
+unrefTimer(setInterval(() => {
     const now = Date.now();
     for (const [key, session] of userSessions.entries()) {
         if (now - session.lastUpdate > GC_INTERVAL_MS * 2) {
@@ -4969,11 +4989,11 @@ setInterval(() => {
             userSessions.delete(key);
         }
     }
-}, GC_INTERVAL_MS);
+}, GC_INTERVAL_MS));
 
-setInterval(() => {
+unrefTimer(setInterval(() => {
     for (const session of userSessions.values()) session.seenMessages?.cleanup?.();
-}, GC_INTERVAL_MS / 2);
+}, GC_INTERVAL_MS / 2));
 
 // Marca 'abandonado' SOLO tras comprobar contra Supabase que no hay cita por delante.
 //
@@ -5011,7 +5031,7 @@ async function marcarAbandonadaSiNoTieneCita(orgId, key, session) {
     persistSession(orgId, phone, session);
 }
 
-setInterval(() => {
+unrefTimer(setInterval(() => {
     const now = Date.now();
     for (const [key, session] of userSessions.entries()) {
         // `leadStatus === 'abandoned'` es la guarda de idempotencia que faltaba: se asignaba
@@ -5031,7 +5051,7 @@ setInterval(() => {
             }
         }
     }
-}, 60000);
+}, 60000));
 
 function setConversationBotMode(phone, active, isEscalationResolve = false) {
     const digits = phone.replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '');

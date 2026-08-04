@@ -88,8 +88,28 @@ function calculateDerivedMetrics() {
 // Cargar al iniciar el módulo
 loadMetrics();
 
-// Flush periódico — no bloquea nada
-setInterval(flushToDisk, FLUSH_INTERVAL_MS);
+// Flush periódico.
+//
+// .unref() por el mismo motivo que los tres timers de bot.js: este módulo se carga como
+// efecto de `require('./bot.js')`, y un intervalo referenciado impide que el proceso termine
+// nunca. Es el que quedaba vivo después de desreferenciar los de bot.js, y por él
+// verify:robustez seguía sin salir aunque ya hubiera imprimido su resumen.
+//
+// Con unref el timer sigue disparándose igual mientras el proceso viva por otra razón (en
+// producción, el Express de server.js), así que el flush cada 30 s no cambia.
+const flushTimer = setInterval(flushToDisk, FLUSH_INTERVAL_MS);
+if (typeof flushTimer.unref === 'function') flushTimer.unref();
+
+// Contrapartida del unref: un proceso corto que termine solo (un script, un verify) ya no
+// espera al siguiente tic, así que se vacía aquí. `beforeExit` sí admite trabajo asíncrono
+// —a diferencia de 'exit'— y no se dispara si el proceso muere por señal, que es lo que
+// cubren los handlers de SIGINT/SIGTERM de abajo.
+let flushingOnExit = false;
+process.on('beforeExit', async () => {
+    if (flushingOnExit) return;
+    flushingOnExit = true;
+    await flushToDisk();
+});
 
 // Flush al cerrar el proceso limpiamente
 process.on('SIGINT', async () => { await flushToDisk(); process.exit(0); });
