@@ -437,8 +437,10 @@ async function bookAppointment(orgId, slot, contactId, { servicio, duracionMin, 
     return { success: true, appointmentId: apt.id, appointment: apt };
 }
 
-async function cancelAppointment(orgId, appointmentId) {
-    const result = await db.updateAppointment(orgId, appointmentId, { estado: 'cancelled' });
+// `actor` por defecto 'bot' porque estas dos funciones son el camino del bot: aquí sí se
+// sabe quién escribe, al revés que en updateAppointment, donde no consta si nadie lo dice.
+async function cancelAppointment(orgId, appointmentId, { actor = 'bot' } = {}) {
+    const result = await db.updateAppointment(orgId, appointmentId, { estado: 'cancelled', actor });
     return { success: !!result };
 }
 
@@ -453,7 +455,7 @@ async function cancelAppointment(orgId, appointmentId) {
 //   'invalid_slot' → fecha/hora que updateAppointment rechaza; insertar no arregla nada.
 //   'duracion_invalida' → ver assertDuracion. NO cae al INSERT de rescate: eso escribiría
 //                    la misma duración inventada en una fila nueva.
-async function rescheduleAppointment(orgId, appointmentId, slot, { servicio, duracionMin, stylistId, notas } = {}) {
+async function rescheduleAppointment(orgId, appointmentId, slot, { servicio, duracionMin, stylistId, notas, actor = 'bot' } = {}) {
     const durErr = assertDuracion(duracionMin, 'rescheduleAppointment', { orgId, appointmentId });
     if (durErr) return durErr;
     let result;
@@ -465,6 +467,7 @@ async function rescheduleAppointment(orgId, appointmentId, slot, { servicio, dur
             duracionMin,
             stylistId: stylistId || slot.stylistId,
             notas,
+            actor,
         });
     } catch (e) {
         // updateAppointment usa .single(): sin filas, Supabase devuelve PGRST116.

@@ -448,7 +448,11 @@ app.put('/api/citas/:id', async (req, res) => {
         // Estado ANTERIOR: hace falta para no contar dos veces la misma visita si la cita ya
         // estaba completada (el worker de auto-completar pudo adelantarse al panel).
         const previo = await db.getAppointmentById(orgId, req.params.id);
-        const apt = await db.updateAppointment(orgId, req.params.id, req.body);
+        // El actor sale del token ya verificado, nunca del body: es la firma de quién movió
+        // la cita, y una firma que puede escribir el cliente no vale para nada.
+        const apt = await db.updateAppointment(orgId, req.params.id, {
+            ...req.body, actor: `panel:${req.authUserId || 'desconocido'}`,
+        });
         console.log('[DEBUG apt]', apt);
         if (!apt) return res.status(404).json({ error: 'No encontrada' });
 
@@ -521,7 +525,9 @@ app.put('/api/citas/:id', async (req, res) => {
 app.delete('/api/citas/:id', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
-        const apt = await db.updateAppointment(orgId, req.params.id, { estado: 'cancelled' });
+        const apt = await db.updateAppointment(orgId, req.params.id, {
+            estado: 'cancelled', actor: `panel:${req.authUserId || 'desconocido'}`,
+        });
         if (!apt) return res.status(404).json({ error: 'No encontrada' });
         if (apt.contact_id) {
             try {
@@ -555,7 +561,7 @@ app.post('/api/bizums/:appointmentId/resolver', async (req, res) => {
         if (!pending) return res.status(404).json({ error: 'No hay verificación pendiente para esta reserva' });
 
         const { resolveBizumResult } = require('./bot');
-        await resolveBizumResult(pending, !!confirmado);
+        await resolveBizumResult(pending, !!confirmado, { actor: `panel:${req.authUserId || 'desconocido'}` });
         await db.resolvePendingAction(orgId, pending.id, confirmado ? 'confirmado' : 'rechazado');
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1046,7 +1052,9 @@ app.get('/api/reviews-pending', async (req, res) => {
 app.post('/api/reviews/:appointmentId/send', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
-        await db.updateAppointment(orgId, req.params.appointmentId, { resenaEnviada: true });
+        await db.updateAppointment(orgId, req.params.appointmentId, {
+            resenaEnviada: true, actor: `panel:${req.authUserId || 'desconocido'}`,
+        });
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });

@@ -139,6 +139,7 @@ getScheduleBlocks(orgId, stylistId, from, to)
 | `config` | Key-value por org (bot_activo, horas_resena, telegram_admins, plantilla_recordatorio, plantilla_resena, dias_retorno_auto) |
 | `pending_actions` | Cola de verificaciones Telegram (bizum_review, vip_suggestion, escalation) |
 | `stylists` | Equipo del salón (name, role, skills JSONB) |
+| `appointments` (auditoría, 033) | `updated_at` por TRIGGER · `updated_by` (`panel:<uuid>` / `bot` / `worker:*` / NULL = no consta) · `last_change` = solo el último `{at, by, de, a}` |
 | `stylist_schedules` | Horario semanal por estilista (day_of_week, start_time, end_time) |
 | `schedule_blocks` | Bloqueos manuales (vacaciones, descansos) |
 

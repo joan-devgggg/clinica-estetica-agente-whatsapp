@@ -58,7 +58,9 @@ testAsync('5 · cancelAppointment llama db.updateAppointment con estado cancelle
         const r = await calendarSante.cancelAppointment('org', 'apt-1');
         assert.deepStrictEqual(r, { success: true });
         assert.strictEqual(calls.length, 1);
-        assert.deepStrictEqual(calls[0], { orgId: 'org', id: 'apt-1', campos: { estado: 'cancelled' } });
+        // `actor` es la firma de la auditoría de la cita (migración 033): aquí escribe el
+        // bot, y eso tiene que constar en la fila.
+        assert.deepStrictEqual(calls[0], { orgId: 'org', id: 'apt-1', campos: { estado: 'cancelled', actor: 'bot' } });
     } finally { db.updateAppointment = orig; }
 });
 

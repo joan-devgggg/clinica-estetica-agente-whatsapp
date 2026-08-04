@@ -124,7 +124,7 @@ async function checkAndSendReviews() {
                 });
 
                 if (resultado === 'enviado') {
-                    await updateAppointment(orgId, apt.id, { resenaEnviada: true });
+                    await updateAppointment(orgId, apt.id, { resenaEnviada: true, actor: 'worker:review' });
                     logger.info('resena_enviada', { orgId, nombre, telefono: phone });
                 }
             }

@@ -1107,6 +1107,53 @@ async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duraci
     return data;
 }
 
+// Campos cuyo cambio le importa a alguien que audita una cita. Se dejan fuera a propósito
+// los interruptores de los workers (recordatorio_enviado, resena_enviada): son ruido
+// mecánico y taparían el último cambio de verdad, que es lo único que guarda `last_change`.
+const CAMPOS_AUDITADOS = ['starts_at', 'ends_at', 'service', 'status', 'stylist_id', 'notes'];
+
+/**
+ * El "de → a" del cambio que se está a punto de escribir, o null si no cambia nada de lo
+ * que se audita. Hace UNA lectura extra, y solo cuando toca: editar una cita es una acción
+ * manual y rara, no un camino caliente.
+ *
+ * Si la lectura falla se devuelve null en vez de propagar: perder la traza es malo, pero
+ * impedir que se guarde el cambio de hora de una clienta por no poder auditarlo es peor.
+ */
+async function buildLastChange(oid, appointmentId, updates, actor) {
+    const campos = CAMPOS_AUDITADOS.filter(c => updates[c] !== undefined);
+    if (!campos.length) return undefined;
+
+    let previo = null;
+    try {
+        const { data, error } = await supabase
+            .from('appointments')
+            .select(campos.join(', '))
+            .eq('organization_id', oid)
+            .eq('id', appointmentId)
+            .maybeSingle();
+        if (error) throw error;
+        previo = data;
+    } catch (e) {
+        logger.warn('auditoria_cita_sin_estado_previo', { appointmentId, error: e.message });
+        return undefined;
+    }
+    if (!previo) return undefined;
+
+    const de = {};
+    const a = {};
+    for (const campo of campos) {
+        // Comparación laxa a propósito: null y undefined son "no había nada", y un id que
+        // llega como string no es un cambio respecto al mismo id guardado.
+        if (String(previo[campo] ?? '') === String(updates[campo] ?? '')) continue;
+        de[campo] = previo[campo] ?? null;
+        a[campo] = updates[campo] ?? null;
+    }
+    if (!Object.keys(a).length) return undefined;
+
+    return { at: now(), by: actor, de, a };
+}
+
 async function updateAppointment(orgId, appointmentId, campos) {
     const oid = resolveOrg(orgId);
     const updates = {};
@@ -1144,6 +1191,17 @@ async function updateAppointment(orgId, appointmentId, campos) {
         updates.ends_at   = new Date(startsAt.getTime() + durMin * 60 * 1000).toISOString();
     }
     if (!Object.keys(updates).length) return null;
+
+    // Auditoría mínima (migración 033). `updated_at` lo pone el trigger; aquí van las dos
+    // cosas que la base de datos no puede saber sola: QUIÉN escribe y QUÉ cambió.
+    //
+    // El actor NO se adivina. Sin `campos.actor` la columna queda a null —"no consta"— en
+    // vez de atribuirle la escritura al bot por defecto, que es justo la clase de dato que
+    // luego se lee como si fuera verdad.
+    if (campos.actor !== undefined) updates.updated_by = campos.actor || null;
+    const cambio = await buildLastChange(oid, appointmentId, updates, campos.actor || null);
+    if (cambio) updates.last_change = cambio;
+
     const { data, error } = await supabase
         .from('appointments')
         .update(updates)
@@ -2071,7 +2129,10 @@ async function autoCompleteAppointments(orgId) {
     // sin citas. Esas citas no se completan nunca y por tanto no llegan a facturarse.
     const { data, error } = await supabase
         .from('appointments')
-        .update({ status: 'completed' })
+        // updated_by va aquí porque este UPDATE no pasa por updateAppointment. Sin él, una
+        // cita completada por el barrido y otra completada por una persona en el panel
+        // serían indistinguibles (migración 033).
+        .update({ status: 'completed', updated_by: 'worker:auto-complete' })
         .eq('organization_id', oid)
         .eq('status', 'confirmed')
         .lte('ends_at', ahora)

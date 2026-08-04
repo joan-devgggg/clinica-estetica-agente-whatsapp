@@ -260,7 +260,9 @@ test('reseña DENTRO de la ventana: texto libre con el enlace de Google', async 
     assert.strictEqual(reqs[0].body.type, 'text');
     assert.ok(reqs[0].body.text.body.includes(REVIEW_LINK));
     assert.strictEqual(state.resenasMarcadas.length, 1);
-    assert.deepStrictEqual(state.resenasMarcadas[0].patch, { resenaEnviada: true });
+    // `actor` firma la escritura en la cita (auditoría, migración 033): sin él, marcar la
+    // reseña como enviada sería indistinguible de que lo hiciera una persona en el panel.
+    assert.deepStrictEqual(state.resenasMarcadas[0].patch, { resenaEnviada: true, actor: 'worker:review' });
 });
 
 test('reseña FUERA de la ventana: plantilla sante_solicitud_resena con {{1}}=nombre {{2}}=enlace', async () => {

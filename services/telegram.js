@@ -186,7 +186,7 @@ function formatPendingVip(pa, i) {
 
 async function resolveBizumAction(orgId, pendingAction, confirmed, bot, chatId) {
     const { resolveBizumResult } = require('../bot');
-    await resolveBizumResult(pendingAction, confirmed);
+    await resolveBizumResult(pendingAction, confirmed, { actor: `telegram:${chatId}` });
     await resolvePendingAction(orgId, pendingAction.id, confirmed ? 'confirmado' : 'rechazado');
     const nombre = pendingAction.contacts?.full_name || pendingAction.payload?.nombre || 'el cliente';
     bot.sendMessage(chatId, confirmed

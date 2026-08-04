@@ -733,7 +733,7 @@ async function handleAppointmentAction(client, session, userPhone, accion, respu
         if (session.appointmentId) {
             if (session.orgType === 'salon') await calendarSante.cancelAppointment(orgId, session.appointmentId);
             else await calendar.cancelAppointment(session.appointmentId);
-            await updateAppointment(orgId, session.appointmentId, { estado: 'cancelled' });
+            await updateAppointment(orgId, session.appointmentId, { estado: 'cancelled', actor: 'bot' });
         }
         session.reservaConfirmada = false;
         session.bizumAsked = false;
@@ -2850,7 +2850,9 @@ function ofrecerAlternativas(session, freshSlots) {
 }
 
 // ─── Resolución desde Telegram (Bizum confirm/reject) ───────────────────────
-async function resolveBizumResult(pendingAction, confirmed) {
+// `actor` solo alimenta la auditoría de la cita (migración 033): quien resuelve un Bizum es
+// una persona, por Telegram o por el panel, y esa es justo la firma que hace falta.
+async function resolveBizumResult(pendingAction, confirmed, { actor = null } = {}) {
     const orgId = pendingAction.organization_id;
     const contact = pendingAction.contacts;
     const appointment = pendingAction.appointments;
@@ -2868,7 +2870,7 @@ async function resolveBizumResult(pendingAction, confirmed) {
 
     if (confirmed) {
         await updateLead(orgId, { leadId: contact.id, estado_cita: 'confirmado' });
-        if (appointment?.id) await updateAppointment(orgId, appointment.id, { bizumStatus: 'confirmed', estado: 'confirmed' });
+        if (appointment?.id) await updateAppointment(orgId, appointment.id, { bizumStatus: 'confirmed', estado: 'confirmed', actor });
 
         const agentCfg = await getAgentConfig(orgId);
         const info = agentCfg?.business_info || {};
@@ -2885,7 +2887,7 @@ async function resolveBizumResult(pendingAction, confirmed) {
         );
     } else {
         await updateLead(orgId, { leadId: contact.id, estado_cita: 'cancelado' });
-        if (appointment?.id) await updateAppointment(orgId, appointment.id, { bizumStatus: 'rejected', estado: 'cancelled' });
+        if (appointment?.id) await updateAppointment(orgId, appointment.id, { bizumStatus: 'rejected', estado: 'cancelled', actor });
         await setBlacklist(orgId, contact.id, 'Bizum no recibido');
         await sendDirectMessage(orgId, userPhone, 'No hemos recibido el Bizum, así que no podemos confirmar la reserva 😕 Si crees que es un error, contesta a este mensaje.');
     }
@@ -4527,7 +4529,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                             logger.error('ampliacion_sin_base_horaria', {
                                 orgId, telefono: userPhone, appointmentId: session.appointmentId, servicios: updServices,
                             });
-                            await updateAppointment(orgId, session.appointmentId, { servicio: updServices });
+                            await updateAppointment(orgId, session.appointmentId, { servicio: updServices, actor: 'bot' });
                         } else if (await ampliacionSolapa(orgId, apt, endsAt)) {
                             // Añadir alarga la cita. Si la nueva duración se come la cita
                             // siguiente de esa estilista NO se escribe: un solape invisible en
@@ -4545,6 +4547,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                             await updateAppointment(orgId, session.appointmentId, {
                                 servicio: updServices,
                                 endsAt: endsAt.toISOString(),
+                                actor: 'bot',
                             });
                         }
                     } catch (e) {
