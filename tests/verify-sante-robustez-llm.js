@@ -357,6 +357,29 @@ async function turno(c, texto) {
         else rec('DEGRADADO', r.txt.slice(0, 90));
     });
 
+    // El caso del 02/08/2026: la clienta abre preguntando por un servicio (no "quiero cita"),
+    // el bot nunca le pregunta el nombre, y acaba escribiendo la cita con full_name = null.
+    // Ahora tiene que preguntarlo ANTES de reservar. Este escenario necesita el LLM porque el
+    // camino hasta el hueco lo conduce el modelo; la puerta en sí está cubierta en frío por
+    // tests/nombre-antes-de-reservar.test.js.
+    await escenario('Abre por servicio, sin dar el nombre → lo pide antes de reservar', async (c, rec) => {
+        await turno(c, 'Haces alisado?');
+        await turno(c, 'Largo');
+        await turno(c, 'La semana que viene');
+        const propuesta = await turno(c, 'Por la tarde');
+        const horas = propuesta.txt.match(/\b\d{1,2}:\d{2}\b/g) || [];
+        if (!horas.length) return rec('DEGRADADO', 'no llegó a proponer huecos: ' + propuesta.txt.slice(0, 80));
+
+        const r = await turno(c, horas[0]);
+        if (r.vacio) return rec('SILENCIO');
+        // Lo que NO puede pasar: anunciar la cita sin haber preguntado el nombre.
+        const anunciaCita = /✅|reservada|записана|booked/i.test(r.txt);
+        const pideNombre = /nombre|llamas|name|имя|ім'я/i.test(r.txt);
+        if (pideNombre && !anunciaCita) rec('OK', 'pide el nombre y no anuncia cita');
+        else if (anunciaCita) rec('BUG', 'reserva sin haber preguntado el nombre: ' + r.txt.slice(0, 90));
+        else rec('DEGRADADO', r.txt.slice(0, 90));
+    });
+
     await escenario('Ráfaga: 2 mensajes separados 7 s (fuera del buffer)', async (c, rec) => {
         const msgs = await c.sendBurst(['Quiero reservar cita', 'Quiero otra cita'], { gapMs: 7000 });
         if (msgs.length === 0) return rec('SILENCIO');

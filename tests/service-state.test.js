@@ -123,6 +123,12 @@ test('la fuente de verdad coincide con la lista esperada (candado anti-drift)', 
         // pendingCitaAccion es más delicado todavía: una cancelación recitada y no confirmada que
         // sobreviviera a un reinicio del flujo convertiría cualquier "sí" futuro en un borrado.
         'citaEnCurso', 'pendingCitaAccion',
+        // Nombre antes de reservar. Se limpian con el servicio a propósito: si la clienta
+        // reinicia el flujo o arranca una segunda reserva, una pregunta de nombre a medias no
+        // puede sobrevivir — su respuesta acabaría aplicándose a la cita equivocada. Y el
+        // contador del tope de 2 preguntas tiene que reiniciarse con cada cierre nuevo, o la
+        // segunda reserva del día no podría preguntar nada.
+        'pendingNameForBooking', 'preguntasCierre',
     ];
     const EXPECTED_PARTIAL = [
         'servicio', 'categoria_servicio', 'estilista_preferida',
