@@ -82,12 +82,12 @@ interface AgentConfig {
   business_info?: BusinessInfo;
 }
 
+// Escribe una clave de `config` y LANZA si el servidor no lo confirma. Antes era un
+// `fetch` a pelo cuyo resultado nadie miraba: un 500, un 401 con la sesión caducada o un
+// 404 salían por pantalla como "Guardado". La dueña cambiaba el horario, leía el visto
+// bueno y se iba; el bot seguía con el horario viejo.
 async function putConfig(orgId: string, clave: string, valor: unknown) {
-  await fetch(`${API}/api/config/${clave}`, {
-    method: "PUT",
-    headers: await apiHeaders(orgId),
-    body: JSON.stringify({ valor }),
-  });
+  await apiMutate(`/api/config/${clave}`, { method: "PUT", body: { valor }, orgId });
 }
 
 async function patchAgentConfig(orgId: string, campos: Partial<AgentConfig>) {
@@ -157,7 +157,12 @@ export default function ConfiguracionPage() {
       direccion: form.get("direccion") as string,
       descripcion: form.get("descripcion") as string,
     };
-    await putConfig(orgId, "restaurante_info", info);
+    try {
+      await putConfig(orgId, "restaurante_info", info);
+    } catch (err) {
+      toast.error((err as Error).message || "No se pudo guardar la información");
+      return;
+    }
     setConfig((c) => ({ ...c, restaurante_info: info }));
     toast.success("Información guardada");
   }
@@ -178,8 +183,16 @@ export default function ConfiguracionPage() {
     }));
   }
 
+  // Si falla, los cambios se quedan en pantalla a propósito (no se recarga desde el
+  // servidor): así se puede reintentar sin volver a teclear los siete días. Lo que NO
+  // puede pasar es que se anuncien como guardados.
   async function saveHorario() {
-    await putConfig(orgId, "horario", horario);
+    try {
+      await putConfig(orgId, "horario", horario);
+    } catch (err) {
+      toast.error((err as Error).message || "No se pudo guardar el horario");
+      return;
+    }
     toast.success("Horario guardado");
   }
 
@@ -216,7 +229,12 @@ export default function ConfiguracionPage() {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
     const horas = Number(form.get("horas_recordatorio"));
-    await putConfig(orgId, "horas_recordatorio", horas);
+    try {
+      await putConfig(orgId, "horas_recordatorio", horas);
+    } catch (err) {
+      toast.error((err as Error).message || "No se pudo guardar el tiempo de recordatorio");
+      return;
+    }
     setConfig((c) => ({ ...c, horas_recordatorio: horas }));
     toast.success("Tiempo guardado");
   }
