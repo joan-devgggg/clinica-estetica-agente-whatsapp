@@ -780,6 +780,14 @@ async function handleAppointmentAction(client, session, userPhone, accion, respu
     return false;
 }
 
+// Cuánto ocupa una mesa reservada. El número no es nuevo: es el que llevaba aplicándose
+// desde siempre, pero como valor por defecto DENTRO de db.saveAppointment, donde no se veía
+// y donde parecía una red para todas las orgs cuando en realidad solo lo usaba esto. Al
+// exigir db.js una duración explícita, la mesa declara la suya aquí. Si alguna vez hay que
+// cambiarla, este es el sitio; y si San Remo llega a tener duraciones por servicio, sale de
+// agent_configs como el importe del Bizum.
+const DURACION_MESA_MIN = 120;
+
 // ─── Finalización de reserva con Bizum (San Remo only) ──────────────────────
 async function finalizarReservaConBizum(client, session, userPhone) {
     const orgId = session.orgId;
@@ -803,6 +811,7 @@ async function finalizarReservaConBizum(client, session, userPhone) {
         const apt = await saveAppointment(orgId, session.leadId, {
             servicio: 'Reserva de mesa',
             fecha, hora,
+            duracionMin: DURACION_MESA_MIN,
             estado: 'pending',
             notas: session.partialData.notas || null,
             personas: session.partialData.personas,

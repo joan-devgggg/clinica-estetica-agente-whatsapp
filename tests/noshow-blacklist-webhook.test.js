@@ -90,7 +90,9 @@ async function test(name, fn) {
         // y reminder.js lee esa tabla: el recordatorio salía con la hora antigua.
         await test('reagendar desde el panel sincroniza la ficha del contacto', async () => {
             syncCalls = [];
-            const res = await put(server, 'apt-1', { fecha: '2026-08-05', hora: '17:30', estado: 'confirmed' });
+            // duracionMin va SIEMPRE que se mueve la cita: es la rama que recalcula ends_at
+            // y desde 04/08/2026 no se rellena con un 120 por defecto (ver test de abajo).
+            const res = await put(server, 'apt-1', { fecha: '2026-08-05', hora: '17:30', duracionMin: 60, estado: 'confirmed' });
             assert.strictEqual(res.status, 200);
             assert.strictEqual(syncCalls.length, 1, 'sincroniza una vez');
             assert.strictEqual(syncCalls[0].contactId, 'c1');
@@ -118,6 +120,31 @@ async function test(name, fn) {
             assert.strictEqual(res.status, 401);
         });
 
+        // Mover una cita sin decir cuánto dura llegaba a db.updateAppointment y allí se
+        // resolvía con un 120 por defecto: no creaba una cita mal medida, REDIMENSIONABA
+        // una existente (un alisado de 5 h pasaba a 2 h y las otras 3 se publicaban como
+        // libres). Ahora se rechaza antes, con un motivo que se lee.
+        await test('mover la cita sin duración: 400 con motivo, y NO se toca la cita', async () => {
+            for (const mala of [undefined, null, 0, '', 'sesenta', -30]) {
+                updateAppointmentCalls = [];
+                const body = { fecha: '2026-08-05', hora: '17:30', estado: 'confirmed' };
+                if (mala !== undefined) body.duracionMin = mala;
+                const res = await put(server, 'apt-1', body);
+                assert.strictEqual(res.status, 400, `duracionMin=${JSON.stringify(mala)}`);
+                assert.match(res.body.error, /[Dd]uración/, 'el motivo dice qué falta');
+                assert.strictEqual(updateAppointmentCalls.length, 0, 'la cita no se toca');
+            }
+        });
+
+        await test('un PUT que NO mueve la cita no necesita duración', async () => {
+            // Cambiar estado o notas no recalcula ends_at, así que exigir duración ahí
+            // sería un rojo permanente en flujos que nunca tocaron el horario.
+            updateAppointmentCalls = [];
+            const res = await put(server, 'apt-1', { estado: 'completed', notas: 'vino tarde' });
+            assert.strictEqual(res.status, 200);
+            assert.strictEqual(updateAppointmentCalls.length, 1);
+        });
+
         await test('10 · el PUT genérico NUNCA lleva columnas de facturación', async () => {
             // El invariante que sostiene el importe manual: las columnas de facturación se
             // escriben en dos sitios y solo dos (stampBillingSnapshot y setManualPrice).
@@ -125,7 +152,7 @@ async function test(name, fn) {
             // cita desde el panel podría pisar una corrección hecha a mano — y este test
             // salta antes de que llegue a producción.
             updateAppointmentCalls = [];
-            await put(server, 'apt-1', { estado: 'confirmed', servicio: 'Corte', fecha: '2026-08-10', hora: '10:00' });
+            await put(server, 'apt-1', { estado: 'confirmed', servicio: 'Corte', fecha: '2026-08-10', hora: '10:00', duracionMin: 60 });
             assert.ok(updateAppointmentCalls.length > 0, 'la ruta llamó a updateAppointment');
             const prohibidas = [
                 'precio', 'precio_manual', 'precioManual', 'precio_facturado', 'precioFacturado',

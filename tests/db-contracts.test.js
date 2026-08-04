@@ -109,11 +109,39 @@ const lastCall = () => mock.calls[mock.calls.length - 1];
         assert.strictEqual(dur, 60 * 60 * 1000, 'ends_at - starts_at = duracionMin (TZ-independiente)');
     });
 
+    // Mover una cita sin duración se resolvía con un 120 por defecto. No era una cita
+    // nueva mal medida: REDIMENSIONABA una existente, y la diferencia se publicaba como
+    // agenda libre encima de la clienta. Ahora no se escribe nada.
+    await test('6 · updateAppointment que mueve la cita SIN duración → null, sin update', async () => {
+        for (const mala of [undefined, null, 0, '', 'sesenta', -30]) {
+            const before = mock.calls.length;
+            const r = await db.updateAppointment('org', 'apt-1', { fecha: '2026-07-14', hora: '10:00', duracionMin: mala });
+            assert.strictEqual(r, null, `duracionMin=${JSON.stringify(mala)} no puede pasar por buena`);
+            assert.strictEqual(mock.calls.length, before, 'no llega a llamar a supabase');
+        }
+    });
+
+    await test('6 · un update que NO mueve la cita sigue sin necesitar duración', async () => {
+        mock.setResponder(() => ({ data: { id: 'apt-1' }, error: null }));
+        const r = await db.updateAppointment('org', 'apt-1', { estado: 'completed' });
+        assert.ok(r, 'cambiar estado no recalcula ends_at, así que no exige duración');
+    });
+
     await test('6 · updateAppointment con fecha/hora inválida → null, sin update', async () => {
         const before = mock.calls.length;
         const r = await db.updateAppointment('org', 'apt-1', { fecha: 'nope', hora: '99:99' });
         assert.strictEqual(r, null, 'no actualiza si la fecha/hora es inválida');
         assert.strictEqual(mock.calls.length, before, 'no llega a llamar a supabase');
+    });
+
+    await test('saveAppointment SIN duración → null, y ningún INSERT en appointments', async () => {
+        mock.setResponder(() => ({ data: { id: 'c1' }, error: null }));   // findById encuentra el contacto
+        for (const mala of [undefined, null, 0, '', 'sesenta', -30]) {
+            const r = await db.saveAppointment('org', 'c1', { servicio: 'Corte', fecha: '2026-07-14', hora: '10:00', duracionMin: mala });
+            assert.strictEqual(r, null, `duracionMin=${JSON.stringify(mala)}`);
+        }
+        assert.ok(!mock.calls.some(c => c.op === 'insert' && c.table === 'appointments'),
+            'ninguna cita escrita con una duración inventada');
     });
 
     // ── Item 8: fusión de upsell = UPDATE (servicio + ends_at), NO insert ──

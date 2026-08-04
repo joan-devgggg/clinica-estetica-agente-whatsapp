@@ -904,8 +904,12 @@ async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duraci
         return null;
     }
     const durMin = Number(duracionMin);
-    const durationMs = (Number.isFinite(durMin) && durMin > 0 ? durMin : 120) * 60 * 1000;
-    const endsAt = new Date(startsAt.getTime() + durationMs);
+    if (!Number.isFinite(durMin) || durMin <= 0) {
+        logger.error('cita_sin_duracion', { orgId: oid, op: 'saveAppointment', contactId, servicio: servicio || null, duracionMin: duracionMin ?? null });
+        console.error('[saveAppointment] duración ausente o inválida — reserva no guardada', { contactId, duracionMin });
+        return null;
+    }
+    const endsAt = new Date(startsAt.getTime() + durMin * 60 * 1000);
 
     // Idempotencia: nunca crear DOS veces la misma cita. Si ya existe una cita activa
     // (no cancelada) para este contacto a la MISMA hora de inicio, devolvemos la existente
@@ -988,10 +992,19 @@ async function updateAppointment(orgId, appointmentId, campos) {
             console.error('[updateAppointment] fecha/hora inválida — no se actualiza el horario', { appointmentId, fecha: campos.fecha, hora: campos.hora });
             return null;
         }
+        // Mover una cita sin decir cuánto dura NO puede resolverse con un número por
+        // defecto: aquí el 120 no creaba una cita nueva mal medida, REDIMENSIONABA una
+        // existente. Un PUT con {fecha, hora} y sin duracionMin convertía las 5 h de un
+        // alisado en 2 h y publicaba las otras 3 como libres. Quien mueve la cita sabe
+        // cuánto dura (el panel la manda siempre); si no lo sabe, esto falla y se ve.
         const durMin = Number(campos.duracionMin);
-        const durationMs = (Number.isFinite(durMin) && durMin > 0 ? durMin : 120) * 60 * 1000;
+        if (!Number.isFinite(durMin) || durMin <= 0) {
+            logger.error('cita_sin_duracion', { orgId: oid, op: 'updateAppointment', appointmentId, duracionMin: campos.duracionMin ?? null });
+            console.error('[updateAppointment] duración ausente o inválida — no se actualiza el horario', { appointmentId, duracionMin: campos.duracionMin });
+            return null;
+        }
         updates.starts_at = startsAt.toISOString();
-        updates.ends_at   = new Date(startsAt.getTime() + durationMs).toISOString();
+        updates.ends_at   = new Date(startsAt.getTime() + durMin * 60 * 1000).toISOString();
     }
     if (!Object.keys(updates).length) return null;
     const { data, error } = await supabase

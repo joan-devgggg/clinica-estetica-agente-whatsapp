@@ -396,6 +396,16 @@ app.patch('/api/citas/:id/precio', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// La duración es la que ocupa la agenda: db.js ya no la rellena con un 120 por
+// defecto, así que ausente significa cita no guardada. Validarla aquí es lo que
+// convierte ese rechazo en un mensaje que se entiende, en vez de un 500 genérico
+// (POST) o un "No encontrada" que no tiene nada que ver (PUT).
+function validarDuracion(duracionMin) {
+    const dur = Number(duracionMin);
+    if (Number.isFinite(dur) && dur > 0) return null;
+    return `Duración inválida (${JSON.stringify(duracionMin ?? null)}). Indica los minutos que ocupa la cita.`;
+}
+
 app.post('/api/appointments', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
@@ -404,6 +414,8 @@ app.post('/api/appointments', async (req, res) => {
         if (hora != null && hora !== '' && !/^\d{1,2}:\d{2}$/.test(String(hora).trim())) {
             return res.status(400).json({ error: `Hora inválida ("${hora}"). Usa el formato HH:MM` });
         }
+        const durErr = validarDuracion(duracionMin);
+        if (durErr) return res.status(400).json({ error: durErr });
         const apt = await db.saveAppointment(orgId, contactId, { servicio, fecha, hora, duracionMin, notas, personas, ocasion, stylistId, source: 'manual' });
         if (!apt) {
             const contact = await db.findById(orgId, contactId);
@@ -427,6 +439,12 @@ app.put('/api/citas/:id', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
         console.log('[DEBUG PUT /api/citas/:id] llegó petición', { id: req.params.id, orgId, body: req.body });
+        // Solo cuando se MUEVE la cita: es la única rama que recalcula ends_at. Un PUT
+        // que solo cambia estado/notas no tiene por qué traer duración.
+        if (req.body?.fecha !== undefined && req.body?.hora !== undefined) {
+            const durErr = validarDuracion(req.body.duracionMin);
+            if (durErr) return res.status(400).json({ error: durErr });
+        }
         // Estado ANTERIOR: hace falta para no contar dos veces la misma visita si la cita ya
         // estaba completada (el worker de auto-completar pudo adelantarse al panel).
         const previo = await db.getAppointmentById(orgId, req.params.id);

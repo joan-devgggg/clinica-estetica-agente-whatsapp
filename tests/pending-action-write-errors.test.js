@@ -386,6 +386,16 @@ function makeDriver(orgId, phoneDigits) {
         assert.strictEqual(fila.type, 'bizum_review');
         assert.strictEqual(fila.organization_id, SANREMO_ORG, 'la fila es de la org de San Remo');
 
+        // La mesa sigue ocupando exactamente 120 minutos. Ese número lo ponía el valor por
+        // defecto de db.saveAppointment, donde no se veía y parecía una red para todas las
+        // orgs; ahora lo declara el flujo de San Remo. La fila guardada tiene que salir
+        // IDÉNTICA — si este ends_at cambia, ha cambiado la agenda del restaurante.
+        const cita = inserts('appointments').slice(-1)[0].payload;
+        assert.strictEqual(cita.organization_id, SANREMO_ORG);
+        assert.strictEqual(
+            (new Date(cita.ends_at) - new Date(cita.starts_at)) / 60000, 120,
+            'la reserva de mesa dura 120 min, como siempre');
+
         try { require('../services/memory').deleteClient(SANREMO_ORG, sanremo.phone); } catch { /* best-effort */ }
     });
 
