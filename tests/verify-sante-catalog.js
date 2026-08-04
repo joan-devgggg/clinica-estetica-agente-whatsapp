@@ -213,6 +213,34 @@ const addDays = (dateStr, n) => {
             `tienen la skill [${elegibles.map(s => s.name)}] pero ninguna tiene horario configurado`);
     }
 
+    // Y la cobertura al revés: ninguna estilista activa puede ser un fantasma. Si sus skills
+    // no casan con NINGUNA categoría del catálogo, el motor no la propone jamás: figura en el
+    // panel, la dueña cuenta con ella, y para las clientas no existe. Es el mismo desenlace
+    // que no tener horario, y hasta ahora salía verde.
+    //
+    // Sustituye al `skillsIguales: 'Irina'` que se le exigía a Natalia. Aquello comparaba dos
+    // conjuntos de skills que la dueña edita por separado desde el panel: el día que tocara
+    // las de cualquiera de las dos, el check se ponía en rojo sin que nada estuviera roto — la
+    // misma bomba que los horarios de la Fase 6, y sin verificar nada útil de paso, porque a
+    // Natalia lo que hay que exigirle es que el bot pueda usarla, no que sea el clon de otra.
+    //
+    // La excepción se declara por SKILL y no por nombre: "Extensiones de cabello" no está en
+    // el catálogo a propósito (la cita se gestiona a mano, se afirma en la Fase 6), así que
+    // quien solo tenga skills de esas debe ser inelegible. Nombrar a la persona en cambio
+    // sería otro dato editable más: la dueña puede renombrarla mañana.
+    const SKILLS_NO_RESERVABLES = ['Extensiones de cabello'];
+    const soloHaceLoNoReservable = (s) => {
+        const skills = Array.isArray(s.skills) ? s.skills : [];
+        return skills.length > 0 && skills.every(sk =>
+            SKILLS_NO_RESERVABLES.some(nr => normalizeText(nr) === normalizeText(sk)));
+    };
+    for (const s of realStylists) {
+        if (soloHaceLoNoReservable(s)) continue; // agenda manual por diseño
+        const suyas = categories.filter(cat => skillMatches(s.skills, cat));
+        check('3-skill', suyas.length >= 1, `${s.name}: el bot puede usarla`,
+            `sus skills [${(s.skills || []).join(', ')}] no casan con ninguna categoría del catálogo`);
+    }
+
     // Centinela: Consulta debe seguir en el catálogo y con alguien que pueda atenderla, para
     // que la matriz de Fase 4 (abajo) la ejerza de verdad y no la salte por falta de elegibles.
     //
@@ -339,9 +367,13 @@ const addDays = (dateStr, n) => {
     // había pasado con las tres. Tres fallos permanentes que no había que arreglar, arrastrados
     // durante días, entrenando a todo el mundo a ignorar el informe entero.
     // Lo sustituye la Fase 7: invariantes que se sostienen con CUALQUIER horario.
+    //
+    // Natalia estaba aquí con `skillsIguales: 'Irina'` y ya no: exigir que dos estilistas
+    // tengan el MISMO conjunto de skills ata dos datos que la dueña edita por separado, y no
+    // afirma nada que le importe a una clienta. Lo que hay que exigirle —que el bot pueda
+    // usarla en alguna categoría real— lo cubre ahora la Fase 3, para ella y para todas.
     const ROSTER = [
         { name: 'Tetiana', skills: ['Extensiones de cabello'] },
-        { name: 'Natalia', skillsIguales: 'Irina', incluye: ['Mechas Balayage'] },
         { name: 'Yulia-Tricóloga', skills: ['Dermapen Hair Loss', 'Diagnóstico Capilar'] },
     ];
 
@@ -378,11 +410,10 @@ const addDays = (dateStr, n) => {
     check('6-roster', !catalog.some(s => normalizeText(s.categoria) === normalizeText('Extensiones de cabello')),
         'Extensiones no es servicio reservable', 'hay un servicio con categoría Extensiones de cabello');
 
-    // Natalia: elegible en pelo general.
-    for (const cat of ['Cortes', 'Mechas Balayage']) {
-        check('6-roster', (eligibleByCat[cat] || []).some(s => normalizeText(s.name) === 'natalia'),
-            `Natalia elegible en ${cat}`, 'no aparece como elegible');
-    }
+    // Aquí se exigía además que Natalia fuese elegible en "Cortes" y "Mechas Balayage". Misma
+    // trampa por partida doble: fijaba a una persona (la dueña puede darle de baja o cambiarle
+    // las skills mañana) contra dos categorías escritas a mano. Que ninguna categoría del
+    // catálogo se quede sin nadie lo comprueba la Fase 3 sobre TODAS, sin nombrar a nadie.
 
     // Yulia-Tricóloga: distinta de Yulia, no elegible para generales, y sin confusión de nombre.
     const yulia = findStylist('Yulia');
