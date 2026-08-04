@@ -266,7 +266,7 @@ test('B · el filtro "before" descarta los huecos que se solaparían con la cita
         { fecha: '2026-08-06', hora: '15:30' }, // 15:30+60 = 16:30 → pisa la pedicura
         { fecha: '2026-08-07', hora: '11:00' }, // otro día → fuera
     ];
-    applyAnchorFilter(s);
+    applyAnchorFilter(s, 60);
     assert.deepStrictEqual(s.availableSlots.map(x => x.hora), ['14:00', '15:00']);
     assert.strictEqual(s.anchorFilterVacio, false);
 });
@@ -279,7 +279,7 @@ test('B · el filtro "after" arranca en el FIN de la cita ancla', () => {
         { fecha: '2026-08-06', hora: '16:30' }, // dentro de la pedicura
         { fecha: '2026-08-06', hora: '17:00' },
     ];
-    applyAnchorFilter(s);
+    applyAnchorFilter(s, 45);
     assert.deepStrictEqual(s.availableSlots.map(x => x.hora), ['17:00']);
 });
 
@@ -288,9 +288,36 @@ test('B · si el filtro se queda sin huecos, CONSERVA la lista y lo marca (no mi
     s.selectedService = { nombre: 'Relajante completo', categoria: 'Masajes y SPA', duracion: 60 };
     s.anchorAppointment = { fecha: '2026-08-06', horaInicio: '10:00', horaFin: '10:50', rel: 'before' };
     s.availableSlots = [{ fecha: '2026-08-06', hora: '11:00' }, { fecha: '2026-08-06', hora: '12:00' }];
-    applyAnchorFilter(s);
+    applyAnchorFilter(s, 60);
     assert.strictEqual(s.availableSlots.length, 2, 'no puede vaciar la lista: los huecos existen');
     assert.strictEqual(s.anchorFilterVacio, true, 'y hay que decir que no encajan en la ventana pedida');
+});
+
+test('B · el filtro mide con la duración QUE RECIBE, no con la del objeto de sesión', () => {
+    // Es la razón de que sea un parámetro: quien carga los huecos ya suma el upselling
+    // (y resuelve las variantes sin `duracion`). Si el filtro volviera a leer
+    // selectedService.duracion, un masaje + upsell de 90 min se colaría en la hora
+    // anterior a la pedicura y se comería la cita que la clienta ya tiene.
+    const s = sesionPedicuraConfirmada();
+    s.selectedService = { nombre: 'Relajante completo', categoria: 'Masajes y SPA', duracion: 60 };
+    s.anchorAppointment = { fecha: '2026-08-06', horaInicio: '16:00', horaFin: '16:50', rel: 'before' };
+    s.availableSlots = [
+        { fecha: '2026-08-06', hora: '14:00' },
+        { fecha: '2026-08-06', hora: '15:00' }, // 15:00+90 = 16:30 → pisa la pedicura
+    ];
+    applyAnchorFilter(s, 90);
+    assert.deepStrictEqual(s.availableSlots.map(x => x.hora), ['14:00']);
+});
+
+test('B · sin `horaFin` en el ancla el filtro sigue funcionando (con final supuesto)', () => {
+    // Una cita sin ends_at no debería existir; si aparece, el filtro no se cae — mide
+    // contra el fallback declarado y lo deja dicho en el log.
+    const s = sesionPedicuraConfirmada();
+    s.selectedService = { nombre: 'Espalda y hombros', categoria: 'Masajes y SPA', duracion: 45 };
+    s.anchorAppointment = { fecha: '2026-08-06', horaInicio: '16:00', horaFin: null, rel: 'after' };
+    s.availableSlots = [{ fecha: '2026-08-06', hora: '16:30' }, { fecha: '2026-08-06', hora: '17:00' }];
+    applyAnchorFilter(s, 45);
+    assert.deepStrictEqual(s.availableSlots.map(x => x.hora), ['17:00'], '16:00 + 60 supuestos');
 });
 
 // ─── C · Contrato de estado ───────────────────────────────────────────────────

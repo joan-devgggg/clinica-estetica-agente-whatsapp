@@ -1659,7 +1659,10 @@ function shouldDiscardUpsellForClosing({ horaCita, serviceDurMin, upsellLabel, c
     const startM = Number(m[2]);
     const upsellDurMin = resolveServiceDurationMin(upsellLabel, catalog);
     const apptStart = startH * 60 + (startM || 0);
-    const apptEnd = apptStart + (serviceDurMin || 60) + upsellDurMin;
+    // Quien llama resuelve la duración (resolveAppointmentDurationMin) y la pasa ya
+    // decidida; esto es solo la red de una función pura, con el MISMO fallback declarado
+    // que el resto de la cadena en vez de un 60 suelto que parezca otra decisión.
+    const apptEnd = apptStart + (serviceDurMin || DURACION_CITA_FALLBACK_MIN) + upsellDurMin;
     if (apptEnd > hardCutoffMin) return { discard: true, motivo: 'tope_19h', apptEnd };
     if (Number.isFinite(stylistCloseMin) && apptEnd >= stylistCloseMin) {
         return { discard: true, motivo: 'cierre_estilista', apptEnd };

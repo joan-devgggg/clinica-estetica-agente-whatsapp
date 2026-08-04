@@ -96,3 +96,32 @@ test('hora_cita ausente/malformada → no descarta (guard delega en el resto de 
     assert.strictEqual(r.discard, false);
     assert.strictEqual(r.apptEnd, null);
 });
+
+// ─── La duración del servicio PRINCIPAL que alimenta el guard ─────────────────
+// El mismo bug, un escalón más arriba. La etiqueta del upsell ya se resolvía bien,
+// pero el otro sumando —cuánto dura el servicio principal— salía de
+// `svc.duracion || 60`. Con un selectedService parcial (variante sin `duracion`,
+// lo que loadAvailableSlots registra como selectedService_incompleto_sin_match)
+// el guard medía desde un final que no existe y dejaba pasar justo lo que frena.
+const { resolveAppointmentDurationMin } = require('../services/helpers');
+
+test('GUARD: servicio parcial sin duracion → se resuelve del catálogo, no vale 60', () => {
+    const parcial = { nombre: 'Mechas Contouring' };   // sin duracion
+    const dur = resolveAppointmentDurationMin(parcial, CATALOG);
+    assert.strictEqual(dur.minutos, 200, 'la duración real del servicio principal');
+    assert.strictEqual(dur.resuelto, true);
+});
+
+test('GUARD: con la duración resuelta el upsell de las 15:00 se descarta; con el 60 viejo se colaba', () => {
+    const parcial = { nombre: 'Mechas Contouring' };
+    const base = { horaCita: '15:00', upsellLabel: UPSELL_LABEL, catalog: CATALOG };
+
+    const conViejo = shouldDiscardUpsellForClosing({ ...base, serviceDurMin: parcial.duracion || 60 });
+    assert.strictEqual(conViejo.discard, false, 'el 60 inventado daba 16:00 → "cabe" (falso)');
+
+    const conResuelta = shouldDiscardUpsellForClosing({
+        ...base, serviceDurMin: resolveAppointmentDurationMin(parcial, CATALOG).minutos,
+    });
+    assert.strictEqual(conResuelta.discard, true, '15:00 + 200 + 60 = 19:20, pasa del cierre');
+    assert.strictEqual(conResuelta.motivo, 'tope_19h');
+});

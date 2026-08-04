@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -527,7 +527,7 @@ async function loadAvailableSlots(session) {
             }
             // "Un masaje ANTES de la pedicura de las 16:00": único punto donde se recortan
             // los huecos a la ventana pedida. No inventa nada — filtra huecos ya reales.
-            applyAnchorFilter(session);
+            applyAnchorFilter(session, serviceDuration);
         } else {
             const pref = session.partialData.preferencia_horaria || {};
             const slots = await calendar.getAvailableSlots(pref);
@@ -2079,13 +2079,36 @@ async function resolveAnchorAppointment(orgId, session) {
 // Si el filtro se queda sin huecos NO devolvemos "no hay disponibilidad" —eso sería
 // mentira, los huecos existen fuera de la ventana pedida—: se conserva la lista completa y
 // se marca `anchorFilterVacio` para que el mensaje lo diga.
-function applyAnchorFilter(session) {
+// `duracionServicioMin` la calcula quien carga los huecos (la MISMA con la que se buscó y
+// con la que se escribirá ends_at). No se vuelve a deducir aquí: este filtro decide si un
+// masaje cabe ANTES de la pedicura, y medirlo con un 60 inventado sobre un servicio de
+// 360 deja pasar huecos que se comen la cita que la clienta ya tiene.
+function applyAnchorFilter(session, duracionServicioMin) {
     const anchor = session.anchorAppointment;
     if (!anchor || !anchor.rel || !Array.isArray(session.availableSlots) || !session.availableSlots.length) return;
     const toMin = hhmm => { const [H, M] = String(hhmm).split(':').map(Number); return H * 60 + M; };
-    const dur = session.selectedService?.duracion || 60;
+    const durArg = Number(duracionServicioMin);
+    let dur = durArg;
+    if (!Number.isFinite(durArg) || durArg <= 0) {
+        // Sin duración de quien llama: se resuelve con lo que haya en sesión y se avisa.
+        const r = resolveAppointmentDurationMin(session.selectedService, []);
+        dur = r.minutos;
+        logger.warn('ancla_duracion_no_recibida', {
+            orgId: session.orgId, servicio: session.selectedService?.nombre || null,
+            resuelto: r.resuelto, minutosUsados: dur,
+        });
+    }
     const inicioAncla = toMin(anchor.horaInicio);
-    const finAncla = anchor.horaFin ? toMin(anchor.horaFin) : inicioAncla + 60;
+    // Sin `horaFin` no sabemos cuándo acaba la cita ancla, así que "después de" se mide
+    // contra un final supuesto. Pasa solo si la cita no tiene ends_at, que no debería
+    // ocurrir: si aparece en los logs, el dato de origen está roto.
+    if (!anchor.horaFin) {
+        logger.warn('ancla_sin_hora_fin', {
+            orgId: session.orgId, fecha: anchor.fecha, horaInicio: anchor.horaInicio,
+            minutosAsumidos: DURACION_CITA_FALLBACK_MIN,
+        });
+    }
+    const finAncla = anchor.horaFin ? toMin(anchor.horaFin) : inicioAncla + DURACION_CITA_FALLBACK_MIN;
     const encajan = session.availableSlots.filter(s => {
         if (s.fecha !== anchor.fecha) return false;
         const ini = toMin(s.hora);
@@ -4571,9 +4594,21 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                             logger.error('error_check_upselling_cierre', { orgId, error: e.message });
                         }
                     }
+                    // La duración del servicio PRINCIPAL decide dónde termina la cita, o
+                    // sea si el upsell cabe antes del cierre. Infra-estimarla a 60 sobre un
+                    // servicio de 360 hace que el guard mida desde un final que no existe y
+                    // deje pasar justo lo que está para frenar. Misma resolución que en la
+                    // búsqueda y en la escritura.
+                    const durGuard = resolveAppointmentDurationMin(svc, cfgConf?.services || []);
+                    if (!durGuard.resuelto) {
+                        logger.warn('duracion_guard_cierre_no_resuelta', {
+                            orgId, telefono: userPhone, servicio: svc.nombre || null,
+                            minutosAsumidos: durGuard.minutos, upsell: upsellSug,
+                        });
+                    }
                     const guard = shouldDiscardUpsellForClosing({
                         horaCita: session.partialData.hora_cita,
-                        serviceDurMin: svc.duracion || 60,
+                        serviceDurMin: durGuard.minutos,
                         upsellLabel: upsellSug,
                         catalog: cfgConf?.services || [],
                         stylistCloseMin,
