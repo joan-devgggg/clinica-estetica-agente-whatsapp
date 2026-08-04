@@ -2272,10 +2272,37 @@ async function mensajeConfirmacionSante(orgId, session, { upsellSug = null, upse
     const svc = session.selectedService || {};
     const upsellingDur = (session.upsellingAccepted || []).reduce(
         (sum, name) => sum + resolveServiceDurationMin(name, catalogo), 0);
+    // El precio de este mensaje es lo que la clienta se cree que va a pagar. Un upsell
+    // cuyo precio no está en el catálogo valía 0 y desaparecía de la suma: el mensaje
+    // cobraba de menos y la diferencia aparecía en el salón. Sin todos los sumandos no
+    // hay total — decir "te lo confirmamos en el salón" es la respuesta correcta.
+    // `Number(null)` es 0, no NaN: leer el precio con Number() a secas convierte
+    // "no tiene precio" en "es gratis" y lo suma sin protestar. Es el mismo cambiazo
+    // silencioso que estamos quitando, así que se distingue a mano.
+    const precioNum = v => (v === null || v === undefined || v === '' ? NaN : Number(v));
+    let precioUpsellsDesconocido = false;
     const upsellingPrice = (session.upsellingAccepted || []).reduce((sum, name) => {
         const s = catalogo.find(x => normalizeText(x.nombre) === normalizeText(name));
-        return sum + (s?.precio || 0);
+        const p = precioNum(s?.precio);
+        if (!Number.isFinite(p)) { precioUpsellsDesconocido = true; return sum; }
+        return sum + p;
     }, 0);
+    // `precio: null` en el catálogo es intencionado (la Consulta se confirma en salón),
+    // así que un total nulo no es un fallo: es la única cifra honesta.
+    const precioMain = precioNum(svc.precio);
+    const precioTotal = (Number.isFinite(precioMain) && !precioUpsellsDesconocido)
+        ? precioMain + upsellingPrice
+        : null;
+    // La duración anunciada es una promesa de cuánto va a estar en el salón. Si no se
+    // resuelve, se calla en vez de prometer una hora sobre un servicio de seis.
+    const durMain = resolveAppointmentDurationMin(svc, catalogo);
+    if (!durMain.resuelto || precioTotal === null) {
+        logger.info('confirmacion_sin_cifra_completa', {
+            orgId, servicio: svc.nombre || null,
+            duracionResuelta: durMain.resuelto, precioConocido: precioTotal !== null,
+            precioUpsellsDesconocido,
+        });
+    }
     const mainServiceName = buildFullServiceName(svc, catalogo);
     const allServices = [mainServiceName, ...(session.upsellingAccepted || [])].filter(Boolean).join(' + ');
     return buildSanteConfirmationMessage({
@@ -2284,8 +2311,8 @@ async function mensajeConfirmacionSante(orgId, session, { upsellSug = null, upse
         hora: session.partialData.hora_cita,
         servicio: humanizeLargoLabel(allServices) || svc.nombre || 'Cita',
         stylistNombre: session.selectedStylist?.nombre,
-        precio: ((svc.precio || 0) + upsellingPrice) || svc.precio,
-        duracion: (svc.duracion || 60) + upsellingDur,
+        precio: precioTotal,
+        duracion: durMain.resuelto ? durMain.minutos + upsellingDur : null,
         categoria: svc.categoria,
         direccion: info.direccion,
         language: session.language,

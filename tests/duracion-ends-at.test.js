@@ -216,8 +216,11 @@ test('rescheduleAppointment sin duración: falla en alto y NO mueve la cita', as
 //
 // db.getAgentConfig se parchea ANTES de requerir bot.js: bot lo importa desestructurado
 // y se queda con la referencia del momento del require.
-db.getAgentConfig = async () => ({ services: CATALOG });
-const { loadAvailableSlots, reloadSlotsForConfirmation } = require('../bot')._internals;
+// Mutable para que cada test pueda cambiar el catálogo: bot.js se queda con ESTA función,
+// así que sustituirla más tarde no tendría efecto — la que varía es la config que devuelve.
+let CFG = { services: CATALOG };
+db.getAgentConfig = async () => CFG;
+const { loadAvailableSlots, reloadSlotsForConfirmation, mensajeConfirmacionSante } = require('../bot')._internals;
 
 function sesionSalon(selectedService, upsells = []) {
     return {
@@ -272,6 +275,74 @@ test('la re-verificación al confirmar mide igual que la propuesta', async () =>
 test('servicio irresoluble: busca con el fallback declarado, sin romper la conversación', async () => {
     const dur = await duracionBuscada(sesionSalon({ nombre: 'Servicio inventado xyz' }));
     assert.strictEqual(dur, DURACION_CITA_FALLBACK_MIN, 'sin propuesta no hay conversación: se busca igual');
+});
+
+// ─── Grupo 4: las cifras del mensaje de confirmación ─────────────────────────
+// Aquí el daño no es la agenda: es lo que la clienta se cree que va a pagar y cuánto
+// va a estar. Prometer 60 minutos de un servicio de seis horas, o un precio al que le
+// falta un sumando, se descubre en el salón.
+
+function sesionConfirmada(selectedService, upsells = []) {
+    return {
+        orgId: 'org-sante', orgType: 'salon', language: 'es', selectedService,
+        upsellingAccepted: upsells, selectedStylist: { nombre: 'Irina' },
+        partialData: { nombre: 'Ana', fecha_cita: '2026-08-10', hora_cita: '10:00' },
+    };
+}
+const lineaPrecio = msg => (msg.split('\n').find(l => l.startsWith('💰')) || null);
+
+test('CONTROL: servicio completo → precio y duración reales en el mensaje', async () => {
+    const svc = { nombre: 'Corto', categoria: 'Mechas Airtouch', precio: 195, duracion: 360 };
+    const msg = await mensajeConfirmacionSante('org-sante', sesionConfirmada(svc));
+    assert.strictEqual(lineaPrecio(msg), '💰 195€ · 360 minutos');
+});
+
+test('servicio parcial sin duracion: anuncia los 360 min reales, no 60', async () => {
+    const svc = { nombre: 'Largo 2', categoria: 'Mechas Airtouch', precio: 195 };
+    const msg = await mensajeConfirmacionSante('org-sante', sesionConfirmada(svc));
+    assert.match(msg, /360 minutos/);
+    assert.doesNotMatch(msg, /(?<!\d)60 minutos/, 'nunca la hora inventada');
+});
+
+test('duración irresoluble: no se anuncia duración en vez de prometer una hora', async () => {
+    const svc = { nombre: 'Servicio inventado xyz', precio: 40 };
+    const msg = await mensajeConfirmacionSante('org-sante', sesionConfirmada(svc));
+    assert.strictEqual(lineaPrecio(msg), '💰 40€', 'el precio sí se sabe; la duración no');
+});
+
+test('upsell con precio desconocido: NO se anuncia un total al que le falta un sumando', async () => {
+    // Antes: el upsell fuera de catálogo valía 0 y el mensaje anunciaba solo el precio
+    // del principal. La clienta leía 195€ y en el salón le cobraban el extra.
+    const svc = { nombre: 'Corto', categoria: 'Mechas Airtouch', precio: 195, duracion: 360 };
+    const msg = await mensajeConfirmacionSante('org-sante', sesionConfirmada(svc, ['Ritual que no existe']));
+    assert.ok(!/195€/.test(msg), 'un total incompleto es peor que ningún total');
+    assert.match(msg, /minutos/, 'la duración sí se conoce y se sigue diciendo');
+});
+
+test('upsell con precio conocido: se SUMA al del servicio', async () => {
+    const svc = { nombre: 'Corto', categoria: 'Mechas Airtouch', precio: 195, duracion: 360 };
+    const msg = await mensajeConfirmacionSante('org-sante', sesionConfirmada(svc, ['Reconstrucción K18 + lavar y peinar']));
+    assert.match(msg, /255€/, '195 + 60');
+});
+
+// `Number(null) === 0`: leer el precio con Number() a secas convierte "no tiene precio"
+// en "es gratis". El total sale plausible y bajo, que es la peor forma de estar mal.
+test('precio null NO es precio 0: un servicio sin precio no suma como gratis', async () => {
+    const svc = { nombre: 'Diagnóstico', categoria: 'Tricología', precio: null, duracion: 30 };
+    CFG = { services: [...CATALOG, svc] };
+    try {
+        const msg = await mensajeConfirmacionSante('org-sante', sesionConfirmada(svc));
+        assert.ok(!/0€/.test(msg), 'sin precio no se anuncia 0€');
+    } finally { CFG = { services: CATALOG }; }
+});
+
+test('servicio con precio null (se confirma en salón) + upsell: no se inventa un total', async () => {
+    const svc = { nombre: 'Diagnóstico', categoria: 'Tricología', precio: null, duracion: 30 };
+    CFG = { services: [...CATALOG, svc] };
+    try {
+        const msg = await mensajeConfirmacionSante('org-sante', sesionConfirmada(svc, ['Reconstrucción K18 + lavar y peinar']));
+        assert.ok(!/60€/.test(msg), 'el precio del upsell solo no es el precio de la cita');
+    } finally { CFG = { services: CATALOG }; }
 });
 
 // ─── Regresión de fuente ─────────────────────────────────────────────────────
