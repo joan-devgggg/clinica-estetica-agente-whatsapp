@@ -21,7 +21,7 @@ const assert = require('assert');
 const { extractQuickDataSante, detectNoPreferenceSignal, extractDateSignalSante } = require('../services/helpers');
 const calendarSante = require('../services/calendar-sante');
 const db = require('../services/db');
-const { computeStylistGating, announcesHumanHandover } = require('../bot')._internals;
+const { computeStylistGating, announcesHumanHandover, offersHumanHandover } = require('../bot')._internals;
 
 function test(name, fn) {
     try { fn(); console.log(`ok - ${name}`); }
@@ -160,6 +160,73 @@ test('…pero la afirmación en el turno siguiente sí lo es', () => {
     assert.strictEqual(announcesHumanHandover(
         '¿Te viene bien el jueves? Si no, paso tu solicitud a nuestro equipo.'), true,
     'una frase afirmativa de traspaso cuenta aunque el mensaje lleve otra pregunta');
+});
+
+// ─── 4b. El traspaso que no era "al equipo" ───────────────────────────────────
+// El destino solo reconocía al "equipo", pero de las cuatro preguntas de traspaso escritas
+// en el prompt de Sante TRES mandan a "una especialista". Y "poner en contacto" —la fórmula
+// literal de esas preguntas— no estaba entre los verbos. O sea: la mayoría de los traspasos
+// del salón no los veía ninguna de las dos redes.
+test('traspaso a especialista / salón / chicas también es traspaso', () => {
+    for (const txt of [
+        'Te pongo en contacto con una especialista para que te asesore',
+        'Paso tu caso a una de nuestras especialistas',
+        'Aviso al salón para que te llamen',
+        'Comento con las chicas del salón y te dicen',
+        'Te pongo en contacto con alguien del equipo',
+    ]) assert.strictEqual(announcesHumanHandover(txt), true, txt);
+});
+
+test('mencionar el salón sin traspasar NO cuenta (el destino exige preposición)', () => {
+    for (const txt of [
+        'Te paso a comentarte los precios del salón',
+        'Te espero en el salón el jueves',
+        'La especialista te lo confirmará en el salón',
+        'El salón abre de lunes a sábado',
+    ]) assert.strictEqual(announcesHumanHandover(txt), false, txt);
+});
+
+// ─── 4c. La pregunta que nadie apuntaba ───────────────────────────────────────
+// La regla del prompt PROHÍBE escalar en el mensaje que pregunta y manda esperar un "sí".
+// Nadie apuntaba que la pregunta se había hecho, así que el "sí" volvía al LLM y, si no
+// ponía accion:escalar_humano, la clienta que había dicho que sí no llegaba a nadie.
+test('offersHumanHandover reconoce las preguntas EXACTAS del prompt', () => {
+    for (const txt of [
+        'Las extensiones requieren una valoración personalizada 😊 ¿Quieres que te ponga en contacto con una especialista para que te asesore?',
+        'La permanente requiere una valoración personalizada 😊 ¿Quieres que te ponga en contacto con una especialista?',
+        'Por supuesto 😊 ¿Quieres que te ponga en contacto con nuestro equipo?',
+        '¿Te paso con nuestro equipo para que lo vean?',
+    ]) assert.strictEqual(offersHumanHandover(txt), true, txt);
+});
+
+test('las dos redes son excluyentes: una pregunta no se anuncia y un anuncio no se pregunta', () => {
+    const pregunta = '¿Quieres que te ponga en contacto con una especialista?';
+    const anuncio = 'Voy a pasar tu solicitud a nuestro equipo para que te atiendan directamente';
+    assert.strictEqual(offersHumanHandover(pregunta), true);
+    assert.strictEqual(announcesHumanHandover(pregunta), false, 'preguntar no escala: se espera el sí');
+    assert.strictEqual(offersHumanHandover(anuncio), false);
+    assert.strictEqual(announcesHumanHandover(anuncio), true, 'anunciarlo sí escala en el acto');
+});
+
+test('una respuesta normal no arma ninguna espera', () => {
+    for (const txt of [
+        '¿Te viene bien el jueves a las 10?',
+        '¿Necesitas algo más?',
+        '¿Quieres que te reserve el hueco de las 16:00?',
+        '¿Prefieres con Irina o con Veronika?',
+    ]) assert.strictEqual(offersHumanHandover(txt), false, txt);
+});
+
+// El "sí" lo resuelve la MISMA maquinaria que ya usan extensiones/permanente, no una
+// segunda: por eso la oferta se apunta en pendingEscalation y no en un flag paralelo.
+test('la oferta se apunta en pendingEscalation, y el bloque que lo consume sigue ahí', () => {
+    const BOT = require('fs').readFileSync(require('path').join(__dirname, '..', 'bot.js'), 'utf8');
+    assert.ok(/offersHumanHandover\(aiResponse\.respuesta\)/.test(BOT), 'se mira sobre el texto final');
+    assert.ok(/session\.pendingEscalationService = 'traspaso'/.test(BOT));
+    assert.ok(/if \(orgType === 'salon' && session\.pendingEscalation\)/.test(BOT),
+        'el bloque determinista que resuelve el sí/no debe seguir existiendo');
+    // Y no se arma si ya se está escalando en este turno.
+    assert.ok(/aiResponse\.accion !== 'escalar_humano'\s*\n\s*&& !session\.pendingEscalation && offersHumanHandover/.test(BOT));
 });
 
 // ─── 5. Los huecos reales que el bot no vio ───────────────────────────────────

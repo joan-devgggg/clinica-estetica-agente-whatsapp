@@ -1452,17 +1452,50 @@ function salonNoSlotsMsg(session) {
 // verbo-de-traspaso + destinatario ("paso/derivo/aviso… a nuestro equipo / a mis compañeras"),
 // no solo mencionar al equipo: "el equipo abre a las 10" no es una escalada. Sirve de red
 // para que jamás se anuncie un traspaso sin crear la acción pendiente ni avisar por Telegram.
+// Verbos de traspaso. "poner en contacto" es la fórmula EXACTA de las preguntas escritas
+// en el prompt ("¿Quieres que te ponga en contacto con…"), así que sin ella no se
+// reconocían ni la pregunta ni su versión afirmativa.
+const HANDOVER_TRASPASO = /\b(paso|pasar|pasare|derivo|derivar|derivare|traslado|trasladar|aviso|avisar|avisare|comento|comentar|escalo|escalar)\b|\b(pongo|ponga|poner|ponerte|pondre|pondria)\s+(te\s+)?en\s+contacto\b/;
+// A QUIÉN se traspasa. El prompt manda a "una especialista" en tres de sus cuatro
+// preguntas y solo una menciona al "equipo": con el destino limitado al equipo, la
+// mayoría de los traspasos de Sante no se reconocían.
+// Los destinos nuevos exigen preposición ("con una especialista", "al salón") para no
+// confundir al receptor con una mención cualquiera: "los precios del salón" no es un
+// traspaso aunque la frase lleve el verbo "paso".
+const HANDOVER_DESTINO = new RegExp([
+    'nuestro equipo', 'al equipo', 'del equipo', 'el equipo se',
+    'mis companer', 'nuestras companer', 'una companer',
+    'el salon te', 'te contactara', 'se pondran en contacto', 'se pondra en contacto',
+    'atiendan directamente', 'atiendan personalmente',
+    '(con|a|al)\\s+(el\\s+)?salon',
+    '(con|a)\\s+(una|la|las|nuestra|nuestras|alguna|el)\\s+(especialista|especialistas|tricologa|profesional|profesionales|chicas)',
+    'una de nuestras (especialistas|chicas|companeras)',
+    '(con|a)\\s+(alguien|una persona|una compañera)',
+].join('|'));
+
+// Frase a frase, y SOLO afirmaciones: los casos 1-6 del prompt PIDEN permiso antes de
+// escalar ("¿Quieres que te paso con el equipo?"), y esa pregunta no debe disparar nada
+// — la escalada llega en el turno siguiente, cuando la clienta dice que sí. Una frase con
+// interrogación (de apertura o de cierre) se descarta siempre.
 function announcesHumanHandover(respuesta) {
     const t = normalizeText(respuesta);
     if (!t) return false;
-    const traspaso = /\b(paso|pasar|pasare|derivo|derivar|derivare|traslado|trasladar|aviso|avisar|avisare|comento|comentar|escalo|escalar)\b/;
-    const destino = /(nuestro equipo|al equipo|del equipo|el equipo se|mis companer|nuestras companer|una companer|el salon te|te contactara|se pondran en contacto|se pondra en contacto|atiendan directamente|atiendan personalmente)/;
-    // Frase a frase, y SOLO afirmaciones: los casos 1-6 del prompt PIDEN permiso antes de
-    // escalar ("¿Quieres que te paso con el equipo?"), y esa pregunta no debe disparar nada
-    // — la escalada llega en el turno siguiente, cuando la clienta dice que sí. Una frase con
-    // interrogación (de apertura o de cierre) se descarta siempre.
     return t.split(/(?<=[.!?])\s+|\n+/)
-        .some(frase => !/[?¿]/.test(frase) && traspaso.test(frase) && destino.test(frase));
+        .some(frase => !/[?¿]/.test(frase) && HANDOVER_TRASPASO.test(frase) && HANDOVER_DESTINO.test(frase));
+}
+
+// La otra mitad del mismo problema: el bot OFRECE el traspaso ("¿quieres que te ponga en
+// contacto con una especialista?") y la promesa queda colgando. La regla del prompt le
+// prohíbe escalar en ese mismo mensaje y le manda esperar un "sí", pero nadie apuntaba que
+// la pregunta se hizo: el "sí" del turno siguiente volvía al LLM, que podía no ponerle
+// accion:escalar_humano — y entonces la clienta que dijo que sí no llegaba a nadie.
+// Detectar la pregunta permite armar la misma espera que ya usan extensiones/permanente
+// (session.pendingEscalation), que sí resuelve el "sí" de forma determinista.
+function offersHumanHandover(respuesta) {
+    const t = normalizeText(respuesta);
+    if (!t) return false;
+    return t.split(/(?<=[.!?])\s+|\n+/)
+        .some(frase => /[?¿]/.test(frase) && HANDOVER_TRASPASO.test(frase) && HANDOVER_DESTINO.test(frase));
 }
 
 // Mensaje DETERMINISTA que ofrece los primeros huecos REALES ya cargados. Lo usa la red
@@ -4847,6 +4880,19 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             }
         }
 
+        // Traspaso OFRECIDO: se apunta la espera para que el "sí" del turno siguiente lo
+        // resuelva la capa determinista (el bloque de pendingEscalation, el mismo que usan
+        // extensiones y permanente) en vez de depender de que el LLM se acuerde de poner
+        // accion:escalar_humano. Se mira aquí, sobre el texto YA definitivo: las redes de
+        // más arriba pueden haber sustituido la respuesta entera.
+        // Si ya se está escalando en este turno no hay nada que esperar.
+        if (orgType === 'salon' && aiResponse.accion !== 'escalar_humano'
+                && !session.pendingEscalation && offersHumanHandover(aiResponse.respuesta)) {
+            session.pendingEscalation = true;
+            session.pendingEscalationService = 'traspaso';
+            logger.info('sante_traspaso_ofrecido_espera_confirmacion', { orgId, telefono: userPhone });
+        }
+
         session.history.push({ role: 'assistant', content: aiResponse.respuesta, ts: Date.now() });
 
         // Send response: salon sends as a single message, restaurant splits if long
@@ -5267,7 +5313,7 @@ module.exports = {
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
         respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
-        announcesHumanHandover,
+        announcesHumanHandover, offersHumanHandover,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:
         escalateToHuman,
         // Estado de servicio centralizado (fuente de verdad + limpieza):
