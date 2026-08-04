@@ -84,6 +84,25 @@ const esNombreGenerico = (nombre, catalog) => {
     return /^largo\s*\d+$/.test(norm) || catalog.filter(s => normalizeText(s.nombre) === norm).length > 1;
 };
 
+// ¿El nombre completo refleja su categoría? Por TOKENS y sin plural, no por subcadena.
+//
+// Un `includes()` sobre el texto crudo daba un fallo fantasma: buildFullServiceName prefija
+// "Corte" en SINGULAR a los servicios de la categoría "Cortes" (helpers.js:903, deliberado —
+// el prefijo natural es "Corte hombre", no "Cortes hombre"), así que "corte hombre" no
+// contiene "cortes" y el check llevaba días en rojo por un servicio perfectamente correcto.
+// Un fallo permanente que no hay que arreglar enseña a ignorar el informe entero.
+// El separador tampoco puede ser el espacio: "Manicura/Pedicura Hombre" parte por la barra.
+const stems = (texto) => normalizeText(texto)
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .map(t => t.replace(/s$/, '')); // cortes→corte, mechas→mecha; aplicado a AMBOS lados
+
+const reflejaCategoria = (nombre, categoria) => {
+    const necesarios = stems(categoria);
+    const presentes = new Set(stems(nombre));
+    return necesarios.length > 0 && necesarios.every(t => presentes.has(t));
+};
+
 // Aritmética pura de fechas YYYY-MM-DD (idéntica a addDaysStr de calendar-sante).
 const addDays = (dateStr, n) => {
     const [y, m, d] = dateStr.split('-').map(Number);
@@ -124,9 +143,9 @@ const addDays = (dateStr, n) => {
 
         // Nombre genérico ("Largo N" / repetido) → el nombre completo DEBE prefijar la categoría.
         if (esNombreGenerico(svc.nombre, catalog) && svc.categoria &&
-            !normalizeText(svc.nombre).includes(normalizeText(svc.categoria))) {
-            check('1-resolucion', normalizeText(fullName).includes(normalizeText(svc.categoria)),
-                label, `nombre completo "${fullName}" no incluye la categoría`);
+            !reflejaCategoria(svc.nombre, svc.categoria)) {
+            check('1-resolucion', reflejaCategoria(fullName, svc.categoria),
+                label, `nombre completo "${fullName}" no refleja la categoría "${svc.categoria}"`);
         }
 
         // El nombre completo debe resolver de vuelta a la MISMA categoría.
@@ -168,8 +187,8 @@ const addDays = (dateStr, n) => {
                 const full = buildFullServiceName(resolved, catalog);
                 if (check('2-largo', !!full, `${cat}: nombre completo L${L}`, 'buildFullServiceName null') &&
                     esNombreGenerico(resolved.nombre, catalog) &&
-                    !normalizeText(resolved.nombre).includes(normalizeText(cat))) {
-                    check('2-largo', normalizeText(full).includes(normalizeText(cat)),
+                    !reflejaCategoria(resolved.nombre, cat)) {
+                    check('2-largo', reflejaCategoria(full, cat),
                         `${cat}: prefijo de categoría L${L}`, `"${full}" no refleja la categoría`);
                 }
             }
