@@ -195,12 +195,15 @@ const ANCHORS = [
         ['con Yulia', 'Yulia'],
         ['con Yulia-Tricóloga', 'Yulia-Tricóloga'],
         ['con la tricologa Yulia', 'Yulia-Tricóloga'],
-        ['con Olgha', 'Olgha'],
+        ['con Olga', 'Olga'],
         ['con Larisa', 'Larisa'],
         ['con Tetiana', 'Tetiana'],
         ['con Natalia', 'Natalia'],
         // Variantes que una clienta real escribiría — hoy TODAS fallan
-        ['con Olga', 'Olgha'],
+        // "Olgha" era el nombre en stylists hasta que la dueña lo renombró a "Olga"
+        // (30/07/2026). Las clientas de siempre lo seguirán escribiendo así durante meses,
+        // así que la grafía vieja pasa a ser una variante más, no la expectativa.
+        ['con Olgha', 'Olga'],
         ['quiero con Veronica', 'Veronika'],
         ['con Verónica', 'Veronika'],
         ['con Julia', 'Yulia'],
@@ -218,8 +221,19 @@ const ANCHORS = [
         'quiero un corte de mujer', 'para el martes', 'una manicura', 'con mechas balayage',
         'para mañana por la tarde', 'con gel', 'con prisa', 'lo antes posible', 'me da igual',
     ];
+    // Las expectativas nombran a estilistas REALES, y el roster sale de Supabase (arriba),
+    // donde la dueña da altas, bajas y renombrados desde el panel. Cuando una expectativa
+    // apunta a alguien que ya no existe, el fallo NO es de reconocimiento sino del test:
+    // separarlo evita perseguir un bug inexistente. Pasó con Olgha→Olga, que estuvo días
+    // contándose como "variante perdida" cuando el matcher acertaba de pleno.
+    const nombresRoster = new Set(stylists.map(s => normalizeText(s.name)));
     let fallos = [];
     for (const [texto, esperado] of variantes) {
+        if (!nombresRoster.has(normalizeText(esperado))) {
+            gap('A1', `expectativa caducada: "${texto}" espera a "${esperado}"`,
+                `ya no hay ninguna estilista con ese nombre (roster: ${stylists.map(s => s.name).join(', ')})`);
+            continue;
+        }
         const m = extractStylistFromText(texto, stylists);
         const acertado = m && normalizeText(m.name) === normalizeText(esperado);
         if (acertado) ok('A1', `"${texto}" → ${esperado}`);
