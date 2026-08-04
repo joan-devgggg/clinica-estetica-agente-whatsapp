@@ -1679,6 +1679,39 @@ async function updateContactLanguage(orgId, contactId, language) {
     return true;
 }
 
+// Fija un idioma INFERIDO por heurística de nombre (scripts/classify-sante-language-by-name.js),
+// no confirmado por conversación real. Se marca en metadata.language_inferred para que quede
+// distinguible de un idioma verificado — updateContactLanguage (llamado por detectLanguage en
+// cada turno real) lo pisa en cuanto la clienta escribe, pero no borra la marca; por eso el
+// caller del script solo debe usar esta función en contactos sin ningún inbound registrado.
+async function setInferredContactLanguage(orgId, contactId, language, matched) {
+    const oid = resolveOrg(orgId);
+    const { data: row } = await supabase
+        .from('contacts')
+        .select('metadata')
+        .eq('id', contactId)
+        .eq('organization_id', oid)
+        .maybeSingle();
+    const meta = (row?.metadata && typeof row.metadata === 'object') ? row.metadata : {};
+    const { error } = await supabase
+        .from('contacts')
+        .update({
+            language,
+            metadata: {
+                ...meta,
+                language_inferred: true,
+                language_inference_source: 'name_heuristic',
+                language_inference_matched: matched,
+                language_inference_at: now(),
+            },
+            updated_at: now(),
+        })
+        .eq('id', contactId)
+        .eq('organization_id', oid);
+    assertWrite(error, 'contacts', 'setInferredContactLanguage');
+    return true;
+}
+
 async function updateContactPreferredStylist(orgId, contactId, stylistId) {
     const oid = resolveOrg(orgId);
     await supabase
@@ -1901,6 +1934,7 @@ module.exports = {
     getAppointmentsByStylistAndRange,
     // Contact extensions
     updateContactLanguage,
+    setInferredContactLanguage,
     updateContactPreferredStylist,
     updateContactLastStylist,
     getContactStats,
