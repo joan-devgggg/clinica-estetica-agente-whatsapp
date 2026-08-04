@@ -157,6 +157,16 @@ export default function WhatsAppPage() {
     [orgId]
   );
 
+  // Devolver al bot desde la LISTA, sin abrir el chat. Reutiliza el mismo camino que el
+  // botón del chat (misma escritura, mismo reflejo en la lista) y deja que el error suba
+  // para que la fila no se quede diciendo "Devolviendo…" cuando no se ha devuelto nada.
+  const handleReturnToBot = useCallback(
+    async (conv: Conversation) => {
+      await handleConvBotModeToggle(conv.id, "auto");
+    },
+    [handleConvBotModeToggle]
+  );
+
   const handleSendMessage = useCallback(
     async (telefono: string, mensaje: string) => {
       sendingRef.current = true;
@@ -265,6 +275,7 @@ export default function WhatsAppPage() {
             conversations={conversations}
             selectedId={selectedId}
             onSelect={(conv) => setSelectedId(conv.id)}
+            onReturnToBot={handleReturnToBot}
           />
         </div>
 

@@ -1,4 +1,4 @@
-import { API, apiHeaders } from "./api";
+import { API, apiHeaders, apiMutate } from "./api";
 
 export type BotMode = "auto" | "manual";
 export type EstadoCita = "pendiente" | "en_conversacion" | "pendiente_bizum" | "confirmado" | "completado" | "cancelado" | "abandonado";
@@ -89,12 +89,13 @@ export async function fetchGlobalBotActive(orgId: string): Promise<boolean | nul
 // Monitor de WhatsApp es lo que permitió apagar Sante entera creyendo que se pausaba una
 // conversación (01/08). Para una sola conversación, toggleLeadBotMode.
 
+/**
+ * Cambia el modo de UNA conversación. Lanza si el servidor no confirma la escritura: sin
+ * eso, un 500 o un 401 dejaban la lista pintando "auto" con la conversación todavía en
+ * manual — es decir, el bot mudo y nadie mirando ese chat.
+ */
 export async function toggleLeadBotMode(orgId: string, leadId: number, mode: BotMode): Promise<void> {
-  await fetch(`${API}/api/leads/${leadId}/bot-mode`, {
-    method: "PUT",
-    headers: await apiHeaders(orgId),
-    body: JSON.stringify({ mode }),
-  });
+  await apiMutate(`/api/leads/${leadId}/bot-mode`, { method: "PUT", body: { mode }, orgId });
 }
 
 /**
