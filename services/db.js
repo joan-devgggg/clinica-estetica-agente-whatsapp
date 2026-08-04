@@ -86,6 +86,57 @@ function sanitizePhone(phone) {
     return MOVIL_ES_SIN_PREFIJO.test(digits) ? `34${digits}` : digits;
 }
 
+// Todas las formas con las que un MISMO teléfono puede estar escrito en `contacts.wa_phone`.
+//
+// sanitizePhone arregló el problema hacia delante, pero las filas duplicadas que creó antes
+// siguen en producción y UNIQUE (organization_id, wa_phone) no las detecta: compara el string
+// literal, así que '611209542' y '34611209542' son dos claves distintas. Cuando la cita cuelga
+// del duplicado, buscarla por el contact_id "bueno" no la encuentra y el bot le dice a la
+// clienta que no tiene ninguna cita teniéndola. Ese fue el incidente del 01/08/2026.
+//
+// Se enumeran variantes EXPLÍCITAS en vez de un `ilike '%sufijo'`: el sufijo colisiona entre
+// países (un número extranjero acabado en los mismos 9 dígitos casaría) y devolver el contacto
+// de otra persona es infinitamente peor que no encontrar el propio.
+//
+// SOLO PARA LECTURA. El camino de escritura (findByPhone → saveLead) sigue usando únicamente
+// la forma canónica: ampliarlo cambiaría a qué fila escribe San Remo.
+function phoneVariants(telefono) {
+    const canonico = sanitizePhone(telefono);
+    if (!canonico) return [];
+    const digitos = new Set([canonico]);
+    // '34611209542' → '611209542' (la forma que teclea el panel sin prefijo).
+    if (canonico.startsWith('34') && MOVIL_ES_SIN_PREFIJO.test(canonico.slice(2))) {
+        digitos.add(canonico.slice(2));
+    }
+    // updateLeadById escribe `campos.telefono` tal cual, sin pasar por sanitizePhone, así que
+    // un '+34…' tecleado en la ficha del panel puede haber llegado con el '+' incluido.
+    return [...digitos].flatMap(d => [d, `+${d}`]);
+}
+
+// Ids de TODOS los contactos que comparten teléfono, no solo el canónico. El primero es el
+// que devolvería findByPhone (misma forma y desempate por created_at), y detrás van los
+// duplicados; quien lea citas debe mirarlos todos.
+async function findContactIdsByPhone(orgId, telefono) {
+    const oid = resolveOrg(orgId);
+    const variantes = phoneVariants(telefono);
+    if (!variantes.length) return [];
+    const canonico = variantes[0];
+    const { data, error } = await supabase
+        .from('contacts')
+        .select('id, wa_phone, created_at')
+        .eq('organization_id', oid)
+        .in('wa_phone', variantes);
+    assertRead(error, 'contacts');
+    return (data || [])
+        .sort((a, b) => {
+            const ca = a.wa_phone === canonico ? 0 : 1;
+            const cb = b.wa_phone === canonico ? 0 : 1;
+            if (ca !== cb) return ca - cb;
+            return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+        })
+        .map(r => r.id);
+}
+
 function now() { return new Date().toISOString(); }
 
 function rowToPublic(row) {
@@ -1825,14 +1876,18 @@ async function hasActiveAppointmentForSlot(orgId, contactId, fecha, hora) {
 // sobrevive a un reinicio ni al timeout de sesión.
 // Con assertRead: si esta lectura fallara en silencio devolveríamos [] y la red concluiría
 // que TODA cita anunciada es fantasma — reescribiendo mensajes correctos.
+// Acepta un contactId suelto o un ARRAY de ids (los que devuelve findContactIdsByPhone): una
+// clienta con contactos duplicados tiene sus citas repartidas entre varias filas de `contacts`
+// y mirar solo la canónica es exactamente cómo el bot se quedó ciego ante la cita de Valeria.
 async function getUpcomingAppointments(orgId, contactId) {
-    if (!contactId) return [];
+    const ids = (Array.isArray(contactId) ? contactId : [contactId]).filter(Boolean);
+    if (!ids.length) return [];
     const oid = resolveOrg(orgId);
     const { data, error } = await supabase
         .from('appointments')
-        .select('id, service, starts_at, ends_at, status, stylist_id')
+        .select('id, service, starts_at, ends_at, status, stylist_id, stylists!stylist_id(name)')
         .eq('organization_id', oid)
-        .eq('contact_id', contactId)
+        .in('contact_id', ids)
         .neq('status', 'cancelled')
         .gte('starts_at', new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString())
         .order('starts_at', { ascending: true });
@@ -1860,10 +1915,12 @@ async function authenticateToken(accessToken) {
 
 module.exports = {
     sanitizePhone,
+    phoneVariants,
     authenticateToken,
     saveLead,
     updateLead,
     findByPhone,
+    findContactIdsByPhone,
     setContactJid,
     getContactWaJid,
     findById,

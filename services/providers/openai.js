@@ -401,6 +401,35 @@ MODO REAGENDAMIENTO:
 * La clienta quiere cambiar su cita. Buscando nuevos huecos.
 * NUNCA devuelvas accion: "cambiar" — ya estamos en ese flujo.` : '';
 
+    // Citas que la clienta YA tiene, leídas de la agenda real. Sin este bloque el modelo no
+    // tenía ningún dato sobre sus citas y ante "es para mi cita de las 6" hacía lo único que
+    // sabía: abrir una reserva nueva (incidente del 01/08/2026). Consultar, cancelar y
+    // reagendar los resuelve la capa determinista de bot.js ANTES de llamar aquí; esto es el
+    // refuerzo para todo lo demás que la clienta pueda decir sobre esas citas.
+    const citasVivas = partialData.__citasVivas;
+    let bloqueCitasVivas;
+    if (!Array.isArray(citasVivas)) {
+        // No se ha podido leer la agenda: se omite el bloque entero. Decirle al modelo que no
+        // tiene ninguna cita porque la lectura falló es afirmar sin haber comprobado.
+        bloqueCitasVivas = '';
+    } else if (citasVivas.length) {
+        const lista = citasVivas
+            .map(c => `- ${c.fecha} a las ${c.hora} — ${c.servicio || 'servicio sin especificar'}${c.estilista ? ` con ${c.estilista}` : ''}`)
+            .join('\n');
+        bloqueCitasVivas = `
+CITAS QUE ESTA CLIENTA YA TIENE RESERVADAS (dato real de la agenda, es la verdad):
+${lista}
+
+* Si pregunta por su cita, responde con estos datos. NO los contradigas ni los cambies.
+* NO menciones ninguna cita que no esté en esta lista.
+* NO ofrezcas cancelar ni cambiar por tu cuenta: solo si ella lo pide.${partialData.__citaEnCurso ? `
+* Está hablando de la cita del ${partialData.__citaEnCurso.fecha} a las ${partialData.__citaEnCurso.hora}. Lo que pida se refiere a ESA cita, no a una nueva.` : ''}`;
+    } else {
+        bloqueCitasVivas = `
+CITAS QUE ESTA CLIENTA YA TIENE RESERVADAS: ninguna.
+* Si dice que tiene una cita, NO se la confirmes: dile que no te consta y ofrécele reservar.`;
+    }
+
     let modoClienteRecurrente = '';
     if (partialData.__clienteRecurrente) {
         const stylistHabitual = partialData.__preferredStylistName;
@@ -829,6 +858,7 @@ ${modoCategoriaPendiente}
 ${modoAncla}
 ${modoReagendamiento}
 ${modoClienteRecurrente}
+${bloqueCitasVivas}
 
 # ── CONTEXTO ACTUAL ────────────────────────────────────────────────────────
 
