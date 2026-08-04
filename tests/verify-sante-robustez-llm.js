@@ -109,6 +109,44 @@ const AGENDA_LLENA = (_o, stylistId, from, to) => {
     return out;
 };
 
+/**
+ * ¿Se escribió alguna cita a nombre de nadie?
+ *
+ * Es la única comprobación de este fichero que NO depende de cómo redacte el LLM. El fallo
+ * del 02/08 no fue un texto raro: fue una fila en `appointments` con la clienta sin nombre.
+ * Clasificar eso por regex (/✅|reservada/) deja pasar cualquier confirmación redactada de
+ * otra forma —"te espero el lunes a las 10 con Irina"— con la cita ya escrita: verde con el
+ * agujero abierto. Aquí se mira la fila.
+ *
+ * El stub de agenda solo tapa las LECTURAS (horarios, huecos). `saveLead`/`saveAppointment`
+ * son reales, así que estas filas existen de verdad en Supabase mientras dura la prueba;
+ * `cleanup()` las borra al empezar cada escenario.
+ */
+// Forma exacta del fallo del 02/08 (fila 9aa5ee32 de producción, "Orising hidratación
+// intensa" del 05/08): `appointments.full_name` = CADENA VACÍA y `contacts.full_name` = null.
+// La columna de la cita es NOT NULL, así que el nombre que falta no llega como null sino
+// como "" — buscar `is null` solo no habría encontrado nada. Se miran las dos, porque la
+// que lee el salón es la de la cita y la que usa el bot para saludar es la del contacto.
+const nombreEnBlanco = v => {
+    const s = String(v ?? '').trim();
+    return !s || ['null', 'undefined'].includes(s.toLowerCase());
+};
+
+async function citasSinNombre(phones) {
+    const digits = phones.map(p => String(p).replace(/\D/g, ''));
+    const { data: contactos } = await supabase
+        .from('contacts').select('id, wa_phone, full_name')
+        .eq('organization_id', ORG).in('wa_phone', digits);
+    if (!contactos || !contactos.length) return [];
+    const porId = new Map(contactos.map(c => [c.id, c]));
+    const { data: citas } = await supabase
+        .from('appointments').select('id, contact_id, full_name, service, starts_at')
+        .eq('organization_id', ORG).in('contact_id', [...porId.keys()]);
+    return (citas || [])
+        .filter(a => nombreEnBlanco(a.full_name) || nombreEnBlanco((porId.get(a.contact_id) || {}).full_name))
+        .map(a => ({ ...a, telefono: (porId.get(a.contact_id) || {}).wa_phone }));
+}
+
 async function cleanup(phone) {
     const digits = phone.replace(/\D/g, '');
     try {
@@ -126,6 +164,10 @@ let seq = 0;
 const nextPhone = () => `3460099${String(1000 + (seq++)).slice(-4)}`;
 
 const only = process.argv[2] ? Number(process.argv[2]) : null;
+// Teléfonos que ha usado esta ejecución: al final se barren todos contra `citasSinNombre`.
+// Un escenario cualquiera puede acabar reservando aunque no vaya de eso, y una cita a nombre
+// de nadie es un fallo se llame como se llame el escenario que la provocó.
+const telefonosUsados = [];
 let idx = 0;
 async function escenario(nombre, fn) {
     idx++;
@@ -133,6 +175,7 @@ async function escenario(nombre, fn) {
     if (only && only !== n) return;
     console.log(`\n▶ ${n}. ${nombre}`);
     const phone = nextPhone();
+    telefonosUsados.push(phone);
     await cleanup(phone);
     const c = new Convo(phone);
 
@@ -366,9 +409,21 @@ async function turno(c, texto) {
 
     // El caso del 02/08/2026: la clienta abre preguntando por un servicio (no "quiero cita"),
     // el bot nunca le pregunta el nombre, y acaba escribiendo la cita con full_name = null.
-    // Ahora tiene que preguntarlo ANTES de reservar. Este escenario necesita el LLM porque el
-    // camino hasta el hueco lo conduce el modelo; la puerta en sí está cubierta en frío por
-    // tests/nombre-antes-de-reservar.test.js.
+    //
+    // ⚠️ QUÉ DEMUESTRA ESTE ESCENARIO Y QUÉ NO. Medido el 04/08/2026, cuatro ejecuciones:
+    // con la puerta y sin ella el resultado es el MISMO (verde). Sin la puerta, el LLM pide
+    // el nombre por su cuenta en este camino, así que un escenario conducido por el modelo
+    // no puede demostrar la puerta: verde aquí significa "o la puerta funciona, o el modelo
+    // preguntó igualmente", y las dos cosas no se distinguen desde fuera.
+    //
+    // La prueba de la puerta es determinista y está en tests/nombre-antes-de-reservar.test.js.
+    // NO conviertas esto en la red de la puerta ni te fíes de su verde para tocarla.
+    //
+    // Lo que sí aporta, y por lo que se queda: es un MUESTREO adversarial del fallo real.
+    // Clasifica contra `appointments` (ver citasSinNombre), no contra el texto de la
+    // respuesta, así que cuando el modelo sí se salta el nombre lo caza siempre — se anuncie
+    // la cita como se anuncie. Nunca da rojo falso: con la puerta puesta no se puede escribir
+    // una fila sin nombre, así que un BUG aquí es un BUG de verdad.
     await escenario('Abre por servicio, sin dar el nombre → lo pide antes de reservar', async (c, rec) => {
         await turno(c, 'Haces alisado?');
         await turno(c, 'Largo');
@@ -390,19 +445,21 @@ async function turno(c, texto) {
         // clasificaba DEGRADADO — con y sin la puerta, o sea sin valor como red.
         // Bucle acotado: se responde "sí" mientras el bot siga pidiendo aprobación.
         let r = await turno(c, horas[0]);
+        let pidioNombre = false;
         for (let i = 0; i < 3; i++) {
             if (r.vacio) return rec('SILENCIO');
-            const anunciaCita = /✅|reservada|записана|booked/i.test(r.txt);
-            const pideNombre = /nombre|llamas|c[oó]mo te (llamas|dices)|name|имя|ім'я/i.test(r.txt);
-            // El nombre manda: si lo pide, da igual lo demás que diga el turno.
-            if (pideNombre && !anunciaCita) return rec('OK', 'pide el nombre y no anuncia cita');
-            if (anunciaCita) {
-                return rec('BUG', 'reserva sin haber preguntado el nombre: ' + r.txt.slice(0, 90));
-            }
+            if (/nombre|llamas|c[oó]mo te (llamas|dices)|name|имя|ім'я/i.test(r.txt)) { pidioNombre = true; break; }
             if (/¿|\?/.test(r.txt)) { r = await turno(c, 'Sí'); continue; }
             break;
         }
-        rec('DEGRADADO', 'no llegó a reservar ni a pedir el nombre: ' + r.txt.slice(0, 80));
+
+        // El veredicto lo da la BD, no el texto: ¿quedó escrita una cita a nombre de nadie?
+        const huerfanas = await citasSinNombre([c.phone]);
+        if (huerfanas.length) {
+            return rec('BUG', `cita escrita sin nombre: ${huerfanas[0].service} ${String(huerfanas[0].starts_at).slice(0, 16)}`);
+        }
+        if (pidioNombre) return rec('OK', 'pide el nombre y no ha escrito la cita');
+        rec('DEGRADADO', 'ni pidió el nombre ni llegó a reservar: ' + r.txt.slice(0, 80));
     });
 
     await escenario('Ráfaga: 2 mensajes separados 7 s (fuera del buffer)', async (c, rec) => {
@@ -440,6 +497,20 @@ async function turno(c, texto) {
     });
 
     restore();
+
+    // ─── Barrido final: ninguna cita a nombre de nadie ────────────────────────────────
+    // Aquí está la probabilidad de cazar el fallo, no en el escenario 16: cualquiera de los
+    // ~19 escenarios puede acabar reservando, y basta con que el modelo se salte el nombre
+    // UNA vez en toda la tirada. Es una comprobación contra la BD, así que no depende de
+    // cómo redacte el LLM y no puede dar rojo falso con la puerta puesta.
+    const huerfanas = await citasSinNombre(telefonosUsados);
+    for (const h of huerfanas) {
+        results.push({
+            n: '—', nombre: 'BARRIDO · cita escrita sin nombre', estado: 'BUG',
+            nota: `${h.telefono} · ${h.service} ${String(h.starts_at).slice(0, 16)}`,
+        });
+        console.log(`\n  ${ICON.BUG} BUG — cita sin nombre: ${h.telefono} · ${h.service}`);
+    }
 
     // ─── Resumen ──────────────────────────────────────────────────────────────────────
     console.log('\n' + '═'.repeat(78));
