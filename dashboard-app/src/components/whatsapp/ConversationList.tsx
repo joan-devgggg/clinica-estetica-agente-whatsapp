@@ -3,9 +3,9 @@
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Search, UserCheck, AlertTriangle, Bot } from "lucide-react";
+import { Search, UserCheck, AlertTriangle, Bot, RotateCcw } from "lucide-react";
 import type { Conversation } from "@/lib/whatsapp";
-import { getInitials, formatTimestamp } from "@/lib/whatsapp";
+import { getInitials, formatTimestamp, formatTraceDate } from "@/lib/whatsapp";
 import { cn } from "@/lib/utils";
 
 export type ModeFilter = "todas" | "manual" | "auto";
@@ -161,6 +161,9 @@ export function ConversationList({
           const isEscalated = isManual && !!conv.escalation_reason;
           const initials = getInitials(conv.nombre, conv.telefono);
           const canReturn = isManual && !!onReturnToBot;
+          // La traza solo tiene sentido mientras la conversación siga en auto: si alguien
+          // ha vuelto a tomar el control, lo que manda es el estado de ahora.
+          const autoReturnDate = !isManual ? formatTraceDate(conv.auto_return?.at) : null;
 
           return (
             <div
@@ -235,6 +238,15 @@ export function ConversationList({
                         <AlertTriangle size={9} strokeWidth={2.5} />
                         Requiere atención
                       </Badge>
+                    )}
+                    {autoReturnDate && (
+                      <span
+                        className="flex items-center gap-0.5 text-[10px] font-medium text-muted-foreground"
+                        title={`El bot volvió a esta conversación solo el ${autoReturnDate}, tras ${conv.auto_return?.dias_silencio} días sin que escribiera nadie.`}
+                      >
+                        <RotateCcw size={9} strokeWidth={2} />
+                        el bot volvió solo · {autoReturnDate}
+                      </span>
                     )}
                   </div>
 

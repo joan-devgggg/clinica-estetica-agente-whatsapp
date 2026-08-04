@@ -27,6 +27,7 @@ server.js              ← Punto de entrada: crea N clientes WA, arranca workers
     ├── calendar-sante.js  ← Disponibilidad real por estilista (Sante)
     ├── review.js          ← Worker: reseña Google N horas tras cita completada
     ├── reminder.js        ← Worker: recordatorio 24h antes + auto-completar citas
+    ├── auto-return.js     ← Worker: devuelve a 'auto' lo que lleva 7 días mudo en manual
     ├── telegram.js        ← Bot admin multi-org (mismo token, admins por org)
     ├── helpers.js         ← Extracción de datos (restaurante + salón)
     ├── memory.js          ← Sesiones SQLite (clave compuesta orgId:phone)
@@ -63,6 +64,26 @@ La ventana se calcula sobre `messages.direction = 'inbound'` — nunca sobre `co
 Plantillas aprobadas (Sante): `sante_recordatorio_cita` ({{1}}=nombre, {{2}}=hora) y `sante_solicitud_resena` ({{1}}=nombre, {{2}}=enlace). Los nombres viven en `config` (`plantilla_recordatorio`, `plantilla_resena`), no en el código. `sanitizeTemplateParam` limpia saltos de línea/tabuladores/espacios múltiples: Meta rechaza el mensaje entero (132000) si un parámetro los lleva.
 
 **La resolución de proveedor saliente es única**: `services/outbound.js` → `resolveOutboundClient(orgId, fallback)`, que enruta por `getOrgChannel` (registry), no por `SANTE_360_API_KEY`. La usan el panel (`webhook.js` → `getOutboundClient`) y los dos workers.
+
+## Retorno automático a `auto` tras silencio (`services/auto-return.js`)
+
+`bot_mode = 'manual'` se pone solo —basta con contestar desde el panel— y no se quitaba
+nunca. La conversación se quedaba muda para siempre: el bot calla porque cree que hay una
+persona, y la persona hace semanas que pasó a otra cosa.
+
+El barrido corre cada hora, para todas las orgs del Map de clientes, y devuelve a `auto` lo
+que lleve **7 días de silencio total** (`conversations.last_message_at`, cualquier
+dirección — no la ventana de 24 h, que solo mira entrantes). Umbral por org en
+`config.dias_retorno_auto`; **0 lo desactiva**.
+
+Nunca devuelve: `escalation_reason` sin resolver, `pending_actions` en `pending`, o lista
+negra. Las tres se comprueban dos veces, al decidir y otra vez como compare-and-set en el
+propio UPDATE (`bot_mode` sigue en manual **y** `escalation_reason` sigue a null), porque
+entre una cosa y otra pasan minutos y en ese hueco cabe que alguien tome el control.
+
+La traza va en `contacts.metadata.auto_return` (`at`, `dias_silencio`,
+`ultima_actividad_at`) y el Monitor la pinta mientras la conversación siga en auto: sin
+ella, una devuelta por el sistema y otra devuelta a mano son la misma fila.
 
 ## Multi-tenancy
 
@@ -115,7 +136,7 @@ getScheduleBlocks(orgId, stylistId, from, to)
 | `messages` | Mensajes WA (inbound/outbound) |
 | `appointments` | Citas/reservas (service, starts_at, ends_at, stylist_id, status) |
 | `agent_configs` | System prompt, tone, business_info, services, business_hours por org |
-| `config` | Key-value por org (bot_activo, horas_resena, telegram_admins, plantilla_recordatorio, plantilla_resena) |
+| `config` | Key-value por org (bot_activo, horas_resena, telegram_admins, plantilla_recordatorio, plantilla_resena, dias_retorno_auto) |
 | `pending_actions` | Cola de verificaciones Telegram (bizum_review, vip_suggestion, escalation) |
 | `stylists` | Equipo del salón (name, role, skills JSONB) |
 | `stylist_schedules` | Horario semanal por estilista (day_of_week, start_time, end_time) |

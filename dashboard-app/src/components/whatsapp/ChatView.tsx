@@ -4,10 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { MessageCircle, Bot, UserCheck, Send, AlertTriangle } from "lucide-react";
+import { MessageCircle, Bot, UserCheck, Send, AlertTriangle, RotateCcw } from "lucide-react";
 import { MessageBubble } from "./MessageBubble";
 import type { Conversation, Message } from "@/lib/whatsapp";
-import { getInitials, getDateLabel } from "@/lib/whatsapp";
+import { getInitials, getDateLabel, formatTraceDate } from "@/lib/whatsapp";
 import { cn } from "@/lib/utils";
 
 interface ChatViewProps {
@@ -70,6 +70,9 @@ export function ChatView({
 
   const isManual = conversation.bot_mode === "manual";
   const isEscalated = isManual && !!conversation.escalation_reason;
+  // Quien abre el chat necesita saber que el bot no volvió porque alguien lo decidiera:
+  // volvió solo, tras días sin que escribiera nadie. Solo mientras siga en auto.
+  const autoReturnDate = !isManual ? formatTraceDate(conversation.auto_return?.at) : null;
   const showInput = isManual || !!globalBotPaused;
   const initials = getInitials(conversation.nombre, conversation.telefono);
 
@@ -169,6 +172,17 @@ export function ChatView({
               ✅ Quitar de lista negra
             </Button>
           )}
+        </div>
+      )}
+
+      {/* Traza del retorno automático (opción C) */}
+      {autoReturnDate && (
+        <div className="shrink-0 flex items-center gap-2 px-5 py-1.5 bg-muted/60 border-b border-border/40">
+          <RotateCcw size={12} strokeWidth={2} className="text-muted-foreground shrink-0" />
+          <p className="text-[11.5px] text-muted-foreground">
+            El bot volvió a llevar esta conversación solo el {autoReturnDate}, tras{" "}
+            {conversation.auto_return?.dias_silencio} días sin que escribiera nadie.
+          </p>
         </div>
       )}
 

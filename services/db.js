@@ -167,6 +167,11 @@ function rowToPublic(row) {
         last_stylist:          row.last_stylist || null,
         language:              row.language || 'es',
         wa_jid:                (row.metadata && typeof row.metadata === 'object') ? (row.metadata.wa_jid || null) : null,
+        // Traza del retorno automático a 'auto' (opción C). Sin esto, en el panel un
+        // contacto devuelto por el barrido y uno devuelto a mano son la misma fila: nadie
+        // podría saber si el bot volvió a hablar porque alguien lo decidió o porque pasaron
+        // siete días. La escribe devolverContactoAAuto; aquí solo se expone.
+        auto_return:           (row.metadata && typeof row.metadata === 'object') ? (row.metadata.auto_return || null) : null,
         created_at:            row.created_at,
         updated_at:            row.updated_at,
     };
@@ -797,6 +802,104 @@ async function setLeadBotMode(orgId, telefono, mode) {
         .eq('wa_phone', phone);
     assertWrite(error, 'contacts', 'update bot_mode');
     return true;
+}
+
+// ─── Retorno automático a 'auto' tras silencio (opción C) ────────────────────
+
+/**
+ * Contactos en `bot_mode = 'manual'` con el instante de su ÚLTIMA ACTIVIDAD, en cualquier
+ * dirección: `conversations.last_message_at`, que saveMessage refresca con cada mensaje
+ * entrante y con cada saliente.
+ *
+ * Ojo con no confundirlo con la ventana de 24 h de Cloud API, que se mide SOLO sobre
+ * entrantes (getLastInboundAt) porque un saliente nuestro no reabre nada para Meta. Aquí la
+ * pregunta es la contraria —"¿ha hablado alguien, quien sea?"— y para eso last_message_at
+ * es exactamente el dato: si la dueña escribió ayer, la conversación no está en silencio
+ * aunque la clienta lleve un mes callada.
+ */
+async function getContactosEnManual(orgId) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('contacts')
+        .select('id, wa_phone, full_name, bot_mode, escalation_reason, is_blacklisted, updated_at, conversations(last_message_at)')
+        .eq('organization_id', oid)
+        .eq('bot_mode', 'manual');
+    assertRead(error, 'contacts');
+    return (data || []).map(row => {
+        // Un contacto debería tener un solo hilo, pero si tuviera varios vale el más
+        // reciente: basta con que UNO tenga actividad para que no haya silencio.
+        const fechas = (row.conversations || [])
+            .map(c => c && c.last_message_at)
+            .filter(Boolean)
+            .sort();
+        return {
+            id:                 row.id,
+            telefono:           row.wa_phone,
+            nombre:             row.full_name,
+            bot_mode:           row.bot_mode || 'auto',
+            escalation_reason:  row.escalation_reason || null,
+            is_blacklisted:     !!row.is_blacklisted,
+            updated_at:         row.updated_at,
+            ultima_actividad_at: fechas.length ? fechas[fechas.length - 1] : null,
+        };
+    });
+}
+
+/** Ids de contacto con alguna acción todavía sin resolver en la cola de Telegram. */
+async function getContactIdsConAccionPendiente(orgId) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('pending_actions')
+        .select('contact_id')
+        .eq('organization_id', oid)
+        .eq('status', 'pending')
+        .not('contact_id', 'is', null);
+    assertRead(error, 'pending_actions');
+    return new Set((data || []).map(r => r.contact_id));
+}
+
+/**
+ * Devuelve un contacto a `auto` dejando constancia de que lo hizo el sistema, no una
+ * persona: `metadata.auto_return` es la traza que pinta el Monitor.
+ *
+ * La escritura es un compare-and-set: solo toca la fila si SIGUE en manual y SIGUE sin
+ * escalada. Entre la lectura del barrido y este UPDATE pueden pasar minutos, y en ese hueco
+ * cabe que alguien tome el control a mano o que el bot escale — devolver la conversación al
+ * bot por encima de cualquiera de las dos cosas es justo lo que no puede pasar.
+ *
+ * Por eso 0 filas NO es un error: es la carrera perdida, y se comunica como tal
+ * (devuelve false) en vez de reventar como haría assertRowsAffected.
+ *
+ * @returns {Promise<boolean>} true si la fila cambió de verdad.
+ */
+async function devolverContactoAAuto(orgId, contactId, traza) {
+    const oid = resolveOrg(orgId);
+
+    const { data: row, error: readErr } = await supabase
+        .from('contacts')
+        .select('metadata')
+        .eq('organization_id', oid)
+        .eq('id', contactId)
+        .maybeSingle();
+    assertRead(readErr, 'contacts');
+
+    // metadata ya guarda wa_jid: se fusiona, nunca se sustituye.
+    const metadata = (row?.metadata && typeof row.metadata === 'object') ? row.metadata : {};
+
+    const { data, error } = await supabase
+        .from('contacts')
+        .update({
+            bot_mode: 'auto',
+            metadata: { ...metadata, auto_return: traza },
+            updated_at: now(),
+        })
+        .eq('organization_id', oid)
+        .eq('id', contactId)
+        .eq('bot_mode', 'manual')
+        .is('escalation_reason', null)
+        .select('id');
+    assertWrite(error, 'contacts', 'retorno automático a auto');
+    return Array.isArray(data) ? data.length > 0 : !!data;
 }
 
 async function setEscalationReason(orgId, telefono, reason) {
@@ -2007,6 +2110,9 @@ module.exports = {
     getMessages,
     setLeadBotMode,
     setEscalationReason,
+    getContactosEnManual,
+    getContactIdsConAccionPendiente,
+    devolverContactoAAuto,
     deleteConversationMessages,
     getLastInboundAt,
     getLastInboundAtBulk,

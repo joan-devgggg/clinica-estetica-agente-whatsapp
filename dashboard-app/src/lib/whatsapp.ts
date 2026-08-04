@@ -3,6 +3,17 @@ import { API, apiHeaders, apiMutate } from "./api";
 export type BotMode = "auto" | "manual";
 export type EstadoCita = "pendiente" | "en_conversacion" | "pendiente_bizum" | "confirmado" | "completado" | "cancelado" | "abandonado";
 
+/**
+ * Traza del retorno automático a 'auto' (opción C). La escribe el barrido del servidor en
+ * `contacts.metadata.auto_return`. Sin ella, en el panel una conversación devuelta por el
+ * sistema y otra devuelta a mano son idénticas.
+ */
+export interface AutoReturn {
+  at: string;
+  dias_silencio: number;
+  ultima_actividad_at: string | null;
+}
+
 export interface Conversation {
   id: number;
   nombre: string | null;
@@ -14,8 +25,20 @@ export interface Conversation {
   is_vip?: boolean;
   is_blacklisted?: boolean;
   escalation_reason?: string | null;
+  auto_return?: AutoReturn | null;
   updated_at: string;
   created_at: string;
+}
+
+/**
+ * Fecha corta para la traza ("5 ago"). Devuelve null si no es legible: una traza sin fecha
+ * fiable no se pinta, porque "el bot volvió solo" sin cuándo no se puede contrastar con nada.
+ */
+export function formatTraceDate(ts: string | null | undefined): string | null {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("es-ES", { day: "numeric", month: "short" });
 }
 
 export interface Message {

@@ -13,6 +13,7 @@ const { getConfigValue } = require('./services/db');
 const { startWebhookServer, setWAClient } = require('./webhook');
 const { startReminderWorker } = require('./services/reminder');
 const { startReviewWorker } = require('./services/review');
+const { startAutoReturnWorker } = require('./services/auto-return');
 const { startTelegramBot } = require('./services/telegram');
 const { getAllOrgs, CHANNEL_WWEBJS } = require('./services/org-registry');
 const { build360Client } = require('./services/providers/threesixty-dialog');
@@ -137,6 +138,9 @@ function tryStartWorkers() {
     workersStarted = true;
     startReminderWorker(waClients);
     startReviewWorker(waClients);
+    // No manda nada a nadie: solo devuelve al bot conversaciones que llevan días muertas en
+    // manual. No depende de que ningún cliente de WhatsApp esté listo.
+    startAutoReturnWorker(waClients);
 }
 
 for (const { client, channel } of waClients.values()) {
