@@ -246,6 +246,21 @@ npm run verify:sante          # catálogo + motor de huecos + Fase 7 (coherencia
 npm run verify:sante:agenda   # SOLO LECTURA: ¿las citas futuras siguen cabiendo?
 ```
 
+```bash
+npm run informe:nombres            # SOLO LECTURA: ¿a quién no sabemos cómo llamar?
+npm run informe:nombres -- sante   # una sola org (sante | sanremo | slug | uuid)
+```
+
+`informe:nombres` mira las **dos** columnas del nombre, que fallan distinto:
+`contacts.full_name` es NULLABLE y es la que bloquea el recordatorio de 24 h;
+`appointments.full_name` es **NOT NULL**, así que cuando falta es **cadena vacía** —
+`saveAppointment` escribe `contact.nombre || ''`— y ningún `IS NULL` la encuentra. Cruza las
+dos: lo más común es que el nombre esté en una y no en la otra, y eso se arregla copiando.
+"Sin nombre" es `!isUsableName`, no `!full_name`: entra 'cliente' o '-', y no entra el
+cirílico. Sale con código 1 solo con `error` (hay una cita futura y su recordatorio no va a
+salir). No escribe nada: rellenar un nombre lo decide una persona, porque el bot saludará
+con él.
+
 `verify:sante:agenda` es la red que faltaba: cuando la dueña quita un día o recorta una franja,
 las citas ya reservadas en ese hueco no se mueven ni avisan. Comprueba día laborable, franja
 (con `ends_at` incluido), `schedule_blocks`, skill por segmento de servicio y solapes. Sale con

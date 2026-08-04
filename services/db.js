@@ -1974,6 +1974,43 @@ async function getLastCompletedAppointment(orgId, contactId) {
     } : null;
 }
 
+// ─── Informe de nombres que faltan (solo lectura) ────────────────────────────
+//
+// El nombre vive en DOS columnas que no se copian entre sí y que fallan distinto:
+//
+//   · `contacts.full_name` es NULLABLE. Es la que leen el bot para saludar y
+//     getLeadsPendientesRecordatorio para el recordatorio de 24 h; sin ella el envío se
+//     bloquea (motivoNoEnviable → 'sin_nombre').
+//   · `appointments.full_name` es NOT NULL, así que cuando falta NO es null: saveAppointment
+//     escribe `contact.nombre || ''`. Una cadena vacía no la detecta ningún `IS NULL`, y es
+//     la que acaba en el KPI de "próxima cita" del panel como una fila sin nadie.
+//
+// De ahí que el informe mire las dos y las cruce: lo más frecuente es que una tenga el
+// nombre y la otra no, y entonces no hay que preguntarle nada a la clienta.
+
+async function getContactosParaInformeNombres(orgId) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('contacts')
+        .select('id, wa_phone, full_name, estado, visit_count, is_blacklisted, created_at, updated_at')
+        .eq('organization_id', oid)
+        .order('created_at', { ascending: true });
+    assertRead(error, 'contacts');
+    return data || [];
+}
+
+async function getCitasParaInformeNombres(orgId) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('appointments')
+        .select('id, contact_id, full_name, phone, service, starts_at, status')
+        .eq('organization_id', oid)
+        .neq('status', 'cancelled')
+        .order('starts_at', { ascending: true });
+    assertRead(error, 'appointments');
+    return data || [];
+}
+
 // ─── Review worker helpers ────────────────────────────────────────────────────
 
 async function getCompletedAppointmentsForReview(orgId, horasAfter) {
@@ -2110,6 +2147,8 @@ module.exports = {
     getMessages,
     setLeadBotMode,
     setEscalationReason,
+    getContactosParaInformeNombres,
+    getCitasParaInformeNombres,
     getContactosEnManual,
     getContactIdsConAccionPendiente,
     devolverContactoAAuto,
