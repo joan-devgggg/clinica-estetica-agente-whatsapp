@@ -9,6 +9,9 @@
  *               los horarios disponibles?" sin lista) o anuncia avería técnica sin haberla
  *   SILENCIO    no responde nada
  *   BUCLE       repite una pregunta que ya había hecho, tras una respuesta de la clienta
+ *   BUG         fallo real y demostrado (no una degradación): hace fallar el proceso, igual
+ *               que en el nivel A. Un escenario que use BUG tiene que fallar SIN el arreglo
+ *               y pasar CON él; si no, no está probando nada.
  *
  * La agenda se sintetiza (stub de la capa db) para poder forzar escenarios imposibles de
  * reproducir con la agenda real: salón completamente lleno, estilista sin horario, etc.
@@ -36,7 +39,11 @@ class Convo extends BaseConvo {
 
 // ─── Clasificación ───────────────────────────────────────────────────────────────────
 const results = [];
-const ICON = { OK: '✅', DEGRADADO: '⚠️ ', SILENCIO: '🔇', BUCLE: '🔁', ERROR: '💥' };
+// BUG existía en el nivel A pero no aquí, así que un rec('BUG') imprimía "undefined", no
+// contaba en el resumen y no rompía el proceso: un escenario que detectara un fallo real
+// pasaba inadvertido. Con la misma semántica que en verify-sante-robustez.js — BUG hace
+// fallar el proceso a propósito.
+const ICON = { OK: '✅', DEGRADADO: '⚠️ ', SILENCIO: '🔇', BUCLE: '🔁', ERROR: '💥', BUG: '🐞' };
 
 const norm = t => String(t || '').toLowerCase().replace(/[^\wáéíóúñ ]+/gi, '').replace(/\s+/g, ' ').trim();
 
@@ -366,18 +373,36 @@ async function turno(c, texto) {
         await turno(c, 'Haces alisado?');
         await turno(c, 'Largo');
         await turno(c, 'La semana que viene');
-        const propuesta = await turno(c, 'Por la tarde');
-        const horas = propuesta.txt.match(/\b\d{1,2}:\d{2}\b/g) || [];
+        // NADA de "por la tarde": el alisado vegano dura 300 min y con la agenda sintética
+        // (10-19) no cabe ninguno empezando por la tarde → agenda_llena y el escenario se
+        // quedaba a dos turnos de la puerta, marcando DEGRADADO con y sin ella.
+        let propuesta = await turno(c, 'El lunes');
+        let horas = propuesta.txt.match(/\b\d{1,2}:\d{2}\b/g) || [];
+        if (!horas.length) {
+            propuesta = await turno(c, '¿A qué horas tienes?');
+            horas = propuesta.txt.match(/\b\d{1,2}:\d{2}\b/g) || [];
+        }
         if (!horas.length) return rec('DEGRADADO', 'no llegó a proponer huecos: ' + propuesta.txt.slice(0, 80));
 
-        const r = await turno(c, horas[0]);
-        if (r.vacio) return rec('SILENCIO');
-        // Lo que NO puede pasar: anunciar la cita sin haber preguntado el nombre.
-        const anunciaCita = /✅|reservada|записана|booked/i.test(r.txt);
-        const pideNombre = /nombre|llamas|name|имя|ім'я/i.test(r.txt);
-        if (pideNombre && !anunciaCita) rec('OK', 'pide el nombre y no anuncia cita');
-        else if (anunciaCita) rec('BUG', 'reserva sin haber preguntado el nombre: ' + r.txt.slice(0, 90));
-        else rec('DEGRADADO', r.txt.slice(0, 90));
+        // El camino hasta la reserva lo decide el LLM y no siempre es el mismo: unas veces
+        // reserva al dar la hora, otras pide aprobación antes ("¿te va bien el lunes a las
+        // 10:00?"). Sin contestar a eso, el escenario se quedaba a un turno de la reserva y
+        // clasificaba DEGRADADO — con y sin la puerta, o sea sin valor como red.
+        // Bucle acotado: se responde "sí" mientras el bot siga pidiendo aprobación.
+        let r = await turno(c, horas[0]);
+        for (let i = 0; i < 3; i++) {
+            if (r.vacio) return rec('SILENCIO');
+            const anunciaCita = /✅|reservada|записана|booked/i.test(r.txt);
+            const pideNombre = /nombre|llamas|c[oó]mo te (llamas|dices)|name|имя|ім'я/i.test(r.txt);
+            // El nombre manda: si lo pide, da igual lo demás que diga el turno.
+            if (pideNombre && !anunciaCita) return rec('OK', 'pide el nombre y no anuncia cita');
+            if (anunciaCita) {
+                return rec('BUG', 'reserva sin haber preguntado el nombre: ' + r.txt.slice(0, 90));
+            }
+            if (/¿|\?/.test(r.txt)) { r = await turno(c, 'Sí'); continue; }
+            break;
+        }
+        rec('DEGRADADO', 'no llegó a reservar ni a pedir el nombre: ' + r.txt.slice(0, 80));
     });
 
     await escenario('Ráfaga: 2 mensajes separados 7 s (fuera del buffer)', async (c, rec) => {
@@ -419,15 +444,17 @@ async function turno(c, texto) {
     // ─── Resumen ──────────────────────────────────────────────────────────────────────
     console.log('\n' + '═'.repeat(78));
     console.log('RESUMEN NIVEL B');
-    const tally = { OK: 0, DEGRADADO: 0, SILENCIO: 0, BUCLE: 0, ERROR: 0 };
+    const tally = { OK: 0, DEGRADADO: 0, SILENCIO: 0, BUCLE: 0, ERROR: 0, BUG: 0 };
     for (const r of results) tally[r.estado]++;
     for (const r of results) {
-        const icon = { OK: '✅', DEGRADADO: '⚠️ ', SILENCIO: '🔇', BUCLE: '🔁', ERROR: '💥' }[r.estado];
+        // La constante compartida, no una copia: la copia se quedó sin BUG y el resumen
+        // imprimía "undefined" justo en la línea del único fallo real.
+        const icon = ICON[r.estado];
         console.log(`  ${icon} ${String(r.n).padStart(2)}. ${r.nombre.padEnd(46)} ${r.nota.slice(0, 60)}`);
     }
     console.log('─'.repeat(78));
-    console.log(`OK ${tally.OK} · DEGRADADO ${tally.DEGRADADO} · SILENCIO ${tally.SILENCIO} · BUCLE ${tally.BUCLE} · ERROR ${tally.ERROR}`);
+    console.log(`OK ${tally.OK} · DEGRADADO ${tally.DEGRADADO} · SILENCIO ${tally.SILENCIO} · BUCLE ${tally.BUCLE} · ERROR ${tally.ERROR} · BUG ${tally.BUG}`);
     console.log('═'.repeat(78) + '\n');
-    if (tally.SILENCIO || tally.ERROR) process.exitCode = 1;
+    if (tally.SILENCIO || tally.ERROR || tally.BUG) process.exitCode = 1;
     process.exit(process.exitCode || 0);
 })().catch(e => { console.error('\n💥', e); process.exit(1); });
