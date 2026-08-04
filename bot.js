@@ -278,6 +278,27 @@ function getMessageKey(msg) {
     return msg?.id?._serialized || msg?.key?.id || msg?.id?.id || null;
 }
 
+/**
+ * Id que devuelve el proveedor al ENVIAR, para guardarlo en `messages.wa_message_id`.
+ *
+ * Las dos formas son distintas y las dos son válidas: whatsapp-web.js devuelve el objeto
+ * Message (`id._serialized`), y Cloud API el JSON de la respuesta
+ * (`{ messages: [{ id: 'wamid…' }] }`). Sin id, la fila se guarda igual: es un dato para
+ * poder correlacionar después, no un requisito para registrar el mensaje.
+ */
+function extractSentMessageId(result) {
+    if (!result || typeof result !== 'object') return null;
+    return result.id?._serialized
+        || result.id?.id
+        || (Array.isArray(result.messages) ? (result.messages[0]?.id || null) : null)
+        || null;
+}
+
+/** Payload crudo del proveedor, si lo hay. Hoy solo lo trae el adapter de Cloud API. */
+function rawFromProvider(msg) {
+    return msg?._cloud?.valueMessage || null;
+}
+
 function sanitizeUserMessage(text) {
     if (!text || typeof text !== 'string') return '';
     let s = text.slice(0, MAX_USER_MESSAGE_LENGTH);
@@ -380,9 +401,12 @@ async function sendWithDelay(client, phone, text, orgId, dbPhone) {
         await (await client.getChatById(phone)).sendStateTyping();
         if (delay > 100) await new Promise(r => setTimeout(r, delay));
     } catch { /* sendStateTyping es best-effort: si el frame falla, seguimos al envío */ }
-    await waSendMessage(client, phone, text);
+    const enviado = await waSendMessage(client, phone, text);
     const phoneForDb = dbPhone || extractPhoneFromJid(phone);
-    if (phoneForDb) saveMessage(orgId, { telefono: phoneForDb, contenido: text, direccion: 'saliente' }).catch(() => {});
+    if (phoneForDb) saveMessage(orgId, {
+        telefono: phoneForDb, contenido: text, direccion: 'saliente',
+        waMessageId: extractSentMessageId(enviado),
+    }).catch(() => {});
 }
 
 async function sendDirectMessage(orgId, userPhone, text) {
@@ -5100,7 +5124,10 @@ async function handleIncomingMessage(client, message, orgId) {
                 const language = userSessions.get(sKey)?.language || null;
                 logger.info('media_no_soportada', { orgId, telefono: userPhone, kind });
                 // Dejamos rastro en el panel: antes estos mensajes no existían en el historial.
-                saveMessage(orgId, { telefono: dbPhone, contenido: `[${kind}]`, direccion: 'entrante' }).catch(() => {});
+                saveMessage(orgId, {
+                    telefono: dbPhone, contenido: `[${kind}]`, direccion: 'entrante',
+                    waMessageId: getMessageKey(message), raw: rawFromProvider(message),
+                }).catch(() => {});
                 // El rastro en el panel sí se guarda, la respuesta no sale: un contacto
                 // bloqueado no vuelve a hablar con el bot con normalidad.
                 if (await isBlacklistedNow(orgId, dbPhone, sKey)) {
@@ -5115,7 +5142,10 @@ async function handleIncomingMessage(client, message, orgId) {
             return;
         }
 
-        saveMessage(orgId, { telefono: dbPhone, contenido: userText, direccion: 'entrante' }).catch(() => {});
+        saveMessage(orgId, {
+            telefono: dbPhone, contenido: userText, direccion: 'entrante',
+            waMessageId: getMessageKey(message), raw: rawFromProvider(message),
+        }).catch(() => {});
         // Persistimos el JID canónico del chat (message.from, p.ej. "<lid>@lid") para poder
         // enviar mensajes manuales desde el panel al chat correcto, sin construir "<lid>@c.us"
         // (chat inexistente que desadjunta el frame de puppeteer). Best-effort, no bloquea.
@@ -5318,6 +5348,7 @@ module.exports = {
     findOriginalJid,
     waSendMessage,
     isTransientWAError,
+    extractSentMessageId,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
         respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,

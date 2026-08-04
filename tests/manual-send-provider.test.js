@@ -34,6 +34,14 @@ require.cache[botPath] = {
         findOriginalJid: () => null,
         isTransientWAError: () => false,
         waSendMessage: async (client, jid, text) => client.sendMessage(jid, text),
+        // Misma implementación que la real (bot.js): las dos formas de id de saliente, la
+        // de whatsapp-web.js (objeto Message) y la de Cloud API (JSON de la respuesta).
+        extractSentMessageId: (r) => {
+            if (!r || typeof r !== 'object') return null;
+            return r.id?._serialized || r.id?.id
+                || (Array.isArray(r.messages) ? (r.messages[0]?.id || null) : null)
+                || null;
+        },
     },
 };
 
@@ -62,7 +70,9 @@ let convModeCalls = [];
 let wwebSends = [];
 const fakeWwebClient = {
     getChatById: async () => ({ sendStateTyping: async () => {} }),
-    sendMessage: async (jid, text) => { wwebSends.push({ jid, text }); return { id: 'wweb-out' }; },
+    // Devuelve un Message con la forma real de whatsapp-web.js (id._serialized): es de donde
+    // sale el wa_message_id que se guarda con el saliente.
+    sendMessage: async (jid, text) => { wwebSends.push({ jid, text }); return { id: { _serialized: 'false_34600999888@c.us_OUT' } }; },
 };
 setWAClient(
     new Map([[SANREMO_ORG, { client: fakeWwebClient, slug: 'sanremo' }]]),
@@ -124,6 +134,9 @@ async function test(name, fn) {
             assert.strictEqual(wwebSends.length, 0, 'NO debe usar el cliente wwebjs para Sante');
             assert.strictEqual(savedMessages.length, 1, 'guarda el mensaje saliente');
             assert.strictEqual(savedMessages[0].esManual, true);
+            // El wamid que devuelve Cloud API se guarda con la fila: es lo que permite
+            // correlacionar después este saliente con lo que vuelva del proveedor.
+            assert.strictEqual(savedMessages[0].waMessageId, 'wamid.OUT');
         });
 
         await test('San Remo: envío manual sigue por whatsapp-web.js (no toca 360dialog)', async () => {
@@ -145,6 +158,9 @@ async function test(name, fn) {
             assert.strictEqual(wwebSends.length, 1, 'usa el cliente wwebjs');
             assert.strictEqual(wwebSends[0].jid, '34600999888@c.us');
             assert.strictEqual(wwebSends[0].text, 'Reserva confirmada');
+            // San Remo sigue exactamente igual; lo único nuevo es que el id del mensaje
+            // enviado también se guarda (columna que existía desde 001 y nadie rellenaba).
+            assert.strictEqual(savedMessages[0].waMessageId, 'false_34600999888@c.us_OUT');
         });
 
         // ─── Pausa por envío manual ──────────────────────────────────────────────────

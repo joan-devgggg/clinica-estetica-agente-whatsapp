@@ -884,7 +884,7 @@ app.post('/api/send', async (req, res) => {
         if (!telefono || !mensaje) return res.status(400).json({ error: 'telefono y mensaje requeridos' });
         const client = getOutboundClient(orgId);
         if (!client) return res.status(503).json({ error: 'WhatsApp no conectado — reconecta el bot e inténtalo de nuevo' });
-        const { findOriginalJid, waSendMessage, isTransientWAError } = require('./bot');
+        const { findOriginalJid, waSendMessage, isTransientWAError, extractSentMessageId } = require('./bot');
         const digits = telefono.replace(/\D/g, '');
         // Resolvemos el JID REAL del chat. Para contactos LID, construir "<lid>@c.us" apunta a
         // un chat inexistente y desadjunta el frame de puppeteer ("detached Frame"). Prioridad:
@@ -897,16 +897,17 @@ app.post('/api/send', async (req, res) => {
             || (looksLikeLid ? `${digits}@lid` : `${digits}@c.us`);
         // Warm-up del chat YA resuelto (best-effort), como el path del bot.
         try { await client.getChatById(userPhone); } catch { /* best-effort */ }
+        let enviado = null;
         try {
             // waSendMessage reintenta con backoff ante errores transitorios de frame (bug 7).
-            await waSendMessage(client, userPhone, mensaje);
+            enviado = await waSendMessage(client, userPhone, mensaje);
         } catch (waErr) {
             const msg = String(waErr?.message || waErr || '');
             if (msg.includes('LID')) {
                 const altJid = findOriginalJid(orgId, digits) || `${digits}@lid`;
                 if (altJid && altJid !== userPhone) {
                     logger.info('wa_send_lid_retry', { orgId, telefono, altJid });
-                    await waSendMessage(client, altJid, mensaje);
+                    enviado = await waSendMessage(client, altJid, mensaje);
                 } else {
                     logger.warn('wa_send_lid_no_jid', { orgId, telefono });
                     return res.status(503).json({ error: 'No se puede enviar: el contacto usa LID y no hay chat conocido' });
@@ -922,7 +923,10 @@ app.post('/api/send', async (req, res) => {
                 throw waErr;
             }
         }
-        await db.saveMessage(orgId, { telefono: digits, contenido: mensaje, direccion: 'saliente', esManual: true });
+        await db.saveMessage(orgId, {
+            telefono: digits, contenido: mensaje, direccion: 'saliente', esManual: true,
+            waMessageId: extractSentMessageId(enviado),
+        });
 
         // Solo si el envío salió bien: si falló, la persona no ha atendido a nadie y no
         // tiene sentido dejar el bot apagado en esa conversación. Mismo par de llamadas que

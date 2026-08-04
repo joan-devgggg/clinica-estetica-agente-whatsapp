@@ -555,7 +555,30 @@ async function findOrCreateConversation(orgId, contactId) {
     return null;
 }
 
-async function saveMessage(orgId, { telefono, contenido, direccion, esManual = false }) {
+// Violación de UNIQUE en Postgres. `messages.wa_message_id` lo es, así que este código
+// significa "ese mensaje ya está guardado", no "ha fallado la escritura".
+const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * Guarda un mensaje.
+ *
+ * `waMessageId` y `raw` existían en el esquema desde 001 y NADIE los rellenaba. Costaba dos
+ * cosas concretas:
+ *
+ *   · Sin `wa_message_id` no hay red contra la reentrega del webhook de Cloud API. Meta
+ *     reintenta si tardamos en responder 200, y el único dedupe era `TTLMessageDedupe`: un
+ *     Map en RAM, 60 s, por proceso. Un reinicio, un reintento tardío o un segundo proceso
+ *     y el mismo mensaje se guardaba dos veces. La columna es UNIQUE: la base de datos lo
+ *     rechaza sola, sobreviva o no el proceso.
+ *   · Sin `raw` no queda el payload del proveedor. Cuando un mensaje llega raro (un tipo de
+ *     media inesperado, un `type` que no sabíamos que existía) no hay NADA que mirar
+ *     después: el log tiene lo que decidimos loguear, y eso ya es una interpretación.
+ *
+ * El duplicado NO es un error: se registra y se devuelve null, que es lo que el llamante ya
+ * trataba como "no se guardó nada nuevo". El resto de errores sí se registran — antes se
+ * descartaban en silencio y un INSERT fallido era indistinguible de uno correcto.
+ */
+async function saveMessage(orgId, { telefono, contenido, direccion, esManual = false, waMessageId = null, raw = null }) {
     const oid = resolveOrg(orgId);
     const phone = sanitizePhone(telefono);
     if (!phone || !contenido) return null;
@@ -573,18 +596,29 @@ async function saveMessage(orgId, { telefono, contenido, direccion, esManual = f
     const direction = direccion === 'entrante' ? 'inbound' : 'outbound';
     const sender    = direction === 'inbound' ? 'contact' : (esManual ? 'human' : 'bot');
 
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from('messages')
         .insert({
             conversation_id: convId,
             organization_id: oid,
+            wa_message_id: waMessageId || null,
             direction,
             sender,
             content: contenido,
+            raw: raw || null,
             created_at: now(),
         })
         .select('id')
         .single();
+
+    if (error) {
+        if (error.code === PG_UNIQUE_VIOLATION) {
+            logger.info('mensaje_duplicado_ignorado', { orgId: oid, waMessageId, direction });
+            return null;
+        }
+        logger.error('db_write_error', { tabla: 'messages', op: 'insert', error: error.message, code: error.code });
+        return null;
+    }
 
     await supabase
         .from('conversations')
