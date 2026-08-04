@@ -10,10 +10,10 @@ import { ChatView } from "@/components/whatsapp/ChatView";
 import {
   getConversations,
   getMessages,
-  getBotActivo,
   toggleLeadBotMode,
   sendManualMessage,
 } from "@/lib/whatsapp";
+import { useBotStatus } from "@/lib/bot-status-context";
 import type { Conversation, Message } from "@/lib/whatsapp";
 import { API, apiHeaders } from "@/lib/api";
 
@@ -21,12 +21,16 @@ export default function WhatsAppPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [sendingMessage, setSendingMessage] = useState(false);
   // Solo de LECTURA en esta pantalla. El interruptor que apaga el bot de TODA la
   // organización vive únicamente en Configuración: tenerlo aquí, junto al de "modo manual"
   // de cada conversación, hizo que el 01/08 se apagara Sante entera 4 h creyendo que se
   // pausaba una sola clienta (los dos controles se llamaban parecido y estaban a 30 cm).
-  const [botActivo, setBotActivo] = useState(true);
-  const [sendingMessage, setSendingMessage] = useState(false);
+  // El estado (y su refresco periódico) sale de BotStatusProvider, el mismo que pinta la
+  // píldora de la barra lateral: antes esta pantalla lo mantenía por su cuenta arrancando
+  // en `true`, así que el aviso rojo tardaba en aparecer aunque el bot ya estuviera parado.
+  const { status: botStatus } = useBotStatus();
+  const botPausado = botStatus === "paused";
 
   const { orgId, orgName } = useOrg();
   const selectedConv = conversations.find((c) => c.id === selectedId) ?? null;
@@ -48,22 +52,7 @@ export default function WhatsAppPage() {
   // Carga inicial — solo datos reales de la org activa
   useEffect(() => {
     if (!orgId) return;
-    Promise.all([getConversations(orgId), getBotActivo(orgId)]).then(([convs, active]) => {
-      setConversations(convs);
-      setBotActivo(active);
-    });
-  }, [orgId]);
-
-  // El bot de la org se apaga desde Configuración (u otra pestaña), así que el aviso de
-  // "pausado" hay que refrescarlo aquí: es la pantalla donde se nota que no contesta.
-  useEffect(() => {
-    if (!orgId) return;
-    const id = setInterval(() => {
-      getBotActivo(orgId).then((active) => {
-        if (mountedRef.current) setBotActivo(active);
-      });
-    }, 30000);
-    return () => clearInterval(id);
+    getConversations(orgId).then(setConversations);
   }, [orgId]);
 
   // Cargar mensajes al seleccionar conversación
@@ -248,7 +237,7 @@ export default function WhatsAppPage() {
 
       {/* Aviso persistente: mientras la org esté pausada el bot DESCARTA todo lo que entra,
           de todas las clientas. El 01/08 estuvo así 4 h sin que nadie lo notara. */}
-      {!botActivo && (
+      {botPausado && (
         <div
           role="alert"
           className="shrink-0 flex flex-wrap items-center gap-x-2 gap-y-1 px-6 py-2.5 border-b border-destructive/30 bg-destructive/10 text-[13px] text-destructive"
@@ -288,7 +277,7 @@ export default function WhatsAppPage() {
             onSendMessage={handleSendMessage}
             onRemoveBlacklist={handleRemoveBlacklist}
             sendingMessage={sendingMessage}
-            globalBotPaused={!botActivo}
+            globalBotPaused={botPausado}
           />
         </div>
       </div>

@@ -16,8 +16,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { TimePickerSelect } from "@/components/ui/time-picker-select";
-import { API, apiHeaders } from "@/lib/api";
+import { API, apiHeaders, apiMutate } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
+import { useBotStatus } from "@/lib/bot-status-context";
 
 const DIAS = [
   { key: "lun", label: "Lunes" },
@@ -65,11 +66,13 @@ interface BusinessInfo {
   vip?: VipConfig;
 }
 
+// `bot_activo` no vive aquí: lo lleva BotStatusProvider, que es lo que ve también la
+// barra lateral. Dos copias del mismo estado es lo que dejaba la píldora del pie diciendo
+// "Activo" con la organización pausada.
 interface Config {
   restaurante_info?: RestauranteInfo;
   horario?: Record<string, HorarioDia>;
   horas_recordatorio?: number;
-  bot_activo?: boolean;
 }
 
 interface AgentConfig {
@@ -103,6 +106,7 @@ export default function ConfiguracionPage() {
   const [loading, setLoading] = useState(true);
   const [savingBot, setSavingBot] = useState(false);
   const { orgId, orgType } = useOrg();
+  const { status: botStatus, setBotActive } = useBotStatus();
 
   const fetchAll = useCallback(async () => {
     if (!orgId) return;
@@ -126,11 +130,20 @@ export default function ConfiguracionPage() {
   }, [fetchAll]);
 
   // ── Bot toggle ──
+  // El estado solo se mueve si el servidor confirma la escritura. Con `putConfig` a pelo,
+  // un 500 dejaba la tarjeta (y ahora también la píldora de la barra lateral) diciendo
+  // "Pausado" con el bot respondiendo tan tranquilo.
   async function handleBotToggle(next: boolean) {
     setSavingBot(true);
-    await putConfig(orgId, "bot_activo", next);
-    setConfig((c) => ({ ...c, bot_activo: next }));
-    setSavingBot(false);
+    try {
+      await apiMutate(`/api/config/bot_activo`, { method: "PUT", body: { valor: next }, orgId });
+      setBotActive(next);
+      toast.success(next ? "Bot reactivado para todas las clientas" : "Bot pausado para todas las clientas");
+    } catch (e) {
+      toast.error((e as Error).message || "No se pudo cambiar el estado del bot");
+    } finally {
+      setSavingBot(false);
+    }
   }
 
   // ── Información del restaurante ──
@@ -237,7 +250,9 @@ export default function ConfiguracionPage() {
 
           {/* Bot toggle */}
           <BotToggle
-            active={config.bot_activo ?? false}
+            active={
+              botStatus === "active" ? true : botStatus === "paused" ? false : null
+            }
             onToggle={handleBotToggle}
             loading={savingBot}
           />

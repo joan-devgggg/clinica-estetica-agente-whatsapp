@@ -61,14 +61,22 @@ export async function getMessages(orgId: string, telefono: string, limit = 100):
   }
 }
 
-export async function getBotActivo(orgId: string): Promise<boolean> {
+/**
+ * Estado del bot de TODA la organización (`config.bot_activo`).
+ *
+ * Devuelve `null` — no `true` — cuando no se ha podido leer (API caída, 401, red).
+ * Antes devolvía `true` en el catch: un fallo de red se veía exactamente igual que un bot
+ * respondiendo, y la UI afirmaba "Activo" sin haber comprobado nada. Quien consuma esto
+ * debe distinguir los tres casos; el valor por defecto NUNCA puede ser "activo".
+ */
+export async function fetchGlobalBotActive(orgId: string): Promise<boolean | null> {
   try {
     const res = await fetch(`${API}/api/config`, { headers: await apiHeaders(orgId) });
-    if (!res.ok) return true;
+    if (!res.ok) return null;
     const config = await res.json();
     return config.bot_activo !== false;
   } catch {
-    return true;
+    return null;
   }
 }
 

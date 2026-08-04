@@ -14,7 +14,8 @@ import {
 } from "@/components/ui/dialog";
 
 interface BotToggleProps {
-  active: boolean;
+  /** `null` = todavía no se sabe (cargando o no se ha podido leer). Nunca se asume activo. */
+  active: boolean | null;
   onToggle: (next: boolean) => Promise<void>;
   loading?: boolean;
 }
@@ -77,10 +78,39 @@ function ToggleCard({
   loading,
   onRequest,
 }: {
-  active: boolean;
+  active: boolean | null;
   loading?: boolean;
   onRequest: () => void;
 }) {
+  // Estado desconocido: ni "Activo" ni "Pausado". Decir cualquiera de los dos sin haberlo
+  // leído es inventarse el estado del bot, que es justo lo que rompía la barra lateral.
+  if (active === null) {
+    return (
+      <Card className="border-border/60 shadow-sm">
+        <CardHeader className="pb-2 pt-5 px-5">
+          <p className="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">
+            Estado del bot
+          </p>
+        </CardHeader>
+        <CardContent className="px-5 pb-5">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted">
+              <Bot size={16} strokeWidth={1.5} className="text-muted-foreground" />
+            </div>
+            <div>
+              <p className="text-[13.5px] font-medium text-foreground">
+                Bot WhatsApp — todas las clientas
+              </p>
+              <p className="text-[11.5px] font-medium text-muted-foreground">
+                Comprobando estado…
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card className="border-border/60 shadow-sm">
       <CardHeader className="pb-2 pt-5 px-5">

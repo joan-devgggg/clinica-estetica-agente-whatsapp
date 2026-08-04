@@ -31,6 +31,7 @@ import {
   SidebarSeparator,
 } from "@/components/ui/sidebar";
 import { useOrg } from "@/lib/org-context";
+import { useBotStatus, type BotStatus } from "@/lib/bot-status-context";
 import type { LucideIcon } from "lucide-react";
 
 interface NavItem {
@@ -72,9 +73,44 @@ const salonSettingsItems: NavItem[] = [
   { href: "/configuracion", label: "Configuración", icon: Settings },
 ];
 
+// Píldora del pie: lo que ve quien mira el panel de reojo. Decía "Activo" en texto fijo,
+// también con la organización pausada y también mientras el estado ni siquiera había
+// cargado. Los cuatro estados son explícitos a propósito: no hay rama por defecto que
+// afirme que el bot responde.
+const BOT_STATUS_PILL: Record<BotStatus, { label: string; dot: string; text: string; title: string }> = {
+  active: {
+    label: "Activo",
+    dot: "bg-accent",
+    text: "text-muted-foreground",
+    title: "El bot responde a todas las clientas",
+  },
+  paused: {
+    label: "Pausado",
+    // Mismo rojo que la tarjeta de Configuración (text-destructive), para que las dos
+    // pantallas se lean igual de un vistazo.
+    dot: "bg-destructive",
+    text: "text-destructive font-medium",
+    title: "Pausado para TODAS las clientas — reactívalo en Configuración",
+  },
+  loading: {
+    label: "Comprobando…",
+    dot: "bg-muted-foreground/40",
+    text: "text-muted-foreground",
+    title: "Comprobando el estado del bot",
+  },
+  unknown: {
+    label: "Estado no disponible",
+    dot: "bg-muted-foreground/40",
+    text: "text-muted-foreground",
+    title: "No se ha podido leer el estado del bot",
+  },
+};
+
 export function AppSidebar() {
   const pathname = usePathname();
   const { orgName, orgType, loading } = useOrg();
+  const { status: botStatus } = useBotStatus();
+  const pill = BOT_STATUS_PILL[botStatus];
 
   const navItems = orgType === "salon" ? salonNavItems : restaurantNavItems;
   const settingsItems = orgType === "salon" ? salonSettingsItems : restaurantSettingsItems;
@@ -164,17 +200,31 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter className="p-3 border-t border-sidebar-border">
-        <div className="flex items-center gap-2.5 rounded-lg bg-muted px-3 py-2.5">
+        <div
+          className="flex items-center gap-2.5 rounded-lg bg-muted px-3 py-2.5"
+          title={pill.title}
+        >
           <div className="relative flex-shrink-0">
-            <Bot size={15} strokeWidth={1.5} className="text-muted-foreground" />
-            <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-accent border border-card" />
+            <Bot
+              size={15}
+              strokeWidth={1.5}
+              className={
+                botStatus === "paused" ? "text-destructive" : "text-muted-foreground"
+              }
+            />
+            <span
+              className={`absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full border border-card ${pill.dot}`}
+            />
           </div>
           <div className="min-w-0">
             <p className="text-[12px] font-medium text-foreground leading-none truncate">
               Bot WhatsApp
             </p>
-            <p className="mt-0.5 text-[10.5px] text-muted-foreground leading-none truncate">
-              Activo
+            <p
+              className={`mt-0.5 text-[10.5px] leading-none truncate ${pill.text}`}
+              aria-live="polite"
+            >
+              {pill.label}
             </p>
           </div>
         </div>
