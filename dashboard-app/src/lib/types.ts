@@ -64,6 +64,12 @@ export interface Reserva {
   service?: string;
   starts_at?: string;
   ends_at?: string;
+  // Facturación, SOLO LECTURA desde aquí. El importe se corrige en la pantalla de
+  // Facturación (PATCH /api/citas/:id/precio): editar dinero en el mismo formulario que
+  // edita el servicio es la confusión que dejó una cita congelada a 220 € cuando valía 260.
+  precio_facturado?: number | null;
+  precio_manual?: number | null;
+  precio_manual_motivo?: string | null;
 }
 
 export interface Stylist {

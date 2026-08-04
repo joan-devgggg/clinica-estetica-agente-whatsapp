@@ -305,6 +305,27 @@ export function AppointmentEditSheet({
             </div>
           )}
 
+          {/* Importe facturado: SOLO LECTURA. Se corrige desde la pantalla de Facturación,
+              no aquí — editar dinero en el mismo formulario que edita el servicio es lo que
+              dejó una cita congelada a 220 € cuando ya valía 260. */}
+          {isSalon && (reserva?.precio_manual != null || reserva?.precio_facturado != null) && (
+            <div className="space-y-1.5">
+              <Label className="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground">
+                Importe facturado
+              </Label>
+              <p className="text-[13.5px] tabular-nums">
+                {new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" })
+                  .format(Number(reserva.precio_manual ?? reserva.precio_facturado))}
+                {reserva.precio_manual != null && (
+                  <span className="ml-2 text-xs font-medium text-amber-600 dark:text-amber-500">
+                    · manual{reserva.precio_manual_motivo ? ` (${reserva.precio_manual_motivo})` : ""}
+                  </span>
+                )}
+              </p>
+              <p className="text-xs text-muted-foreground">Se corrige desde Facturación.</p>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <Label className="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground">
               Notas

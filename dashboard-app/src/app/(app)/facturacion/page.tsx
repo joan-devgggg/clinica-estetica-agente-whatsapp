@@ -20,10 +20,20 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { ChevronLeft, ChevronRight, AlertTriangle, ChevronDown, ChevronUp, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { useOrg } from "@/lib/org-context";
-import { API, apiHeaders } from "@/lib/api";
+import { API, apiHeaders, apiMutate } from "@/lib/api";
 import { ymd, madridDateKey } from "@/lib/date";
 
 // ─── Rangos de periodo ────────────────────────────────────────────────────────
@@ -56,7 +66,16 @@ function getMonthRange(offset: number) {
 
 // ─── Tipos del informe (lo que devuelve GET /api/facturacion) ─────────────────
 
-type SegmentStatus = "ok" | "unpriced" | "unmatched";
+type SegmentStatus = "ok" | "unpriced" | "unmatched" | "ambiguous";
+
+// De dónde sale el importe de una cita. Lo decide el backend (helpers.js) y es la ÚNICA
+// fuente para lo que pinta esta pantalla: el panel no recalcula dinero ni deduce precedencia.
+//   manual       → lo fijó una persona; manda sobre todo lo demás
+//   congelado    → snapshot del momento de completar la cita
+//   divergente   → hay snapshot, pero el `service` cambió después: no se suma, hay que revisar
+//   calculado    → recálculo en vivo contra el catálogo
+//   sin_calcular → no se pudo valorar (sin precio, sin match o nombre ambiguo)
+type BillingOrigen = "manual" | "congelado" | "divergente" | "calculado" | "sin_calcular";
 
 interface BillingSegment {
   name: string;
@@ -71,6 +90,15 @@ interface BillingCita {
   starts_at: string | null;
   precio: number | null;
   calculable: boolean;
+  congelado: boolean;
+  origen: BillingOrigen;
+  // Lo que daría el catálogo hoy (null si no se puede valorar). Viene SIEMPRE, gane la rama
+  // que gane, justamente para que esta pantalla no tenga que calcularlo por su cuenta a
+  // partir del catálogo que ya tiene cargado en otras vistas.
+  precio_calculado: number | null;
+  precio_manual_motivo: string | null;
+  precio_manual_at: string | null;
+  servicio_facturado: string | null;
   segments: BillingSegment[];
 }
 
@@ -79,6 +107,8 @@ interface BillingStylist {
   stylist_name: string | null;
   numCitas: number;
   sinCalcular: number;
+  numDivergentes: number;
+  numManuales: number;
   totalConIva: number;
   totalSinIva: number;
   iva: number;
@@ -94,6 +124,11 @@ interface BillingReport {
   estilistas: BillingStylist[];
   totales: { totalConIva: number; totalSinIva: number; iva: number; numCitas: number };
   sinCalcularTotal: number;
+  // Citas cuyo servicio se editó DESPUÉS de facturarse. Contador aparte de sinCalcularTotal
+  // a propósito: "el servicio cambió" y "no supe calcularlo" son avisos distintos, y
+  // fusionarlos haría que los dos banners dijeran algo que no es.
+  divergentesTotal: number;
+  manualesTotal: number;
   ivaRate: number;
   // Opciones del selector: las estilistas activas de la org + las que tengan citas en el
   // periodo + "Sin estilista asignada". No dependen del filtro aplicado.
@@ -117,6 +152,8 @@ export default function FacturacionPage() {
   // vaciarse y aparentar "Todas las estilistas" mientras hay un filtro aplicado.
   const [stylistOptions, setStylistOptions] = useState<BillingStylistOption[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  // Cita cuyo importe se está corrigiendo a mano (null = diálogo cerrado).
+  const [editando, setEditando] = useState<BillingCita | null>(null);
 
   const { orgId } = useOrg();
   const range = periodMode === "week" ? getWeekRange(offset) : getMonthRange(offset);
@@ -155,6 +192,10 @@ export default function FacturacionPage() {
   const rows = report?.estilistas ?? [];
   const visibleTotals = report?.totales;
   const visibleSinCalcular = report?.sinCalcularTotal ?? 0;
+  const visibleDivergentes = report?.divergentesTotal ?? 0;
+  // Las dos cosas que piden intervención, en un solo número. Los avisos de debajo siguen
+  // separados porque la acción que toca en cada caso no es la misma.
+  const visibleARevisar = visibleSinCalcular + visibleDivergentes;
   const ivaPct = Math.round((report?.ivaRate ?? 0.21) * 100);
 
   const selectedName =
@@ -239,9 +280,9 @@ export default function FacturacionPage() {
               <KpiCard label="Base sin IVA" value={eur(visibleTotals?.totalSinIva ?? 0)} />
               <KpiCard label="Citas completadas" value={String(visibleTotals?.numCitas ?? 0)} />
               <KpiCard
-                label="Citas sin calcular"
-                value={String(visibleSinCalcular)}
-                highlight={visibleSinCalcular > 0}
+                label="Citas a revisar"
+                value={String(visibleARevisar)}
+                highlight={visibleARevisar > 0}
               />
             </div>
           )}
@@ -254,7 +295,20 @@ export default function FacturacionPage() {
                 {visibleSinCalcular === 1
                   ? "1 cita no se ha podido calcular automáticamente"
                   : `${visibleSinCalcular} citas no se han podido calcular automáticamente`}
-                {" "}(servicio sin precio fijo o no encontrado en el catálogo). Revísalas manualmente — no se suman al total.
+                {" "}(servicio sin precio fijo o no encontrado en el catálogo). Haz clic en su importe para fijarlo a mano — hasta entonces no se suman al total.
+              </p>
+            </div>
+          )}
+
+          {/* Aviso citas cuyo servicio cambió después de facturarse */}
+          {!loading && visibleDivergentes > 0 && (
+            <div className="flex items-start gap-2.5 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0 text-destructive" />
+              <p className="text-sm text-destructive">
+                {visibleDivergentes === 1
+                  ? "1 cita cambió de servicio después de facturarse."
+                  : `${visibleDivergentes} citas cambiaron de servicio después de facturarse.`}
+                {" "}El importe congelado ya no corresponde al servicio registrado. Revísalas y confirma el importe — no se suman al total.
               </p>
             </div>
           )}
@@ -297,6 +351,20 @@ export default function FacturacionPage() {
                                   {e.sinCalcular} sin calcular
                                 </span>
                               )}
+                              {e.numDivergentes > 0 && (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-semibold text-destructive">
+                                  <AlertTriangle size={10} />
+                                  {e.numDivergentes} servicio cambiado
+                                </span>
+                              )}
+                              {/* Ámbar, nunca rojo: el rojo está reservado a "no lo sé". Un
+                                  importe que decidió una persona no puede parecer un error. */}
+                              {e.numManuales > 0 && (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-500">
+                                  <Pencil size={10} />
+                                  {e.numManuales} manual
+                                </span>
+                              )}
                             </span>
                           </TableCell>
                           <TableCell className="text-right tabular-nums">{e.numCitas}</TableCell>
@@ -311,7 +379,7 @@ export default function FacturacionPage() {
                           <TableRow className="hover:bg-transparent">
                             <TableCell colSpan={6} className="bg-muted/30 p-0">
                               <div className="px-4 py-3">
-                                <CitaBreakdown citas={e.citas} />
+                                <CitaBreakdown citas={e.citas} onEdit={setEditando} />
                               </div>
                             </TableCell>
                           </TableRow>
@@ -325,6 +393,13 @@ export default function FacturacionPage() {
           )}
         </div>
       </div>
+
+      <PrecioManualDialog
+        cita={editando}
+        orgId={orgId}
+        onClose={() => setEditando(null)}
+        onSaved={loadData}
+      />
     </>
   );
 }
@@ -346,7 +421,7 @@ function KpiCard({ label, value, highlight }: { label: string; value: string; hi
   );
 }
 
-function CitaBreakdown({ citas }: { citas: BillingCita[] }) {
+function CitaBreakdown({ citas, onEdit }: { citas: BillingCita[]; onEdit: (c: BillingCita) => void }) {
   if (!citas.length) {
     return <p className="text-sm text-muted-foreground">Sin citas.</p>;
   }
@@ -365,9 +440,33 @@ function CitaBreakdown({ citas }: { citas: BillingCita[] }) {
             <span className="font-medium">{c.cliente ?? "—"}</span>
             <span className="mx-2 text-border">·</span>
             <span className="text-muted-foreground">{c.service ?? "—"}</span>
+            {c.origen === "divergente" && (
+              <p className="mt-0.5 text-xs text-destructive">
+                Se facturó como «{c.servicio_facturado}» y el servicio se editó después.
+                {c.precio_calculado != null && ` Ahora el catálogo daría ${eur(c.precio_calculado)}.`}
+              </p>
+            )}
+            {c.origen === "manual" && c.precio_manual_motivo && (
+              <p className="mt-0.5 text-xs text-muted-foreground">Motivo: {c.precio_manual_motivo}</p>
+            )}
           </div>
-          <div className="shrink-0 tabular-nums">
-            {c.calculable ? (
+          <button
+            type="button"
+            onClick={() => onEdit(c)}
+            title="Corregir el importe a mano"
+            className="shrink-0 tabular-nums rounded px-1.5 py-0.5 hover:bg-muted transition-colors"
+          >
+            {c.origen === "manual" ? (
+              <span className="inline-flex items-center gap-1 font-medium text-amber-600 dark:text-amber-500">
+                <Pencil size={11} />
+                {eur(c.precio ?? 0)}
+              </span>
+            ) : c.origen === "divergente" ? (
+              <span className="inline-flex items-center gap-1 text-destructive text-xs font-semibold">
+                <AlertTriangle size={11} />
+                servicio cambiado
+              </span>
+            ) : c.calculable ? (
               <span className="font-medium">{eur(c.precio ?? 0)}</span>
             ) : (
               <span className="inline-flex items-center gap-1 text-destructive text-xs font-semibold">
@@ -375,9 +474,130 @@ function CitaBreakdown({ citas }: { citas: BillingCita[] }) {
                 revisar
               </span>
             )}
-          </div>
+          </button>
         </div>
       ))}
     </div>
+  );
+}
+
+// Diálogo para fijar o limpiar el importe de una cita a mano.
+//
+// Manda un número y recarga: NO calcula la base sin IVA, NO decide precedencia y NO deriva
+// del catálogo a qué importe volvería al limpiar. Todo eso llega ya resuelto en
+// `precio_calculado`. Es deliberado — el catálogo está a mano en esta app (useServiceCatalog)
+// y duplicar aquí la aritmética del backend es exactamente como se desincronizan las dos
+// capas. El único sitio donde se decide dinero es services/helpers.js.
+function PrecioManualDialog({
+  cita, orgId, onClose, onSaved,
+}: {
+  cita: BillingCita | null;
+  orgId: string | undefined;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [valor, setValor] = useState("");
+  const [motivo, setMotivo] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!cita) return;
+    // Se precarga con el importe que se está viendo: corregir suele ser un retoque sobre él,
+    // no escribirlo de cero.
+    const base = cita.origen === "manual" ? cita.precio : (cita.precio ?? cita.precio_calculado);
+    setValor(base != null ? String(base) : "");
+    setMotivo(cita.precio_manual_motivo ?? "");
+  }, [cita]);
+
+  if (!cita) return null;
+  const esManual = cita.origen === "manual";
+
+  async function guardar(limpiar: boolean) {
+    if (!cita) return;
+    let precio: number | null = null;
+    if (!limpiar) {
+      // Coma decimal: en un teclado español es lo que se teclea de forma natural.
+      const n = Number(valor.replace(",", "."));
+      if (!Number.isFinite(n) || n < 0) {
+        toast.error("Escribe un importe válido (0 o más)");
+        return;
+      }
+      precio = Math.round(n * 100) / 100;
+    }
+    setSaving(true);
+    try {
+      await apiMutate(`/api/citas/${cita.appointment_id}/precio`, {
+        method: "PATCH",
+        orgId,
+        body: { precio, motivo: limpiar ? null : motivo.trim() || null },
+      });
+      toast.success(limpiar ? "Importe devuelto al calculado" : "Importe actualizado");
+      onSaved();
+      onClose();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo guardar el importe");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open={!!cita} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="sm:max-w-[420px]">
+        <DialogHeader>
+          <DialogTitle>Corregir importe</DialogTitle>
+          <DialogDescription>
+            {cita.cliente ?? "—"} · {cita.service ?? "—"}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="precio-manual">Total con IVA</Label>
+            <Input
+              id="precio-manual"
+              inputMode="decimal"
+              value={valor}
+              onChange={(e) => setValor(e.target.value)}
+              placeholder="0,00"
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="motivo-manual">Motivo (opcional)</Label>
+            <Input
+              id="motivo-manual"
+              value={motivo}
+              onChange={(e) => setMotivo(e.target.value)}
+              placeholder="Descuento fidelidad, error al registrar…"
+              maxLength={300}
+            />
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            {cita.precio_calculado != null
+              ? <>Calculado desde el catálogo: <span className="tabular-nums font-medium">{eur(cita.precio_calculado)}</span></>
+              : "El catálogo no puede calcular este servicio automáticamente."}
+          </p>
+          {cita.origen === "divergente" && (
+            <p className="text-xs text-destructive">
+              Se facturó por «{cita.servicio_facturado}» y el servicio se editó después. Confirma
+              el importe correcto para que vuelva a contar en el total.
+            </p>
+          )}
+        </div>
+
+        <DialogFooter className="gap-2 sm:justify-between">
+          {esManual ? (
+            <Button variant="ghost" onClick={() => guardar(true)} disabled={saving}>
+              Volver al importe calculado
+            </Button>
+          ) : <span />}
+          <Button onClick={() => guardar(false)} disabled={saving}>
+            {saving ? "Guardando…" : "Guardar"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
