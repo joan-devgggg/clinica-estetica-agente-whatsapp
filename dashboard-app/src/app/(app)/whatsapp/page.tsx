@@ -12,13 +12,24 @@ import {
   getMessages,
   toggleLeadBotMode,
   sendManualMessage,
+  CONVERSATIONS_PAGE_SIZE,
 } from "@/lib/whatsapp";
 import { useBotStatus } from "@/lib/bot-status-context";
-import type { Conversation, Message } from "@/lib/whatsapp";
+import type { Conversation, ConversationPage, Message } from "@/lib/whatsapp";
 import { API, apiHeaders } from "@/lib/api";
 
 export default function WhatsAppPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  // Tamaño de la ventana que se pide al servidor. Crece de golpes de CONVERSATIONS_PAGE_SIZE
+  // con "Cargar más"; el refresco en tiempo real siempre pide la ventana actual entera, así
+  // que lo ya cargado no se encoge cuando entra un mensaje.
+  //
+  // Va emparejado con la org a la que pertenece y se DERIVA, en vez de resetearse en un
+  // efecto: al cambiar de organización vuelve solo al tamaño inicial, sin un render extra
+  // en el que se pediría la ventana grande de la org anterior.
+  const [limitState, setLimitState] = useState({ org: "", limit: CONVERSATIONS_PAGE_SIZE });
+  const [hayMas, setHayMas] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [sendingMessage, setSendingMessage] = useState(false);
@@ -33,6 +44,7 @@ export default function WhatsAppPage() {
   const botPausado = botStatus === "paused";
 
   const { orgId, orgName } = useOrg();
+  const limit = limitState.org === orgId ? limitState.limit : CONVERSATIONS_PAGE_SIZE;
   const selectedConv = conversations.find((c) => c.id === selectedId) ?? null;
   // Bug 9: memoizamos el cliente. Antes se llamaba createClient() en CADA render, creando
   // una instancia nueva de Supabase (y un socket realtime nuevo) cada vez → los canales
@@ -49,11 +61,17 @@ export default function WhatsAppPage() {
     return () => { mountedRef.current = false; };
   }, []);
 
-  // Carga inicial — solo datos reales de la org activa
+  const applyPage = useCallback((page: ConversationPage) => {
+    setConversations(page.items);
+    setHayMas(page.hayMas);
+    setLoadingMore(false);
+  }, []);
+
+  // Carga inicial y recarga al crecer la ventana — solo datos reales de la org activa
   useEffect(() => {
     if (!orgId) return;
-    getConversations(orgId).then(setConversations);
-  }, [orgId]);
+    getConversations(orgId, limit).then(applyPage);
+  }, [orgId, limit, applyPage]);
 
   // Cargar mensajes al seleccionar conversación
   useEffect(() => {
@@ -72,8 +90,13 @@ export default function WhatsAppPage() {
       pendingConvRefresh.current = true;
       return;
     }
-    getConversations(orgId).then(setConversations);
-  }, [orgId]);
+    getConversations(orgId, limit).then(applyPage);
+  }, [orgId, limit, applyPage]);
+
+  const handleLoadMore = useCallback(() => {
+    setLoadingMore(true);
+    setLimitState({ org: orgId, limit: limit + CONVERSATIONS_PAGE_SIZE });
+  }, [orgId, limit]);
 
   // Realtime: refrescar lista de conversaciones cuando cambian contacts, conversations o llegan mensajes nuevos
   useEffect(() => {
@@ -192,12 +215,12 @@ export default function WhatsAppPage() {
           setSendingMessage(false);
           if (pendingConvRefresh.current) {
             pendingConvRefresh.current = false;
-            getConversations(orgId).then(setConversations);
+            getConversations(orgId, limit).then(applyPage);
           }
         }
       }
     },
-    [orgId]
+    [orgId, limit, applyPage]
   );
 
   const handleRemoveBlacklist = useCallback(
@@ -276,6 +299,9 @@ export default function WhatsAppPage() {
             selectedId={selectedId}
             onSelect={(conv) => setSelectedId(conv.id)}
             onReturnToBot={handleReturnToBot}
+            hayMas={hayMas}
+            loadingMore={loadingMore}
+            onLoadMore={handleLoadMore}
           />
         </div>
 

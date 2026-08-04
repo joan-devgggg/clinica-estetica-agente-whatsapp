@@ -20,6 +20,10 @@ interface ConversationListProps {
    * botón es lo que hacía que se quedaran en manual días enteros (y el bot mudo con ellas).
    */
   onReturnToBot?: (conv: Conversation) => Promise<void>;
+  /** Hay más conversaciones detrás de la ventana cargada. */
+  hayMas?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 const ESTADO_LABELS: Record<string, string> = {
@@ -43,6 +47,9 @@ export function ConversationList({
   selectedId,
   onSelect,
   onReturnToBot,
+  hayMas,
+  loadingMore,
+  onLoadMore,
 }: ConversationListProps) {
   const [search, setSearch] = useState("");
   const [modeFilter, setModeFilter] = useState<ModeFilter>("todas");
@@ -126,7 +133,12 @@ export function ConversationList({
       {/* List */}
       <div className="flex-1 overflow-y-auto">
         {filtered.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground/60 px-4 text-center">
+          <div
+            className={cn(
+              "flex flex-col items-center justify-center gap-2 text-muted-foreground/60 px-4 text-center",
+              hayMas ? "py-10" : "h-full"
+            )}
+          >
             <Search size={24} strokeWidth={1.25} />
             <p className="text-[12px]">
               {modeFilter === "manual" && !search.trim()
@@ -135,6 +147,11 @@ export function ConversationList({
                   ? "Ninguna conversación la lleva el bot"
                   : "Sin resultados"}
             </p>
+            {hayMas && (
+              <p className="text-[11px] text-muted-foreground/70">
+                Solo se han cargado las más recientes.
+              </p>
+            )}
           </div>
         )}
 
@@ -254,6 +271,26 @@ export function ConversationList({
             </div>
           );
         })}
+
+        {/* La lista solo trae una ventana de las más recientes. Sin este botón, las
+            conversaciones que se salían del tope de 60 sencillamente no existían para el
+            panel: ni buscándolas por nombre aparecían, porque el buscador filtra lo ya
+            cargado, no la base de datos. */}
+        {hayMas && onLoadMore && (
+          <div className="p-3">
+            <button
+              type="button"
+              onClick={onLoadMore}
+              disabled={loadingMore}
+              className={cn(
+                "w-full h-8 rounded-md border border-border/60 bg-card text-[12px] font-medium",
+                "text-foreground hover:bg-secondary disabled:opacity-60 disabled:pointer-events-none"
+              )}
+            >
+              {loadingMore ? "Cargando…" : "Cargar conversaciones anteriores"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -34,12 +34,37 @@ export interface Message {
 // el estado se puso mal, sin poder abrir el chat no había forma de verlo desde el panel.
 const ACTIVE_ESTADOS: EstadoCita[] = ["pendiente", "en_conversacion", "pendiente_bizum", "confirmado", "completado", "cancelado", "abandonado"];
 
-export async function getConversations(orgId: string): Promise<Conversation[]> {
+/** Cuántas conversaciones se piden de golpe, y cuántas añade cada "Cargar más". */
+export const CONVERSATIONS_PAGE_SIZE = 60;
+
+export interface ConversationPage {
+  items: Conversation[];
+  /** El servidor llenó la ventana entera: es muy probable que haya más detrás. */
+  hayMas: boolean;
+}
+
+/**
+ * Devuelve las `limit` conversaciones más recientes (el servidor ordena por updated_at
+ * desc). La paginación es por VENTANA, no por páginas sueltas: "Cargar más" vuelve a pedir
+ * desde el principio con un límite mayor. Así el refresco en tiempo real —que dispara con
+ * cada mensaje que entra— no tiene que recomponer trozos ni puede duplicar o perder filas
+ * cuando el orden cambia entre una petición y la siguiente.
+ *
+ * `hayMas` se calcula sobre lo que devuelve el servidor, ANTES de descartar los estados no
+ * activos: si se mirara la lista ya filtrada, una ventana llena de descartes se leería como
+ * "no hay nada más" y el botón desaparecería con conversaciones todavía sin traer.
+ */
+export async function getConversations(
+  orgId: string,
+  limit: number = CONVERSATIONS_PAGE_SIZE
+): Promise<ConversationPage> {
   try {
-    const res = await fetch(`${API}/api/leads?limit=60&hasConversation=true`, { headers: await apiHeaders(orgId) });
-    if (!res.ok) return [];
+    const res = await fetch(`${API}/api/leads?limit=${limit}&hasConversation=true`, {
+      headers: await apiHeaders(orgId),
+    });
+    if (!res.ok) return { items: [], hayMas: false };
     const data: Conversation[] = await res.json();
-    return data
+    const items = data
       .filter((l) => ACTIVE_ESTADOS.includes(l.estado_cita))
       .sort((a, b) => {
         const aEsc = a.bot_mode === "manual" && !!a.escalation_reason ? 1 : 0;
@@ -47,8 +72,9 @@ export async function getConversations(orgId: string): Promise<Conversation[]> {
         if (aEsc !== bEsc) return bEsc - aEsc;
         return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
       });
+    return { items, hayMas: data.length >= limit };
   } catch {
-    return [];
+    return { items: [], hayMas: false };
   }
 }
 
