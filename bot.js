@@ -454,15 +454,30 @@ async function loadAvailableSlots(session) {
                 }
             }
             const service = session.selectedService;
+            const cfgSlots = await getAgentConfig(orgId);
+            const catalogSlots = cfgSlots?.services || [];
             let upsellingDuration = 0;
             if (session.upsellingAccepted?.length) {
-                const cfgSlots = await getAgentConfig(orgId);
-                const catalogSlots = cfgSlots?.services || [];
                 upsellingDuration = session.upsellingAccepted.reduce(
                     (sum, name) => sum + resolveServiceDurationMin(name, catalogSlots), 0);
             }
+            // La duración con la que se BUSCA el hueco y la que se ESCRIBE en ends_at
+            // (finalizarCitaSante) tienen que salir del MISMO sitio. Cuando divergían, el
+            // bot buscaba sitio para una hora y guardaba seis: el hueco encajaba en la
+            // propuesta y pisaba la cita siguiente al escribirse. Por eso las dos pasan
+            // ahora por resolveAppointmentDurationMin.
+            const durBusqueda = resolveAppointmentDurationMin(service, catalogSlots);
+            const serviceDuration = durBusqueda.minutos + upsellingDuration;
+            // Buscar con una duración adivinada ofrece huecos que quizá no existen. No
+            // bloquea la búsqueda —sin propuesta no hay conversación— pero deja de ser mudo.
+            if (service && !durBusqueda.resuelto) {
+                logger.warn('duracion_busqueda_no_resuelta', {
+                    orgId, servicio: service.nombre || null, categoria: service.categoria || null,
+                    minutosAsumidos: durBusqueda.minutos,
+                });
+            }
             const slots = await calendarSante.getAvailableSlots(orgId, {
-                serviceDuration: (service?.duracion || 60) + upsellingDuration,
+                serviceDuration,
                 serviceCategory: service?.categoria,
                 preferredStylistId: session.anyStylists ? null : (session.selectedStylist?.id || session.preferredStylistId),
                 preferencia: session.partialData.preferencia_horaria || {},
@@ -479,7 +494,8 @@ async function loadAvailableSlots(session) {
                     causa: slots.causa || null,
                     servicio: service.nombre || null,
                     serviceCategory: service.categoria || null,
-                    serviceDuration: (service.duracion || 60) + upsellingDuration,
+                    serviceDuration,
+                    duracionResuelta: durBusqueda.resuelto,
                     preferredStylistId: session.anyStylists ? null : (session.selectedStylist?.id || session.preferredStylistId || null),
                     anyStylists: !!session.anyStylists,
                     preferencia: session.partialData.preferencia_horaria || {},
@@ -539,13 +555,17 @@ async function reloadSlotsForConfirmation(session, { fecha, stylistId }) {
     const orgId = session.orgId;
     try {
         const service = session.selectedService;
+        const cfgSlots = await getAgentConfig(orgId);
+        const catalogSlots = cfgSlots?.services || [];
         let upsellingDuration = 0;
         if (session.upsellingAccepted?.length) {
-            const cfgSlots = await getAgentConfig(orgId);
-            const catalogSlots = cfgSlots?.services || [];
             upsellingDuration = session.upsellingAccepted.reduce(
                 (sum, name) => sum + resolveServiceDurationMin(name, catalogSlots), 0);
         }
+        // MISMA duración que en la propuesta y que en la escritura: esta recarga decide si
+        // el hueco elegido "sigue libre", así que medir distinto aquí es contestar a otra
+        // pregunta — y la respuesta se usa para reservar.
+        const durBusqueda = resolveAppointmentDurationMin(service, catalogSlots);
         // Preservamos `asap` (reserva mismo día): sin él, getAvailableSlots arranca
         // mañana y no encontraría un hueco de hoy, dando un falso "ocupado".
         const asap = !!session.partialData?.preferencia_horaria?.asap;
@@ -553,7 +573,7 @@ async function reloadSlotsForConfirmation(session, { fecha, stylistId }) {
         if (fecha) pref.fecha = fecha;
         if (asap) pref.asap = true;
         const slots = await calendarSante.getAvailableSlots(orgId, {
-            serviceDuration: (service?.duracion || 60) + upsellingDuration,
+            serviceDuration: durBusqueda.minutos + upsellingDuration,
             serviceCategory: service?.categoria,
             preferredStylistId: stylistId || session.selectedStylist?.id || session.preferredStylistId,
             preferencia: pref,
@@ -5179,6 +5199,9 @@ module.exports = {
         evaluarNombreAntesDeReservar, handleNombreParaCita, handleApellidoParaCita,
         leerNombreDeRespuesta, preguntaNombreMsg, preguntaApellidoMsg, PENDIENTE_NOMBRE,
         mensajeConfirmacionSante,
+        // Huecos: exportados para poder comprobar que la duración con la que se BUSCA es la
+        // misma con la que se ESCRIBE ends_at (si divergen, la cita pisa a la siguiente).
+        loadAvailableSlots, reloadSlotsForConfirmation,
         // Citas que ya existen: resolución contra BD, localización y acciones.
         resolveCitasVivas, matchCitaByPistas, handleCitasExistentes, hidratarCitaEnSesion,
         ejecutarCancelacion, ampliacionSolapa, dowLunes0,

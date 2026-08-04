@@ -23,6 +23,7 @@ const path = require('path');
 
 const {
     resolveAppointmentDurationMin,
+    resolveServiceDurationMin,
     computeAmpliacionEndsAt,
     DURACION_CITA_FALLBACK_MIN,
 } = require('../services/helpers');
@@ -45,6 +46,15 @@ test('el caso caro: variante sin duracion se recupera del catálogo, no cae a 60
     assert.strictEqual(r.resuelto, true);
     assert.strictEqual(r.via, 'catalogo');
     assert.strictEqual(r.minutos, 360);
+});
+
+test('recupera aunque el nombre suelto NO exista en el catálogo: resuelve por nombre completo', () => {
+    // "Largo 2" no está en el catálogo como `nombre`; "Mechas Airtouch Largo 2" sí se
+    // resuelve. Es la diferencia entre buscar por el nombre crudo (lo que ya intenta
+    // INVARIANTE A, y falla) y buscar por el nombre completo con su categoría.
+    const r = resolveAppointmentDurationMin({ nombre: 'Largo 2', categoria: 'Mechas Airtouch' }, CATALOG);
+    assert.strictEqual(r.minutos, 360);
+    assert.strictEqual(r.via, 'catalogo');
 });
 
 test('el nombre suelto es ambiguo: la categoría decide cuál de los cuatro "Largo" es', () => {
@@ -197,6 +207,71 @@ test('rescheduleAppointment sin duración: falla en alto y NO mueve la cita', as
         // reacciona a 'not_found', así que esto no puede acabar creando una cita nueva.
         assert.notStrictEqual(r.reason, 'not_found');
     });
+});
+
+// ─── El invariante: buscar y escribir miden lo mismo ─────────────────────────
+// Si la propuesta busca sitio para 60 min y la escritura guarda 360, el hueco encaja
+// en la conversación y pisa la cita siguiente al llegar a la agenda. Las dos salen
+// ahora de resolveAppointmentDurationMin; esto lo comprueba sobre el código real.
+//
+// db.getAgentConfig se parchea ANTES de requerir bot.js: bot lo importa desestructurado
+// y se queda con la referencia del momento del require.
+db.getAgentConfig = async () => ({ services: CATALOG });
+const { loadAvailableSlots, reloadSlotsForConfirmation } = require('../bot')._internals;
+
+function sesionSalon(selectedService, upsells = []) {
+    return {
+        orgId: 'org-sante', orgType: 'salon', selectedService,
+        upsellingAccepted: upsells, partialData: {}, availableSlots: [],
+        selectedStylist: null, preferredStylistId: null, anyStylists: false,
+    };
+}
+
+async function duracionBuscada(session, fn = loadAvailableSlots, args = []) {
+    const orig = calendarSante.getAvailableSlots;
+    let capturada = null;
+    calendarSante.getAvailableSlots = async (_orgId, params) => { capturada = params.serviceDuration; return []; };
+    try { await fn(session, ...args); } finally { calendarSante.getAvailableSlots = orig; }
+    return capturada;
+}
+
+// El objeto de sesión que provoca el fallo. La forma importa: "Largo 2" es la
+// nomenclatura interna de las variantes y NO existe como `nombre` suelto en el catálogo,
+// así que el bloque INVARIANTE A de loadAvailableSlots no lo completa (deja el
+// `selectedService_incompleto_sin_match`) y la duración se quedaba en 60. El servicio
+// dura SEIS horas: se buscaba sitio para una.
+// Con "Largo" a secas INVARIANTE A sí resuelve — por eso ese caso no distingue nada.
+const AIRTOUCH_PARCIAL = { nombre: 'Largo 2', categoria: 'Mechas Airtouch' };
+
+test('propuesta de huecos: busca con la duración REAL del servicio, no con 60', async () => {
+    const dur = await duracionBuscada(sesionSalon({ ...AIRTOUCH_PARCIAL }));
+    assert.strictEqual(dur, 360);
+});
+
+test('propuesta y escritura coinciden, con y sin upselling', async () => {
+    for (const upsells of [[], ['K18'], ['K18', 'Matiz plus']]) {
+        const svc = { ...AIRTOUCH_PARCIAL };
+        const buscada = await duracionBuscada(sesionSalon(svc, upsells));
+        // Lo que escribiría finalizarCitaSante para esa misma sesión.
+        const escrita = resolveAppointmentDurationMin(svc, CATALOG).minutos
+            + upsells.reduce((s, n) => s + resolveServiceDurationMin(n, CATALOG), 0);
+        assert.strictEqual(buscada, escrita, `upsells: ${JSON.stringify(upsells)}`);
+    }
+});
+
+test('la re-verificación al confirmar mide igual que la propuesta', async () => {
+    // Esta recarga decide si el hueco elegido "sigue libre" y su respuesta se usa para
+    // reservar: medir distinto aquí es contestar a otra pregunta.
+    const svc = { ...AIRTOUCH_PARCIAL };
+    const propuesta = await duracionBuscada(sesionSalon(svc));
+    const confirmacion = await duracionBuscada(
+        sesionSalon({ ...AIRTOUCH_PARCIAL }), reloadSlotsForConfirmation, [{ fecha: '2026-08-10', stylistId: 'e1' }]);
+    assert.strictEqual(confirmacion, propuesta);
+});
+
+test('servicio irresoluble: busca con el fallback declarado, sin romper la conversación', async () => {
+    const dur = await duracionBuscada(sesionSalon({ nombre: 'Servicio inventado xyz' }));
+    assert.strictEqual(dur, DURACION_CITA_FALLBACK_MIN, 'sin propuesta no hay conversación: se busca igual');
 });
 
 // ─── Regresión de fuente ─────────────────────────────────────────────────────
