@@ -169,6 +169,33 @@ cd dashboard-app && npm run dev
 pm2 start server.js --name antigravity-bot
 ```
 
+### ⚠️ `verify:robustez` NO termina solo — no esperes a que salga
+
+```bash
+script -q /dev/null node tests/verify-sante-robustez.js > /tmp/robustez.log 2>&1 &
+until grep -q "TOTAL" /tmp/robustez.log; do sleep 5; done
+grep -E "TOTAL|BUG" /tmp/robustez.log
+pkill -f verify-sante-robustez        # hay que matarlo: no sale por su cuenta
+```
+
+Dos cosas, las dos aprendidas perdiendo casi una hora (04/08/2026):
+
+1. **Hace TODO el trabajo, imprime el resumen y luego se queda vivo para siempre.** No se
+   cuelga a mitad: los resultados están completos en el log y el proceso sigue ahí, con
+   ~0,5 s de CPU acumulada después de 40 minutos. Algún handle abierto (cliente de Supabase,
+   timer, SQLite) mantiene vivo el event loop. Por eso el bucle de arriba espera a la línea
+   `TOTAL` y mata: esperar al exit es esperar a algo que no va a pasar.
+2. **Node bloquea el buffer de stdout cuando no es un TTY.** Sin `script -q /dev/null`, un
+   `npm run verify:robustez` redirigido no escribe **nada** hasta terminar — y como no
+   termina, no escribe nunca. Cero salida no significa cero progreso.
+
+Para distinguir "trabajando" de "acabado y sin salir": `ps -o time,%cpu,etime -p <pid>`.
+Décimas de segundo de CPU acumulada = ya no está trabajando.
+
+Línea base con la que comparar: **OK 82 · GAP 11 · BUG 0**. Los GAP son deficiencias
+medidas, no regresiones. `verify:sante` arrastra **4 fallos preexistentes** (roster de
+Tetiana/Natalia/Yulia-Tricóloga y el nombre completo de "Corte hombre").
+
 ## Regla de oro
 
 **San Remo NO se toca.** Cualquier cambio en el código compartido debe mantener el comportamiento exacto de San Remo. El flujo Bizum, party_size, mock calendar — todo sigue igual para `orgType === 'restaurant'`.
