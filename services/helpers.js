@@ -1658,6 +1658,271 @@ function buildCitaFantasmaMsg({ citasReales = [], language } = {}) {
     return lines.join('\n');
 }
 
+// ─── Citas que YA existen: consultar y referirse ─────────────────────────────
+//
+// Hasta el 03/08/2026 el bot no tenía forma de mirar una cita ya reservada: "¿a qué hora
+// tengo la cita?" y "es para mi cita de las 6" caían en el flujo de reserva y acababan
+// abriendo una cita NUEVA. El segundo caso es el peligroso (incidente Valeria, 01/08) y es
+// el que obliga a que estos detectores sean deterministas: si la decisión de "esto habla de
+// una cita que ya existe" la toma el LLM, vuelve a poder equivocarse hacia el lado caro.
+//
+// Regla de diseño de los dos detectores: exigen SIEMPRE una marca de cita EXISTENTE
+// ("mi cita", "tengo cita", "la cita que tengo"). Sin esa marca no disparan, y por eso
+// "quiero pedir cita" o "quiero una cita a las 6" siguen su camino de reserva normal.
+// El gating (que solo se llamen cuando la clienta tiene citas de verdad) vive en bot.js.
+
+// SEGUNDA trampa de los patrones cirílicos, además de la NFD que documenta buildCyrillicRe:
+// `\b` en JavaScript es ASCII, así que un `/\bкогда\b/` NO casa NUNCA contra texto cirílico
+// (ni el espacio ni la к son "word characters" para el motor, luego no hay frontera entre
+// ellos). Es el mismo fallo silencioso del commit 902bf0c. Aquí la frontera se escribe a
+// mano con la clase de letras cirílicas, para que 'коли' no se lleve el 'коли' de 'ніколи'.
+const CIR_LETRA = 'а-яёієґ';
+function _cirWord(literal) {
+    return new RegExp(`(?:^|[^${CIR_LETRA}])${literal}(?:[^${CIR_LETRA}]|$)`);
+}
+
+// Habla de una cita SUYA que ya existe. Deliberadamente NO incluye "pedir/reservar cita".
+const MARCA_CITA_EXISTENTE = [
+    // ES — posesivo o verbo de posesión pegado a cita/reserva/hora
+    /\b(mi|la|esa|esta) (cita|reserva)\b/,
+    /\btengo (una |la )?(cita|reserva|hora)\b/,
+    /\b(cita|reserva) que (tengo|teniamos|tenia)\b/,
+    /\bmis citas\b/,
+    // EN
+    /\b(my|the) (appointment|booking)\b/,
+    /\bi have (an? )?(appointment|booking)\b/,
+    // RU / UK — 'моя запись', 'мій запис', 'у меня запись'. El posesivo se escribe como
+    // "м + о/і + lo que sea" y no enumerado: 'мій' se normaliza a 'міи' (la й se descompone)
+    // y 'мої' a 'моі', así que ninguna de las dos formas literales casaría.
+    /м[оі]\S* (запис|запись)/,
+    /у мене (є )?запис/,
+    /у меня (есть )?запись/,
+    /(запись|запис) (яка|которая|що|которую)/,
+];
+// Contraseñal: pide una cita NUEVA. Gana sobre la marca de existencia.
+const MARCA_CITA_NUEVA = [
+    /\b(pedir|reservar|coger|sacar|hacer|solicitar) (una |la )?cita\b/,
+    /\b(quiero|queria|querria|necesito|busco|me gustaria|puedo) (pedir|reservar|coger|sacar|hacer)\b/,
+    /\b(book|make|get) (an? )?(appointment|booking)\b/,
+    /(записаться|записатися)/,
+];
+function _hablaDeCitaExistente(t) {
+    if (MARCA_CITA_NUEVA.some(re => re.test(t))) return false;
+    return MARCA_CITA_EXISTENTE.some(re => re.test(t));
+}
+
+// Preguntas por un campo concreto de la cita. El campo solo decide el encabezado del
+// mensaje: la respuesta enumera la cita entera, así que clasificar de menos nunca deja a
+// la clienta sin el dato que pedía.
+const CAMPO_PATTERNS = [
+    ['hora', [/\ba (que|qu) hora\b/, /\bque hora\b/, /\bwhat time\b/, /во сколько/, /о котр\S+ годин/]],
+    ['dia', [/\b(que|qu) dia\b/, /\bcuando\b/, /\bwhat day\b/, /\bwhen\b/, /(какой|який) день/, _cirWord('когда'), _cirWord('коли')]],
+    ['estilista', [/\bcon (quien|qui)\b/, /\b(quien|qui) me (atiende|lo hace|hace)\b/, /\bwho (is|will be|am i)\b/, _cirWord('с кем'), _cirWord('з ким')]],
+    ['servicio', [/\b(que|qu) (me )?(tengo|voy a|me van a) (hacer|hacerme)\b/, /\bwhat (service|am i getting)\b/, /(что|що) (мне |мені )?(делают|роблять|будут делать)/]],
+];
+
+// ¿Está preguntando POR una cita que ya tiene? Devuelve { campo } o null.
+function detectAppointmentQuery(text) {
+    if (!text) return null;
+    const t = normalizeText(text);
+    if (!_hablaDeCitaExistente(t)) return null;
+    for (const [campo, patterns] of CAMPO_PATTERNS) {
+        if (patterns.some(re => re.test(t))) return { campo };
+    }
+    // "mi cita?" / "¿tengo cita el jueves?" — pregunta sin campo concreto. Se exige señal
+    // interrogativa para no confundirla con una referencia ("es para mi cita de las 6").
+    if (/\?/.test(text) || /^(tengo|sigue|esta|confirmame|confirma)\b/.test(t) || /\bsigue en pie\b/.test(t)) {
+        return { campo: 'general' };
+    }
+    return null;
+}
+
+const DIA_SEMANA_CONSULTA = {
+    ...DIA_SEMANA_MAP,
+    понедельник: 0, вторник: 1, среда: 2, четверг: 3, пятница: 4, суббота: 5, воскресенье: 6,
+    понедiлок: 0, вiвторок: 1, середа: 2, четвер: 3, пятниця: 4, субота: 5, недiля: 6,
+};
+
+// Horas candidatas de un "de las 6": la clienta casi nunca escribe el formato de 24h y el
+// salón trabaja mañana y tarde, así que se devuelven AMBAS lecturas ordenadas por
+// probabilidad. Quien casa contra las citas reales elige la que exista de verdad — que es
+// mejor que adivinar aquí y equivocarse de cita.
+function _horasCandidatas(t) {
+    const explicita = t.match(/\b(\d{1,2})[:.](\d{2})\b/);
+    const pad = n => String(n).padStart(2, '0');
+    if (explicita) {
+        const h = Number(explicita[1]); const m = Number(explicita[2]);
+        if (h > 23 || m > 59) return [];
+        return [`${pad(h)}:${pad(m)}`];
+    }
+    const suelta = t.match(/\b(?:a las|las|at|в|о)\s+(\d{1,2})\b/);
+    if (!suelta) return [];
+    const h = Number(suelta[1]);
+    if (h === 12) return ['12:00'];
+    if (h >= 13 && h <= 23) return [`${pad(h)}:00`];
+    if (h < 1 || h > 11) return [];
+    const esManana = /\b(manana|morning|утра|ранку)\b/.test(t);
+    return esManana ? [`${pad(h)}:00`, `${pad(h + 12)}:00`] : [`${pad(h + 12)}:00`, `${pad(h)}:00`];
+}
+
+// Pistas para LOCALIZAR una cita entre las que la clienta tiene: hora(s) y día de la semana.
+// Sin la marca de "cita existente" a propósito — también resuelve la respuesta a "¿cuál de
+// las dos?" ("la del jueves"), donde ya no repite "mi cita".
+function extractCitaPistas(text) {
+    const t = normalizeText(text);
+    let diaSemana = null;
+    for (const [nombre, idx] of Object.entries(DIA_SEMANA_CONSULTA)) {
+        if (new RegExp(`(?:^|[^${CIR_LETRA}a-z])${nombre}(?:[^${CIR_LETRA}a-z]|$)`).test(t)) {
+            diaSemana = idx; break;
+        }
+    }
+    return { horas: _horasCandidatas(t), diaSemana };
+}
+
+// ¿Se está refiriendo a una cita que ya tiene ("es para mi cita de las 6")? Devuelve
+// { horas, diaSemana } —las pistas para localizarla— o null. NO resuelve la cita: eso lo
+// hace bot.js contra Supabase, porque la verdad está en la agenda y no en el mensaje.
+function detectExistingAppointmentReference(text) {
+    if (!text) return null;
+    const t = normalizeText(text);
+    if (!_hablaDeCitaExistente(t)) return null;
+    return extractCitaPistas(text);
+}
+
+// Pide cancelar. `fuerza` separa dos cosas que no merecen la misma confianza:
+//   'explicita' — nombra la cancelación ("cancela mi cita"). Inequívoco.
+//   'implicita' — "no puedo ir el miércoles". Puede ser eso… o el rechazo de un hueco que
+//                 acabamos de proponer, que es una conversación completamente distinta. Por
+//                 eso bot.js la ignora si hay huecos sobre la mesa (slotsProposed).
+// En ningún caso cancela nada por sí sola: siempre se recita la cita y se espera un sí.
+function detectCancelRequest(text) {
+    if (!text) return null;
+    const t = normalizeText(text);
+    if (/\b(cancelar|cancela|cancelame|anular|anula|anulame|cancelo)\b/.test(t)
+        || /\bcancel\b/.test(t) || /отмен/.test(t) || /скасу/.test(t)) {
+        return { fuerza: 'explicita' };
+    }
+    if (/\bno (puedo|podre|voy a poder) (ir|venir|asistir|acudir|llegar|estar)\b/.test(t)
+        || /\bno me viene bien\b.*\b(cita|reserva)\b/.test(t)
+        || /can.?(no)?t make it/.test(t) || /\bnot able to come\b/.test(t)
+        || /не смогу/.test(t) || /не зможу/.test(t)) {
+        return { fuerza: 'implicita' };
+    }
+    return null;
+}
+
+// Pide mover la cita. Exige que el verbo vaya PEGADO a la cita: detectIntent devuelve
+// 'cambiar' con un `includes('cambiar')` a secas, y sobre eso no se puede tocar la agenda
+// ("quiero cambiar de look" no es un reagendado).
+function detectRescheduleRequest(text) {
+    if (!text) return false;
+    const t = normalizeText(text);
+    return [
+        /\b(cambiar|cambia|cambiarme|mover|mueve|reagendar|aplazar|posponer|adelantar|retrasar|cambio)\b[^.!?]{0,25}\b(cita|reserva|hora|dia|fecha)\b/,
+        /\b(cita|reserva)\b[^.!?]{0,25}\b(cambiar|cambiarla|mover|moverla|reagendar|otro dia|otra hora)\b/,
+        /\b(change|move|reschedule)\b[^.!?]{0,25}\b(appointment|booking)\b/,
+        /перенести/, /перенести (запис|запись)/,
+    ].some(re => re.test(t));
+}
+
+function _lineaCita(c, lang) {
+    const con = { es: 'con', en: 'with', ru: 'у', uk: 'у' }[lang] || 'con';
+    const estilista = c.estilista ? ` (${con} ${c.estilista})` : '';
+    return `📅 ${_formatFechaHora(c.fecha, c.hora, lang)} — ${c.servicio || ''}${estilista}`.trim();
+}
+
+// Respuesta determinista a "¿a qué hora tengo la cita?" y familia. Enumera SIEMPRE la cita
+// completa (fecha, hora, servicio y estilista) sea cual sea el campo preguntado: el dato
+// viene de Supabase y darlo entero cuesta lo mismo que darlo a medias.
+function buildCitasVivasMsg({ citas = [], campo = 'general', language } = {}) {
+    const lang = ['es', 'en', 'ru', 'uk'].includes(language) ? language : 'es';
+    const T = {
+        es: {
+            una: 'Tienes esta cita reservada:', varias: 'Tienes estas citas reservadas:',
+            ninguna: 'No me consta ninguna cita reservada a tu nombre. ¿Quieres que te busque hueco?',
+            noCasa: 'No encuentro ninguna cita que encaje con eso. Lo que tengo apuntado es:',
+            cierre: 'Si necesitas cambiar algo, dímelo 😊',
+        },
+        en: {
+            una: 'You have this appointment booked:', varias: 'You have these appointments booked:',
+            ninguna: "I don't have any appointment booked under your name. Would you like me to find you a time?",
+            noCasa: "I can't find an appointment matching that. What I have booked is:",
+            cierre: 'If you need to change anything, just tell me 😊',
+        },
+        ru: {
+            una: 'У тебя записано:', varias: 'У тебя записано:',
+            ninguna: 'На твоё имя нет ни одной записи. Подобрать тебе время?',
+            noCasa: 'Не нахожу запись на это время. Вот что у меня записано:',
+            cierre: 'Если нужно что-то изменить, напиши 😊',
+        },
+        uk: {
+            una: 'У тебе записано:', varias: 'У тебе записано:',
+            ninguna: 'На твоє ім\'я немає жодного запису. Підібрати тобі час?',
+            noCasa: 'Не знаходжу запис на цей час. Ось що в мене записано:',
+            cierre: 'Якщо потрібно щось змінити, напиши 😊',
+        },
+    };
+    const t = T[lang] || T.es;
+    if (!citas.length) return t.ninguna;
+    const intro = campo === 'no_casa' ? t.noCasa : (citas.length === 1 ? t.una : t.varias);
+    return [intro, '', ...citas.map(c => _lineaCita(c, lang)), '', t.cierre].join('\n');
+}
+
+// Cancelar es irreversible y libera un hueco facturable, así que NUNCA se ejecuta sobre una
+// intención inferida: se recita la cita concreta leída de Supabase y se espera un sí. Sin
+// esto, un "no puedo ir el miércoles" dicho de cualquier otra cosa borraba la cita.
+function buildCancelConfirmMsg({ cita, language } = {}) {
+    const lang = ['es', 'en', 'ru', 'uk'].includes(language) ? language : 'es';
+    const T = {
+        es: { intro: 'Antes de cancelar, confírmame que es esta:', pregunta: '¿La cancelo?' },
+        en: { intro: 'Before I cancel, let me check it\'s this one:', pregunta: 'Shall I cancel it?' },
+        ru: { intro: 'Прежде чем отменить, уточню — эта запись:', pregunta: 'Отменяю?' },
+        uk: { intro: 'Перш ніж скасувати, уточню — цей запис:', pregunta: 'Скасовую?' },
+    };
+    const t = T[lang] || T.es;
+    return [t.intro, '', _lineaCita(cita, lang), '', t.pregunta].join('\n');
+}
+
+// Con dos citas vivas y un "cancela mi cita" a secas NO se adivina: adivinar mal cancela la
+// cita equivocada, que es el peor resultado posible de toda esta funcionalidad.
+function buildElegirCitaMsg({ citas = [], accion = 'cancelar', language } = {}) {
+    const lang = ['es', 'en', 'ru', 'uk'].includes(language) ? language : 'es';
+    const T = {
+        es: { cancelar: '¿Cuál de estas quieres cancelar?', cambiar: '¿Cuál de estas quieres cambiar?', referir: '¿A cuál de estas te refieres?' },
+        en: { cancelar: 'Which one would you like to cancel?', cambiar: 'Which one would you like to change?', referir: 'Which one do you mean?' },
+        ru: { cancelar: 'Какую из них отменить?', cambiar: 'Какую из них перенести?', referir: 'Какую из них ты имеешь в виду?' },
+        uk: { cancelar: 'Який із них скасувати?', cambiar: 'Який із них перенести?', referir: 'Який із них ти маєш на увазі?' },
+    };
+    const t = T[lang] || T.es;
+    return [t[accion] || t.cancelar, '', ...citas.map(c => _lineaCita(c, lang))].join('\n');
+}
+
+// Añadir un servicio alarga la cita y la nueva duración pisaría la cita siguiente de esa
+// estilista. No se escribe: se dice la verdad y lo cuadra una persona. La alternativa
+// —escribir igual— crea un solape invisible que solo se descubre el día de la cita.
+function buildAmpliacionSolapaMsg(language) {
+    const T = {
+        es: 'Puedo añadírtelo, pero con ese servicio la cita se alarga y se junta con la siguiente 😅 Aviso al salón para que te cuadren el horario y te confirmen.',
+        en: "I can add it, but that service makes the appointment run into the next one 😅 I'm letting the salon know so they can sort the timing and confirm.",
+        ru: 'Могу добавить, но с этой услугой запись удлиняется и накладывается на следующую 😅 Сообщаю в салон, чтобы согласовали время и подтвердили.',
+        uk: 'Можу додати, але з цією послугою запис подовжується й накладається на наступний 😅 Повідомляю салон, щоб узгодили час і підтвердили.',
+    };
+    return T[language] || T.es;
+}
+
+// La cancelación NO se pudo escribir. Gemelo de la red anti-cita-fantasma en la otra
+// dirección: antes el bot decía "cancelada ✅" con la cita viva en la agenda, y la clienta
+// no aparecía el día de su cita creyéndola anulada.
+function buildCancelFalloMsg(language) {
+    const T = {
+        es: 'Perdona, no he podido cancelarla desde aquí 😔 Aviso al salón ahora mismo para que la anulen y te confirmen.',
+        en: "Sorry, I couldn't cancel it from here 😔 I'm letting the salon know right now so they cancel it and confirm.",
+        ru: 'Извини, я не смогла отменить запись 😔 Сообщаю в салон, чтобы отменили и подтвердили тебе.',
+        uk: 'Вибач, я не змогла скасувати запис 😔 Повідомляю салон, щоб скасували та підтвердили тобі.',
+    };
+    return T[language] || T.es;
+}
+
 // Clasifica una variante de largo de pelo a partir del NOMBRE del servicio.
 // Vía 1 (idéntica a la de siempre): sufijo numérico — "Largo 3", "Mechas 2",
 // "Color completo largo 1" → nivel = el dígito final. Cero cambio de comportamiento
@@ -2415,6 +2680,17 @@ module.exports = {
     shouldDiscardUpsellForClosing,
     buildSanteConfirmationMessage,
     buildCitaFantasmaMsg,
+    // Citas que ya existen: consultar / referirse / cancelar con confirmación
+    detectAppointmentQuery,
+    detectExistingAppointmentReference,
+    extractCitaPistas,
+    detectCancelRequest,
+    detectRescheduleRequest,
+    buildCitasVivasMsg,
+    buildCancelConfirmMsg,
+    buildElegirCitaMsg,
+    buildCancelFalloMsg,
+    buildAmpliacionSolapaMsg,
     isSpaPromoCategory,
     hasPreviousSpaOrMassage,
     buildSpaPromoNote,

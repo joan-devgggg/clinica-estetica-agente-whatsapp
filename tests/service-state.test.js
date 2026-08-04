@@ -117,6 +117,12 @@ test('la fuente de verdad coincide con la lista esperada (candado anti-drift)', 
         // el servicio a propósito: en una 2ª reserva la clienta puede volver a describir su
         // pelo, y arrastrar el flag la mandaría directa a la consulta sin oír el rango.
         'rangoTratamientosOfrecido',
+        // Citas que ya existen. Se limpian con el servicio a propósito: citaEnCurso apunta a
+        // LA cita de la que se está hablando ahora, y arrastrarla haría que un upsell
+        // posterior modificara una cita que la clienta ya no tiene en la cabeza.
+        // pendingCitaAccion es más delicado todavía: una cancelación recitada y no confirmada que
+        // sobreviviera a un reinicio del flujo convertiría cualquier "sí" futuro en un borrado.
+        'citaEnCurso', 'pendingCitaAccion',
     ];
     const EXPECTED_PARTIAL = [
         'servicio', 'categoria_servicio', 'estilista_preferida',
