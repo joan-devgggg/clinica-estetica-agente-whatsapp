@@ -29,8 +29,9 @@
 -- ── Sobre el relleno de updated_at ───────────────────────────────────────────
 -- La columna se añade SIN default y se rellena con `created_at`, y solo después se le pone
 -- el default. Añadirla directamente con DEFAULT NOW() habría escrito la hora de la
--- migración en las 700 filas existentes: todas las citas del histórico dirían que se
+-- migración en las 18 filas existentes: todas las citas del histórico dirían que se
 -- modificaron el mismo segundo, que es exactamente lo contrario de lo que se busca.
+-- (18 son las CITAS; las 700 largas de la base son contactos.)
 --
 -- Aditiva y reversible: ninguna columna existente se toca, ninguna fila cambia de sentido.
 
@@ -43,10 +44,17 @@ UPDATE public.appointments SET updated_at = created_at WHERE updated_at IS NULL;
 
 ALTER TABLE public.appointments ALTER COLUMN updated_at SET DEFAULT NOW();
 
--- El trigger es la razón de que updated_at se pueda creer. Se define genérico y por eso
--- lleva `IF NOT EXISTS`-equivalente (CREATE OR REPLACE): si otra migración futura lo
--- necesita para otra tabla, reutiliza esta función en vez de escribir una gemela.
-CREATE OR REPLACE FUNCTION public.set_updated_at()
+-- El trigger es la razón de que updated_at se pueda creer.
+--
+-- La función se llama `appointments_set_updated_at`, no `set_updated_at`, y eso NO es
+-- verbosidad: esta base de datos está compartida con otros proyectos. Un nombre genérico
+-- más `CREATE OR REPLACE` corta en las dos direcciones — hoy podría pisar la función de
+-- otro, y mañana el `set_updated_at` de cualquiera sustituiría a esta sin que nadie se
+-- entere, cambiando en silencio lo que hace el trigger de nuestras citas. Con nombre propio
+-- ese choque no existe. Comprobado antes de aplicar (05/08/2026): en `public` no había
+-- NINGÚN trigger de usuario ni ninguna función así; la única parecida es
+-- `storage.update_updated_at_column()`, de Supabase Storage, en otro esquema.
+CREATE OR REPLACE FUNCTION public.appointments_set_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
     NEW.updated_at = NOW();
@@ -59,7 +67,7 @@ DROP TRIGGER IF EXISTS appointments_set_updated_at ON public.appointments;
 CREATE TRIGGER appointments_set_updated_at
     BEFORE UPDATE ON public.appointments
     FOR EACH ROW
-    EXECUTE FUNCTION public.set_updated_at();
+    EXECUTE FUNCTION public.appointments_set_updated_at();
 
 COMMENT ON COLUMN public.appointments.updated_at IS
     'Última escritura sobre la fila. La mantiene el trigger appointments_set_updated_at, NO el código: hay muchos caminos que escriben aquí y uno que se olvide deja una fecha que miente.';
