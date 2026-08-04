@@ -288,12 +288,76 @@ const NAME_STOPWORDS = new Set([
     'espana', 'cita', 'reserva', 'precio', 'euros',
 ]);
 
+// ─── Stopwords RU/UK ─────────────────────────────────────────────────────────
+//
+// Sacadas de los mensajes REALES de Sante (los 19 en cirílico del historial), no inventadas
+// de cabeza: es lo que las clientas escriben de verdad cuando se les pregunta algo.
+//
+// Van como FRASES aquí y se tokenizan abajo, porque NAME_STOPWORDS se compara token a token
+// (isNameToken recibe UNA palabra). Una entrada con espacio dentro del Set sería una entrada
+// muerta — el mismo fallo silencioso que el \b ASCII sobre cirílico.
+//
+// Y se normalizan con normalizeText al construir el Set, nunca a mano: normalizeText
+// descompone NFD y borra los diacríticos combinantes, que en cirílico son parte de la letra
+// (й→и, ё→е, ї→і). Escribir 'мой' a mano dejaría una entrada que no casa nunca.
+const CYRILLIC_STOPWORD_FRASES = [
+    // saludos — "Доброго дня", "Добрый день", "День добрый", "Привет"
+    'привет', 'здравствуйте', 'добрый день', 'доброго дня', 'день добрый', 'добрий день',
+    'добрый вечер', 'доброе утро', 'вітаю',
+    // cortesía — "Спасибо большое", "пожалуйста"
+    'спасибо', 'спасибо большое', 'пожалуйста', 'дякую', 'будь ласка', 'прошу',
+    // sí / no / conformidad — "Ок", "Нет", "Отлично", "конечно"
+    'да', 'нет', 'ок', 'окей', 'конечно', 'отлично', 'хорошо', 'так', 'ні', 'добре', 'гаразд',
+    // intención — "хочу записаться", "Прошу записать меня", "Перенести", "Можно предложить"
+    'хочу', 'хотела', 'записаться', 'записать', 'запишите', 'записатися',
+    'можно', 'можете', 'можу', 'перенести', 'предложить', 'нужно', 'треба',
+    'буду', 'будет', 'есть', 'подойдет', 'удобно',
+    // tiempo — "послеобеденное время", "если есть окошки"
+    'сегодня', 'завтра', 'время', 'послеобеденное', 'окошки', 'окно',
+    'понедельник', 'вторник', 'среда', 'среду', 'четверг', 'пятница', 'суббота', 'воскресенье',
+    // servicios — "мужскую стрижку", "прикорневое окрашивание + мелирование"
+    'стрижка', 'стрижку', 'мужскую', 'женскую', 'окрашивание', 'прикорневое',
+    'мелирование', 'процедура', 'мастер', 'мастеру', 'волосы', 'волос',
+    // pronombres y partículas — "у меня", "я Светлана", "Мой сын будет"
+    'я', 'мне', 'меня', 'мой', 'моя', 'мою', 'у', 'это', 'этот', 'эта',
+    'всегда', 'только', 'больше', 'очень', 'сын', 'дочь',
+];
+
+// ⚠️ CANDADO. Muchos nombres de mujer rusos y ucranianos SON palabras comunes: Вера (fe),
+// Надежда (esperanza), Любовь (amor), Слава (gloria), Злата (oro), Роза, Лилия, Майя,
+// Виктория (victoria), Мила, Лада... Meter cualquiera de ellas como stopword haría que el
+// bot descartara el nombre de una clienta que se ha presentado bien.
+//
+// Es la misma disciplina que arriba con Rosa, Alba, Mar, Sol o Luz en español, pero aquí en
+// forma de lista comprobable: el test recorre NAME_STOPWORDS y falla si alguna aparece.
+const NOMBRES_RU_UK_NUNCA_STOPWORD = [
+    'вера', 'надежда', 'любовь', 'слава', 'злата', 'роза', 'лилия', 'майя', 'мила',
+    'лада', 'виктория', 'светлана', 'мир', 'віра', 'надія', 'любов', 'квітка', 'оксана',
+];
+
+for (const frase of CYRILLIC_STOPWORD_FRASES) {
+    for (const token of normalizeText(frase).split(/\s+/)) {
+        if (token) NAME_STOPWORDS.add(token);
+    }
+}
+
+// Alfabeto de un nombre, YA normalizado (normalizeText colapsa й→и, ё→е, ї→і, así que
+// esas formas no llegan aquí; se listan igualmente por si alguien salta la normalización).
+// El rango а-я cubre ь, ъ, ы y э; і, ї, є y ґ son ucranianas y caen fuera de él.
+const LETRAS_NOMBRE = 'a-zñа-яёіїєґ';
+// Guion y apóstrofo solo INTERNOS: "Dubois-Moiseaux", "O'Brien", "Гнатюк-Іванова".
+const NAME_TOKEN_RE = new RegExp(`^[${LETRAS_NOMBRE}]+(?:['-][${LETRAS_NOMBRE}]+)*$`);
+// Sin vocal no es un nombre pronunciable. Las cirílicas hacen falta o "Наталья" se cae.
+const NAME_VOWEL_RE = /[aeiouаеиоуыэюяіє]/;
+// Signos que ENVUELVEN un token del CRM (".IGHOUBA", "(Blond)") y no son parte del nombre.
+const BORDE_PUNTUACION_RE = /^[.,;:()[\]'"«»¡!¿?-]+|[.,;:()[\]'"«»¡!¿?-]+$/g;
+
 // Un token individual plausible como nombre o apellido.
 function isNameToken(word) {
-    const w = normalizeText(word);
+    const w = normalizeText(word).replace(BORDE_PUNTUACION_RE, '');
     if (w.length < 2 || w.length > 20) return false;
-    if (!/^[a-zñ]+$/.test(w)) return false;
-    if (!/[aeiou]/.test(w)) return false;
+    if (!NAME_TOKEN_RE.test(w)) return false;
+    if (!NAME_VOWEL_RE.test(w)) return false;
     if (NAME_STOPWORDS.has(w)) return false;
     if (w.length > 8 && w.endsWith('me')) return false;   // "recomiendame", "ayudame"
     return true;
@@ -311,9 +375,17 @@ function isValidName(name) {
         'manana', 'mañana', 'tarde', 'noche', 'semana'];
     if (invalidWords.includes(lower)) return false;
     if (cleaned.length < 2 || cleaned.length > 40) return false;
-    if (!/^[a-zA-ZáéíóúñüÁÉÍÓÚÑÜ\s]+$/.test(cleaned)) return false;
+    // \p{L} en vez de una lista de letras latinas: el alfabeto cerrado descartaba cualquier
+    // nombre cirílico ("Наталья" nunca se capturaba, y hasApellido decía false sobre
+    // "Наталія Зінченко" → el bot pedía un apellido que ya tenía). Guion y apóstrofo se
+    // admiten porque son parte de apellidos reales ("Dubois-Moiseaux", "Гнатюк-Іванова").
+    // Esto NO afloja la defensa contra "rubia pero": quien filtra es tokens.every(isNameToken)
+    // con NAME_STOPWORDS; aquí solo se rechazan dígitos y símbolos.
+    if (!/^[\p{L}\s'-]+$/u.test(cleaned)) return false;
 
-    const letterCount = cleaned.replace(/[^a-zA-ZáéíóúñüÁÉÍÓÚÑÜ]/g, '').length;
+    // \p{L}: con la clase latina, "Наталья" contaba 0 letras y se descartaba aquí mismo,
+    // después de haber pasado todos los filtros anteriores.
+    const letterCount = (cleaned.match(/\p{L}/gu) || []).length;
     if (letterCount < 2) return false;
 
     const garbagePatterns = [/^[a-z]{1,2}$/, /^([a-z])\1+$/, /^[a-z]{15,}$/];
@@ -322,7 +394,8 @@ function isValidName(name) {
     // Rechazar verbos con clítico "-me" (ej: "recomiéndame", "ayúdame")
     if (lower.length > 8 && lower.endsWith('me')) return false;
 
-    if (!/[aeiouáéíóú]/i.test(cleaned)) return false;
+    // Vocales cirílicas incluidas: sin ellas "Наталья" no tiene ninguna vocal "válida".
+    if (!NAME_VOWEL_RE.test(normalizeText(cleaned))) return false;
 
     // Cada palabra debe ser plausible POR SEPARADO. La lista `invalidWords` de arriba
     // sólo mira la cadena entera, así que "rubia pero" la esquivaba entera.
@@ -374,7 +447,14 @@ function isUsableName(nombre) {
 const NAME_INTRO_RE = new RegExp(
     '(?:^|[.!?;\\n,])\\s*'
     + '(?:(?:hola|buenas|buenos)\\s*(?:tardes|noches|dias|días)?[\\s,.!¡]*)?'
-    + '(?:soy|me\\s+llamo|mi\\s+nombre\\s+es|ll[aá]mame|my\\s+name\\s+is|i\\s*am|i\'m)\\s+'
+    // Presentaciones RU/UK, sacadas de cómo escriben las clientas: "Меня зовут X",
+    // "Мене звати X", y el "я X" de "( я Светлана)". El literal va SIN \b (es ASCII y no
+    // casaría) y sin normalizar, porque este patrón se aplica al texto CRUDO — ninguna de
+    // estas formas lleva й ni ё, así que no le afecta la descomposición NFD.
+    // "я" solo, anclado a principio de frase, es seguro: "я хочу" produce el candidato
+    // "хочу", que ahora es stopword y muere en isValidName.
+    + '(?:soy|me\\s+llamo|mi\\s+nombre\\s+es|ll[aá]mame|my\\s+name\\s+is|i\\s*am|i\'m'
+    + '|меня\\s+зовут|мене\\s+звати|мене\\s+звуть|моё\\s+имя|моя\\s+ім\'я|я)\\s+'
     + '(.+)',
     'i'
 );
@@ -1155,7 +1235,13 @@ function extractGuestName(text) {
 // alternativa de pedir explícitamente el apellido y fastidiar el flujo.
 function hasApellido(nombre) {
     if (!nombre || typeof nombre !== 'string') return false;
-    const tokens = nombre.trim().split(/\s+/).filter(Boolean);
+    // Se parte por espacios Y por los signos que separan partes de un nombre en la ficha del
+    // CRM: "Alina Kirsanova(Kashuba)" y "Nataliia ZINCHENKO(newton)" son filas reales. Con un
+    // split solo por espacios, "Kirsanova(Kashuba)" era UN token con paréntesis dentro, no lo
+    // aceptaba isNameToken, y el bot le pedía a esa clienta un apellido que ya tenía.
+    // isNameToken se queda estricto a propósito: aquí la pregunta es "¿este nombre YA
+    // guardado trae apellido?", no "¿esto que ha escrito la clienta es un nombre?".
+    const tokens = nombre.trim().split(/[\s()[\].,;/]+/).filter(Boolean);
     if (tokens.length < 2) return false;
     // No basta con contar palabras: "rubia pero" tenía dos, así que el bot daba el nombre
     // por completo, dejaba de pedir el apellido Y bot.js impedía al LLM corregirlo con un
@@ -2687,6 +2773,8 @@ module.exports = {
     isValidName,
     isNameToken,
     isUsableName,
+    NAME_STOPWORDS,
+    NOMBRES_RU_UK_NUNCA_STOPWORD,
     extractNameAfterIntro,
     isServiceName,
     // Salon-specific
