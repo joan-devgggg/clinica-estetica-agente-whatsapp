@@ -238,6 +238,54 @@ test('1B · la ventana 1h-2h ya no crea una sesión vacía sin leer SQLite', () 
         'un solo punto de entrada a SQLite, y ahora lo alcanzan los dos casos');
 });
 
+// ─── Las tres ramas de rehidratación ─────────────────────────────────────────
+// La rehidratación tiene tres caminos: (A) leadGuardado + 'pendiente_bizum' (San Remo),
+// (B) leadGuardado + cualquier otro estado (Sante), (C) sin lead guardado. La rama B
+// solo rescataba el `nombre` y tiraba el resto de partialData. Dos daños:
+//   · leadGuardado se quedaba en false con el contacto YA guardado, así que el guardado
+//     oportunista volvía a llamar a saveLead con estado_cita:'pendiente' en cada turno,
+//     pisando contacts.estado='confirmado'. getLeadsPendientesRecordatorio exige
+//     'confirmado' → la clienta perdía el recordatorio de 24 h. La misma pérdida del
+//     incidente de este fichero, por un camino distinto.
+//   · sin fecha_cita/hora_cita el guard anti-cierre del upselling ni se evalúa: su
+//     puerta las exige.
+const bloqueRecarga = BOT.split('if (persisted.leadGuardado) {')[1].split('userSessions.set(sKey, newSession);')[0];
+const [cabeceraYBizum, ramaSante, ramaSinLead] = bloqueRecarga.split('} else {');
+// Estas ramas llevan comentarios largos que citan el código viejo ("llamaba a
+// clearServiceState"). Comprobar prohibiciones contra el texto crudo daría falsos
+// positivos sobre la explicación, no sobre el código.
+const soloCodigo = src => src.split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');
+
+test('las TRES ramas de recarga restauran partialData entero', () => {
+    for (const [nombre, rama] of [['bizum', cabeceraYBizum], ['sante', ramaSante], ['sin-lead', ramaSinLead]]) {
+        assert.ok(/newSession\.partialData = \{ telefono, \.\.\.persisted\.partialData \}/.test(rama),
+            `la rama ${nombre} debe restaurar partialData completo`);
+    }
+});
+
+test('la rama Sante marca leadGuardado: el contacto YA estaba guardado', () => {
+    assert.ok(/newSession\.leadGuardado = true/.test(ramaSante),
+        'con false, saveLead vuelve a escribir estado_cita:pendiente en cada turno');
+});
+
+test('el guardado oportunista sigue dependiendo de leadGuardado', () => {
+    // Es lo que convierte el flag en una escritura real sobre contacts.estado.
+    assert.ok(/if \(!session\.leadGuardado && session\.partialData\.telefono/.test(BOT));
+    assert.ok(/saveLead\(orgId, \{ \.\.\.session\.partialData, estado_cita: 'pendiente'/.test(BOT));
+});
+
+test('CONDICIÓN 1 (fuente) · la rama Sante restaura DATOS pero no DECIDE', () => {
+    // Restaurar partialData no puede colarse en una decisión: la cita se resuelve contra
+    // Supabase en reconciliarCitaViva, no contra partialData.estado_cita.
+    const codigo = soloCodigo(ramaSante);
+    for (const prohibido of ['reservaConfirmada = true', 'bizumAsked = true', 'bizumPendiente = true',
+        "leadStatus = 'completed'", 'appointmentId = persisted']) {
+        assert.ok(!codigo.includes(prohibido), `la rama Sante no puede fijar ${prohibido}`);
+    }
+    assert.ok(/_decidirCitaVivaAlRecargar = true/.test(codigo), 'la decisión se sigue aplazando');
+    assert.ok(!/clearServiceState\(/.test(codigo), 'y sigue sin borrar el servicio aquí');
+});
+
 // ─── San Remo no se toca ─────────────────────────────────────────────────────
 
 test('San Remo: la rama pendiente_bizum sigue intacta', () => {

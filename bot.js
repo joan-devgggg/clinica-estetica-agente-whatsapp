@@ -2986,8 +2986,27 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         // La decisión se aplaza a reconciliarCitaViva(), que la toma contra
                         // Supabase y no contra partialData.estado_cita. Aquí todavía no se
                         // puede: session.leadId se resuelve más abajo, con findByPhone.
+                        // Los DATOS sí se restauran; lo que no se decide es qué significan.
+                        // Antes solo se rescataba el nombre y el resto de partialData se
+                        // perdía (fecha_cita, hora_cita, estado_cita, personas, notas…),
+                        // con dos consecuencias:
+                        //   · `leadGuardado` se quedaba en false pese a que el contacto SÍ
+                        //     estaba guardado, y el bloque de guardado oportunista de abajo
+                        //     volvía a llamar a saveLead con estado_cita:'pendiente' en cada
+                        //     turno. Eso pisa contacts.estado='confirmado' → y
+                        //     getLeadsPendientesRecordatorio exige 'confirmado', o sea que
+                        //     la clienta se quedaba otra vez sin recordatorio de 24 h. Es la
+                        //     MISMA pérdida del incidente de arriba, por otro camino.
+                        //   · sin hora_cita/fecha_cita, el guard anti-cierre del upselling
+                        //     ni siquiera llega a evaluarse (su puerta las exige).
+                        // Restaurarlo no reintroduce la decisión: nada aguas abajo ramifica
+                        // sobre partialData.estado_cita — la cita se resuelve contra
+                        // Supabase en reconciliarCitaViva(), que es quien fija appointmentId
+                        // y citaEnCurso. reservaConfirmada sigue SIN tocarse.
+                        const { telefono } = newSession.partialData;
+                        newSession.partialData = { telefono, ...persisted.partialData };
+                        newSession.leadGuardado = true;
                         newSession.ultimaVisita = persisted.partialData?.fecha_cita || null;
-                        if (persisted.partialData?.nombre) newSession.partialData.nombre = persisted.partialData.nombre;
                         newSession._decidirCitaVivaAlRecargar = true;
                     }
                 } else {
