@@ -351,61 +351,35 @@ const addDays = (dateStr, n) => {
             `ni empezando a las 10:00 cabe: ${svcDur}min + ${upsellDur}min terminaría a las ${hhmm} (>19:00)`);
     }
 
-    // ─── Fase 6: roster de estilistas (datos reales de Supabase) ──────────────────────
-    // db real ya restaurada (finally de Fase 4). Verifica horarios, skills exactas,
-    // elegibilidad y la distinción de nombre de las estilistas añadidas hoy.
-    const skillSet = (skills) => new Set((Array.isArray(skills) ? skills : []).map(x => normalizeText(x)));
-    const setsEqual = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
+    // ─── Fase 6: invariantes de DISEÑO del roster (datos reales de Supabase) ──────────
+    // db real ya restaurada (finally de Fase 4).
+    //
+    // Aquí hubo una tabla ROSTER declarativa con los días, las franjas y el conjunto exacto de
+    // skills de cada estilista, transcrita de las migraciones 013/014 el 14/07/2026. Ha ido
+    // cayendo entera, porque todo eso lo edita la dueña desde el panel y una expectativa
+    // copiada de un INSERT solo mide antigüedad:
+    //   · `dias` y franja      → Fase 7 (coherencia contra business_hours, sin constantes)
+    //   · `skillsIguales`      → Fase 3 (ninguna estilista puede ser un fantasma)
+    //   · `skills` exactas     → los checks derivados de aquí abajo
+    //
+    // Lo que queda son invariantes de DISEÑO —consecuencias en el flujo, no preferencias— y
+    // cada una se afirma contra el catálogo, no contra una lista escrita a mano.
     const findStylist = (name) => realStylists.find(s => normalizeText(s.name) === normalizeText(name));
 
-    // Especificación declarativa. `skillsIguales` compara el set con el de otra estilista.
-    //
-    // Aquí había también un `dias: [...]` por estilista, copiado de las migraciones 013/014 el
-    // 14/07/2026. No verificaba nada: comparaba la BD contra la foto del INSERT que la creó.
-    // La dueña edita los horarios desde el panel de Configuración (upsertStylistSchedule
-    // borra y reinserta), así que la expectativa caducaba en cuanto tocaba un día — y eso ya
-    // había pasado con las tres. Tres fallos permanentes que no había que arreglar, arrastrados
-    // durante días, entrenando a todo el mundo a ignorar el informe entero.
-    // Lo sustituye la Fase 7: invariantes que se sostienen con CUALQUIER horario.
-    //
-    // Natalia estaba aquí con `skillsIguales: 'Irina'` y ya no: exigir que dos estilistas
-    // tengan el MISMO conjunto de skills ata dos datos que la dueña edita por separado, y no
-    // afirma nada que le importe a una clienta. Lo que hay que exigirle —que el bot pueda
-    // usarla en alguna categoría real— lo cubre ahora la Fase 3, para ella y para todas.
-    const ROSTER = [
-        { name: 'Tetiana', skills: ['Extensiones de cabello'] },
-        { name: 'Yulia-Tricóloga', skills: ['Dermapen Hair Loss', 'Diagnóstico Capilar'] },
-    ];
-
-    for (const spec of ROSTER) {
-        const sty = findStylist(spec.name);
-        if (!check('6-roster', !!sty, `${spec.name} existe`, 'no está en stylists activas')) continue;
-
-        // Skills: exactas, o iguales a las de otra estilista (Natalia == Irina).
-        const got = skillSet(sty.skills);
-        if (spec.skillsIguales) {
-            const ref = findStylist(spec.skillsIguales);
-            if (check('6-roster', !!ref, `${spec.name}: referencia ${spec.skillsIguales}`, 'no encontrada') && ref) {
-                check('6-roster', setsEqual(got, skillSet(ref.skills)), `${spec.name}: skills == ${spec.skillsIguales}`,
-                    `[${[...got]}] vs ${spec.skillsIguales} [${[...skillSet(ref.skills)]}]`);
-            }
-        } else {
-            check('6-roster', setsEqual(got, skillSet(spec.skills)), `${spec.name}: skills exactas`,
-                `[${[...got]}] esperado [${spec.skills.map(normalizeText)}]`);
-        }
-        for (const must of (spec.incluye || [])) {
-            check('6-roster', got.has(normalizeText(must)), `${spec.name}: incluye "${must}"`, 'skill ausente');
-        }
-
-        // El horario de esta estilista ya no se compara contra una lista fija: lo cubre la
-        // Fase 7, que lo juzga contra el horario del salón y contra sí mismo.
-    }
-
     // Tetiana: extensiones escala a humano → nunca candidata en getAvailableSlots.
+    // Se afirma sobre el CATÁLOGO ("ninguna de sus skills es una categoría reservable"), que es
+    // lo que de verdad decide si el motor la propone. El conjunto exacto de skills que tuviera
+    // era irrelevante para eso: con `['Extensiones de cabello']` o con cualquier otra cosa que
+    // no esté en el catálogo, el resultado para la clienta es el mismo. Y si se le vacían las
+    // skills o se le pone una inexistente, salta la Fase 3.
     const tetiana = findStylist('Tetiana');
     if (tetiana) {
         check('6-roster', categories.every(cat => !skillMatches(tetiana.skills, cat)),
             'Tetiana nunca elegible', 'su skill casa con alguna categoría del catálogo');
+    } else {
+        // No se exige que exista: dar de baja a alguien es decisión de la dueña. Pero que el
+        // check desaparezca en silencio sí sería una pérdida de cobertura invisible.
+        warn('6-roster', 'Tetiana ya no está en el roster: no se comprueba su inelegibilidad');
     }
     check('6-roster', !catalog.some(s => normalizeText(s.categoria) === normalizeText('Extensiones de cabello')),
         'Extensiones no es servicio reservable', 'hay un servicio con categoría Extensiones de cabello');
@@ -416,17 +390,26 @@ const addDays = (dateStr, n) => {
     // catálogo se quede sin nadie lo comprueba la Fase 3 sobre TODAS, sin nombrar a nadie.
 
     // Yulia-Tricóloga: distinta de Yulia, no elegible para generales, y sin confusión de nombre.
+    // Su conjunto exacto de skills ya no se fija (lo edita la dueña); lo que se afirma es la
+    // consecuencia: que pedir pelo general NO puede acabar en ella.
     const yulia = findStylist('Yulia');
     const yuliaTri = findStylist('Yulia-Tricóloga');
     if (yulia && yuliaTri) {
         check('6-roster', yulia.id !== yuliaTri.id, 'Yulia ≠ Yulia-Tricóloga', 'comparten id');
         for (const cat of ['Cortes', 'Color Premium', 'Mechas Balayage']) {
+            // La categoría tiene que EXISTIR para que el "no la hace" signifique algo: si se
+            // renombrara en el catálogo, skillMatches devolvería false y el check pasaría en
+            // vacío — verde por ausencia, que es peor que rojo.
+            if (!check('6-roster', categories.some(c => normalizeText(c) === normalizeText(cat)),
+                `categoría "${cat}" existe en el catálogo`, 'se renombró: el check de abajo pasaría en vacío')) continue;
             check('6-roster', !skillMatches(yuliaTri.skills, cat), `Yulia-Tricóloga NO hace "${cat}"`, 'casa la skill');
         }
         check('6-roster', extractStylistFromText('quiero con yulia tricologa', realStylists)?.id === yuliaTri.id,
             'nombre real: "yulia tricologa" → tricóloga', 'resolvió a otra estilista');
         check('6-roster', extractStylistFromText('quiero con yulia', realStylists)?.id === yulia.id,
             'nombre real: "yulia" → Yulia de pelo', 'resolvió a otra estilista');
+    } else {
+        warn('6-roster', 'Yulia y/o Yulia-Tricóloga ya no están en el roster: no se comprueba la desambiguación de nombre');
     }
 
     // ─── Fase 7: coherencia de los horarios (sin ninguna lista de horarios esperados) ──
