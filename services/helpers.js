@@ -330,6 +330,38 @@ function isValidName(name) {
     return tokens.length > 0 && tokens.every(isNameToken);
 }
 
+// Rellenos que acaban en `contacts.full_name` y con los que no se puede saludar.
+const NOMBRE_RELLENO = new Set(['null', 'undefined', 'cliente', 'clienta', 'sin nombre',
+    'n/a', 'na', '-', '?', 'hola']);
+
+/**
+ * ¿Hay aquí algo con lo que dirigirse a la clienta? Definición ÚNICA en el repo para la
+ * pregunta de SALIDA: "¿puedo poner esto después de Hola?".
+ *
+ * Cuidado: NO es la misma pregunta que isValidName, y confundirlas rompe algo en los dos
+ * sentidos.
+ *
+ *   · isValidName responde "¿esto que ha ESCRITO la clienta es un nombre?" y tiene que ser
+ *     estricto, porque un falso positivo guarda basura como nombre (el bug de "rubia pero").
+ *   · isUsableName responde "¿lo que TENGO guardado sirve para saludar?" y tiene que ser
+ *     laxo, porque un falso negativo deja a una clienta real sin su recordatorio.
+ *
+ * Usar isValidName como puerta de salida descartaría 8 nombres reales del CRM de Sante
+ * ("Tiffany Dubois-Moiseaux", "Marina Lyon (Blond)", "Karima .IGHOUBA": su regex no admite
+ * guion, punto ni paréntesis) y todo el cirílico.
+ *
+ * Y al revés: usar ESTA como puerta de entrada capturaría "хочу", "привет" o "спасибо" como
+ * nombre. Para capturar, isValidName; para saludar, isUsableName.
+ */
+function isUsableName(nombre) {
+    if (typeof nombre !== 'string') return false;
+    const limpio = nombre.trim();
+    if (limpio.length < 2) return false;
+    if (NOMBRE_RELLENO.has(limpio.toLowerCase())) return false;
+    if (isValidName(limpio)) return true;                       // atajo: nombre latino limpio
+    return (limpio.match(/\p{L}/gu) || []).length >= 2;         // \p{L} → cirílico incluido
+}
+
 // Presentación ("soy X", "me llamo X") anclada al inicio del mensaje o de una frase
 // dentro de él, admitiendo un saludo delante ("Hola, buenas tardes, soy Ana").
 //
@@ -2654,6 +2686,7 @@ module.exports = {
     isNegative,
     isValidName,
     isNameToken,
+    isUsableName,
     extractNameAfterIntro,
     isServiceName,
     // Salon-specific

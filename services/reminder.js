@@ -6,6 +6,8 @@
 
 const { getAppointmentsPendientesRecordatorio, marcarRecordatorioSent, getConfigValue, getAgentConfig, autoCompleteAppointments } = require('./db');
 const { resolveOutboundClient, resolveAutomatedSend } = require('./outbound');
+const { isUsableName } = require('./helpers');
+const { alertOnce } = require('./admin-alerts');
 const logger = require('../lib/logger');
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -48,6 +50,65 @@ function resolveChatId(telefono, waJid) {
     const digits = String(telefono || '').replace(/@c\.us$|@lid$/g, '').replace(/\D/g, '');
     if (!digits) return null;
     return digits.length >= 14 ? `${digits}@lid` : `${digits}@c.us`;
+}
+
+// ─── Puerta de calidad: un automatismo sale BIEN o no sale ───────────────────
+//
+// Con full_name null salían dos cosas distintas, las dos malas: por texto libre
+// "Hola  😊 Te recordamos…" (doble espacio, `${nombre || ''}`), y por plantilla un {{1}}
+// vacío que Meta rechaza entera (132000) — el envío falla, no se marca enviado y el worker
+// reintenta cada 5 minutos para siempre. Le tocaba el 04/08/2026 a una clienta con cita al
+// día siguiente. Lo mismo con un contacto sin teléfono (hay uno con wa_phone = '').
+
+/** Motivo por el que el recordatorio no puede salir bien, o null si sí puede. */
+function motivoNoEnviable(record) {
+    if (!resolveChatId(record.telefono, record.wa_jid)) return 'sin_telefono';
+    // isUsableName (helpers.js) es la definición ÚNICA de "esto sirve para saludar".
+    // No es isValidName: ver allí por qué la puerta de salida tiene que ser más laxa
+    // que la de captura.
+    if (!isUsableName(record.nombre)) return 'sin_nombre';
+    if (!record.hora_cita) return 'sin_hora';   // {{2}} vacío = mismo rechazo de Meta
+    return null;
+}
+
+const MOTIVO_TEXTO = {
+    sin_telefono: 'no tiene teléfono guardado',
+    sin_nombre: 'no tiene nombre en la ficha',
+    sin_hora: 'no tiene hora guardada',
+};
+
+// "2026-08-05" + "17:30" → "miércoles 5 de agosto a las 17:30". El aviso lo lee una persona
+// que no es técnica ni hispanohablante nativa: una fecha ISO obliga a descifrarla.
+// Mediodía local a propósito: evita que un cambio de huso mueva el día.
+function fechaEnCastellano(fecha, hora) {
+    if (!fecha) return 'sin fecha';
+    const d = new Date(`${fecha}T12:00:00`);
+    if (Number.isNaN(d.getTime())) return hora ? `${fecha} a las ${hora}` : fecha;
+    // toLocaleDateString mete coma tras el día de la semana ("miércoles, 5 de agosto").
+    const dia = d.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' })
+        .replace(',', '');
+    return hora ? `${dia} a las ${hora}` : dia;
+}
+
+// El aviso se throttlea por CITA (contacto + fecha + hora), no por intento: el worker tica
+// cada 5 min y la ventana dura 24 h, así que sin throttle serían ~288 mensajes a Yulia.
+function avisarRecordatorioBloqueado(orgId, record, motivo) {
+    logger.warn('recordatorio_bloqueado', {
+        orgId, motivo, contactId: record.id,
+        telefono: record.telefono || null,
+        fecha: record.fecha_cita, hora: record.hora_cita || null,
+    });
+    const digits = String(record.telefono || '').replace(/\D/g, '');
+    const telefono = digits ? `+${digits}` : '(sin teléfono guardado)';
+    const mensaje =
+        '⚠️ <b>Recordatorio sin enviar</b>\n\n'
+        + `No he podido mandar el recordatorio de una cita porque ${MOTIVO_TEXTO[motivo]}.\n\n`
+        + `📅 Cita: ${fechaEnCastellano(record.fecha_cita, record.hora_cita)}\n`
+        + `📱 Teléfono: ${telefono}\n\n`
+        // Sin "y te lo mando yo": si completa la ficha después de la hora de la cita ya no
+        // sale nada (minutosRestantes < 0), y sería prometerle algo que no va a pasar.
+        + 'Escríbele tú, o completa la ficha en el panel.';
+    alertOnce(orgId, `recordatorio|${record.id}|${record.fecha_cita}|${record.hora_cita || ''}|${motivo}`, mensaje);
 }
 
 /**
@@ -140,15 +201,30 @@ async function checkAndSendReminders() {
             const pendientes = await getAppointmentsPendientesRecordatorio(orgId);
 
             for (const record of pendientes) {
-                if (!record.telefono || !record.fecha_cita) continue;
+                // Sin fecha no hay ventana que calcular, así que no hay nada que decidir ni
+                // de qué avisar. El teléfono, en cambio, YA NO se descarta aquí: saltárselo en
+                // silencio es precisamente cómo el contacto sin wa_phone (cita del 19/08) se
+                // quedaba sin recordatorio sin que nadie se enterara. Cae en motivoNoEnviable,
+                // después del filtro de ventana, para no avisar de citas que aún no tocan.
+                if (!record.fecha_cita) continue;
 
                 const minutosRestantes = minutosHastaCita(record.fecha_cita, record.hora_cita);
                 if (minutosRestantes < 0 || minutosRestantes > minutosAntes) continue;
 
+                // Si el recordatorio no puede salir BIEN, no sale: se avisa a una persona y
+                // se deja PENDIENTE. Clave: no se marca `recordatorio_enviado`, así que en
+                // cuanto le completen la ficha el siguiente tic lo manda solo — la puerta se
+                // reevalúa en cada pasada, no cierra la cita para siempre.
+                const motivo = motivoNoEnviable(record);
+                if (motivo) {
+                    avisarRecordatorioBloqueado(orgId, record, motivo);
+                    continue;
+                }
+
                 const mensaje = buildReminderMessage(record.nombre, companyName, record.hora_cita, record.language);
                 const resultado = await sendReminderMessage(orgId, record, {
                     mensaje,
-                    templateParams: [record.nombre || '', record.hora_cita || ''],
+                    templateParams: [record.nombre, record.hora_cita],
                 });
 
                 if (resultado === 'enviado') {
@@ -175,4 +251,8 @@ function startReminderWorker(clients) {
     setTimeout(checkAndSendReminders, 60 * 1000);
 }
 
-module.exports = { startReminderWorker, buildReminderMessage, checkAndSendReminders, setClients };
+module.exports = {
+    startReminderWorker, buildReminderMessage, checkAndSendReminders, setClients,
+    // Expuestos para los tests de la puerta de calidad (tests/recordatorio-sin-nombre.test.js).
+    motivoNoEnviable,
+};
