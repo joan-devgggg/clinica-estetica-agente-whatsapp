@@ -123,13 +123,21 @@ getScheduleBlocks(orgId, stylistId, from, to)
 
 ### Estilistas de Sante (seeded)
 
-| Nombre | Rol | Días | UUID |
+Los **días de esta tabla son los del seed, no la verdad**: la dueña edita horarios, nombres y
+skills desde el panel de Configuración, y `stylist_schedules` es la única fuente fiable. A
+04/08/2026, 6 de las 8 estilistas ya no coinciden con su migración. No copies estos días a
+ningún test — eso es exactamente lo que dejó `verify:sante` tres semanas en rojo.
+
+| Nombre | Rol | Días (seed) | UUID |
 |---|---|---|---|
 | Veronika | colorista/estilista | L-S | c3d4...0101 |
 | Irina | colorista/estilista | L-S | c3d4...0102 |
 | Yulia | colorista/estilista + diagnóstico | L-S | c3d4...0103 |
-| Olgha | manicura/pedicura | M-J-V | c3d4...0104 |
+| Olga (antes «Olgha») | manicura/pedicura | M-J-V | c3d4...0104 |
 | Larisa | masajes/spa | L-S | c3d4...0105 |
+| Tetiana | extensiones (agenda manual, nunca elegible) | — | c3d4...0106 |
+| Natalia | colorista/estilista | — | c3d4...0107 |
+| Yulia-Tricóloga | tricóloga (dueña) | — | c3d4...0108 |
 
 ## Variables de entorno
 
@@ -197,10 +205,31 @@ revés que `exit`). Los handlers de SIGINT/SIGTERM siguen cubriendo la muerte po
 Si alguien vuelve a añadir un `setInterval` de módulo, que lo pase por `unrefTimer()`
 (`bot.js`) o le ponga `.unref()`: si no, todo esto vuelve.
 
-Línea base con la que comparar: **OK 82 · GAP 11 · BUG 0** (idéntica antes y después del
-unref). Los GAP son deficiencias medidas, no regresiones. `verify:sante` arrastra **4 fallos
-preexistentes** (roster de Tetiana/Natalia/Yulia-Tricóloga y el nombre completo de
-"Corte hombre") y sale con código 1 por ellos.
+Línea base con la que comparar: **OK 84 · GAP 9 · BUG 0**. Los GAP son deficiencias medidas,
+no regresiones. `verify:sante` sale **entero en verde** (los 4 fallos que arrastraba eran del
+test, no del sistema: 3 horarios copiados de la migración y un plural — ver abajo).
+
+### Los datos que edita la dueña no se verifican contra constantes
+
+`stylist_schedules`, `stylists.name`, `stylists.skills`, `agent_configs.services` y
+`business_hours` los cambia la dueña desde el panel. Un check que los compare contra una lista
+escrita en el fichero mide antigüedad, no corrección: caduca en el primer cambio y deja un
+fallo permanente que no hay que arreglar — que es la forma más rápida de que todo el mundo
+deje de leer el informe. Ya pasó tres veces (horarios de Tetiana/Natalia/Yulia-Tricóloga,
+"Consulta con exactamente 4 estilistas", y Olgha→Olga contándose como fallo del matcher).
+
+Se verifica con invariantes que se sostienen con cualquier valor:
+
+```bash
+npm run verify:sante          # catálogo + motor de huecos + Fase 7 (coherencia de horarios)
+npm run verify:sante:agenda   # SOLO LECTURA: ¿las citas futuras siguen cabiendo?
+```
+
+`verify:sante:agenda` es la red que faltaba: cuando la dueña quita un día o recorta una franja,
+las citas ya reservadas en ese hueco no se mueven ni avisan. Comprueba día laborable, franja
+(con `ends_at` incluido), `schedule_blocks`, skill por segmento de servicio y solapes. Sale con
+código 1 solo con hallazgos de severidad `error`; `sin-skill` es aviso porque puede ser una
+decisión deliberada. La lógica pura vive en `tests/lib/agenda-audit.js` y sí corre en `npm test`.
 
 ## Regla de oro
 
