@@ -28,7 +28,11 @@ export interface Message {
   timestamp: string;
 }
 
-const ACTIVE_ESTADOS: EstadoCita[] = ["pendiente", "en_conversacion", "pendiente_bizum", "confirmado", "completado", "cancelado"];
+// `abandonado` entra a propósito: es un estado que pone el bot solo (la clienta dejó de
+// contestar), no una conversación cerrada por nadie. Sin él, el Monitor no las listaba y por
+// tanto no se podían abrir ni retomar a mano — justo las que más falta hace repescar. Y si
+// el estado se puso mal, sin poder abrir el chat no había forma de verlo desde el panel.
+const ACTIVE_ESTADOS: EstadoCita[] = ["pendiente", "en_conversacion", "pendiente_bizum", "confirmado", "completado", "cancelado", "abandonado"];
 
 export async function getConversations(orgId: string): Promise<Conversation[]> {
   try {
