@@ -396,19 +396,36 @@ function formatSlotForMessage(slot) {
     return slot.texto || `el ${slot.diaNombre} ${slot.fecha} a las ${slot.hora} con ${slot.stylistName}`;
 }
 
+// La duración se DECIDE arriba (helpers.resolveAppointmentDurationMin, que ya tiene su
+// propio fallback y lo declara). Aquí abajo un `duracionMin || 60` no era una decisión:
+// era un tercer valor por defecto —el bot ponía 60, esto 60 y db.js 120— tapando que
+// nadie había resuelto la duración. Y taparlo cuesta caro: ends_at corto publica agenda
+// libre encima de una clienta. Así que esto es una aserción del contrato, no un rescate.
+// Con el bot resolviendo siempre un positivo, en producción nunca dispara; si dispara es
+// un fallo de programación y sale como fallo, no como cita de 60 minutos.
+function assertDuracion(duracionMin, fn, ctx) {
+    const dur = Number(duracionMin);
+    if (Number.isFinite(dur) && dur > 0) return null;
+    logger.error('duracion_cita_invalida', { ...ctx, fn, duracionMin: duracionMin ?? null });
+    return { success: false, reason: 'duracion_invalida' };
+}
+
 // Devuelve `reason` en el fallo, simétrico con rescheduleAppointment. Sin él, el bot no
 // podía distinguir "el hueco no es válido" de "Supabase está caído" y ambos acababan en el
 // mismo "no he podido fijar ese hueco", ocultando la avería:
 //   'db_error'     → saveAppointment lanzó (RLS, FK, timeout). Reintentable.
 //   'invalid_slot' → contacto/fecha/hora que saveAppointment rechaza. Reintentar no arregla.
+//   'duracion_invalida' → ver assertDuracion.
 async function bookAppointment(orgId, slot, contactId, { servicio, duracionMin, stylistId, notas } = {}) {
+    const durErr = assertDuracion(duracionMin, 'bookAppointment', { orgId, contactId });
+    if (durErr) return durErr;
     let apt;
     try {
         apt = await db.saveAppointment(orgId, contactId, {
             servicio,
             fecha: slot.fecha,
             hora: slot.hora,
-            duracionMin: duracionMin || 60,
+            duracionMin,
             estado: 'confirmed',
             stylistId: stylistId || slot.stylistId,
             notas,
@@ -434,14 +451,18 @@ async function cancelAppointment(orgId, appointmentId) {
 //   'db_error'     → la escritura falló pero la cita vieja SIGUE VIVA; crear otra dejaría dos
 //                    reservas para la misma clienta, las dos facturables.
 //   'invalid_slot' → fecha/hora que updateAppointment rechaza; insertar no arregla nada.
+//   'duracion_invalida' → ver assertDuracion. NO cae al INSERT de rescate: eso escribiría
+//                    la misma duración inventada en una fila nueva.
 async function rescheduleAppointment(orgId, appointmentId, slot, { servicio, duracionMin, stylistId, notas } = {}) {
+    const durErr = assertDuracion(duracionMin, 'rescheduleAppointment', { orgId, appointmentId });
+    if (durErr) return durErr;
     let result;
     try {
         result = await db.updateAppointment(orgId, appointmentId, {
             servicio,
             fecha: slot.fecha,
             hora: slot.hora,
-            duracionMin: duracionMin || 60,
+            duracionMin,
             stylistId: stylistId || slot.stylistId,
             notas,
         });

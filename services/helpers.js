@@ -1577,6 +1577,73 @@ function resolveServiceDurationMin(name, catalog, fallback = 60) {
     return fallback;
 }
 
+// ─── La duración que se escribe en ends_at ───────────────────────────────────
+// ends_at es lo que el motor de huecos lee para saber qué parte de la agenda está
+// ocupada. Escribirlo corto no deja una cita "un poco mal": deja hueco declarado
+// donde hay clienta. Un `duracion || 60` sobre un servicio de 240 min publica tres
+// horas libres que no lo están, el motor las ofrece y dos clientas coinciden con la
+// misma estilista. Por eso el número no se decide en cada punto de escritura: se
+// decide UNA vez, aquí, y se dice si se ha resuelto o se está adivinando.
+//
+//   via 'servicio' → el objeto de sesión ya traía duracion (caso normal)
+//   via 'catalogo' → no la traía; se recupera por nombre contra agent_configs.services
+//                    (el camino de `selectedService_incompleto_sin_match`, donde queda
+//                    un {nombre, categoria} suelto sin duración)
+//   via 'fallback' → NO resuelta. `resuelto:false` para que quien escribe lo registre
+//                    y lo deje visible, en vez de que el 60 pase por un dato.
+const DURACION_CITA_FALLBACK_MIN = 60;
+
+function resolveAppointmentDurationMin(svc, catalog = [], fallback = DURACION_CITA_FALLBACK_MIN) {
+    const propia = Number(svc?.duracion);
+    if (Number.isFinite(propia) && propia > 0) {
+        return { minutos: propia, resuelto: true, via: 'servicio' };
+    }
+    // Sin fallback interno (null): aquí necesitamos distinguir "resuelta a 60" de
+    // "no resuelta y el 60 me lo he inventado".
+    const candidatos = [buildFullServiceName(svc, catalog), svc?.nombre].filter(Boolean);
+    for (const nombre of candidatos) {
+        const porNombre = Number(resolveServiceDurationMin(nombre, catalog, null));
+        if (Number.isFinite(porNombre) && porNombre > 0) {
+            return { minutos: porNombre, resuelto: true, via: 'catalogo' };
+        }
+    }
+    return { minutos: fallback, resuelto: false, via: 'fallback' };
+}
+
+// Nuevo fin de una cita YA guardada cuando la clienta acepta un upselling.
+// Se mide sobre la cita REAL de la BD —su ends_at actual + lo que dura el upsell
+// NUEVO— y no recalculando desde la duración del servicio de la sesión. El recálculo
+// es el que muerde: si esa duración falta y vale 60 por defecto, aceptar un K18 de
+// 15 min sobre unas mechas de 240 escribe un ends_at 165 minutos ANTES del real.
+// Aceptar un extra ACORTABA la cita y liberaba media tarde ocupada.
+// Solo cuando la cita no trae un ends_at usable se recalcula desde el inicio.
+//   via 'ends_at_real' → extendido sobre el fin guardado (camino normal)
+//   via 'recalculo'    → sin ends_at fiable; depende de totalMin, que puede ser una
+//                        estimación — quien llama debe registrarlo
+//   via 'sin_base'     → no hay ni inicio válido: no hay nada que escribir
+function computeAmpliacionEndsAt({ startsAt, endsAt, extraMin = 0, totalMin = 0 } = {}) {
+    // El inicio se compone a veces como `${fecha}T${hora}:00` con datos de sesión que
+    // pueden faltar, y `new Date('undefinedTundefined:00')` NO da Invalid Date: el
+    // parser laxo de V8 devuelve el año 2000. Un fin en el año 2000 se escribe sin
+    // protestar y deja la cita fuera de cualquier agenda. Por eso se exige la forma.
+    const toDate = v => {
+        if (!v) return null;
+        if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v;
+        if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(v.trim())) return null;
+        const d = new Date(v);
+        return Number.isNaN(d.getTime()) ? null : d;
+    };
+    const inicio = toDate(startsAt);
+    const fin = toDate(endsAt);
+    if (inicio && fin && fin > inicio) {
+        return { endsAt: new Date(fin.getTime() + extraMin * 60000), via: 'ends_at_real' };
+    }
+    if (inicio) {
+        return { endsAt: new Date(inicio.getTime() + totalMin * 60000), via: 'recalculo' };
+    }
+    return { endsAt: null, via: 'sin_base' };
+}
+
 // Parte DETERMINISTA del guard anti-cierre del upselling: dada la hora de inicio de
 // la cita, la duración del servicio principal y la ETIQUETA del upsell sugerido,
 // decide si el upsell debe descartarse porque la cita ampliada cruzaría (1) el tope
@@ -2818,6 +2885,9 @@ module.exports = {
     matchUpsellSuggestion,
     matchUpsellRule,
     resolveServiceDurationMin,
+    resolveAppointmentDurationMin,
+    computeAmpliacionEndsAt,
+    DURACION_CITA_FALLBACK_MIN,
     shouldDiscardUpsellForClosing,
     buildSanteConfirmationMessage,
     buildCitaFantasmaMsg,

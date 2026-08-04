@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -2486,7 +2486,20 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
         // [DIAG-VARIANTE] String EXACTO que se escribirá en appointments.service.
         const upsellingDuration = (session.upsellingAccepted || []).reduce(
             (sum, name) => sum + resolveServiceDurationMin(name, catalogDur), 0);
-        const totalDuration = (session.selectedService?.duracion || 60) + upsellingDuration;
+        // La duración que sale de aquí es la que ocupa la agenda. Si no se ha podido
+        // resolver, la cita se guarda igual —la clienta no puede quedarse sin hueco por
+        // esto— pero deja de ser un dato silencioso: se registra y se anota en la ficha,
+        // porque un ends_at corto publica horas libres encima de esta misma clienta.
+        const durPrincipal = resolveAppointmentDurationMin(session.selectedService, catalogDur);
+        const totalDuration = durPrincipal.minutos + upsellingDuration;
+        if (!durPrincipal.resuelto) {
+            logger.error('duracion_cita_no_resuelta', {
+                orgId, telefono: userPhone, fecha, hora, stylistId,
+                servicio: session.selectedService?.nombre || null,
+                categoria: session.selectedService?.categoria || null,
+                minutosAsumidos: durPrincipal.minutos, totalDuration,
+            });
+        }
 
         // Si la cita es para un acompañante, lo dejamos anotado en la cita (el contacto
         // sigue siendo el titular del WhatsApp, pero la cita es para otra persona).
@@ -2529,7 +2542,13 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
         // Solo el mensaje de confirmación de ESTA cita menciona la promo.
         session._spaPromoEnEsteMensaje = ofrecerPromoAhora;
 
-        const notasCita = [guestNote, promoNote, session.partialData.notas].filter(Boolean).join(' · ') || null;
+        // Duración adivinada → que se vea en la ficha del panel, no solo en los logs: es la
+        // única forma de que alguien del salón corrija el hueco antes de que el motor
+        // ofrezca a otra clienta las horas que esta cita ocupa de verdad.
+        const durNote = durPrincipal.resuelto
+            ? null
+            : `⚠ Duración sin confirmar (${durPrincipal.minutos} min asumidos)`;
+        const notasCita = [guestNote, promoNote, durNote, session.partialData.notas].filter(Boolean).join(' · ') || null;
 
         logger.info('DIAG_finalizarCitaSante_bookAppointment_antes', {
             orgId, telefono: userPhone, leadId: session.leadId,
@@ -4297,7 +4316,11 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 aiResponse.datos.upselling_aceptado = aiResponse.datos.upselling_aceptado.map(nombre =>
                     resolveK18ComplementIfNeeded(nombre, session.selectedService?.categoria, cfgK18?.services || []));
 
+                // Qué es NUEVO en este turno: la cita ya guardada dura lo que dura CON los
+                // upsells anteriores ya dentro, así que alargarla es sumarle solo estos.
+                const yaAceptados = new Set(session.upsellingAccepted || []);
                 session.upsellingAccepted = [...new Set([...(session.upsellingAccepted || []), ...aiResponse.datos.upselling_aceptado])];
+                const upsellsNuevos = session.upsellingAccepted.filter(n => !yaAceptados.has(n));
 
                 if (session.reservaConfirmada && session.appointmentId && session.selectedService) {
                     const catUp = cfgK18?.services || [];
@@ -4309,24 +4332,51 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         buildFullServiceName(session.selectedService, catUp),
                         ...session.upsellingAccepted,
                     ].filter(Boolean).join(' + ');
-                    const upDur = session.upsellingAccepted.reduce(
+                    const upDurNuevos = upsellsNuevos.reduce(
                         (sum, name) => sum + resolveServiceDurationMin(name, catUp), 0);
-                    const totalDur = (session.selectedService.duracion || 60) + upDur;
-                    // El nuevo fin se mide desde el starts_at REAL de la cita, no desde la
-                    // fecha/hora de la sesión: si la cita se movió desde el panel, esos dos
-                    // valores ya no coinciden y ends_at acababa en otro día.
+                    const upDurTotal = session.upsellingAccepted.reduce(
+                        (sum, name) => sum + resolveServiceDurationMin(name, catUp), 0);
+                    const durPrincipal = resolveAppointmentDurationMin(session.selectedService, catUp);
+                    const totalDur = durPrincipal.minutos + upDurTotal;
+                    // El nuevo fin se mide sobre la cita REAL de la BD —su starts_at y su
+                    // ends_at—, no sobre la fecha/hora/duración de la sesión: si la cita se
+                    // movió o se alargó desde el panel, esos valores ya no coinciden y el
+                    // recálculo la reescribía en otro día o, peor, MÁS CORTA (aceptar un K18
+                    // de 15 min sobre unas mechas cuya duración no estaba en sesión valía
+                    // 60+15: 165 minutos de agenda ocupada declarados libres).
                     // Y se hace con await: sin él, este UPDATE competía con la escritura de
                     // cierre de la misma cita y ganaba cualquiera de los dos.
                     try {
                         const apt = await getAppointmentById(orgId, session.appointmentId);
-                        const base = apt?.starts_at
-                            ? new Date(apt.starts_at)
-                            : new Date(`${session.partialData.fecha_cita}T${session.partialData.hora_cita}:00`);
-                        const endsAt = new Date(base.getTime() + totalDur * 60000);
-                        // Añadir alarga la cita. Si la nueva duración se come la cita
-                        // siguiente de esa estilista NO se escribe: un solape invisible en
-                        // la agenda no se descubre hasta que las dos clientas coinciden.
-                        if (await ampliacionSolapa(orgId, apt, endsAt)) {
+                        const { endsAt, via } = computeAmpliacionEndsAt({
+                            startsAt: apt?.starts_at
+                                || `${session.partialData.fecha_cita}T${session.partialData.hora_cita}:00`,
+                            endsAt: apt?.ends_at,
+                            extraMin: upDurNuevos,
+                            totalMin: totalDur,
+                        });
+                        // Sin ends_at guardado hay que recalcular, y entonces sí depende de la
+                        // duración del servicio: si esa tampoco se ha resuelto, el fin es una
+                        // estimación sobre otra. Se registra antes de escribirlo.
+                        if (via !== 'ends_at_real') {
+                            logger.warn('ampliacion_fin_recalculado', {
+                                orgId, telefono: userPhone, appointmentId: session.appointmentId,
+                                via, duracionResuelta: durPrincipal.resuelto, via_duracion: durPrincipal.via,
+                                totalDur,
+                            });
+                        }
+                        if (!endsAt) {
+                            // No hay base horaria fiable. El servicio SÍ se anota (la
+                            // facturación lo necesita); el horario se deja como está en vez
+                            // de escribir un fin inventado.
+                            logger.error('ampliacion_sin_base_horaria', {
+                                orgId, telefono: userPhone, appointmentId: session.appointmentId, servicios: updServices,
+                            });
+                            await updateAppointment(orgId, session.appointmentId, { servicio: updServices });
+                        } else if (await ampliacionSolapa(orgId, apt, endsAt)) {
+                            // Añadir alarga la cita. Si la nueva duración se come la cita
+                            // siguiente de esa estilista NO se escribe: un solape invisible en
+                            // la agenda no se descubre hasta que las dos clientas coinciden.
                             logger.warn('ampliacion_cita_solapa', {
                                 orgId, telefono: userPhone, appointmentId: session.appointmentId,
                                 nuevoFin: endsAt.toISOString(), servicios: updServices,
