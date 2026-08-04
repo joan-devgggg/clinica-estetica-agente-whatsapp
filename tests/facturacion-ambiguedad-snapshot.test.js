@@ -141,5 +141,123 @@ test('el IVA sigue cuadrando con importes congelados (base + iva = total)', () =
     assert.strictEqual(totales.totalSinIva, Math.round((45 / 1.21) * 100) / 100);
 });
 
+// ─── Divergencia: el `service` cambió DESPUÉS de congelarse el importe ───────────
+// El agujero de la 021: stampBillingSnapshot solo sella en → completed y se salta las filas
+// ya selladas; updateAppointment nunca toca las columnas de facturación. Editar el servicio
+// de una cita sellada movía el servicio y no el dinero, y el informe seguía dando el importe
+// viejo por bueno con "sin calcular: 0". Caso real: 220 € congelados y un "Difuminado de
+// raíz" (40 €) añadido después desde el panel.
+const SELLADA = {
+    appointment_id: 'a1', stylist_id: 's1', stylist_name: 'Yulia',
+    precio_facturado: 45, iva_rate: 0.21, facturado_at: '2026-07-20T10:00:00.000Z',
+};
+
+test('el servicio cambió tras sellar → NO suma, avisa y no se confunde con "sin calcular"', () => {
+    const citas = [{ ...SELLADA, service: 'K18 + Corte', servicio_facturado: 'K18' }];
+    const report = buildStylistBillingReport(citas, CATALOG_BARATO);
+    const cita = report.estilistas[0].citas[0];
+    assert.strictEqual(cita.origen, 'divergente');
+    assert.strictEqual(cita.calculable, false);
+    assert.strictEqual(cita.precio, null, 'no se presenta un importe que ya no describe lo que se hizo');
+    assert.strictEqual(report.totales.totalConIva, 0, 'los 45 € NO entran en el total');
+    assert.strictEqual(report.divergentesTotal, 1);
+    assert.strictEqual(report.sinCalcularTotal, 0, 'contador SEPARADO: son hechos distintos');
+});
+
+test('servicio_facturado null (cita pre-031) NO dispara divergencia: nada de marcar el histórico en bloque', () => {
+    const citas = [{ ...SELLADA, service: 'lo que sea que escribieron', servicio_facturado: null }];
+    const report = buildStylistBillingReport(citas, CATALOG_BARATO);
+    assert.strictEqual(report.estilistas[0].citas[0].origen, 'congelado');
+    assert.strictEqual(report.divergentesTotal, 0);
+    assert.strictEqual(report.totales.totalConIva, 45);
+});
+
+test('una SUBIDA de precio del catálogo NO es divergencia (por eso se compara el string, no el precio)', () => {
+    // Es el caso real de "Mechas Contouring + Matiz plus + K18": se selló a 270 € y luego
+    // las migraciones 024/026 renombraron "K18". El congelado es CORRECTO. Si comparásemos
+    // precios en vez de nombres, esta cita saldría en rojo todos los meses para siempre.
+    const citas = [{ ...SELLADA, service: 'K18', servicio_facturado: 'K18' }];
+    const report = buildStylistBillingReport(citas, CATALOG_SUBIDA);
+    assert.strictEqual(report.estilistas[0].citas[0].origen, 'congelado');
+    assert.strictEqual(report.divergentesTotal, 0);
+    assert.strictEqual(report.totales.totalConIva, 45, 'sigue valiendo lo que se cobró');
+});
+
+test('diferencias de mayúsculas/acentos/espacios no son divergencia', () => {
+    const citas = [{ ...SELLADA, service: '  k18 ', servicio_facturado: 'K18' }];
+    const report = buildStylistBillingReport(citas, CATALOG_BARATO);
+    assert.strictEqual(report.divergentesTotal, 0, 'normalizeText evita la falsa alarma');
+    assert.strictEqual(report.estilistas[0].citas[0].origen, 'congelado');
+});
+
+// ─── Importe manual: lo que decidió una persona manda ────────────────────────────
+test('el importe manual gana al snapshot y se marca como manual', () => {
+    const citas = [{ ...SELLADA, service: 'K18', servicio_facturado: 'K18', precio_manual: 30 }];
+    const report = buildStylistBillingReport(citas, CATALOG_BARATO);
+    const cita = report.estilistas[0].citas[0];
+    assert.strictEqual(cita.origen, 'manual');
+    assert.strictEqual(cita.precio, 30);
+    assert.strictEqual(report.totales.totalConIva, 30, 'no los 45 congelados');
+    assert.strictEqual(report.manualesTotal, 1);
+});
+
+test('el importe manual gana también al recálculo (descuento sobre precio de catálogo)', () => {
+    const citas = [{ appointment_id: 'a1', service: 'K18', stylist_id: 's1', stylist_name: 'Yulia', precio_manual: 20 }];
+    const report = buildStylistBillingReport(citas, CATALOG_BARATO);
+    assert.strictEqual(report.totales.totalConIva, 20, 'no los 45 del catálogo');
+    assert.strictEqual(report.estilistas[0].citas[0].origen, 'manual');
+});
+
+test('precio_manual = 0 es un importe VÁLIDO (cortesía), no "sin corrección"', () => {
+    // La trampa de truthiness, gemela del bug de precio_facturado null → 0,00 €. Con
+    // `if (precio_manual)` la cita volvería a facturarse a 45 €, cobrando lo que alguien
+    // decidió expresamente no cobrar.
+    const citas = [{ appointment_id: 'a1', service: 'K18', stylist_id: 's1', stylist_name: 'Yulia', precio_manual: 0 }];
+    const report = buildStylistBillingReport(citas, CATALOG_BARATO);
+    const cita = report.estilistas[0].citas[0];
+    assert.strictEqual(cita.origen, 'manual');
+    assert.strictEqual(cita.calculable, true);
+    assert.strictEqual(cita.precio, 0);
+    assert.strictEqual(report.totales.totalConIva, 0);
+    assert.strictEqual(report.manualesTotal, 1);
+});
+
+test('el importe manual RESCATA una cita ambigua que hoy no suma nada', () => {
+    // Su uso más valioso: "Largo 2 + K18" es irresoluble y hoy desaparece del total.
+    const citas = [{ appointment_id: 'a1', service: 'Largo 2 + K18', stylist_id: 's1', stylist_name: 'Yulia', precio_manual: 265 }];
+    const report = buildStylistBillingReport(citas, CATALOG_AMBIGUO);
+    assert.strictEqual(report.totales.totalConIva, 265);
+    assert.strictEqual(report.sinCalcularTotal, 0, 'deja de estar "sin calcular"');
+    assert.strictEqual(report.manualesTotal, 1);
+});
+
+test('el importe manual apaga la divergencia: es la resolución humana del aviso', () => {
+    const citas = [{ ...SELLADA, service: 'K18 + Corte', servicio_facturado: 'K18', precio_manual: 70 }];
+    const report = buildStylistBillingReport(citas, CATALOG_BARATO);
+    assert.strictEqual(report.estilistas[0].citas[0].origen, 'manual');
+    assert.strictEqual(report.divergentesTotal, 0);
+    assert.strictEqual(report.totales.totalConIva, 70);
+});
+
+test('el IVA cuadra con un importe manual (misma convención que el catálogo)', () => {
+    const citas = [{ appointment_id: 'a1', service: 'K18', stylist_id: 's1', stylist_name: 'Yulia', precio_manual: 30 }];
+    const { totales } = buildStylistBillingReport(citas, CATALOG_BARATO);
+    assert.strictEqual(totales.totalSinIva + totales.iva, totales.totalConIva);
+    assert.strictEqual(totales.totalSinIva, Math.round((30 / 1.21) * 100) / 100);
+});
+
+test('precio_calculado viaja SIEMPRE, para que el panel no calcule dinero en cliente', () => {
+    const citas = [
+        { appointment_id: 'a1', service: 'K18', stylist_id: 's1', stylist_name: 'Yulia', precio_manual: 30 },
+        { ...SELLADA, appointment_id: 'a2', service: 'K18 + Ritual inventado', servicio_facturado: 'K18' },
+        { appointment_id: 'a3', service: 'Largo 2', stylist_id: 's1', stylist_name: 'Yulia' },
+    ];
+    const porId = {};
+    for (const c of buildStylistBillingReport(citas, CATALOG_AMBIGUO).estilistas[0].citas) porId[c.appointment_id] = c;
+    assert.strictEqual(porId.a1.precio_calculado, 45, 'referencia "calculado" bajo un importe manual');
+    assert.strictEqual(porId.a2.precio_calculado, null, 'no recalculable: ese servicio no está en el catálogo');
+    assert.strictEqual(porId.a3.precio_calculado, null, 'ambiguo → sin cifra que ofrecer');
+});
+
 if (!process.exitCode) console.log('\nTodos los tests de facturación (ambigüedad + snapshot) OK');
 process.exit(process.exitCode || 0);

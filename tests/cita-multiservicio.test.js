@@ -167,6 +167,25 @@ const callsTo = (table, op) => mock.calls.filter(c => c.table === table && c.op 
         const p = callsTo('appointments', 'update')[0].payload;
         assert.strictEqual(p.precio_facturado, 285);
         assert.strictEqual(p.stylist_name_facturado, 'Irina');
+        // Se guarda el servicio que se está valorando: sin esto no hay forma de saber, más
+        // tarde, si el `service` de la cita cambió después de congelarse el importe.
+        assert.strictEqual(p.servicio_facturado, SERVICE_STR);
+    });
+
+    await test('editar el servicio DESPUÉS de facturar no cuela el importe viejo como bueno', () => {
+        // La regresión que originó todo (cita de Gisela, 03/08/2026): se selló a 220 € y
+        // luego se le añadió "Difuminado de raíz" desde el panel. El informe seguía dando
+        // 220 € por buenos, con "sin calcular: 0" — ni un aviso.
+        const report = buildStylistBillingReport([{
+            appointment_id: 'apt-2', service: SERVICE_STR + ' + Difuminado de raíz',
+            servicio_facturado: SERVICE_STR,
+            stylist_id: 'st-1', stylist_name: 'Irina',
+            starts_at: '2026-08-03T08:00:00.000Z', cliente: 'Gisela',
+            precio_facturado: 285, iva_rate: 0.21, facturado_at: '2026-08-03T12:22:17.000Z',
+        }], CATALOGO);
+        assert.strictEqual(report.estilistas[0].citas[0].origen, 'divergente');
+        assert.strictEqual(report.totales.totalConIva, 0, 'los 285 obsoletos NO se suman');
+        assert.strictEqual(report.divergentesTotal, 1, 'y se avisa');
     });
 
     await test('el informe muestra la cita a 270 € y sin "revisar"', () => {

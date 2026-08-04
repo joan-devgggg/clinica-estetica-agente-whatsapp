@@ -27,7 +27,11 @@ db.authenticateToken = async (token) => (token === 'test-secret' ? { userId: 'u1
 // Mock de la capa db que usa la ruta (mismo objeto de módulo que webhook.js).
 let blacklistCalls = [];
 let syncCalls = [];
-db.updateAppointment = async (orgId, id, body) => ({ id, contact_id: 'c1', status: body.estado });
+let updateAppointmentCalls = [];
+db.updateAppointment = async (orgId, id, body) => {
+    updateAppointmentCalls.push(body);
+    return { id, contact_id: 'c1', status: body.estado };
+};
 db.findById = async () => ({ id: 'c1', nombre: 'María', telefono: '34600000000' });
 db.setBlacklist = async (orgId, contactId, reason) => { blacklistCalls.push({ orgId, contactId, reason }); return true; };
 // La ruta lee el estado ANTERIOR (para no contar dos veces la visita) y sincroniza la ficha
@@ -112,6 +116,26 @@ async function test(name, fn) {
                 r.on('error', reject); r.end('{}');
             });
             assert.strictEqual(res.status, 401);
+        });
+
+        await test('10 · el PUT genérico NUNCA lleva columnas de facturación', async () => {
+            // El invariante que sostiene el importe manual: las columnas de facturación se
+            // escriben en dos sitios y solo dos (stampBillingSnapshot y setManualPrice).
+            // Si algún día alguien añade `precio` al dict de updateAppointment, guardar una
+            // cita desde el panel podría pisar una corrección hecha a mano — y este test
+            // salta antes de que llegue a producción.
+            updateAppointmentCalls = [];
+            await put(server, 'apt-1', { estado: 'confirmed', servicio: 'Corte', fecha: '2026-08-10', hora: '10:00' });
+            assert.ok(updateAppointmentCalls.length > 0, 'la ruta llamó a updateAppointment');
+            const prohibidas = [
+                'precio', 'precio_manual', 'precioManual', 'precio_facturado', 'precioFacturado',
+                'facturado_at', 'iva_rate', 'servicio_facturado',
+            ];
+            for (const body of updateAppointmentCalls) {
+                for (const k of prohibidas) {
+                    assert.ok(!(k in body), `PUT /api/citas/:id no puede transportar ${k}`);
+                }
+            }
         });
     } finally {
         server.close();

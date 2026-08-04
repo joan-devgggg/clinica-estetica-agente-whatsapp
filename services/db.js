@@ -1020,6 +1020,13 @@ async function getAppointmentsByDateRange(orgId, desde, hasta) {
             service:        row.service,
             starts_at:      row.starts_at,
             ends_at:        row.ends_at,
+            // Solo LECTURA para la ficha de la cita: el importe se ve, no se edita ahí. Se
+            // corrige desde Facturación (PATCH /api/citas/:id/precio) — tocar dinero en el
+            // mismo formulario que edita el `service` es justo la confusión que causó el
+            // desfase del snapshot.
+            precio_facturado:     row.precio_facturado,
+            precio_manual:        row.precio_manual,
+            precio_manual_motivo: row.precio_manual_motivo,
         };
     });
 }
@@ -1036,7 +1043,7 @@ async function getCompletedAppointmentsForBilling(orgId, desde, hasta, stylistId
     const hastaTs = new Date(`${hasta}T23:59:59`).toISOString();
     let query = supabase
         .from('appointments')
-        .select('id, service, stylist_id, starts_at, precio_facturado, iva_rate, facturado_at, stylist_name_facturado, contacts!contact_id(full_name), stylists!stylist_id(id, name)')
+        .select('id, service, stylist_id, starts_at, precio_facturado, iva_rate, facturado_at, stylist_name_facturado, servicio_facturado, precio_manual, precio_manual_motivo, precio_manual_at, contacts!contact_id(full_name), stylists!stylist_id(id, name)')
         .eq('organization_id', oid)
         .eq('status', 'completed')
         .gte('starts_at', desdeTs)
@@ -1062,6 +1069,12 @@ async function getCompletedAppointmentsForBilling(orgId, desde, hasta, stylistId
         precio_facturado: row.precio_facturado,
         iva_rate:         row.iva_rate,
         facturado_at:     row.facturado_at,
+        // El `service` de cuando se congeló el importe: si hoy difiere, el operador editó la
+        // cita después de facturarla y el congelado ya no describe lo que se hizo.
+        servicio_facturado:   row.servicio_facturado,
+        precio_manual:        row.precio_manual,
+        precio_manual_motivo: row.precio_manual_motivo,
+        precio_manual_at:     row.precio_manual_at,
     }));
 }
 
@@ -1101,6 +1114,10 @@ async function stampBillingSnapshot(orgId, appointmentIds, { ivaRate = 0.21 } = 
                 iva_rate: ivaRate,
                 facturado_at: sellado,
                 stylist_name_facturado: cita.stylists?.name || null,
+                // El servicio que se está valorando AHORA. Si alguien lo edita después, el
+                // informe lo compara con el actual y avisa en vez de seguir dando por bueno
+                // un importe que ya no describe lo que se hizo (migración 031).
+                servicio_facturado: cita.service,
             })
             .eq('id', cita.id)
             .eq('organization_id', oid);
@@ -1113,6 +1130,44 @@ async function stampBillingSnapshot(orgId, appointmentIds, { ivaRate = 0.21 } = 
         n++;
     }
     return n;
+}
+
+// Fija (o limpia) el importe de una cita A MANO. Junto con stampBillingSnapshot son los
+// ÚNICOS dos sitios que escriben columnas de facturación: uno es la máquina, este es la
+// persona. updateAppointment no las toca, y por eso resellar nunca puede pisar una decisión
+// humana ni al revés.
+//
+// precio null → limpia las cuatro columnas y la cita vuelve sola al importe congelado o al
+// recálculo (el snapshot nunca se tocó, así que no hay nada que reconstruir).
+// precio 0 → importe VÁLIDO (cortesía). Por eso el guard es `precio == null` y no `!precio`.
+//
+// userId sale del token ya verificado (req.authUserId), NUNCA del body: es dinero y la
+// atribución tiene que ser del que de verdad ha entrado, no del que dice ser.
+// Devuelve la fila actualizada, o null si no existe en esa org (el panel responde 404).
+async function setManualPrice(orgId, appointmentId, { precio, motivo = null, userId = null } = {}) {
+    if (!appointmentId) return null;
+    const oid = resolveOrg(orgId);
+    const limpiar = precio == null;
+    const updates = limpiar
+        ? { precio_manual: null, precio_manual_motivo: null, precio_manual_at: null, precio_manual_por: null }
+        : {
+            precio_manual: Math.round(Number(precio) * 100) / 100,
+            precio_manual_motivo: motivo || null,
+            precio_manual_at: now(),
+            precio_manual_por: userId || null,
+        };
+
+    const { data, error } = await supabase
+        .from('appointments')
+        .update(updates)
+        .eq('id', appointmentId)
+        .eq('organization_id', oid)
+        .select();
+    // Es dinero: un fallo de escritura NO puede devolver null y leerse como "esa cita no
+    // existe" — el panel diría 404 y nadie sabría que la corrección no llegó a guardarse.
+    assertWrite(error, 'appointments', 'setManualPrice');
+    if (!data?.length) return null;
+    return data[0];
 }
 
 // Una cita concreta. Necesaria para no derivar su horario de la sesión del bot: al aceptar
@@ -1863,6 +1918,7 @@ module.exports = {
     getAppointmentsByDateRange,
     getCompletedAppointmentsForBilling,
     stampBillingSnapshot,
+    setManualPrice,
     getAppointmentsPendientesRecordatorio,
     getReservasBizumPendiente,
     getAgentConfig,

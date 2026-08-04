@@ -346,6 +346,56 @@ app.get('/api/facturacion', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Fija o limpia A MANO el importe de una cita (solo salón). Dos usos: corregir un error y
+// aplicar un descuento, que el catálogo no sabe representar.
+//
+// Ruta PROPIA y no un campo más de PUT /api/citas/:id, a propósito:
+//   1. Ese PUT es también la ruta de San Remo y el panel manda el formulario ENTERO en cada
+//      guardado — el dinero no puede viajar de polizón en una petición cuyo propósito es
+//      "he movido la cita a las 11:30".
+//   2. Mantiene mecánicamente el invariante: el dict `campos` de updateAppointment no tiene
+//      ninguna clave de facturación, así que no hay forma de pisar un importe manual desde
+//      la edición normal de la cita.
+//
+// body: { precio: number|null, motivo?: string }.  precio null limpia el importe manual;
+// precio 0 es válido (cortesía) y por eso la validación no puede usar truthiness.
+app.patch('/api/citas/:id/precio', async (req, res) => {
+    try {
+        const orgId = extractOrgId(req);
+        const { getOrgType } = require('./services/org-registry');
+        if (getOrgType(orgId) !== 'salon') {
+            return res.status(403).json({ error: 'El importe manual es solo para salón' });
+        }
+
+        const { precio, motivo } = req.body || {};
+        if (precio !== null && precio !== undefined) {
+            const n = Number(precio);
+            // typeof: un "abc" da NaN pero un "150" pasaría — y aceptar strings aquí abre la
+            // puerta a que el importe llegue como texto y se guarde sin validar de verdad.
+            if (typeof precio !== 'number' || !Number.isFinite(n) || n < 0) {
+                return res.status(400).json({ error: 'precio debe ser un número >= 0, o null para limpiar' });
+            }
+        }
+        if (motivo != null && String(motivo).length > 300) {
+            return res.status(400).json({ error: 'motivo demasiado largo (máx. 300)' });
+        }
+
+        const cita = await db.setManualPrice(orgId, req.params.id, {
+            precio: precio === undefined ? null : precio,
+            motivo: motivo == null ? null : String(motivo).trim() || null,
+            // Del token verificado, NUNCA del body: la atribución de un cambio de dinero
+            // tiene que ser de quien de verdad ha entrado.
+            userId: req.authUserId || null,
+        });
+        if (!cita) return res.status(404).json({ error: 'No encontrada' });
+
+        logger.info('precio_manual_actualizado', {
+            orgId, citaId: req.params.id, precio: cita.precio_manual, userId: req.authUserId || null,
+        });
+        res.json(cita);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/appointments', async (req, res) => {
     try {
         const orgId = extractOrgId(req);

@@ -2204,11 +2204,43 @@ function buildBillingStylistOptions(stylists, estilistasDelInforme) {
     return opciones;
 }
 
+// ¿Cambió el `service` DESPUÉS de congelarse el importe? Es el detector del agujero que
+// dejaba la 021: stampBillingSnapshot solo sella en la transición → completed y se salta
+// las filas ya selladas, y updateAppointment nunca toca las columnas de facturación. Editar
+// el servicio de una cita sellada movía el servicio y no el dinero, y el informe seguía
+// dando el importe viejo por bueno.
+//
+// Se compara el STRING del servicio, NUNCA el precio. Comparar el congelado contra el
+// recálculo marcaría cada subida legítima del catálogo — justo lo que el snapshot existe
+// para absorber (la cita "…+ Matiz plus + K18" de la BD real es ese caso: hoy no se puede
+// recalcular porque las migraciones 024/026 renombraron "K18" después de sellarla, y su
+// congelado es correcto). Solo el string distingue "el catálogo cambió" de "el operador
+// corrigió lo que se hizo".
+//
+// normalizeText evita falsas alarmas por mayúsculas/acentos/espacios; un cambio real de
+// servicio siempre difiere a ese nivel. El `!= null` lo hace null-safe para toda cita
+// sellada antes de la 031 (y para el hueco entre migración y backfill): sin él, todo el
+// histórico se marcaría en bloque el día del despliegue.
+function isBillingServiceDiverged(appt) {
+    return appt?.servicio_facturado != null
+        && normalizeText(appt.servicio_facturado) !== normalizeText(appt.service);
+}
+
 // Construye el informe agregado por estilista a partir de las citas COMPLETED del
 // periodo (ya filtradas y con { appointment_id, service, stylist_id, stylist_name,
-// starts_at, cliente }) y el catálogo. Cada cita cuenta como "sin poder calcular" si
-// ALGÚN segmento suyo es unpriced/unmatched (su total sería incorrecto). Los precios
-// del catálogo incluyen IVA → base sin IVA = total / (1 + ivaRate).
+// starts_at, cliente }) y el catálogo. Los precios del catálogo incluyen IVA → base sin
+// IVA = total / (1 + ivaRate), y el importe manual sigue la MISMA convención.
+//
+// Precedencia del importe, gana la primera que casa (`origen` la nombra para el panel):
+//   1. 'manual'       precio_manual != null  → cuenta SIEMPRE, aunque los segmentos fallen.
+//   2. 'divergente'   snapshot + el `service` cambió tras sellar → NO cuenta, hay que revisar.
+//   2b.'congelado'    snapshot intacto → el importe congelado.
+//   3. 'calculado'    sin snapshot y todos los segmentos 'ok' → recálculo del catálogo.
+//   4. 'sin_calcular' ni lo uno ni lo otro → NO cuenta (unpriced/unmatched/ambiguous/vacío).
+//
+// 'divergente' y 'sin_calcular' se cuentan en contadores SEPARADOS (numDivergentes /
+// sinCalcular) y nunca se fusionan: son hechos distintos ("el servicio cambió después de
+// facturarse" vs "no supe calcularlo") y unirlos haría mentir a los dos avisos del panel.
 function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {}) {
     const NO_STYLIST = NO_STYLIST_KEY;
     const buckets = new Map();
@@ -2220,6 +2252,8 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
                 stylist_name: name || (key === NO_STYLIST ? 'Sin estilista asignada' : null),
                 numCitas: 0,
                 sinCalcular: 0,
+                numDivergentes: 0,
+                numManuales: 0,
                 totalConIva: 0,
                 citas: [],
             });
@@ -2231,11 +2265,12 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
         const key = appt.stylist_id || NO_STYLIST;
         const bucket = getBucket(key, appt.stylist_name);
         const { totalConIva: recalculado, segments } = computeServiceBilling(appt.service, catalog);
+        const recalculable = segments.length > 0 && segments.every(s => s.status === 'ok');
 
         // El importe CONGELADO al completar la cita manda sobre el recálculo. Sin él, subir un
-        // precio en el catálogo —o editar el `service` de una cita pasada— reescribía la
-        // facturación de un periodo ya cerrado. Solo se recalcula cuando no hay snapshot:
-        // citas anteriores a la auditoría, o servicios que no se pudieron valorar.
+        // precio en el catálogo reescribía la facturación de un periodo ya cerrado. Solo se
+        // recalcula cuando no hay snapshot: citas anteriores a la auditoría, o servicios que
+        // no se pudieron valorar.
         // precio_facturado null NO es un snapshot: stampBillingSnapshot sella facturado_at
         // igualmente cuando el servicio no se pudo valorar, para no reintentar. Sin el
         // `!= null`, Number(null) → 0 pasaba el isFinite y esa cita se presentaba como
@@ -2245,15 +2280,41 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
         const tieneSnapshot = !!appt.facturado_at
             && appt.precio_facturado != null
             && Number.isFinite(congelado);
-        const calculable = tieneSnapshot || (segments.length > 0 && segments.every(s => s.status === 'ok'));
-        const totalConIva = tieneSnapshot ? congelado : recalculado;
+
+        // Misma trampa que arriba, y por eso la misma comprobación: precio_manual = 0 es un
+        // importe legítimo (cortesía, 100 % de descuento). Con truthiness se leería como
+        // "sin corrección manual" y la cita volvería a facturarse al precio de catálogo,
+        // cobrando lo que alguien decidió no cobrar.
+        const manual = Number(appt.precio_manual);
+        const tieneManual = appt.precio_manual != null && Number.isFinite(manual);
+
+        // Solo puede divergir lo que está congelado; y un importe manual ya es la resolución
+        // humana de la divergencia, así que la apaga.
+        const divergente = !tieneManual && tieneSnapshot && isBillingServiceDiverged(appt);
+
+        let origen, totalConIva, calculable;
+        if (tieneManual) {
+            // Cuenta aunque los segmentos sean unmatched/ambiguous: rescatar una cita que el
+            // catálogo no sabe valorar es el uso más valioso del importe manual. No rompe el
+            // "una cifra dudosa se comunica como dudosa" — la cifra ya no es dudosa, la
+            // afirmó una persona identificada con fecha y motivo, y el panel la etiqueta.
+            origen = 'manual'; totalConIva = manual; calculable = true;
+        } else if (divergente) {
+            origen = 'divergente'; totalConIva = 0; calculable = false;
+        } else if (tieneSnapshot) {
+            origen = 'congelado'; totalConIva = congelado; calculable = true;
+        } else if (recalculable) {
+            origen = 'calculado'; totalConIva = recalculado; calculable = true;
+        } else {
+            origen = 'sin_calcular'; totalConIva = 0; calculable = false;
+        }
 
         bucket.numCitas += 1;
-        if (calculable) {
-            bucket.totalConIva += totalConIva;
-        } else {
-            bucket.sinCalcular += 1;
-        }
+        if (calculable) bucket.totalConIva += totalConIva;
+        if (origen === 'manual') bucket.numManuales += 1;
+        if (origen === 'divergente') bucket.numDivergentes += 1;
+        if (origen === 'sin_calcular') bucket.sinCalcular += 1;
+
         bucket.citas.push({
             appointment_id: appt.appointment_id,
             cliente: appt.cliente || null,
@@ -2262,6 +2323,15 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
             precio: calculable ? _round2(totalConIva) : null,
             calculable,
             congelado: tieneSnapshot,
+            origen,
+            // Va SIEMPRE, gane la rama que gane (null si no se puede recalcular). Alimenta el
+            // tooltip "manual vs calculado", el de divergencia y la vista previa de "a esto
+            // volverías" al limpiar el importe manual — para que el panel no tenga que
+            // calcular dinero en cliente a partir del catálogo que ya tiene cargado.
+            precio_calculado: recalculable ? _round2(recalculado) : null,
+            precio_manual_motivo: appt.precio_manual_motivo || null,
+            precio_manual_at: appt.precio_manual_at || null,
+            servicio_facturado: appt.servicio_facturado || null,
             segments,
         });
     }
@@ -2285,6 +2355,8 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
     const iva = _round2(estilistas.reduce((s, e) => s + e.iva, 0));
     const numCitas = estilistas.reduce((s, e) => s + e.numCitas, 0);
     const sinCalcularTotal = estilistas.reduce((s, e) => s + e.sinCalcular, 0);
+    const divergentesTotal = estilistas.reduce((s, e) => s + e.numDivergentes, 0);
+    const manualesTotal = estilistas.reduce((s, e) => s + e.numManuales, 0);
 
     return {
         estilistas,
@@ -2295,6 +2367,8 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
             numCitas,
         },
         sinCalcularTotal,
+        divergentesTotal,
+        manualesTotal,
         ivaRate,
     };
 }
@@ -2370,6 +2444,7 @@ module.exports = {
     // Exportado para el test de paridad con la copia del panel (dashboard-app/src/lib/service-names.ts).
     splitServiceNames,
     computeServiceBilling,
+    isBillingServiceDiverged,
     buildStylistBillingReport,
     filterAppointmentsByStylist,
     buildBillingStylistOptions,
