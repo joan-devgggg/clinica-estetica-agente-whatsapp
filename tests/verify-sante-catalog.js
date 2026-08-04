@@ -135,6 +135,13 @@ const addDays = (dateStr, n) => {
     const eligibleByCat = {};
     for (const cat of categories) eligibleByCat[cat] = realStylists.filter(s => skillMatches(s.skills, cat));
 
+    // Horarios REALES de cada estilista, leídos una vez. Los usan la Fase 3 (tener la skill
+    // no basta: una estilista sin horario es invisible para el motor de huecos, así que su
+    // categoría es irreservable aunque figure cubierta) y la Fase 6.
+    const horarioPorEstilista = new Map();
+    for (const s of realStylists) horarioPorEstilista.set(s.id, await db.getStylistSchedule(SANTE_ORG_ID, s.id));
+    const conHorario = (lista) => (lista || []).filter(s => (horarioPorEstilista.get(s.id) || []).length > 0);
+
     // ─── Fase 1: resolución por nombre exacto + nombre completo (offline) ─────────────
     for (const svc of catalog) {
         const label = `${svc.categoria} / ${svc.nombre}`;
@@ -195,18 +202,29 @@ const addDays = (dateStr, n) => {
         }
     }
 
-    // ─── Fase 3: cobertura de skill (estilistas reales) ───────────────────────────────
+    // ─── Fase 3: cobertura de skill + horario (estilistas reales) ─────────────────────
     for (const cat of categories) {
-        check('3-skill', (eligibleByCat[cat] || []).length >= 1, `categoría "${cat}"`,
-            'ninguna estilista activa tiene esa skill');
+        const elegibles = eligibleByCat[cat] || [];
+        if (!check('3-skill', elegibles.length >= 1, `categoría "${cat}"`,
+            'ninguna estilista activa tiene esa skill')) continue;
+        // Con la skill pero sin horario el servicio no se puede reservar: el motor no la
+        // considera ningún día. Es indistinguible de "no tiene la skill" para la clienta.
+        check('3-skill', conHorario(elegibles).length >= 1, `categoría "${cat}": alguien con horario`,
+            `tienen la skill [${elegibles.map(s => s.name)}] pero ninguna tiene horario configurado`);
     }
 
-    // Centinela: Consulta debe seguir en el catálogo y con sus 4 estilistas, para que la
-    // matriz de Fase 4 (abajo) la ejerza de verdad y no la salte por falta de elegibles.
+    // Centinela: Consulta debe seguir en el catálogo y con alguien que pueda atenderla, para
+    // que la matriz de Fase 4 (abajo) la ejerza de verdad y no la salte por falta de elegibles.
+    //
+    // Antes exigía EXACTAMENTE 4 estilistas. Era la misma trampa que los horarios fijos de la
+    // Fase 6: un número copiado de la migración que la dueña puede cambiar desde el panel en
+    // cualquier momento, y que habría puesto el check en rojo el día que diera Consulta a una
+    // quinta o se la quitara a una — sin que nada estuviera roto. Lo que el centinela necesita
+    // de verdad es que la categoría NO se quede sin nadie.
     check('4-huecos', categories.includes('Consulta'), 'Consulta en catálogo',
         'la categoría Consulta desapareció del catálogo');
-    check('4-huecos', (eligibleByCat['Consulta'] || []).length === 4, 'Consulta con 4 estilistas',
-        `elegibles=${(eligibleByCat['Consulta'] || []).length} (esperado 4)`);
+    check('4-huecos', conHorario(eligibleByCat['Consulta']).length >= 1, 'Consulta con estilista y horario',
+        `elegibles con horario=${conHorario(eligibleByCat['Consulta']).length} (hacen falta ≥1)`);
 
     // ─── Fase 4: matriz de huecos (offline, horario sintético abierto) ────────────────
     const realFns = {
