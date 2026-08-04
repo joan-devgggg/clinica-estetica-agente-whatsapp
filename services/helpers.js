@@ -323,6 +323,19 @@ const CYRILLIC_STOPWORD_FRASES = [
     'всегда', 'только', 'больше', 'очень', 'сын', 'дочь',
 ];
 
+// Meses en GENITIVO, que es la forma que se usa al decir una fecha ("27 августа"). Estos
+// nueve no colisionan con ningún nombre, así que son stopwords sin más.
+const MESES_RU_UK_SIN_COLISION = [
+    'января', 'февраля', 'апреля', 'июня', 'июля', 'сентября', 'октября', 'ноября', 'декабря',
+    'січня', 'лютого', 'квітня', 'червня', 'липня', 'вересня', 'жовтня', 'листопада', 'грудня',
+];
+
+// Meses que SÍ colisionan con un nombre de mujer real: Августа, Марта, Майя. No pueden ser
+// stopwords fijas — descartarían a una clienta que se presenta. Se tratan como fecha SOLO
+// cuando el turno va de elegir día (ver extractQuickDataSante). Medido: "5 августа" ya no se
+// capturaba (el fallback exige una sola palabra), pero "августа" a secas sí.
+const MESES_RU_UK_AMBIGUOS = new Set(['августа', 'марта', 'мая', 'серпня', 'березня', 'травня']);
+
 // ⚠️ CANDADO. Muchos nombres de mujer rusos y ucranianos SON palabras comunes: Вера (fe),
 // Надежда (esperanza), Любовь (amor), Слава (gloria), Злата (oro), Роза, Лилия, Майя,
 // Виктория (victoria), Мила, Лада... Meter cualquiera de ellas como stopword haría que el
@@ -335,7 +348,7 @@ const NOMBRES_RU_UK_NUNCA_STOPWORD = [
     'лада', 'виктория', 'светлана', 'мир', 'віра', 'надія', 'любов', 'квітка', 'оксана',
 ];
 
-for (const frase of CYRILLIC_STOPWORD_FRASES) {
+for (const frase of [...CYRILLIC_STOPWORD_FRASES, ...MESES_RU_UK_SIN_COLISION]) {
     for (const token of normalizeText(frase).split(/\s+/)) {
         if (token) NAME_STOPWORDS.add(token);
     }
@@ -1267,7 +1280,14 @@ function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], tea
         if (cand) result.nombre = cand;
         if (!result.nombre && text.trim().split(/\s+/).length === 1) {
             const word = text.trim();
-            if (isValidName(word) && word.length >= 3) result.nombre = word;
+            // "августа" / "марта" / "мая" son a la vez mes en genitivo y nombre de mujer real
+            // (Августа, Марта, Майя), así que no pueden ser stopwords fijas. Se descartan por
+            // CONTEXTO: si acabamos de preguntarle qué día le viene bien, una palabra suelta
+            // que es un mes es la respuesta a esa pregunta, no cómo se llama.
+            // ("5 августа" no llega aquí: este fallback exige una sola palabra.)
+            const esMesEnTurnoDeFecha = opts.datePreferenceAsked
+                && MESES_RU_UK_AMBIGUOS.has(normalizeText(word));
+            if (!esMesEnTurnoDeFecha && isValidName(word) && word.length >= 3) result.nombre = word;
         }
         if (result.nombre && result.nombre !== 'desconocido') {
             result.nombre = filterServiceKeyword(result.nombre) || undefined;

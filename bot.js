@@ -2823,7 +2823,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // stylistQuestionPending: si el turno anterior dejó abierta la pregunta de
             // estilista, "el más cercano" contesta a QUIÉN y no debe tocar la fecha.
             session.partialData = extractQuickDataSante(sanitized, session.partialData, [], [],
-                { stylistQuestionPending: !!session.stylistQuestionPending });
+                {
+                    stylistQuestionPending: !!session.stylistQuestionPending,
+                    // Para descartar "августа"/"марта" como nombre cuando son la respuesta a
+                    // "¿qué día te viene bien?" (son mes en genitivo Y nombre de mujer real).
+                    datePreferenceAsked: !!session.datePreferenceAsked,
+                });
             // Bug 1: si el nombre extraído coincide con un servicio del catálogo, descartarlo
             if (session.partialData.nombre && session.partialData.nombre !== prevData.nombre) {
                 const agentCfgNameCheck = await getAgentConfig(orgId);

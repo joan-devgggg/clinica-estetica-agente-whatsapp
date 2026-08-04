@@ -31,6 +31,7 @@ function test(name, fn) {
 }
 
 const capturar = t => extractQuickDataSante(t, {}, [], []).nombre;
+const capturarConOpts = (t, opts) => extractQuickDataSante(t, {}, [], [], opts).nombre;
 
 // ─── Candados sobre la lista ─────────────────────────────────────────────────
 
@@ -86,6 +87,37 @@ test('INVERSO · un mensaje que es SOLO una stopword no se guarda como nombre', 
     for (const t of ['Спасибо', 'Привет', 'Нет', 'Ок', 'хочу', 'Добрый день',
         'я хочу записаться', 'Доброго дня', 'Отлично', 'пожалуйста']) {
         assert.strictEqual(capturar(t), undefined, `NO debería capturar "${t}"`);
+    }
+});
+
+// ─── Meses: mes en genitivo vs. nombre de mujer ──────────────────────────────
+
+test('MESES · los que no colisionan con un nombre son stopword siempre', () => {
+    // "27 августа" es cómo se dice una fecha en ruso: el mes va en genitivo.
+    for (const t of ['сентября', 'октября', 'января', 'декабря', 'вересня', 'грудня']) {
+        assert.strictEqual(capturar(t), undefined, `"${t}" es un mes, no un nombre`);
+    }
+});
+
+test('MESES · Августа/Марта/Майя se descartan por CONTEXTO, no por lista', () => {
+    // Son mes en genitivo Y nombre de mujer real. Meterlos como stopword fija descartaría
+    // a una clienta que se presenta bien; no meterlos guardaba "августа" como nombre.
+    for (const mes of ['августа', 'марта', 'мая']) {
+        assert.strictEqual(capturarConOpts(mes, { datePreferenceAsked: true }), undefined,
+            `"${mes}" en un turno de elección de día es una fecha`);
+        assert.strictEqual(capturarConOpts(mes, {}), mes,
+            `"${mes}" fuera de ese turno sigue pudiendo ser un nombre`);
+    }
+    // Y el nombre propio, tal cual lo escribiría ella, se captura siempre.
+    for (const nombre of ['Августа', 'Марта', 'Майя']) {
+        assert.strictEqual(capturar(nombre), nombre);
+    }
+});
+
+test('MESES · con dígitos de fecha nunca fue un nombre', () => {
+    // El fallback de una sola palabra no llega a dispararse.
+    for (const t of ['5 августа', '27 августа', 'Мне удобно на 27 августа']) {
+        assert.strictEqual(capturar(t), undefined);
     }
 });
 
