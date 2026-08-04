@@ -1140,6 +1140,67 @@ function asksForBookingApproval(text) {
 // propias, p.ej. escalar_humano envía el texto del LLM y hace return) y al final, sobre el
 // mensaje ya definitivo. El coste extra es una lectura, y solo cuando el texto afirma
 // reservar. Devuelve true si bloqueó algo.
+// ─── Recarga de sesión: ¿clienta recurrente o clienta CON cita viva? ─────────
+//
+// La pregunta se responde contra Supabase, nunca contra `partialData.estado_cita`. Esa era
+// la causa raíz: el estado que la sesión creía tener decidía si se le borraba el servicio.
+//
+// Lo que NO hace, a propósito: tocar `reservaConfirmada`. Ponerlo a true aquí apagaría de
+// golpe cinco de las seis redes del salón (llmClaimsBooked en el turno, las dos anti-fantasma
+// secundarias y los dos guards de "sin servicio"), y encima en muchas más sesiones que antes.
+// Es exactamente el bug del 30/07/2026. Para que la sesión "sepa" que hay una cita basta con
+// appointmentId + citaEnCurso, que es para lo que existe citaEnCurso.
+async function reconciliarCitaViva(orgId, session, userPhone) {
+    if (!session._decidirCitaVivaAlRecargar) return;
+    delete session._decidirCitaVivaAlRecargar;
+
+    if (!session.leadId) {
+        // Sin contacto no hay nada que consultar: se conserva el comportamiento anterior.
+        session.clienteRecurrente = true;
+        clearServiceState(session);
+        return;
+    }
+
+    let citas;
+    try {
+        citas = await getUpcomingAppointments(orgId, session.leadId);
+    } catch (e) {
+        // Conservador y deliberado: ante un fallo de lectura NO se destruye estado (no se
+        // limpia el servicio) y NO se afirma que hay cita (no se fija appointmentId ni
+        // citaEnCurso). Lo contrario sería elegir entre dos mentiras con la BD caída.
+        logger.warn('recarga_cita_viva_lectura_fallida', {
+            orgId, telefono: userPhone, contactId: session.leadId, error: e.message,
+        });
+        return;
+    }
+
+    if (!citas.length) {
+        // No hay cita por delante → es una clienta que vuelve. Comportamiento de siempre.
+        session.clienteRecurrente = true;
+        clearServiceState(session);
+        return;
+    }
+
+    const cita = citas[0];
+    const inicio = new Date(cita.starts_at);
+    session.appointmentId = cita.id;
+    session.citaEnCurso = {
+        appointmentId: cita.id,
+        servicio: cita.service,
+        fecha: toLocalDateStr(inicio),
+        hora: toLocalTimeStr(inicio),
+        horaFin: cita.ends_at ? toLocalTimeStr(new Date(cita.ends_at)) : null,
+        estilista: cita.stylists?.name || null,
+        stylistId: cita.stylist_id || null,
+    };
+    // El servicio restaurado desde SQLite se CONSERVA: es el de esta misma cita.
+    logger.info('recarga_con_cita_viva', {
+        orgId, telefono: userPhone, appointmentId: cita.id,
+        servicio: cita.service, fecha: session.citaEnCurso.fecha, hora: session.citaEnCurso.hora,
+        citasVivas: citas.length,
+    });
+}
+
 async function blockPhantomBookingClaim(orgId, session, userPhone, aiResponse, sanitized) {
     if (!llmClaimsBooked(aiResponse.respuesta)) return false;
     // Una propuesta pendiente de aprobación no es una promesa incumplida: no hay nada que
@@ -2446,9 +2507,24 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 
         const sKey = sessionKey(orgId, userPhone);
         const orgType = getOrgType(orgId);
-        const existingSession = userSessions.get(sKey);
+        let existingSession = userSessions.get(sKey);
         let isNewSession = false;
         let loadedFromSQLite = false;
+
+        // Una sesión caducada se persiste y se DESALOJA del Map, para que caiga por el mismo
+        // camino de rehidratación que una que ya no estaba.
+        //
+        // Antes este caso tenía su propia rama que hacía createEmptySession() sin leer SQLite.
+        // Resultado: entre 1 h (SESSION_TIMEOUT) y 2 h (cuando el GC la desaloja) el servicio
+        // se perdía sin ni siquiera intentar recuperarlo, mientras que pasadas esas 2 h sí se
+        // rehidrataba. Dos reglas distintas para el mismo problema, y la peor de las dos era
+        // la del hueco corto. Ahora hay un solo camino.
+        if (existingSession && Date.now() - existingSession.lastUpdate > SESSION_TIMEOUT) {
+            persistSession(orgId, userPhone, existingSession);
+            userSessions.delete(sKey);
+            existingSession = null;
+            logger.info('session_timeout_rehidrata', { orgId, telefono: userPhone });
+        }
 
         if (!existingSession) {
             const persisted = loadClient(orgId, userPhone);
@@ -2544,13 +2620,24 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         newSession.appointmentId = persisted.partialData?.appointment_id || null;
                         newSession.leadStatus = 'completed';
                     } else {
-                        // Cita anterior completada (confirmada/cancelada/etc.) →
-                        // cliente recurrente que puede reservar de nuevo.
-                        newSession.clienteRecurrente = true;
+                        // AQUÍ NO SE DECIDE NADA. Esta rama daba por hecho "cita anterior
+                        // completada → clienta recurrente" y llamaba a clearServiceState,
+                        // porque el único estado que reconocía arriba es 'pendiente_bizum'
+                        // (el flujo Bizum de San Remo). Sante escribe 'confirmado', así que
+                        // TODA recarga suya caía aquí: se le borraba el servicio y
+                        // reservaConfirmada se quedaba en false. Consecuencias medidas el
+                        // 04/08/2026: el bot le preguntaba "¿qué servicio quieres?" a una
+                        // clienta que ya tenía cita, y el barrido de abandono marcaba
+                        // 'abandonado' a 3 clientas con cita confirmada viva — que por eso
+                        // se quedaron fuera del recordatorio de 24 h (db.js:475 filtra por
+                        // estado='confirmado').
+                        //
+                        // La decisión se aplaza a reconciliarCitaViva(), que la toma contra
+                        // Supabase y no contra partialData.estado_cita. Aquí todavía no se
+                        // puede: session.leadId se resuelve más abajo, con findByPhone.
                         newSession.ultimaVisita = persisted.partialData?.fecha_cita || null;
                         if (persisted.partialData?.nombre) newSession.partialData.nombre = persisted.partialData.nombre;
-                        // Limpiar estado de reserva anterior para no bloquear nuevas citas
-                        clearServiceState(newSession);
+                        newSession._decidirCitaVivaAlRecargar = true;
                     }
                 } else {
                     const { telefono } = newSession.partialData;
@@ -2568,18 +2655,6 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 
             userSessions.set(sKey, newSession);
             incrementMetric('conversationStarted');
-            isNewSession = true;
-        } else if (Date.now() - existingSession.lastUpdate > SESSION_TIMEOUT) {
-            persistSession(orgId, userPhone, existingSession);
-            const prev = existingSession;
-            // Pasamos dbPhone (resuelto) para que el identificador de la sesión sea ESTABLE
-            // entre timeouts. Sin él, el telefono se derivaba del JID y podía divergir del
-            // wa_phone del contacto → rompía el matching de bot_mode (bug 10) y el guardado.
-            userSessions.set(sKey, createEmptySession(userPhone, orgId, dbPhone));
-            userSessions.get(sKey).botActivo = prev.botActivo;
-            if (!prev.botActivo) {
-                logger.info('session_botActivo_inherited_timeout', { orgId, telefono: userPhone, botActivo: false, source: 'session_timeout_inherit' });
-            }
             isNewSession = true;
         }
 
@@ -2629,6 +2704,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         if (!session.partialData.nombre && contact.nombre) session.partialData.nombre = contact.nombre;
                     }
 
+                    // Ya hay leadId: aquí sí se puede preguntar a Supabase si tiene una cita
+                    // por delante. Es la decisión que la rama de recarga dejó aplazada.
+                    await reconciliarCitaViva(orgId, session, userPhone);
+
                     if (session.clienteRecurrente && contact.id && orgType === 'salon') {
                         try {
                             const lastAppt = await getLastCompletedAppointment(orgId, contact.id);
@@ -2650,6 +2729,11 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     logger.info('session_botActivo_reset_orphan', { orgId, telefono: userPhone, source: 'sqlite_no_contact' });
                 }
             } catch (e) { logger.error('error_check_contact', { orgId, telefono: userPhone, error: e.message }); }
+
+            // Red de seguridad: si no hubo contacto en la DB, o findByPhone falló, la decisión
+            // aplazada seguiría pendiente y el estado de servicio se quedaría a medias. Es
+            // idempotente (borra su propia marca), así que si ya corrió arriba no hace nada.
+            await reconciliarCitaViva(orgId, session, userPhone);
         }
 
         // Reconciliación con la DB para sesiones EXISTENTES, en AMBAS direcciones. El panel
@@ -4632,18 +4716,59 @@ setInterval(() => {
     for (const session of userSessions.values()) session.seenMessages?.cleanup?.();
 }, GC_INTERVAL_MS / 2);
 
+// Marca 'abandonado' SOLO tras comprobar contra Supabase que no hay cita por delante.
+//
+// Verificar contra la BD y no contra la sesión es la misma disciplina que la red
+// anti-cita-fantasma, y aquí hace falta por lo mismo: la sesión recargada puede estar
+// equivocada. El 04/08/2026 tres clientas con cita confirmada acabaron en 'abandonado', y eso
+// las sacó del filtro de getLeadsPendientesRecordatorio (db.js:475, exige estado='confirmado')
+// → se quedaron sin el recordatorio de 24 h. Una tenía la cita ese mismo día.
+async function marcarAbandonadaSiNoTieneCita(orgId, key, session) {
+    if (session.leadId) {
+        try {
+            const citas = await getUpcomingAppointments(orgId, session.leadId);
+            if (citas.length) {
+                // Que la sesión lo sepa: así el barrido ni siquiera vuelve a preguntarlo.
+                session.appointmentId = citas[0].id;
+                logger.info('abandono_evitado_cita_viva', {
+                    orgId, telefono: session.partialData.telefono,
+                    appointmentId: citas[0].id, starts_at: citas[0].starts_at,
+                });
+                return;
+            }
+        } catch (e) {
+            // Sin lectura fiable no se marca nada: el lado seguro es NO afirmar que abandonó.
+            logger.warn('abandono_lectura_citas_fallida', {
+                orgId, telefono: session.partialData.telefono, error: e.message,
+            });
+            return;
+        }
+    }
+    incrementMetric('conversationDropped');
+    await saveLead(orgId, { ...session.partialData, estado_cita: 'abandonado', leadId: session.leadId })
+        .catch(() => {});
+    session.leadStatus = 'abandoned';
+    const phone = key.includes(':') ? key.split(':')[1] : key;
+    persistSession(orgId, phone, session);
+}
+
 setInterval(() => {
     const now = Date.now();
     for (const [key, session] of userSessions.entries()) {
-        if (session.reservaConfirmada || session.leadGuardado || !session.botActivo) continue;
+        // `leadStatus === 'abandoned'` es la guarda de idempotencia que faltaba: se asignaba
+        // pero no se comprobaba, así que este barrido reescribía la MISMA fila cada 60 s
+        // durante ~90 min (de los 30 min del umbral a las 2 h del GC). Efecto colateral: el
+        // updated_at de contacts acababa 2-3 h después del último mensaje, y "Actividad
+        // reciente" —que ordena por updated_at— mostraba el orden en que un worker tocó las
+        // filas, no la actividad real.
+        // `appointmentId` la salta de entrada: ya sabemos que tiene cita.
+        if (session.reservaConfirmada || session.leadGuardado || session.appointmentId
+            || session.leadStatus === 'abandoned' || !session.botActivo) continue;
         if (now - session.lastUpdate > ABANDON_THRESHOLD_MS && session.history.filter(m => m.role === 'user').length >= 2) {
-            incrementMetric('conversationDropped');
             const [orgId] = key.includes(':') ? key.split(':') : [null];
             if (session.partialData.telefono) {
-                saveLead(orgId, { ...session.partialData, estado_cita: 'abandonado', leadId: session.leadId }).catch(() => {});
-                session.leadStatus = 'abandoned';
-                const phone = key.includes(':') ? key.split(':')[1] : key;
-                persistSession(orgId, phone, session);
+                marcarAbandonadaSiNoTieneCita(orgId, key, session).catch(e =>
+                    logger.error('abandono_error', { orgId, error: e.message }));
             }
         }
     }
@@ -4719,6 +4844,8 @@ module.exports = {
         clearServiceState, assignStylistIfAppropriate, applyStylistMention, computeStylistGating, shouldFixStylistFromLlm, SERVICE_STATE_DEFAULTS, SERVICE_PARTIAL_FIELDS, createEmptySession,
         // Flujos de reserva (aceptación de upsell, 2ª reserva, skill de estilista):
         isUpsellingAcceptance, matchesServiceName, resetForSecondBooking, stylistCanDoService,
+        // Recarga de sesión con cita viva y barrido de abandono (deciden contra Supabase):
+        reconciliarCitaViva, marcarAbandonadaSiNoTieneCita,
         // Citas que ya existen: resolución contra BD, localización y acciones.
         resolveCitasVivas, matchCitaByPistas, handleCitasExistentes, hidratarCitaEnSesion,
         ejecutarCancelacion, ampliacionSolapa, dowLunes0,
