@@ -331,10 +331,18 @@ const addDays = (dateStr, n) => {
     const findStylist = (name) => realStylists.find(s => normalizeText(s.name) === normalizeText(name));
 
     // Especificación declarativa. `skillsIguales` compara el set con el de otra estilista.
+    //
+    // Aquí había también un `dias: [...]` por estilista, copiado de las migraciones 013/014 el
+    // 14/07/2026. No verificaba nada: comparaba la BD contra la foto del INSERT que la creó.
+    // La dueña edita los horarios desde el panel de Configuración (upsertStylistSchedule
+    // borra y reinserta), así que la expectativa caducaba en cuanto tocaba un día — y eso ya
+    // había pasado con las tres. Tres fallos permanentes que no había que arreglar, arrastrados
+    // durante días, entrenando a todo el mundo a ignorar el informe entero.
+    // Lo sustituye la Fase 7: invariantes que se sostienen con CUALQUIER horario.
     const ROSTER = [
-        { name: 'Tetiana', dias: [1, 2, 3, 5], skills: ['Extensiones de cabello'] },
-        { name: 'Natalia', dias: [2, 3, 4, 5], skillsIguales: 'Irina', incluye: ['Mechas Balayage'] },
-        { name: 'Yulia-Tricóloga', dias: [0, 2], skills: ['Dermapen Hair Loss', 'Diagnóstico Capilar'] },
+        { name: 'Tetiana', skills: ['Extensiones de cabello'] },
+        { name: 'Natalia', skillsIguales: 'Irina', incluye: ['Mechas Balayage'] },
+        { name: 'Yulia-Tricóloga', skills: ['Dermapen Hair Loss', 'Diagnóstico Capilar'] },
     ];
 
     for (const spec of ROSTER) {
@@ -357,14 +365,8 @@ const addDays = (dateStr, n) => {
             check('6-roster', got.has(normalizeText(must)), `${spec.name}: incluye "${must}"`, 'skill ausente');
         }
 
-        // Horario: set de días exacto + franja 10:00–19:00.
-        const sched = await db.getStylistSchedule(SANTE_ORG_ID, sty.id);
-        const days = [...new Set(sched.map(r => r.day_of_week))].sort((a, b) => a - b);
-        check('6-roster', JSON.stringify(days) === JSON.stringify(spec.dias), `${spec.name}: días de horario`,
-            `[${days}] esperado [${spec.dias}]`);
-        check('6-roster', sched.length > 0 && sched.every(r =>
-            String(r.start_time).startsWith('10:00') && String(r.end_time).startsWith('19:00')),
-            `${spec.name}: franja 10:00–19:00`, 'alguna franja no es 10–19');
+        // El horario de esta estilista ya no se compara contra una lista fija: lo cubre la
+        // Fase 7, que lo juzga contra el horario del salón y contra sí mismo.
     }
 
     // Tetiana: extensiones escala a humano → nunca candidata en getAvailableSlots.
@@ -394,6 +396,63 @@ const addDays = (dateStr, n) => {
             'nombre real: "yulia tricologa" → tricóloga', 'resolvió a otra estilista');
         check('6-roster', extractStylistFromText('quiero con yulia', realStylists)?.id === yulia.id,
             'nombre real: "yulia" → Yulia de pelo', 'resolvió a otra estilista');
+    }
+
+    // ─── Fase 7: coherencia de los horarios (sin ninguna lista de horarios esperados) ──
+    //
+    // Sustituye a las expectativas `dias`/franja que la Fase 6 comparaba contra la foto de la
+    // migración. Aquí NADA se compara contra una constante: cada franja se juzga contra sí
+    // misma y contra el horario del salón (agent_configs.business_hours), que la dueña edita
+    // desde el mismo panel. Así el 10:00–18:00 de Yulia-Tricóloga o el 10:00–16:00 de Larisa
+    // pasan —son decisiones suyas, perfectamente legítimas— y en cambio saltaría un 09:00, un
+    // 21:00, un día con el salón cerrado o una franja invertida, que son dedazos de verdad.
+    const businessHours = cfg.business_hours || {};
+    // Convención del proyecto (date-utils.mondayDow): 0=lunes … 6=domingo.
+    const BH_KEYS = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo'];
+    const toMin = (t) => {
+        const [h, m] = String(t || '').split(':').map(Number);
+        return Number.isFinite(h) ? h * 60 + (Number.isFinite(m) ? m : 0) : null;
+    };
+    const asHHMM = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+    // Duración del servicio más corto del catálogo: por debajo de eso, una franja no da ni
+    // para una cita y es un error de tecleo, no un horario.
+    const servicioMasCorto = Math.min(...catalog.map(s => Number(s.duracion) || 60));
+
+    for (const sty of realStylists) {
+        const sched = horarioPorEstilista.get(sty.id) || [];
+        // Una estilista sin horario no la propone el motor NINGÚN día: existe en el panel y es
+        // invisible para las clientas, que es la peor combinación posible.
+        if (!check('7-horarios', sched.length > 0, `${sty.name}: tiene horario`,
+            'no tiene ninguna franja configurada — el motor no la propondrá nunca')) continue;
+
+        const vistos = new Set();
+        for (const r of sched) {
+            const dow = r.day_of_week;
+            const etiqueta = `${sty.name} ${BH_KEYS[dow] || `día ${dow}`}`;
+
+            check('7-horarios', Number.isInteger(dow) && dow >= 0 && dow <= 6,
+                `${etiqueta}: día válido`, `day_of_week=${dow} fuera de 0..6`);
+            check('7-horarios', !vistos.has(dow), `${etiqueta}: día sin duplicar`,
+                'hay dos franjas para el mismo día');
+            vistos.add(dow);
+
+            const ini = toMin(r.start_time), fin = toMin(r.end_time);
+            if (!check('7-horarios', ini != null && fin != null, `${etiqueta}: horas legibles`,
+                `start=${r.start_time} end=${r.end_time}`)) continue;
+            check('7-horarios', ini < fin, `${etiqueta}: franja no invertida`,
+                `${asHHMM(ini)}–${asHHMM(fin)} empieza después de acabar`);
+            check('7-horarios', fin - ini >= servicioMasCorto, `${etiqueta}: franja utilizable`,
+                `${asHHMM(ini)}–${asHHMM(fin)} son ${fin - ini}min y el servicio más corto dura ${servicioMasCorto}min`);
+
+            // Contra el horario del salón: ni antes de abrir, ni después de cerrar, ni un día
+            // en el que el salón no abre.
+            const bh = businessHours[BH_KEYS[dow]];
+            if (!check('7-horarios', !!bh, `${etiqueta}: el salón abre ese día`,
+                `hay horario de ${sty.name} un ${BH_KEYS[dow] || dow} y el salón no abre`)) continue;
+            const abre = toMin(bh.apertura), cierra = toMin(bh.cierre);
+            check('7-horarios', ini >= abre && fin <= cierra, `${etiqueta}: dentro del horario del salón`,
+                `${asHHMM(ini)}–${asHHMM(fin)} se sale de ${bh.apertura}–${bh.cierre}`);
+        }
     }
 
     // ─── Reporte final ────────────────────────────────────────────────────────────────
