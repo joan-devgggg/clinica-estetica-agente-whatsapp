@@ -1789,6 +1789,42 @@ function detectExistingAppointmentReference(text) {
     return extractCitaPistas(text);
 }
 
+// Pide cancelar. `fuerza` separa dos cosas que no merecen la misma confianza:
+//   'explicita' — nombra la cancelación ("cancela mi cita"). Inequívoco.
+//   'implicita' — "no puedo ir el miércoles". Puede ser eso… o el rechazo de un hueco que
+//                 acabamos de proponer, que es una conversación completamente distinta. Por
+//                 eso bot.js la ignora si hay huecos sobre la mesa (slotsProposed).
+// En ningún caso cancela nada por sí sola: siempre se recita la cita y se espera un sí.
+function detectCancelRequest(text) {
+    if (!text) return null;
+    const t = normalizeText(text);
+    if (/\b(cancelar|cancela|cancelame|anular|anula|anulame|cancelo)\b/.test(t)
+        || /\bcancel\b/.test(t) || /отмен/.test(t) || /скасу/.test(t)) {
+        return { fuerza: 'explicita' };
+    }
+    if (/\bno (puedo|podre|voy a poder) (ir|venir|asistir|acudir|llegar|estar)\b/.test(t)
+        || /\bno me viene bien\b.*\b(cita|reserva)\b/.test(t)
+        || /can.?(no)?t make it/.test(t) || /\bnot able to come\b/.test(t)
+        || /не смогу/.test(t) || /не зможу/.test(t)) {
+        return { fuerza: 'implicita' };
+    }
+    return null;
+}
+
+// Pide mover la cita. Exige que el verbo vaya PEGADO a la cita: detectIntent devuelve
+// 'cambiar' con un `includes('cambiar')` a secas, y sobre eso no se puede tocar la agenda
+// ("quiero cambiar de look" no es un reagendado).
+function detectRescheduleRequest(text) {
+    if (!text) return false;
+    const t = normalizeText(text);
+    return [
+        /\b(cambiar|cambia|cambiarme|mover|mueve|reagendar|aplazar|posponer|adelantar|retrasar|cambio)\b[^.!?]{0,25}\b(cita|reserva|hora|dia|fecha)\b/,
+        /\b(cita|reserva)\b[^.!?]{0,25}\b(cambiar|cambiarla|mover|moverla|reagendar|otro dia|otra hora)\b/,
+        /\b(change|move|reschedule)\b[^.!?]{0,25}\b(appointment|booking)\b/,
+        /перенести/, /перенести (запис|запись)/,
+    ].some(re => re.test(t));
+}
+
 function _lineaCita(c, lang) {
     const con = { es: 'con', en: 'with', ru: 'у', uk: 'у' }[lang] || 'con';
     const estilista = c.estilista ? ` (${con} ${c.estilista})` : '';
@@ -1832,6 +1868,21 @@ function buildCitasVivasMsg({ citas = [], campo = 'general', language } = {}) {
     return [intro, '', ...citas.map(c => _lineaCita(c, lang)), '', t.cierre].join('\n');
 }
 
+// Cancelar es irreversible y libera un hueco facturable, así que NUNCA se ejecuta sobre una
+// intención inferida: se recita la cita concreta leída de Supabase y se espera un sí. Sin
+// esto, un "no puedo ir el miércoles" dicho de cualquier otra cosa borraba la cita.
+function buildCancelConfirmMsg({ cita, language } = {}) {
+    const lang = ['es', 'en', 'ru', 'uk'].includes(language) ? language : 'es';
+    const T = {
+        es: { intro: 'Antes de cancelar, confírmame que es esta:', pregunta: '¿La cancelo?' },
+        en: { intro: 'Before I cancel, let me check it\'s this one:', pregunta: 'Shall I cancel it?' },
+        ru: { intro: 'Прежде чем отменить, уточню — эта запись:', pregunta: 'Отменяю?' },
+        uk: { intro: 'Перш ніж скасувати, уточню — цей запис:', pregunta: 'Скасовую?' },
+    };
+    const t = T[lang] || T.es;
+    return [t.intro, '', _lineaCita(cita, lang), '', t.pregunta].join('\n');
+}
+
 // Con dos citas vivas y un "cancela mi cita" a secas NO se adivina: adivinar mal cancela la
 // cita equivocada, que es el peor resultado posible de toda esta funcionalidad.
 function buildElegirCitaMsg({ citas = [], accion = 'cancelar', language } = {}) {
@@ -1844,6 +1895,32 @@ function buildElegirCitaMsg({ citas = [], accion = 'cancelar', language } = {}) 
     };
     const t = T[lang] || T.es;
     return [t[accion] || t.cancelar, '', ...citas.map(c => _lineaCita(c, lang))].join('\n');
+}
+
+// Añadir un servicio alarga la cita y la nueva duración pisaría la cita siguiente de esa
+// estilista. No se escribe: se dice la verdad y lo cuadra una persona. La alternativa
+// —escribir igual— crea un solape invisible que solo se descubre el día de la cita.
+function buildAmpliacionSolapaMsg(language) {
+    const T = {
+        es: 'Puedo añadírtelo, pero con ese servicio la cita se alarga y se junta con la siguiente 😅 Aviso al salón para que te cuadren el horario y te confirmen.',
+        en: "I can add it, but that service makes the appointment run into the next one 😅 I'm letting the salon know so they can sort the timing and confirm.",
+        ru: 'Могу добавить, но с этой услугой запись удлиняется и накладывается на следующую 😅 Сообщаю в салон, чтобы согласовали время и подтвердили.',
+        uk: 'Можу додати, але з цією послугою запис подовжується й накладається на наступний 😅 Повідомляю салон, щоб узгодили час і підтвердили.',
+    };
+    return T[language] || T.es;
+}
+
+// La cancelación NO se pudo escribir. Gemelo de la red anti-cita-fantasma en la otra
+// dirección: antes el bot decía "cancelada ✅" con la cita viva en la agenda, y la clienta
+// no aparecía el día de su cita creyéndola anulada.
+function buildCancelFalloMsg(language) {
+    const T = {
+        es: 'Perdona, no he podido cancelarla desde aquí 😔 Aviso al salón ahora mismo para que la anulen y te confirmen.',
+        en: "Sorry, I couldn't cancel it from here 😔 I'm letting the salon know right now so they cancel it and confirm.",
+        ru: 'Извини, я не смогла отменить запись 😔 Сообщаю в салон, чтобы отменили и подтвердили тебе.',
+        uk: 'Вибач, я не змогла скасувати запис 😔 Повідомляю салон, щоб скасували та підтвердили тобі.',
+    };
+    return T[language] || T.es;
 }
 
 // Clasifica una variante de largo de pelo a partir del NOMBRE del servicio.
@@ -2529,12 +2606,17 @@ module.exports = {
     shouldDiscardUpsellForClosing,
     buildSanteConfirmationMessage,
     buildCitaFantasmaMsg,
-    // Citas que ya existen: consultar y referirse
+    // Citas que ya existen: consultar / referirse / cancelar con confirmación
     detectAppointmentQuery,
     detectExistingAppointmentReference,
     extractCitaPistas,
+    detectCancelRequest,
+    detectRescheduleRequest,
     buildCitasVivasMsg,
+    buildCancelConfirmMsg,
     buildElegirCitaMsg,
+    buildCancelFalloMsg,
+    buildAmpliacionSolapaMsg,
     isSpaPromoCategory,
     hasPreviousSpaOrMassage,
     buildSpaPromoNote,

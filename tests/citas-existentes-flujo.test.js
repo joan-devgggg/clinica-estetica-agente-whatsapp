@@ -1,10 +1,11 @@
-// Flujos sobre una cita que YA existe: consultarla y referirse a ella.
+// Flujos sobre una cita que YA existe: consultar, referirse, cambiar y cancelar.
 //
 // Complementa tests/consulta-cita-existente.test.js (que cubre las piezas puras) ejercitando
 // handleCitasExistentes de punta a punta contra un doble de Supabase, que es donde viven las
 // garantías que de verdad importan:
 //   · la cita se encuentra aunque cuelgue de un contacto DUPLICADO (incidente Valeria);
-//   · con dos citas vivas nunca se adivina a cuál se refiere;
+//   · no se dice "cancelada ✅" sin que la escritura haya ocurrido;
+//   · con dos citas vivas nunca se adivina cuál;
 //   · quien NO tiene ninguna cita sigue reservando exactamente igual que antes.
 process.env.TZ = 'Europe/Madrid';
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
@@ -54,7 +55,7 @@ require.cache[supabasePath] = {
 const calendarSante = require('../services/calendar-sante');
 const { buildSystemPrompt } = require('../services/providers/openai');
 const {
-    handleCitasExistentes, matchCitaByPistas, dowLunes0,
+    handleCitasExistentes, matchCitaByPistas, ampliacionSolapa, dowLunes0,
 } = require('../bot')._internals;
 
 const ORG = 'b2c3d4e5-f6a7-8901-bcde-f12345678901';
@@ -164,6 +165,7 @@ await test('referirse · "es para mi cita de las 6" carga la cita y NO abre una 
     const r = await turno(s, 'es para mi cita de las 6');
     assert.strictEqual(r.manejado, false, 'el turno sigue, pero ya sobre la cita correcta');
     assert.strictEqual(s.citaEnCurso?.appointmentId, 'apt-1');
+    assert.strictEqual(s.appointmentId, 'apt-1', 'sin id real, cancelar/cambiar no pueden operar');
     assert.strictEqual(s.reservaConfirmada, true);
     assert.strictEqual(r.enviados.length, 0, 'identificar la cita no manda ningún mensaje');
 });
@@ -193,6 +195,126 @@ await test('referirse · la respuesta "la del jueves" resuelve la ambigüedad', 
     assert.strictEqual(s.citaEnCurso?.appointmentId, 'apt-1');
 });
 
+// ─── Cancelar ───────────────────────────────────────────────────────────────────
+
+await test('cancelar · el primer turno NO escribe: recita la cita y pregunta', async () => {
+    filasPorTabla.appointments = [filaCita()];
+    let escrituras = 0;
+    calendarSante.cancelAppointment = async () => { escrituras++; return { success: true }; };
+    const s = sesion();
+    const r = await turno(s, 'quiero cancelar mi cita');
+    assert.strictEqual(r.manejado, true);
+    assert.strictEqual(escrituras, 0, 'no se cancela sobre una intención, se pregunta antes');
+    assert.ok(r.texto.includes('18:00') && r.texto.includes('Color raíz'), 'debe recitar la cita');
+    assert.ok(!/cancelada/i.test(r.texto), 'no puede darla por cancelada');
+    assert.strictEqual(s.pendingCitaAccion?.estado, 'confirmar');
+});
+
+await test('cancelar · el "sí" ejecuta y solo entonces confirma', async () => {
+    filasPorTabla.appointments = [filaCita()];
+    const cancelados = [];
+    calendarSante.cancelAppointment = async (_o, id) => { cancelados.push(id); return { success: true }; };
+    const s = sesion();
+    await turno(s, 'quiero cancelar mi cita');
+    const r = await turno(s, 'sí');
+    assert.deepStrictEqual(cancelados, ['apt-1'], 'debe cancelar la cita REAL de Supabase');
+    assert.ok(/cancelada/i.test(r.texto));
+    assert.strictEqual(s.reservaConfirmada, false);
+    assert.strictEqual(s.appointmentId, null);
+});
+
+await test('cancelar · el "no" deja la cita en paz', async () => {
+    filasPorTabla.appointments = [filaCita()];
+    let escrituras = 0;
+    calendarSante.cancelAppointment = async () => { escrituras++; return { success: true }; };
+    const s = sesion();
+    await turno(s, 'quiero cancelar mi cita');
+    const r = await turno(s, 'no, déjala');
+    assert.strictEqual(escrituras, 0);
+    assert.ok(!/cancelada/i.test(r.texto), `no debe anunciar cancelación: ${r.texto}`);
+});
+
+await test('cancelar · si la ESCRITURA falla NO dice "cancelada"', async () => {
+    // El gemelo de la red anti-cita-fantasma. Antes el bot decía "cancelada ✅" con la cita
+    // viva en la agenda y la clienta no aparecía el día de su cita.
+    filasPorTabla.appointments = [filaCita()];
+    calendarSante.cancelAppointment = async () => { const e = new Error('no existe'); e.code = 'PGRST116'; throw e; };
+    const s = sesion();
+    await turno(s, 'quiero cancelar mi cita');
+    const r = await turno(s, 'sí');
+    assert.ok(!/cancelada/i.test(r.texto), `mintió: ${r.texto}`);
+    assert.ok(/no he podido/i.test(r.texto), 'debe decir la verdad y avisar al salón');
+});
+
+await test('cancelar · sin ninguna cita nunca anuncia una cancelación', async () => {
+    filasPorTabla.appointments = [];
+    let escrituras = 0;
+    calendarSante.cancelAppointment = async () => { escrituras++; return { success: true }; };
+    const r = await turno(sesion(), 'quiero cancelar mi cita');
+    assert.strictEqual(escrituras, 0);
+    assert.ok(!/cancelada/i.test(r.texto));
+    assert.ok(/no me consta/i.test(r.texto));
+});
+
+await test('cancelar · con DOS citas pregunta cuál antes de confirmar nada', async () => {
+    filasPorTabla.appointments = [
+        filaCita({ id: 'apt-1', service: 'Color raíz', starts: '2026-08-06T18:00:00+02:00' }),
+        filaCita({ id: 'apt-2', service: 'Manicura', starts: '2026-08-04T11:00:00+02:00', stylistId: 's-2' }),
+    ];
+    let escrituras = 0;
+    calendarSante.cancelAppointment = async () => { escrituras++; return { success: true }; };
+    const s = sesion();
+    const r = await turno(s, 'quiero cancelar mi cita');
+    assert.strictEqual(escrituras, 0);
+    assert.ok(/cu[aá]l/i.test(r.texto));
+    assert.strictEqual(s.pendingCitaAccion?.accion, 'cancelar');
+    // Y al elegir, se recita ESA y se sigue pidiendo confirmación.
+    const r2 = await turno(s, 'la manicura');
+    assert.strictEqual(escrituras, 0, 'elegir no es confirmar');
+    assert.ok(r2.texto.includes('Manicura'));
+    assert.strictEqual(s.pendingCitaAccion?.cita.id, 'apt-2');
+});
+
+await test('cancelar · "no puedo ir el miércoles" con huecos propuestos es RECHAZO de hueco', async () => {
+    // Si acabamos de ofrecerle huecos, esa frase rechaza el hueco: no cancela nada.
+    filasPorTabla.appointments = [filaCita()];
+    const s = sesion({ slotsProposed: true });
+    const r = await turno(s, 'no puedo ir el miércoles');
+    assert.strictEqual(r.manejado, false, 'debe seguir el flujo normal de propuesta de huecos');
+    assert.strictEqual(s.pendingCitaAccion, null);
+});
+
+await test('cancelar · "no puedo ir el jueves" SIN huecos propuestos sí propone cancelar', async () => {
+    filasPorTabla.appointments = [filaCita()];   // jueves 06/08
+    const s = sesion();
+    const r = await turno(s, 'no puedo ir el jueves');
+    assert.strictEqual(r.manejado, true);
+    assert.strictEqual(s.pendingCitaAccion?.estado, 'confirmar');
+    assert.ok(!/cancelada/i.test(r.texto));
+});
+
+// ─── Cambiar ────────────────────────────────────────────────────────────────────
+
+await test('cambiar · fija el id REAL de Supabase antes de entrar en reagendado', async () => {
+    // Sin esto, reagendarAppointmentId quedaba en null tras un timeout y finalizarCitaSante
+    // creaba una cita nueva dejando viva la vieja: dos reservas facturables.
+    filasPorTabla.appointments = [filaCita()];
+    const s = sesion();
+    const r = await turno(s, 'quiero cambiar mi cita al jueves');
+    assert.strictEqual(r.manejado, true);
+    assert.strictEqual(s.reagendarAppointmentId, 'apt-1');
+    assert.strictEqual(s.modoReagendamiento, true);
+});
+
+await test('cambiar · "quiero cambiar de look" NO toca la agenda', async () => {
+    // detectIntent devuelve 'cambiar' con un includes() a secas; sobre eso no se reagenda.
+    filasPorTabla.appointments = [filaCita()];
+    const s = sesion();
+    const r = await turno(s, 'quiero cambiar de look');
+    assert.strictEqual(r.manejado, false);
+    assert.ok(!s.modoReagendamiento);
+});
+
 // ─── El flujo normal de quien NO tiene cita ─────────────────────────────────────
 
 await test('reserva normal · sin citas, un "quiero pedir cita" pasa de largo', async () => {
@@ -217,6 +339,27 @@ await test('reserva normal · aceptar un hueco propuesto no se confunde con una 
     const s = sesion({ slotsProposed: true });
     const r = await turno(s, 'sí, las 18:00 perfecto');
     assert.strictEqual(r.manejado, false);
+});
+
+// ─── Guard de solape al ampliar ─────────────────────────────────────────────────
+
+await test('ampliar · detecta que la nueva duración pisa la cita siguiente', async () => {
+    const apt = { id: 'apt-1', stylist_id: 's-1', starts_at: '2026-08-06T18:00:00+02:00' };
+    filasPorTabla.appointments = [
+        { id: 'apt-1', stylist_id: 's-1', starts_at: '2026-08-06T18:00:00+02:00', ends_at: '2026-08-06T19:30:00+02:00' },
+        { id: 'apt-9', stylist_id: 's-1', starts_at: '2026-08-06T19:30:00+02:00', ends_at: '2026-08-06T20:30:00+02:00' },
+    ];
+    const solapa = await ampliacionSolapa(ORG, apt, new Date('2026-08-06T20:00:00+02:00'));
+    assert.strictEqual(solapa, true, 'ampliar hasta las 20:00 se come la cita de las 19:30');
+});
+
+await test('ampliar · si cabe justo hasta la siguiente, no solapa', async () => {
+    const apt = { id: 'apt-1', stylist_id: 's-1', starts_at: '2026-08-06T18:00:00+02:00' };
+    filasPorTabla.appointments = [
+        { id: 'apt-1', stylist_id: 's-1', starts_at: '2026-08-06T18:00:00+02:00' },
+        { id: 'apt-9', stylist_id: 's-1', starts_at: '2026-08-06T19:30:00+02:00' },
+    ];
+    assert.strictEqual(await ampliacionSolapa(ORG, apt, new Date('2026-08-06T19:30:00+02:00')), false);
 });
 
 // ─── Piezas de localización ─────────────────────────────────────────────────────

@@ -281,6 +281,13 @@ await test('buildCitasVivasMsg · sin citas no inventa ninguna', () => {
     assert.ok(!msg.includes('📅'));
 });
 
+await test('buildCancelConfirmMsg · recita la cita concreta y pregunta', () => {
+    const msg = H.buildCancelConfirmMsg({ cita: CITA, language: 'es' });
+    assert.ok(msg.includes('18:00') && msg.includes('Color raíz'));
+    assert.ok(/cancelo\?/i.test(msg), 'debe preguntar, no afirmar');
+    assert.ok(!/cancelada/i.test(msg), 'no puede dar la cancelación por hecha');
+});
+
 await test('buildElegirCitaMsg · lista las opciones sin elegir por ella', () => {
     const otra = { ...CITA, id: 'a-2', servicio: 'Manicura', fecha: '2026-08-04', hora: '11:00' };
     const msg = H.buildElegirCitaMsg({ citas: [CITA, otra], accion: 'cancelar', language: 'es' });
@@ -293,6 +300,7 @@ await test('mensajes · los 4 idiomas responden sin caer a español', () => {
         const msg = H.buildCitasVivasMsg({ citas: [CITA], language: lang });
         assert.ok(msg.length > 0);
         assert.ok(!/Tienes esta cita/.test(msg), `${lang} cayó al texto español`);
+        assert.ok(!/cancelada/i.test(H.buildCancelConfirmMsg({ cita: CITA, language: lang })));
     }
 });
 

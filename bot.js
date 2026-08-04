@@ -6,13 +6,13 @@ const {
     getAgentConfig, updateContactLanguage, updateContactPreferredStylist, updateContactLastStylist,
     getStylistsByOrg, getAllStylistSchedules, getLastCompletedAppointment, hasActiveAppointmentForSlot,
     getScheduleBlocks, getBlockedDays, getAppointmentsByLead, getAppointmentById, getUpcomingAppointments,
-    findContactIdsByPhone,
+    findContactIdsByPhone, getAppointmentsByStylistAndRange,
 } = require('./services/db');
 const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, buildCitasVivasMsg, buildElegirCitaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -669,6 +669,16 @@ async function escalateToHuman(session, userPhone, reason, ultimoMensaje) {
 async function handleAppointmentAction(client, session, userPhone, accion, respuesta, motivoEscalado) {
     const orgId = session.orgId;
     if (accion === 'cancelar') {
+        // Sin cita que cancelar, el salón NO anuncia una cancelación: el `if` de abajo se
+        // saltaba entero y el mensaje "cancelada ✅" salía igual, con la cita viva en la
+        // agenda y la clienta sin aparecer el día de su cita. La ruta buena para el salón es
+        // handleCitasExistentes, que resuelve la cita contra Supabase y verifica la escritura.
+        // San Remo queda intacto: rehidrata appointment_id desde partialData en las dos ramas
+        // de carga de sesión, así que no llega aquí en blanco.
+        if (session.orgType === 'salon' && !session.appointmentId) {
+            logger.warn('cancelacion_sin_cita_descartada', { orgId, telefono: userPhone });
+            return false;
+        }
         if (session.appointmentId) {
             if (session.orgType === 'salon') await calendarSante.cancelAppointment(orgId, session.appointmentId);
             else await calendar.cancelAppointment(session.appointmentId);
@@ -1728,6 +1738,7 @@ async function hidratarCitaEnSesion(orgId, session, cita) {
         appointmentId: cita.id, servicio: cita.servicio, fecha: cita.fecha,
         hora: cita.hora, horaFin: cita.horaFin, estilista: cita.estilista, stylistId: cita.stylistId,
     };
+    session.appointmentId = cita.id;
     session.reservaConfirmada = true;
     session.partialData.fecha_cita = cita.fecha;
     session.partialData.hora_cita = cita.hora;
@@ -1752,6 +1763,84 @@ async function hidratarCitaEnSesion(orgId, session, cita) {
     }
 }
 
+const CANCEL_OK_MSGS = {
+    es: 'Tu cita ha sido cancelada ✅ Si quieres reservar otra, dímelo cuando quieras 😊',
+    en: "Your appointment has been cancelled ✅ If you'd like to book another, just let me know 😊",
+    ru: 'Запись отменена ✅ Если захочешь записаться снова, напиши мне 😊',
+    uk: 'Запис скасовано ✅ Якщо захочеш записатися знову, напиши мені 😊',
+};
+const CANCEL_NO_MSGS = {
+    es: 'Perfecto, la dejo como está 😊',
+    en: 'Perfect, I\'ll leave it as it is 😊',
+    ru: 'Хорошо, оставляю запись без изменений 😊',
+    uk: 'Добре, залишаю запис без змін 😊',
+};
+
+// Ejecuta la cancelación YA confirmada. El invariante, gemelo del de la red anti-cita-fantasma
+// pero en la otra dirección: ningún mensaje que afirme una cancelación sale sin que la
+// escritura haya ocurrido. Antes, con appointmentId perdido tras un timeout, el bot decía
+// "cancelada ✅" sin tocar la base de datos y la clienta no aparecía el día de su cita.
+async function ejecutarCancelacion(orgId, session, cita, _send, userPhone) {
+    try {
+        const r = await calendarSante.cancelAppointment(orgId, cita.id);
+        if (!r?.success) throw new Error('cancelAppointment sin efecto');
+    } catch (e) {
+        // updateAppointment usa .single(): PGRST116 = la cita ya no existe. Cualquier otro
+        // código es un fallo de escritura con la cita AÚN VIVA. En los dos casos se dice la
+        // verdad y lo recoge una persona.
+        logger.error('cita_cancelacion_fallida', {
+            orgId, telefono: userPhone, appointmentId: cita.id, code: e.code || null, error: e.message,
+        });
+        await _send(buildCancelFalloMsg(session.language));
+        await escalateToHuman(session, userPhone, 'cancelacion_fallida', `Cancelar ${cita.fecha} ${cita.hora} ${cita.servicio || ''}`);
+        return true;
+    }
+    logger.info('cita_cancelada', {
+        orgId, telefono: userPhone, appointmentId: cita.id, fecha: cita.fecha, hora: cita.hora,
+    });
+    session.reservaConfirmada = false;
+    session.appointmentId = null;
+    clearServiceState(session);   // limpia también citaEnCurso y pendingCitaAccion
+    try {
+        await updateLead(orgId, { telefono: session.partialData.telefono, estado_cita: 'cancelado', leadId: session.leadId });
+    } catch (e) {
+        // La cita YA está cancelada en la agenda; sincronizar la ficha es contabilidad
+        // posterior y no puede convertir un éxito en un mensaje de error.
+        logger.error('cita_cancelada_lead_no_sincronizado', { orgId, appointmentId: cita.id, error: e.message });
+    }
+    await _send(CANCEL_OK_MSGS[session.language] || CANCEL_OK_MSGS.es);
+    return true;
+}
+
+// Arranca la acción sobre una cita ya identificada. Cancelar pide confirmación recitándola;
+// cambiar entra en modo reagendado con el id REAL de Supabase — que es justo lo que faltaba:
+// handleAppointmentAction dependía de session.appointmentId, que el salón no persiste, así
+// que tras un timeout el reagendado creaba una cita nueva y dejaba viva la vieja.
+async function iniciarAccionSobreCita(client, orgId, session, cita, accion, _send, userPhone) {
+    await hidratarCitaEnSesion(orgId, session, cita);
+    if (accion === 'referir') return false;   // solo identificarla: el turno sigue su curso
+    if (accion === 'cancelar') {
+        session.pendingCitaAccion = { estado: 'confirmar', accion: 'cancelar', cita };
+        await _send(buildCancelConfirmMsg({ cita, language: session.language }));
+        return true;
+    }
+    logger.info('cita_reagendado_iniciado', { orgId, telefono: userPhone, appointmentId: cita.id });
+    return handleAppointmentAction(client, session, userPhone, 'cambiar');
+}
+
+// ¿Ampliar la cita hasta `endsAt` pisaría la siguiente cita de esa estilista? Se mira la
+// agenda REAL del día, no la sesión. Importa sobre todo al añadir un servicio a una cita
+// reservada en otra sesión: entonces la duración original ya está encajada entre otras dos
+// citas y alargarla por detrás crea un solape que nadie ve hasta el día de la cita.
+async function ampliacionSolapa(orgId, apt, endsAt) {
+    if (!apt?.stylist_id || !apt?.starts_at) return false;   // sin estilista no hay agenda que pisar
+    const desde = new Date(apt.starts_at);
+    const finDia = new Date(desde);
+    finDia.setHours(23, 59, 59, 999);
+    const citas = await getAppointmentsByStylistAndRange(orgId, apt.stylist_id, desde.toISOString(), finDia.toISOString());
+    return (citas || []).some(c => c.id !== apt.id && new Date(c.starts_at) < endsAt);
+}
+
 // ─── Turno que habla de una cita que YA existe (Sante) ───────────────────────
 // El agujero de fondo del incidente de Valeria: el bot no tenía forma de mirar una cita ya
 // reservada, así que "es para mi cita de las 6" caía en el flujo de reserva y abría una cita
@@ -1771,16 +1860,25 @@ async function handleCitasExistentes(client, orgId, session, sanitized, _send, u
         const pend = session.pendingCitaAccion;
         session.pendingCitaAccion = null;
 
-        if (pend.estado === 'elegir') {
+        if (pend.estado === 'confirmar') {
+            if (isAffirmative(sanitized)) return ejecutarCancelacion(orgId, session, pend.cita, _send, userPhone);
+            if (isNegative(sanitized)) {
+                logger.info('cita_cancelacion_rechazada', { orgId, telefono: userPhone, appointmentId: pend.cita.id });
+                await _send(CANCEL_NO_MSGS[lang] || CANCEL_NO_MSGS.es);
+                return true;
+            }
+        } else if (pend.estado === 'elegir') {
             const m = matchCitaByPistas(pend.opciones, { ...extractCitaPistas(sanitized), servicio: sanitized });
-            if (m.cita) { await hidratarCitaEnSesion(orgId, session, m.cita); return false; }
+            if (m.cita) return iniciarAccionSobreCita(client, orgId, session, m.cita, pend.accion, _send, userPhone);
         }
 
         // Ni sí/no ni una elección reconocible. Se repite la pregunta UNA vez y a la segunda
         // se suelta el turno: insistir con la misma frase es cómo se construye un bucle.
         if (!pend.repetida) {
             session.pendingCitaAccion = { ...pend, repetida: true };
-            await _send(buildElegirCitaMsg({ citas: pend.opciones, accion: pend.accion, language: lang }));
+            await _send(pend.estado === 'confirmar'
+                ? buildCancelConfirmMsg({ cita: pend.cita, language: lang })
+                : buildElegirCitaMsg({ citas: pend.opciones, accion: pend.accion, language: lang }));
             return true;
         }
         logger.info('cita_accion_abandonada', { orgId, telefono: userPhone, estado: pend.estado });
@@ -1789,11 +1887,17 @@ async function handleCitasExistentes(client, orgId, session, sanitized, _send, u
     // ── 1. ¿Habla este mensaje de una cita que ya existe? ────────────────────
     const query   = detectAppointmentQuery(sanitized);
     const ref     = detectExistingAppointmentReference(sanitized);
-    if (!query && !ref) return false;
+    const cancel  = detectCancelRequest(sanitized);
+    const resched = detectRescheduleRequest(sanitized);
+    if (!query && !ref && !cancel && !resched) return false;
 
-    // Una referencia a secas con huecos propuestos sobre la mesa no debe secuestrar la
-    // aceptación del hueco ("sí, las 18:00" acepta una propuesta, no habla de otra cita).
-    if (session.slotsProposed && !query && ref) return false;
+    // Con huecos propuestos sobre la mesa, "no puedo ir el miércoles" es el RECHAZO del
+    // hueco que acabamos de ofrecer, no una cancelación. Y una referencia a secas no debe
+    // secuestrar la aceptación de un hueco. Las señales explícitas sí pasan.
+    if (session.slotsProposed && !query) {
+        if (cancel?.fuerza === 'implicita' && !ref) return false;
+        if (ref && !cancel && !resched) return false;
+    }
 
     // ── 2. La verdad: qué citas tiene realmente ──────────────────────────────
     const citas = await resolveCitasVivas(orgId, session);
@@ -1807,7 +1911,7 @@ async function handleCitasExistentes(client, orgId, session, sanitized, _send, u
         // Sin citas NO se toca el flujo de quien viene a reservar por primera vez. Solo se
         // contesta si preguntaba explícitamente por una cita suya — y así un "cancélamela"
         // sin nada que cancelar tampoco puede acabar en un "cancelada ✅".
-        if (query) {
+        if (query || cancel?.fuerza === 'explicita' || resched) {
             logger.info('cita_consultada_sin_citas', { orgId, telefono: userPhone });
             await _send(buildCitasVivasMsg({ citas: [], language: lang }));
             return true;
@@ -1821,6 +1925,18 @@ async function handleCitasExistentes(client, orgId, session, sanitized, _send, u
         await _send(buildCitasVivasMsg({ citas, campo: 'no_casa', language: lang }));
         return true;
     };
+
+    // ── 3. Cancelar / cambiar ────────────────────────────────────────────────
+    if (cancel || resched) {
+        const accion = cancel ? 'cancelar' : 'cambiar';
+        const m = matchCitaByPistas(citas, pistas);
+        if (m.contradice) return noCasa();
+        if (m.cita) return iniciarAccionSobreCita(client, orgId, session, m.cita, accion, _send, userPhone);
+        session.pendingCitaAccion = { estado: 'elegir', accion, opciones: m.candidatas };
+        logger.info('cita_accion_ambigua', { orgId, telefono: userPhone, accion, opciones: m.candidatas.length });
+        await _send(buildElegirCitaMsg({ citas: m.candidatas, accion, language: lang }));
+        return true;
+    }
 
     // ── 4. Consultar ─────────────────────────────────────────────────────────
     if (query) {
@@ -3671,6 +3787,18 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // las redes finales. Un "te he reservado… y te paso con una persona" saldría entero.
         if (orgType === 'salon') await blockPhantomBookingClaim(orgId, session, userPhone, aiResponse, sanitized);
 
+        // Para el salón, cancelar y cambiar ya no los dispara el modelo: los resuelve la capa
+        // determinista de arriba, que identifica la cita contra Supabase y —en el caso de
+        // cancelar— la recita y espera un sí. Un `accion` del LLM sin cita resuelta ejecutaba
+        // sobre session.appointmentId, que el salón no persiste: en la práctica cancelaba sin
+        // tocar la base de datos y anunciaba "cancelada ✅", o reagendaba creando una segunda
+        // cita y dejando viva la vieja. Se conserva como señal secundaria, nunca como orden.
+        if (orgType === 'salon' && (aiResponse.accion === 'cancelar' || aiResponse.accion === 'cambiar')
+            && !session.appointmentId) {
+            logger.info('accion_llm_descartada_sin_cita', { orgId, telefono: userPhone, accion: aiResponse.accion });
+            aiResponse.accion = null;
+        }
+
         // Handle actions (cancel, reschedule, escalate)
         if (aiResponse.accion && !(aiResponse.accion === 'cambiar' && session.modoReagendamiento)) {
             const handled = await handleAppointmentAction(client, session, userPhone, aiResponse.accion, aiResponse.respuesta, aiResponse.motivo_escalado);
@@ -3834,10 +3962,25 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                             ? new Date(apt.starts_at)
                             : new Date(`${session.partialData.fecha_cita}T${session.partialData.hora_cita}:00`);
                         const endsAt = new Date(base.getTime() + totalDur * 60000);
-                        await updateAppointment(orgId, session.appointmentId, {
-                            servicio: updServices,
-                            endsAt: endsAt.toISOString(),
-                        });
+                        // Añadir alarga la cita. Si la nueva duración se come la cita
+                        // siguiente de esa estilista NO se escribe: un solape invisible en
+                        // la agenda no se descubre hasta que las dos clientas coinciden.
+                        if (await ampliacionSolapa(orgId, apt, endsAt)) {
+                            logger.warn('ampliacion_cita_solapa', {
+                                orgId, telefono: userPhone, appointmentId: session.appointmentId,
+                                nuevoFin: endsAt.toISOString(), servicios: updServices,
+                            });
+                            session.upsellingAccepted = session.upsellingAccepted
+                                .filter(u => !(aiResponse.datos.upselling_aceptado || []).includes(u));
+                            aiResponse.respuesta = buildAmpliacionSolapaMsg(session.language);
+                            session.botActivo = false;
+                            await escalateToHuman(session, userPhone, 'ampliacion_cita_solapa', sanitized);
+                        } else {
+                            await updateAppointment(orgId, session.appointmentId, {
+                                servicio: updServices,
+                                endsAt: endsAt.toISOString(),
+                            });
+                        }
                     } catch (e) {
                         logger.error('error_update_upselling', { orgId, error: e.message });
                     }
@@ -4572,7 +4715,8 @@ module.exports = {
         // Flujos de reserva (aceptación de upsell, 2ª reserva, skill de estilista):
         isUpsellingAcceptance, matchesServiceName, resetForSecondBooking, stylistCanDoService,
         // Citas que ya existen: resolución contra BD, localización y acciones.
-        resolveCitasVivas, matchCitaByPistas, handleCitasExistentes, hidratarCitaEnSesion, dowLunes0,
+        resolveCitasVivas, matchCitaByPistas, handleCitasExistentes, hidratarCitaEnSesion,
+        ejecutarCancelacion, ampliacionSolapa, dowLunes0,
         // Solo para introspección en tests (no usar en producción):
         getSession: (orgId, userPhone) => userSessions.get(sessionKey(orgId, userPhone)),
         getBuffer: (orgId, userPhone) => messageBuffers.get(sessionKey(orgId, userPhone)),
