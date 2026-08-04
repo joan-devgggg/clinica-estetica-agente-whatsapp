@@ -239,6 +239,20 @@ async function process360Webhook(body, {
                 continue;
             }
             const messages = Array.isArray(value.messages) ? value.messages : [];
+            if (!messages.length) {
+                // Un `change` que no trae ni statuses ni messages se caía por el bucle vacío
+                // SIN escribir una sola línea: desde los logs, "no llegan ecos" y "llegan y
+                // los tiramos" eran exactamente lo mismo. Con Coexistence activa (la dueña
+                // contesta desde la app del móvil sobre el mismo número), esos mensajes
+                // llegan en un `field` propio, y este log es lo que lo revela: dice qué
+                // campo es y qué claves trae el value, que es todo lo que hace falta para
+                // saber si hay que enchufarlos o si aún falta suscribir el webhook.
+                logger.warn('360d_change_no_reconocido', {
+                    field: change?.field || null,
+                    claves: Object.keys(value),
+                });
+                continue;
+            }
             for (const msg of messages) {
                 try {
                     const receiver = value?.metadata?.display_phone_number;
