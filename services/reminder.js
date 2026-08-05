@@ -8,6 +8,7 @@ const { getAppointmentsPendientesRecordatorio, marcarRecordatorioSent, getConfig
 const { resolveOutboundClient, resolveAutomatedSend } = require('./outbound');
 const { isUsableName } = require('./helpers');
 const { alertOnce } = require('./admin-alerts');
+const { noteSendResult } = require('./channel-health');
 const logger = require('../lib/logger');
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -170,9 +171,13 @@ async function sendReminderMessage(orgId, record, { mensaje, templateParams }) {
         } else {
             await client.sendMessage(chatId, mensaje);
         }
+        // Salud del canal: este envío no pasa por waSendMessage, así que se reporta aquí.
+        // 'sin_plantilla' no se reporta porque no llegó a intentarse ningún envío.
+        noteSendResult(orgId, { ok: true });
         return 'enviado';
     } catch (e) {
         logger.error('reminder_error_envio', { orgId, telefono: record.telefono, chatId, error: e.message });
+        noteSendResult(orgId, { ok: false, error: e, contexto: 'recordatorio de 24 h' });
         return 'fallo';
     }
 }

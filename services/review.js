@@ -6,6 +6,7 @@
 
 const { getCompletedAppointmentsForReview, getConfigValue, getAgentConfig, updateAppointment } = require('./db');
 const { resolveOutboundClient, resolveAutomatedSend } = require('./outbound');
+const { noteSendResult } = require('./channel-health');
 const logger = require('../lib/logger');
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -86,9 +87,12 @@ async function sendReviewMessage(orgId, { telefono, language, waJid }, { mensaje
         } else {
             await client.sendMessage(chatId, mensaje);
         }
+        // Salud del canal: este envío no pasa por waSendMessage, así que se reporta aquí.
+        noteSendResult(orgId, { ok: true });
         return 'enviado';
     } catch (e) {
         logger.error('review_error_envio', { orgId, telefono, chatId, error: e.message });
+        noteSendResult(orgId, { ok: false, error: e, contexto: 'petición de reseña' });
         return 'fallo';
     }
 }

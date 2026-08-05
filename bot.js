@@ -17,6 +17,7 @@ const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
 const { notePausedDrop, resetPauseAlert } = require('./services/bot-pause-alert');
+const { noteSendResult } = require('./services/channel-health');
 const { summarizeHistory } = require('./services/providers/openai');
 const { notifyBizumPending, notifyEscalation, notifyBlacklistAlert } = require('./services/telegram');
 const { getOrgType, getOrgChannel, CHANNEL_WWEBJS } = require('./services/org-registry');
@@ -379,18 +380,28 @@ function isTransientWAError(err) {
 // así que usamos backoff creciente (0.8s, 1.6s, 2.4s) y, antes de cada reintento, "calentamos"
 // el chat con getChatById para forzar que el frame del chat esté cargado (igual que el path
 // del bot, que no sufre este error porque envía justo tras recibir un mensaje de ese chat).
-async function waSendMessage(client, jid, text, { retries = 3, baseDelayMs = 800 } = {}) {
+// `orgId` es opcional y solo alimenta la salud del canal (services/channel-health.js): el
+// resultado se reporta UNA vez por envío lógico, fuera del bucle, no una por reintento —
+// si no, un solo envío fallido contaría como tres y dispararía el aviso de canal caído él
+// solo. Quien no lo pase sigue funcionando igual, sin observación.
+async function waSendMessage(client, jid, text, { retries = 3, baseDelayMs = 800, orgId = null } = {}) {
     let lastErr;
     for (let i = 0; i <= retries; i++) {
         try {
             if (i > 0) { try { await client.getChatById(jid); } catch { /* warm-up best-effort */ } }
-            return await client.sendMessage(jid, text);
+            const enviado = await client.sendMessage(jid, text);
+            if (orgId) noteSendResult(orgId, { ok: true });
+            return enviado;
         } catch (e) {
             lastErr = e;
-            if (!isTransientWAError(e) || i === retries) throw e;
+            if (!isTransientWAError(e) || i === retries) {
+                if (orgId) noteSendResult(orgId, { ok: false, error: e, contexto: `envío a ${jid}` });
+                throw e;
+            }
             await new Promise(r => setTimeout(r, baseDelayMs * (i + 1)));
         }
     }
+    if (orgId) noteSendResult(orgId, { ok: false, error: lastErr, contexto: `envío a ${jid}` });
     throw lastErr;
 }
 
@@ -401,7 +412,10 @@ async function sendWithDelay(client, phone, text, orgId, dbPhone) {
         await (await client.getChatById(phone)).sendStateTyping();
         if (delay > 100) await new Promise(r => setTimeout(r, delay));
     } catch { /* sendStateTyping es best-effort: si el frame falla, seguimos al envío */ }
-    const enviado = await waSendMessage(client, phone, text);
+    // orgId: las respuestas del bot son el grueso de lo que sale, así que son la señal más
+    // temprana de que el canal está caído. Los bloqueos de 360dialog del 1-2/08/2026 se
+    // manifestaron exactamente aquí — entrando mensajes y sin salir ninguno.
+    const enviado = await waSendMessage(client, phone, text, { orgId });
     const phoneForDb = dbPhone || extractPhoneFromJid(phone);
     if (phoneForDb) saveMessage(orgId, {
         telefono: phoneForDb, contenido: text, direccion: 'saliente',

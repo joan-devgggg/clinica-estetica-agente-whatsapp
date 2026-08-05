@@ -13,6 +13,7 @@
  */
 
 const { resolveAutomatedSend, parseTemplateConfig, isCloudChannel } = require('./outbound');
+const { noteSendResult } = require('./channel-health');
 const logger = require('../lib/logger');
 
 // Tope de destinatarios por número y 24 h. No es una cifra nuestra: la impone Meta, y este
@@ -183,6 +184,10 @@ async function runBroadcast(orgId, {
                 await enviarTexto(client, chatId, mensaje);
                 resumen.texto_libre++;
             }
+            // Salud del canal, UNA vez por destinatario y por las dos vías. `enviarTexto` es
+            // waSendMessage, al que a propósito NO se le pasa orgId: reportaría el mismo
+            // envío otra vez y una tanda contaría el doble.
+            noteSendResult(orgId, { ok: true });
             resumen.enviados++;
             if (claimId) {
                 await db.finishBroadcastSend(orgId, claimId, {
@@ -195,6 +200,10 @@ async function runBroadcast(orgId, {
             resumen.omitidos++;
             resumen.fallos.push({ telefono, motivo: e.message });
             logger.error('campana_fallo_envio', { orgId, telefono, error: e.message });
+            // Los fallos por destinatario (fuera de ventana, plantilla) los descarta
+            // classifyChannelError: una campaña normal los acumula por decenas y con ellos
+            // en la cuenta el aviso saltaría en cada envío masivo.
+            noteSendResult(orgId, { ok: false, error: e, contexto: `campaña a ${telefono}` });
             // Se marca 'failed', no se borra: resetStaleBroadcastClaims la liberará al
             // empezar la siguiente tanda, así que se reintenta sola.
             if (claimId) {
