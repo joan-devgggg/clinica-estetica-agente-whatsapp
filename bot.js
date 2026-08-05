@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -3574,7 +3574,9 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 if (!nuevaReserva) {
                     try {
                         const cfgSecond = await getAgentConfig(orgId);
-                        const catalogSecond = cfgSecond?.services || [];
+                        // OFERTA: esto abre una SEGUNDA reserva, así que un servicio dado
+                        // de baja no puede dispararla.
+                        const catalogSecond = offerableCatalog(cfgSecond?.services);
                         const svcNuevo = extractServiceFromText(sanitized, catalogSecond);
                         // Guard: si el servicio detectado es el upselling que el bot ACABA de
                         // ofrecer (o uno ya aceptado en esta cita), la clienta lo está aceptando
@@ -3761,7 +3763,11 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 && !session.pendingCorteMujerTipo && !session.pendingCorteNinoTipo) {
             const problema = detectHairProblemDescription(sanitized);
             // getAgentConfig está cacheado 60 s: leerlo aquí no añade una consulta por turno.
-            const catalogoPre = problema ? ((await getAgentConfig(orgId))?.services || []) : [];
+            // OFERTA: decide si la clienta ya nombró lo que quiere o si le ofrecemos el
+            // rango de tratamientos. Nombrar un servicio de baja no cuenta como haberlo
+            // elegido — si contara, el flujo seguiría hacia un servicio que no se puede
+            // seleccionar y se quedaría sin salida.
+            const catalogoPre = problema ? offerableCatalog((await getAgentConfig(orgId))?.services) : [];
             // El residual es el mensaje sin los tramos de síntoma: si ahí queda un servicio
             // o categoría del catálogo, la clienta SÍ nombró lo que quiere ("tengo el pelo
             // seco, quiero una hidratación") y sigue el flujo normal de reserva.
@@ -3799,6 +3805,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         if (orgType === 'salon') {
             const agentCfgPre = await getAgentConfig(orgId);
             const stylistsPre = await getStylistsByOrg(orgId);
+            // Este bloque es el que ELIGE servicio a partir de lo que ha escrito la clienta:
+            // cortes, detección libre, K18, categoría por largo, consulta. Todo eso es
+            // OFERTA y va contra el catálogo ofertable. Las dos excepciones se marcan donde
+            // están: las variantes indexadas por posición (arriba) y las guardas que solo
+            // usan el catálogo para descartar un nombre propio (abajo).
+            const catalogoOfertable = offerableCatalog(agentCfgPre?.services);
 
             // ── Segunda reserva: resolver el servicio DENTRO de la categoría pedida ──
             // La clienta pidió "un masaje" (categoría ambigua), el bot preguntó el tipo y
@@ -3807,7 +3819,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // hay huecos, y sin huecos el LLM improvisa. Restringido a la categoría resuelve.
             if (session.pendingServiceCategory && !session.selectedService) {
                 const catNorm = normalizeText(session.pendingServiceCategory);
-                const enCategoria = (agentCfgPre?.services || []).filter(s => normalizeText(s.categoria) === catNorm);
+                // OFERTA: selecciona el servicio dentro de la categoría pedida.
+                const enCategoria = catalogoOfertable.filter(s => normalizeText(s.categoria) === catNorm);
                 const svcEnCat = extractServiceFromText(sanitized, enCategoria);
                 if (svcEnCat) {
                     logger.info('servicio_resuelto_en_categoria', {
@@ -3823,6 +3836,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             if (session.pendingLargoCategory && normalizeText(session.pendingLargoCategory) === 'mechas clasicas' && !session.selectedService) {
                 const tipo = extractMechasClasicasTipo(sanitized);
                 if (tipo != null) {
+                    // Catálogo COMPLETO a propósito: la elección es POSICIONAL
+                    // (`candidates[tipo - 1]`), así que filtrar aquí los servicios de baja
+                    // correría los índices y "media cabeza" resolvería a la cobertura de al
+                    // lado — otro precio, y sin que nada lo delate. Es la misma familia de
+                    // fallo que el "Largo 2" ambiguo de la auditoría de facturación. El
+                    // servicio de baja se descarta DESPUÉS, ya elegido.
                     const catalog = agentCfgPre?.services || [];
                     const catNorm = normalizeText(session.pendingLargoCategory);
                     const candidates = catalog.filter(s =>
@@ -3834,8 +3853,17 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     });
                     const idx = Math.min(tipo - 1, candidates.length - 1);
                     if (idx >= 0 && candidates[idx]) {
-                        session.selectedService = candidates[idx];
-                        session.pendingLargoCategory = null;
+                        if (isServiceActive(candidates[idx])) {
+                            session.selectedService = candidates[idx];
+                            session.pendingLargoCategory = null;
+                        } else {
+                            // Ni se selecciona ni se limpia `pendingLargoCategory`: la
+                            // pregunta sigue viva y el turno siguiente vuelve a intentarlo.
+                            logger.info('servicio_inactivo_no_seleccionado', {
+                                orgId, telefono: userPhone, via: 'mechas_clasicas_tipo',
+                                servicio: candidates[idx].nombre, categoria: candidates[idx].categoria,
+                            });
+                        }
                     }
                 }
             }
@@ -3847,6 +3875,9 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 // (intentional guard), so we detect the number directly.
                 const variantNum = parseInt(normalizeText(sanitized).match(/\blargo\s+(\d)\b/)?.[1] || '0', 10);
                 if (largo != null || noSabe || variantNum > 0) {
+                    // Catálogo COMPLETO: misma razón que en Mechas clásicas, la elección es
+                    // posicional sobre las variantes ordenadas por largo. Filtrar aquí haría
+                    // que "cabello largo" cayera en la variante de al lado.
                     const catalog = agentCfgPre?.services || [];
                     const catNorm = normalizeText(session.pendingLargoCategory);
                     const candidates = catalog.filter(s =>
@@ -3858,9 +3889,16 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                             ? Math.min(largo - 1, candidates.length - 1)
                             : Math.min(1, candidates.length - 1); // default to Largo 2 (medium)
                     if (idx >= 0 && candidates[idx]) {
-                        session.selectedService = candidates[idx];
-                        session.largoPelo = largo;
-                        session.pendingLargoCategory = null;
+                        if (isServiceActive(candidates[idx])) {
+                            session.selectedService = candidates[idx];
+                            session.largoPelo = largo;
+                            session.pendingLargoCategory = null;
+                        } else {
+                            logger.info('servicio_inactivo_no_seleccionado', {
+                                orgId, telefono: userPhone, via: 'largo_variante',
+                                servicio: candidates[idx].nombre, categoria: candidates[idx].categoria,
+                            });
+                        }
                     }
                 }
             }
@@ -3875,6 +3913,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // tiene su propia resolución arriba con extractMechasClasicasTipo.
             else if (session.selectedService && !session.pendingLargoCategory
                 && normalizeText(session.selectedService.categoria || '') !== 'mechas clasicas') {
+                // Catálogo COMPLETO: elección posicional, igual que los dos bloques de
+                // arriba. El descarte del servicio de baja va en la condición de abajo.
                 const catalog = agentCfgPre?.services || [];
                 const catNorm = normalizeText(session.selectedService.categoria || '');
                 const sorted = catalog
@@ -3887,7 +3927,14 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     const currentLevel = classifyLargoVariant(session.selectedService.nombre);
                     if (newLevel != null && newLevel !== currentLevel) {
                         const idx = Math.min(newLevel - 1, sorted.length - 1);
-                        if (idx >= 0 && sorted[idx] && sorted[idx].nombre !== session.selectedService.nombre) {
+                        if (idx >= 0 && sorted[idx] && !isServiceActive(sorted[idx])) {
+                            // La corrección apuntaba a una variante de baja: se deja el
+                            // servicio que ya tenía, que sigue siendo reservable.
+                            logger.info('servicio_inactivo_no_seleccionado', {
+                                orgId, telefono: userPhone, via: 'largo_correccion',
+                                servicio: sorted[idx].nombre, categoria: sorted[idx].categoria,
+                            });
+                        } else if (idx >= 0 && sorted[idx] && sorted[idx].nombre !== session.selectedService.nombre) {
                             logger.info('largo_correccion_aplicada', {
                                 orgId, telefono: userPhone, categoria: session.selectedService.categoria,
                                 antes: session.selectedService.nombre, despues: sorted[idx].nombre,
@@ -3914,7 +3961,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             if (session.pendingCorteMujerTipo && !session.selectedService) {
                 const tipo = detectCorteMujerTipo(sanitized);
                 if (tipo) {
-                    const svc = findCorteService(agentCfgPre?.services || [], ['mujer', tipo === 'dyson' ? 'dyson' : 'secado']);
+                    const svc = findCorteService(catalogoOfertable, ['mujer', tipo === 'dyson' ? 'dyson' : 'secado']);
                     if (svc) {
                         session.selectedService = svc;
                         session.pendingCorteMujerTipo = false;
@@ -3926,8 +3973,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 const tipo = detectCorteNinoTipo(sanitized);
                 if (tipo) {
                     const svc = tipo === 'infantil'
-                        ? findCorteService(agentCfgPre?.services || [], ['infantil'])
-                        : findCorteService(agentCfgPre?.services || [], ['nino'], ['infantil']);
+                        ? findCorteService(catalogoOfertable, ['infantil'])
+                        : findCorteService(catalogoOfertable, ['nino'], ['infantil']);
                     if (svc) {
                         session.selectedService = svc;
                         session.pendingCorteNinoTipo = false;
@@ -3938,7 +3985,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             } else if (session.pendingCorteGenero && !session.selectedService) {
                 const genero = detectCorteGenero(sanitized);
                 if (genero === 'hombre') {
-                    const svc = findCorteService(agentCfgPre?.services || [], ['hombre']);
+                    const svc = findCorteService(catalogoOfertable, ['hombre']);
                     if (svc) {
                         session.selectedService = svc;
                         session.pendingCorteGenero = false;
@@ -3954,14 +4001,14 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             }
 
             if (!session.selectedService) {
-                let matchedSvc = extractServiceFromText(sanitized, agentCfgPre?.services || []);
+                let matchedSvc = extractServiceFromText(sanitized, catalogoOfertable);
                 // Mención genérica de K18 ("k18", "reconstrucción k18"). Tras la migración 026
                 // no existe una entrada llamada exactamente "K18": extractServiceFromText cae a
                 // null para "k18" y al complemento de 15 min para "reconstrucción k18". Aquí no
                 // hay servicio principal aún, así que no hay color donde engancharlo → resuelve
                 // al suelto de 60 min. Solo se pisa un match de la propia categoría Reconstrucción:
                 // en "balayage y k18" el principal es el balayage y el K18 llega luego por upsell.
-                const k18Svc = resolveK18ServiceFromText(sanitized, session.selectedService?.categoria, agentCfgPre?.services || []);
+                const k18Svc = resolveK18ServiceFromText(sanitized, session.selectedService?.categoria, catalogoOfertable);
                 if (k18Svc && (!matchedSvc || normalizeText(matchedSvc.categoria || '') === 'reconstruccion')) {
                     matchedSvc = k18Svc;
                 }
@@ -3981,7 +4028,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         }
                     }
                 } else if (!session.pendingLargoCategory && !session.pendingCorteGenero && !session.pendingCorteMujerTipo && !session.pendingCorteNinoTipo) {
-                    const largoCat = detectLargoCategory(sanitized, agentCfgPre?.services || []);
+                    const largoCat = detectLargoCategory(sanitized, catalogoOfertable);
                     if (largoCat) session.pendingLargoCategory = largoCat;
                     else if (detectCorteGenerico(sanitized)) session.pendingCorteGenero = true;
                 }
@@ -3995,7 +4042,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 !session.pendingCorteNinoTipo
                 && (detectConsultaValoracion(sanitized)
                     || (session.consultaOfrecida && isAffirmative(sanitized)))) {
-                const consultaSvc = (agentCfgPre?.services || []).find(isReactiveOnlyService);
+                const consultaSvc = catalogoOfertable.find(isReactiveOnlyService);
                 if (consultaSvc) {
                     session.selectedService = consultaSvc;
                     // Única vía legítima. Marca que el servicio reactivo viene del detector
@@ -4010,7 +4057,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             if (!session.selectedService && session.partialData.servicio) {
                 // Desambiguar usando categoria_servicio de partialData cuando el nombre
                 // del servicio es compartido entre varias categorías (ej. "Largo 3").
-                const catalog = agentCfgPre?.services || [];
+                // OFERTA: recupera un servicio para una reserva que aún no existe. Un
+                // servicio de baja arrastrado en partialData desde antes de la baja no
+                // puede reactivarse por esta vía.
+                const catalog = catalogoOfertable;
                 const partialNorm = normalizeText(session.partialData.servicio);
                 const partialCatNorm = normalizeText(session.partialData.categoria_servicio || '');
                 const matchesPartial = catalog.filter(s => normalizeText(s.nombre) === partialNorm);
@@ -4045,6 +4095,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 // como filtro anti-falso-positivo: "con mechas" o "con Ana" (ella misma)
                 // NO pueden interpretarse como una estilista que no existe.
                 const verdict = resolveStylistMention(sanitized, stylistsPre, {
+                    // GUARDA, no oferta: el catálogo se usa aquí para que "con mechas" no
+                    // se lea como el nombre de una estilista inexistente. Va COMPLETO a
+                    // propósito — dar de baja un servicio no puede convertir su nombre en
+                    // un nombre de persona plausible.
                     servicesCatalog: agentCfgPre?.services || [],
                     excludeNames: [session.partialData?.nombre, session.guestName].filter(Boolean),
                     guestBooking: !!session.guestBooking,
@@ -4522,7 +4576,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 || null;
             if (servicioLLM) {
                 const agentCfg = await getAgentConfig(orgId);
-                const servicesCatalog = agentCfg?.services || [];
+                // OFERTA: el modelo ya no ve los servicios de baja en el catálogo del
+                // prompt, pero puede repetir uno leyéndolo del historial de la conversación
+                // (o del resumen). Este filtro es el que impide que eso lo reactive.
+                const servicesCatalog = offerableCatalog(agentCfg?.services);
                 // Desambiguar usando categoria_servicio que el LLM puede haber devuelto,
                 // o la categoría guardada en partialData. Evita coger la primera entrada
                 // cuando el nombre (ej. "Largo 3") existe en varias categorías.
@@ -4581,6 +4638,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 // "Carmen". El aviso se consumirá al construir el prompt del turno
                 // siguiente (igual que __servicioMencionado).
                 const verdict = resolveStylistMention(aiResponse.datos.estilista_preferida, stylists, {
+                    // GUARDA (ver arriba): catálogo completo, no ofertable.
                     servicesCatalog: (await getAgentConfig(orgId))?.services || [],
                     excludeNames: [session.partialData?.nombre, session.guestName].filter(Boolean),
                     guestBooking: !!session.guestBooking,
@@ -4825,6 +4883,23 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     ? null
                     : matchUpsellRule(session.selectedService, infoConf.upselling || []);
                 let upsellSug = upsellRule ? (upsellRule.sugerencias || [])[0] || null : null;
+                // Las reglas de upselling viven en `business_info.upselling`, que es una
+                // lista APARTE del catálogo: dar de baja un servicio no la toca, así que sin
+                // esto el bot seguiría ofreciendo por upsell justo lo que ha dejado de
+                // hacer. Solo se descarta cuando la etiqueta RESUELVE contra una entrada de
+                // baja: las etiquetas son frases de marketing y muchas no resuelven contra
+                // nada (ver resolveServiceDurationMin), y de una que no resuelve no se puede
+                // afirmar que esté dada de baja. Esa es la parte que la Fase 1 no cubre y
+                // que se cerraría de verdad ligando cada regla a su entrada de catálogo.
+                if (upsellSug) {
+                    const upsellEntry = resolveServiceCatalogEntry(upsellSug, cfgConf?.services || []);
+                    if (upsellEntry && !isServiceActive(upsellEntry)) {
+                        logger.info('upsell_descartado_servicio_inactivo', {
+                            orgId, telefono: userPhone, upsell: upsellSug, servicio: upsellEntry.nombre,
+                        });
+                        upsellSug = null;
+                    }
+                }
                 // `tono` de la regla: las de decoloración se ofrecen como consejo de
                 // cuidado, no como venta (ver plantilla upsellCuidado en helpers.js).
                 const upsellTono = upsellRule?.tono || null;

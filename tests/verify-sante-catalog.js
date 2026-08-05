@@ -38,6 +38,9 @@ const {
     matchUpsellSuggestion,
     normalizeText,
     extractStylistFromText,
+    offerableCatalog,
+    isServiceActive,
+    findCatalogEntriesExact,
 } = require('../services/helpers');
 const calendarSante = require('../services/calendar-sante');
 
@@ -121,13 +124,26 @@ const addDays = (dateStr, n) => {
         console.error(`❌ No hay agent_config para Sante (org ${SANTE_ORG_ID}). ¿Credenciales/ORG correctas?`);
         process.exit(1);
     }
-    const catalog = Array.isArray(cfg.services) ? cfg.services : [];
+    // `catalogoCompleto` incluye los servicios dados de baja (`activo: false`); `catalog`
+    // son solo los OFERTABLES, y es el que recorren las fases 1-5 y 7.
+    //
+    // Un servicio de baja no tiene por qué tener estilista con la skill, ni horario, ni
+    // huecos: el salón ha dejado de hacerlo. Exigírselo pondría en rojo permanente algo que
+    // no hay que arreglar — el fallo que ya nos ha costado tres veces (horarios de la
+    // migración, "Consulta con exactamente 4 estilistas", Olgha→Olga) y que enseña a
+    // ignorar el informe entero.
+    //
+    // Lo que SÍ se le exige a un servicio de baja está en la Fase 8: que siga RESOLVIENDO
+    // por nombre. Ahí es donde vive la promesa de que el histórico no se mueve.
+    const catalogoCompleto = Array.isArray(cfg.services) ? cfg.services : [];
+    const catalog = offerableCatalog(catalogoCompleto);
+    const inactivos = catalogoCompleto.filter(s => !isServiceActive(s));
     const upsellingRules = cfg.business_info?.upselling || [];
     const realStylists = await db.getStylistsByOrg(SANTE_ORG_ID);
-    if (!catalog.length) { console.error('❌ Catálogo de servicios vacío.'); process.exit(1); }
+    if (!catalog.length) { console.error('❌ Catálogo de servicios ofertables vacío.'); process.exit(1); }
     if (!realStylists.length) { console.error('❌ Sin estilistas activas.'); process.exit(1); }
 
-    console.log(`\nCatálogo: ${catalog.length} servicios · Estilistas activas: ${realStylists.length} · Reglas upsell: ${upsellingRules.length}`);
+    console.log(`\nCatálogo: ${catalog.length} ofertables${inactivos.length ? ` (+${inactivos.length} de baja)` : ''} · Estilistas activas: ${realStylists.length} · Reglas upsell: ${upsellingRules.length}`);
 
     const categories = [...new Set(catalog.map(s => s.categoria).filter(Boolean))];
     const byCat = {};
@@ -467,6 +483,31 @@ const addDays = (dateStr, n) => {
             check('7-horarios', ini >= abre && fin <= cierra, `${etiqueta}: dentro del horario del salón`,
                 `${asHHMM(ini)}–${asHHMM(fin)} se sale de ${bh.apertura}–${bh.cierre}`);
         }
+    }
+
+    // ─── Fase 8: los servicios de baja siguen RESOLVIENDO ─────────────────────────────
+    //
+    // La promesa entera de `activo:false` frente a borrar la fila es que el histórico no se
+    // mueve. Eso se sostiene sobre una cosa concreta: que el nombre guardado en
+    // `appointments.service` siga encontrando su entrada de catálogo. Si alguien mete el
+    // filtro de ofertable dentro de un helper de resolución, esta fase es la que se entera
+    // — no hay ningún síntoma visible hasta que alguien mira la facturación de un mes.
+    //
+    // Nota sobre el nombre: buildFullServiceName cuenta homónimos sobre el catálogo COMPLETO
+    // a propósito. Un "Largo 2" deja de ser ambiguo si se da de baja a sus hermanos, y el
+    // nombre con el que está guardada la cita no puede depender de eso.
+    for (const svc of inactivos) {
+        const fullName = buildFullServiceName(svc, catalogoCompleto);
+        check('8-inactivos', !!fullName, `"${svc.nombre}" (de baja): tiene nombre completo`);
+        check('8-inactivos', findCatalogEntriesExact(fullName, catalogoCompleto).length > 0,
+            `"${fullName}" (de baja): sigue resolviendo contra el catálogo completo`,
+            'una cita pasada con este servicio caería a "sin poder calcular"');
+        // Y la otra mitad: que NO se ofrezca. Las dos juntas son el flag.
+        check('8-inactivos', !catalog.some(s => s.nombre === svc.nombre && s.categoria === svc.categoria),
+            `"${fullName}" (de baja): fuera del catálogo ofertable`);
+    }
+    if (inactivos.length === 0) {
+        console.log('\n(Fase 8: no hay servicios dados de baja en el catálogo.)');
     }
 
     // ─── Reporte final ────────────────────────────────────────────────────────────────

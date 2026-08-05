@@ -838,19 +838,34 @@ app.patch('/api/agent-config', async (req, res) => {
 // `fullName` usa el MISMO buildFullServiceName que resuelve las citas del bot y la
 // facturación por estilista, para que el nombre guardado desde el panel case exacto
 // contra el catálogo (ver auditoría de facturación: nombres ambiguos como "Largo 2").
+//
+// Por defecto devuelve solo los OFERTABLES: es lo que quiere el desplegable de una cita
+// NUEVA. `?incluirInactivos=1` devuelve también los dados de baja, con `activo:false` en
+// cada entrada, y eso es lo que necesita el formulario de EDITAR una cita existente: si un
+// servicio de baja desapareciera de esa lista, abrir una cita antigua mostraría el campo
+// de servicio vacío y guardarla lo borraría. Es el mismo principio de siempre — se filtra
+// donde se ofrece, nunca donde se resuelve algo que ya está guardado.
 app.get('/api/service-catalog', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
-        const { buildFullServiceName } = require('./services/helpers');
+        const { buildFullServiceName, offerableCatalog, isServiceActive } = require('./services/helpers');
+        const incluirInactivos = req.query.incluirInactivos === '1' || req.query.incluirInactivos === 'true';
         const agentConfig = await db.getAgentConfig(orgId);
-        const catalog = Array.isArray(agentConfig?.services) ? agentConfig.services : [];
+        const completo = Array.isArray(agentConfig?.services) ? agentConfig.services : [];
+        // buildFullServiceName recibe SIEMPRE el catálogo completo: decide si un nombre es
+        // ambiguo contando cuántas entradas lo comparten, y contar sobre la lista filtrada
+        // haría que un "Largo 2" dejara de prefijarse con su categoría en cuanto se diera de
+        // baja a uno de sus hermanos. El nombre guardado cambiaría por un motivo que no
+        // tiene nada que ver con él.
+        const catalog = incluirInactivos ? completo : offerableCatalog(completo);
         const entries = catalog.map(svc => ({
             key: `${svc.categoria || ''}|${svc.nombre || ''}`,
+            activo: isServiceActive(svc),
             nombre: svc.nombre,
             categoria: svc.categoria ?? null,
             precio: svc.precio ?? null,
             duracion: svc.duracion ?? 60,
-            fullName: buildFullServiceName(svc, catalog),
+            fullName: buildFullServiceName(svc, completo),
         }));
         res.json(entries);
     } catch (e) { res.status(500).json({ error: e.message }); }

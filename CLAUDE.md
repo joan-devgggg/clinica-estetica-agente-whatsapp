@@ -159,6 +159,73 @@ denʹ`…). Esa segunda regla existe porque la primera es asimétrica: sin esas 
 patrones cirílicos van SIEMPRE por `buildCyrillicRe` y se prueban contra `normalizeText`:
 sin eso no casan nunca (NFD descompone й/ё/ї, y `\b` es ASCII).
 
+## Dar de baja un servicio: `activo: false`, nunca borrar la fila
+
+Un servicio que el salón deja de hacer **se desactiva, no se borra**. Borrar hace dos cosas
+y solo una se quería. La que se quería: el bot deja de ofrecerlo. La que no:
+`appointments.service` guarda un NOMBRE, y sin su entrada de catálogo ese nombre deja de
+resolver — la cita pasada cae a `unmatched` en `computeServiceBilling`, suma 0 € y aparece
+en "sin poder calcular". Dar de baja algo hoy movería la caja de meses cerrados.
+
+De ahí la línea que sostiene todo esto, y que es lo único que hay que recordar:
+
+| | Catálogo |
+|---|---|
+| se **OFRECE** | `offerableCatalog(cfg.services)` |
+| se **RESUELVE** | `cfg.services` COMPLETO, siempre |
+
+`activo` **ausente = activo** (sin backfill; solo el `false` explícito da de baja).
+`isServiceActive` / `offerableCatalog` viven en `helpers.js`, al lado de
+`isReactiveOnlyService`, que es el mismo patrón para otro motivo.
+
+**El filtro va en el CALL SITE, jamás dentro de un helper.** `extractServiceFromText` es a la
+vez un detector (oferta) y el fallback de `computeServiceBilling` (facturación): meterle el
+filtro dentro apaga la factura de una cita pasada sin que ningún test de oferta se entere.
+
+Ofrecen (filtrado): el catálogo del prompt (`openai.js`, el 90 % del efecto), el bloque
+determinista de `bot.js` (`catalogoOfertable`: cortes, detección libre, K18, categoría por
+largo, consulta, recuperación desde `partialData`), la selección que llega del LLM, la
+segunda reserva, y `GET /api/service-catalog` por defecto.
+
+Resuelven (completo): `computeServiceBilling`, `stampBillingSnapshot`, `buildFullServiceName`,
+`resolveServiceDurationMin` / `resolveAppointmentDurationMin`, y
+`GET /api/service-catalog?incluirInactivos=1` — que es el que necesita el formulario de
+EDITAR una cita: si un servicio de baja desapareciera de esa lista, abrir una cita antigua
+mostraría el campo vacío y guardarla lo borraría.
+
+Tres trampas que ya están resueltas y conviene no reabrir:
+
+- **Las variantes indexadas por posición** (Mechas clásicas, largo de pelo, corrección de
+  largo) construyen su lista con el catálogo COMPLETO. Filtrar ahí correría los índices y
+  "media cabeza" resolvería a la cobertura de al lado, otro precio y sin síntoma. El
+  descarte va después, ya elegida la variante (`servicio_inactivo_no_seleccionado`).
+- **`buildFullServiceName` cuenta homónimos**: sobre la lista filtrada, dar de baja a un
+  "Hombre" haría que el otro dejara de prefijarse con su categoría. El nombre con el que se
+  guarda una cita no puede depender de eso.
+- **Las guardas no son ofertas**: el catálogo que reciben `isServiceName` y
+  `resolveStylistMention` va completo — dar de baja un servicio no puede convertir su nombre
+  en un nombre de persona plausible.
+
+**DEUDA CONOCIDA — el upselling solo está medio cubierto.** Las reglas viven en
+`business_info.upselling`, que es una lista aparte: dar de baja un servicio no la toca. Hoy
+se descarta la sugerencia cuando su etiqueta RESUELVE contra una entrada de baja
+(`upsell_descartado_servicio_inactivo`), y ahí se acaba la cobertura: las etiquetas son
+frases de marketing, muchas no resuelven contra ninguna entrada, y de esas no se puede
+afirmar que estén de baja. O sea que el bot **puede seguir ofreciendo por upsell un servicio
+dado de baja** si su regla está redactada con una frase que no case con el catálogo.
+
+Arreglarlo de verdad es ligar cada regla a su entrada de catálogo (una referencia, no una
+frase), y eso es un trabajo aparte: toca el formato de `business_info.upselling`, las 8
+reglas actuales y el flujo de aceptación. **Decidido el 05/08/2026 no hacerlo**: no hay
+ninguna señal de que haga falta — cero servicios de baja en producción y cero reglas de
+upsell apuntando a uno. Se retoma si aparece la señal.
+
+Red: `tests/servicio-desactivado.test.js` (en `npm test`; el primer bloque es la regresión de
+facturación) y la **Fase 8** de `verify:sante`, que le exige a cada servicio de baja que siga
+resolviendo. No hay UI ni endpoint de edición: `activo:false` se pone a mano sobre el JSONB,
+y `PATCH /api/agent-config` sigue reemplazando el array entero — copia antes de tocarlo
+(`data/sante-catalogo-backup-*.json`).
+
 ## `session.leadId` puede venir vacío — usa `ensureLeadId`
 
 **Nunca leas `session.leadId` a pelo.** Se queda a null en dos situaciones normales: el

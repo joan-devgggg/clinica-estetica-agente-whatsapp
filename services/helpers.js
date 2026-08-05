@@ -2429,6 +2429,38 @@ function isReactiveOnlyService(svc) {
     return !!svc && isReactiveOnlyCategory(svc.categoria);
 }
 
+// ─── Servicios dados de baja (`activo: false`) ───────────────────────────────
+//
+// Un servicio que el salón deja de hacer NO se borra del catálogo: se desactiva. Borrarlo
+// hace dos cosas a la vez, y solo una de ellas se quería. La que se quería: el bot deja de
+// ofrecerlo. La que no: `appointments.service` guarda un NOMBRE, y sin la entrada de
+// catálogo ese nombre deja de resolver — la cita pasada cae a `unmatched` en
+// computeServiceBilling, suma 0 € y aparece en "sin poder calcular". El histórico se mueve
+// por dar de baja algo hoy.
+//
+// De ahí la separación que sostiene todo esto:
+//   · se OFRECE  → catálogo filtrado (offerableCatalog). El bot no lo propone, el modelo no
+//                  lo ve, los detectores no lo seleccionan.
+//   · se RESUELVE → catálogo COMPLETO, siempre. Facturación, duración de una cita viva,
+//                  buildFullServiceName, y el desplegable de EDITAR una cita existente.
+//
+// `activo` ausente = activo. Así las entradas que ya están en Supabase no necesitan
+// backfill, y cualquier camino que todavía no conozca el flag se comporta como antes.
+// Solo el `false` explícito da de baja: un `activo: null` o `undefined` de un editor a
+// medio escribir no puede tirar un servicio del catálogo sin querer.
+function isServiceActive(svc) {
+    return svc?.activo !== false;
+}
+
+// El catálogo tal como puede OFRECERSE. Se llama en el CALL SITE, nunca dentro de los
+// helpers de resolución: `extractServiceFromText`, por ejemplo, es a la vez un detector
+// (oferta) y el fallback de `computeServiceBilling` (facturación, helpers.js). Meterle el
+// filtro dentro apagaría la factura de una cita pasada sin que ningún test de oferta se
+// enterara — el fallo silencioso que este diseño existe para evitar.
+function offerableCatalog(catalog) {
+    return (Array.isArray(catalog) ? catalog : []).filter(isServiceActive);
+}
+
 // Detecta la intención REACTIVA de "quiero que me asesoren / no sé qué servicio quiero".
 // Solo intención de ELECCIÓN DE SERVICIO — NUNCA de largo de pelo. El gating (que solo
 // se llame cuando no hay servicio concreto detectado ni flujo de largo/corte pendiente)
@@ -3062,6 +3094,8 @@ module.exports = {
     buildCyrillicRe,
     isReactiveOnlyCategory,
     isReactiveOnlyService,
+    isServiceActive,
+    offerableCatalog,
     // Facturación por estilista
     resolveServiceCatalogEntry,
     findCatalogEntriesExact,

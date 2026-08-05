@@ -3,7 +3,7 @@ require('dotenv').config();
 const config = require('../../config.json');
 const db = require('../db');
 const { getOrgType } = require('../org-registry');
-const { normalizeText, classifyLargoVariant, hasApellido, isReactiveOnlyCategory } = require('../helpers');
+const { normalizeText, classifyLargoVariant, hasApellido, isReactiveOnlyCategory, offerableCatalog } = require('../helpers');
 const logger = require('../../lib/logger');
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -223,7 +223,14 @@ Usa "escalar_humano" si el cliente pide hablar con una persona o la situación s
 
 function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg) {
     const info = agentCfg?.business_info || {};
-    const services = agentCfg?.services || [];
+    // Catálogo OFERTABLE, no el completo: un servicio dado de baja (`activo: false`) no
+    // puede aparecer en nada de lo que se le pasa al modelo. Si lo ve, lo ofrece — es
+    // exactamente lo que pasó con la Consulta de valoración, y por eso se filtra en el
+    // mismo punto y no en cada uso. Todo lo que cuelga de `services` en este prompt (el
+    // menú de categorías, y las variantes de largo del próximo paso) hereda el filtro.
+    // La resolución del histórico NO pasa por aquí: vive en computeServiceBilling y
+    // compañía, que siguen leyendo el catálogo entero.
+    const services = offerableCatalog(agentCfg?.services);
     const handoffMessage = agentCfg?.handoff_message || 'Un momento, te paso con alguien del equipo.';
 
     const salonName = info.companyName || 'Sante Healthy Hair Salon';
