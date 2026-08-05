@@ -399,13 +399,18 @@ test, no del sistema: 3 horarios copiados de la migración y un plural — ver a
 ### `verify:robustez:llm` — línea base y cómo leer un DEGRADADO
 
 Este llama al LLM de verdad, así que **no es determinista y su línea base es un rango**, no una
-cifra. Medida el 05/08/2026 con tres corridas seguidas del MISMO código:
+cifra. Re-medida el **05/08/2026 con el check NUEVO del escenario 3** (el que afirma estado, no
+redacción — ver abajo), tres corridas seguidas del MISMO código:
 
 | | 1ª | 2ª | 3ª |
 |---|---|---|---|
 | OK | 20 | 21 | 20 |
-| DEGRADADO | 1 (esc. 3) | 0 | 1 (esc. 6) |
+| DEGRADADO | 1 (**esc. 3**) | 0 | 1 (**esc. 3**) |
 | SILENCIO · BUCLE · ERROR · BUG | 0 | 0 | 0 |
+
+Las tres corridas salieron con **cero** mensajes `"Perdona, no he podido procesar tu mensaje"`,
+que es lo que hace válida la medición: el proveedor estuvo en pie de principio a fin (ver el
+párrafo de la TANDA, más abajo — ese mismo día hubo tres corridas que hubo que tirar por un 402).
 
 **Lo que se compara es la fila de abajo.** `BUG`, `SILENCIO`, `BUCLE` y `ERROR` a 0 son el
 invariante duro: cualquiera de ellos por encima de 0 es un hallazgo, siempre. **Un DEGRADADO
@@ -413,8 +418,14 @@ suelto que cae en un escenario distinto en cada corrida es varianza del modelo, 
 regresión** — antes de tocar nada, repetir. Dos corridas con el MISMO escenario degradado ya
 es otra cosa.
 
-(La tabla se midió con el check VIEJO del escenario 3, que se cambió ese mismo día — ver abajo.
-La fila de invariantes vale igual; el conteo de OK del 3 ya no es comparable.)
+⚠️ **Y eso es exactamente lo que pasa aquí ahora: el degradado repite en el escenario 3, 2 de 3
+corridas.** Por la regla de arriba, eso NO es varianza — es una deficiencia medida, y está
+diagnosticada en [`docs/escenario-3-servicio-sin-resolver.md`](docs/escenario-3-servicio-sin-resolver.md).
+Resumen: balayage no tiene capa determinista (`detectLargoCategory` casa la categoría por
+subcadena completa y no tiene `balayage` en `largoKeywords`), así que el servicio solo aterriza
+si el modelo rellena `datos.servicio` — y 1 de cada 3 veces no lo hace. El typo del nombre del
+escenario es una pista falsa: falla igual con "balayage" bien escrito. **No lo tapes subiendo
+el umbral del check.**
 
 **Una TANDA de degradados que comparten el texto `"Perdona, no he podido procesar tu mensaje"`
 no es una regresión: es el LLM caído o limitando.** Ese literal es el fallback de bot.js cuando
@@ -436,8 +447,20 @@ de una constante (si la dueña la renombra, el escenario se declara no aplicable
 quedarse en rojo). Sigue degradando ~1 de cada 3, pero ya por un motivo real y no por
 redacción: el bot pasa a preguntar el día **sin haber resuelto el servicio** —`selectedService`
 a null y 0 huecos cargados—, y en la repetición que falló seguía sin resolverlo un turno
-después, proponiendo fechas para una cita cuyo servicio no sabía. Eso es de la familia de la
-cita fantasma y está sin investigar: no lo tapes subiendo el umbral del check.
+después, preguntando el día para una cita cuyo servicio no sabía.
+
+**Ya está investigado** (05/08/2026): [`docs/escenario-3-servicio-sin-resolver.md`](docs/escenario-3-servicio-sin-resolver.md).
+Dos conclusiones que conviene tener a mano antes de tocar nada:
+
+- **NO es de la familia de la cita fantasma.** Por ese camino no se puede reservar: los tres
+  puntos de entrada a la escritura de una cita de Sante están gateados por `selectedService`,
+  y también los tres `loadAvailableSlots` del flujo de salón — así que ni siquiera llega a
+  proponer horas concretas, solo a preguntar el día. Es molesto, no peligroso. (El molde sí
+  está montado: si una de esas tres guardas se relajara, `buildFullServiceName(null)` acaba
+  escribiendo `service: 'Reserva'`. Hoy no hay ningún test que las afirme.)
+- **Sí es el mismo callejón que el bucle sin servicio de `4e7743c`**, por otra puerta: allí la
+  clienta no sabía qué quería, aquí lo sabe y el detector no lo reconoce. Ha pasado con
+  clientas reales cuatro veces entre el 01 y el 03/08.
 
 ### Los datos que edita la dueña no se verifican contra constantes
 
