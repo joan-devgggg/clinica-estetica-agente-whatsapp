@@ -70,7 +70,7 @@ require.cache[openaiPkgPath] = {
     id: openaiPkgPath, filename: openaiPkgPath, loaded: true, exports: OpenAIFalso,
 };
 
-const { noteLlmResult, classifyLlmError, FALLOS_PARA_AVISAR, _reset } = require('../services/llm-health');
+const { noteLlmResult, classifyLlmError, FALLOS_PARA_AVISAR, UMBRAL_TRANSITORIO, _reset } = require('../services/llm-health');
 const { _resetThrottle } = require('../services/admin-alerts');
 
 function limpiar() {
@@ -119,36 +119,45 @@ test('clasificación · lo que NO es del proveedor no cuenta', () => {
 
 // ─── 2 · El umbral y el throttle ─────────────────────────────────────────────
 
-test('avisa al TERCER fallo seguido, no antes', async () => {
+test('un error de CUENTA avisa al PRIMER fallo', async () => {
     limpiar();
-    await fallar(FALLOS_PARA_AVISAR - 1, err('402 Insufficient credits', 402));
-    assert.strictEqual(avisos.length, 0, 'dos fallos no son una caída');
-
+    // Un 402 es cierto desde el primer intento: no existe el "sin saldo pasajero". Esperar a
+    // tres solo garantiza que tres clientas reciban el fallback antes de que nadie se entere.
     await fallar(1, err('402 Insufficient credits', 402));
     assert.strictEqual(avisos.length, 1);
     assert.strictEqual(avisos[0].orgId, ORG);
+    assert.strictEqual(FALLOS_PARA_AVISAR.cuenta, 1);
+});
+
+test('un error TRANSITORIO sigue esperando al tercero', async () => {
+    limpiar();
+    await fallar(UMBRAL_TRANSITORIO - 1, err('503 Service Unavailable', 503));
+    assert.strictEqual(avisos.length, 0, 'un 5xx aislado no es una caída: no se despierta a nadie');
+
+    await fallar(1, err('503 Service Unavailable', 503));
+    assert.strictEqual(avisos.length, 1);
 });
 
 test('y no repite mientras siga caído', async () => {
     limpiar();
-    await fallar(FALLOS_PARA_AVISAR + 20, err('402 Insufficient credits', 402));
-    assert.strictEqual(avisos.length, 1, '23 conversaciones rotas = 1 aviso, no 23');
+    await fallar(20, err('402 Insufficient credits', 402));
+    assert.strictEqual(avisos.length, 1, '20 conversaciones rotas = 1 aviso, no 20');
 });
 
 test('un motivo distinto empieza racha nueva', async () => {
     limpiar();
     await fallar(2, err('429 Too Many Requests', 429));
-    await fallar(2, err('402 Insufficient credits', 402));
+    await fallar(2, err('500 Internal', 500));
     assert.strictEqual(avisos.length, 0, 'dos por un motivo y dos por otro no son tres seguidos');
-    await fallar(1, err('402 Insufficient credits', 402));
+    await fallar(1, err('500 Internal', 500));
     assert.strictEqual(avisos.length, 1);
 });
 
-test('un éxito por medio corta la racha', async () => {
+test('un éxito por medio corta la racha (transitorios)', async () => {
     limpiar();
-    await fallar(2, err('402 Insufficient credits', 402));
+    await fallar(2, err('503 Service Unavailable', 503));
     await noteLlmResult(ORG, { ok: true });
-    await fallar(2, err('402 Insufficient credits', 402));
+    await fallar(2, err('503 Service Unavailable', 503));
     assert.strictEqual(avisos.length, 0, 'la racha se cuenta SEGUIDA');
 });
 
@@ -156,18 +165,20 @@ test('un éxito por medio corta la racha', async () => {
 
 test('el aviso de cuenta dice que no se arregla solo y qué hay que hacer', async () => {
     limpiar();
-    await fallar(FALLOS_PARA_AVISAR, err('402 Insufficient credits', 402));
+    await fallar(1, err('402 Insufficient credits', 402));
     const m = avisos[0].mensaje;
     assert.ok(/no se arregla solo/i.test(m), 'tiene que descartar que sea pasajero');
     assert.ok(/recargar saldo|renovar la clave/i.test(m), 'tiene que decir la acción');
     // Y el síntoma que ella va a ver o le van a contar, con sus palabras.
     assert.ok(/no he podido procesar tu mensaje/.test(m));
     assert.ok(/no coge citas/i.test(m));
+    assert.ok(/van a fallar todas/i.test(m),
+        'con umbral 1 el aviso tiene que explicar por qué no hace falta esperar a más fallos');
 });
 
 test('el aviso transitorio NO manda pagar nada', async () => {
     limpiar();
-    await fallar(FALLOS_PARA_AVISAR, err('503 Service Unavailable', 503));
+    await fallar(UMBRAL_TRANSITORIO, err('503 Service Unavailable', 503));
     const m = avisos[0].mensaje;
     assert.ok(/se recupera solo/i.test(m));
     assert.ok(!/recargar saldo/i.test(m),
@@ -176,7 +187,7 @@ test('el aviso transitorio NO manda pagar nada', async () => {
 
 test('el texto va en español y sin jerga técnica suelta', async () => {
     limpiar();
-    await fallar(FALLOS_PARA_AVISAR, err('402 Insufficient credits', 402));
+    await fallar(1, err('402 Insufficient credits', 402));
     const m = avisos[0].mensaje;
     // El código va, pero etiquetado como dato entre <code>, no como explicación.
     assert.ok(/<code>http_402<\/code>/.test(m));
@@ -190,7 +201,7 @@ test('el texto va en español y sin jerga técnica suelta', async () => {
 
 test('cuando vuelve, avisa — y sin eso el aviso vale la mitad', async () => {
     limpiar();
-    await fallar(FALLOS_PARA_AVISAR, err('402 Insufficient credits', 402));
+    await fallar(1, err('402 Insufficient credits', 402));
     assert.strictEqual(avisos.length, 1);
 
     await noteLlmResult(ORG, { ok: true });
@@ -202,11 +213,11 @@ test('cuando vuelve, avisa — y sin eso el aviso vale la mitad', async () => {
 
 test('y una segunda caída del mismo tipo vuelve a avisar (la clave se liberó)', async () => {
     limpiar();
-    await fallar(FALLOS_PARA_AVISAR, err('402 Insufficient credits', 402));
+    await fallar(1, err('402 Insufficient credits', 402));
     await noteLlmResult(ORG, { ok: true });
     avisos.length = 0;
 
-    await fallar(FALLOS_PARA_AVISAR, err('402 Insufficient credits', 402));
+    await fallar(1, err('402 Insufficient credits', 402));
     assert.strictEqual(avisos.length, 1, 'sin liberar la clave, la 2ª caída sería muda para siempre');
 });
 
@@ -220,7 +231,7 @@ test('un ok sin caída previa no dice nada', async () => {
 
 test('la racha de una org no avisa a la otra', async () => {
     limpiar();
-    await fallar(FALLOS_PARA_AVISAR, err('402 Insufficient credits', 402), ORG);
+    await fallar(1, err('402 Insufficient credits', 402), ORG);
     assert.strictEqual(avisos.length, 1);
     assert.ok(avisos.every(a => a.orgId === ORG), 'San Remo no tiene por qué recibir el de Sante');
 });
@@ -230,7 +241,7 @@ test('la racha de una org no avisa a la otra', async () => {
 test('si Telegram no lo acepta, el siguiente fallo reintenta', async () => {
     limpiar();
     entrega = false;
-    await fallar(FALLOS_PARA_AVISAR, err('402 Insufficient credits', 402));
+    await fallar(1, err('402 Insufficient credits', 402));
     assert.strictEqual(avisos.length, 1, 'se intentó');
     assert.ok(logs.some(l => l.evento === 'admin_alert_no_entregado'));
 
@@ -245,7 +256,7 @@ test('si el aviso revienta, la conversación sigue', async () => {
     limpiar();
     const original = require('../services/telegram').notifyOrgAdmin;
     require('../services/telegram').notifyOrgAdmin = async () => { throw new Error('telegram muerto'); };
-    await assert.doesNotReject(() => fallar(FALLOS_PARA_AVISAR, err('402 Insufficient credits', 402)));
+    await assert.doesNotReject(() => fallar(1, err('402 Insufficient credits', 402)));
     require('../services/telegram').notifyOrgAdmin = original;
 });
 
@@ -278,11 +289,14 @@ test('INCIDENTE 05/08 · tres conversaciones con 402 → Yulia se entera', async
     const historia = [{ role: 'user', content: 'hola quiero una cita' }];
     const conversacion = () => getChatbotResponse(ORG, historia, {}, 'reservar', false, null, cfg);
 
+    // Con umbral 1 para errores de cuenta, la PRIMERA conversación rota ya avisa: antes
+    // había que esperar a tres, o sea a que tres clientas se llevaran el fallback.
     const r1 = await conversacion();
-    const r2 = await conversacion();
-    assert.strictEqual(avisos.length, 0, 'dos conversaciones rotas todavía no son una caída');
+    assert.strictEqual(avisos.length, 1, 'un 402 es cierto desde el primer fallo');
 
+    const r2 = await conversacion();
     const r3 = await conversacion();
+    assert.strictEqual(avisos.length, 1, 'y no se repite mientras siga caído');
 
     // Lo que recibió la clienta: el fallback. Es el síntoma que nadie vio el 05/08.
     for (const r of [r1, r2, r3]) {
@@ -292,7 +306,6 @@ test('INCIDENTE 05/08 · tres conversaciones con 402 → Yulia se entera', async
     }
     // Varios intentos por conversación, tres conversaciones: muchas llamadas, UN aviso.
     assert.ok(llamadasLlm >= 6, `esperaba reintentos, hubo ${llamadasLlm} llamadas`);
-    assert.strictEqual(avisos.length, 1, 'los reintentos NO pueden contar como caídas distintas');
     assert.ok(/recargar saldo|renovar la clave/i.test(avisos[0].mensaje));
 
     // Y al volver el saldo, el aviso de recuperación.

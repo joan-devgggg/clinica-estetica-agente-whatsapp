@@ -30,8 +30,15 @@
 const { alertOnce, clearAlert } = require('./admin-alerts');
 const logger = require('../lib/logger');
 
-/** Fallos consecutivos del proveedor, con el MISMO código, antes de avisar. */
-const FALLOS_PARA_AVISAR = 3;
+// Fallos consecutivos con el MISMO código antes de avisar. El umbral depende del tipo, y no
+// por afinar: un 402 o un 401 son CIERTOS desde el primer fallo —no existe el "sin saldo
+// pasajero"—, así que esperar a tres solo garantiza que tres clientas reciban el fallback
+// antes de que nadie se entere. Un 429 o un 5xx sí pueden ser un tropiezo aislado, y ahí el
+// umbral es lo que evita despertar a alguien por nada.
+const FALLOS_PARA_AVISAR = { cuenta: 1, transitorio: 3 };
+
+/** Compat: lo que importaba de la constante vieja era el umbral del caso ruidoso. */
+const UMBRAL_TRANSITORIO = FALLOS_PARA_AVISAR.transitorio;
 
 /** Errores de red: el proveedor ni siquiera contestó. */
 const PATRONES_RED = [
@@ -99,8 +106,8 @@ const claveAviso = codigo => `llm|${codigo}`;
 
 const MENSAJE_CUENTA = (codigo, contexto) =>
     '🚨 <b>El asistente no está entendiendo los mensajes</b>\n\n'
-    + `Han fallado <b>${FALLOS_PARA_AVISAR} conversaciones seguidas</b> por el mismo motivo `
-    + `(<code>${codigo}</code>).\n\n`
+    + `Acaba de fallar una conversación por un problema de la cuenta del proveedor `
+    + `(<code>${codigo}</code>), y esto no es pasajero: <b>van a fallar todas</b>.\n\n`
     + 'Mientras dure, a cada clienta que escriba le contesta <i>"Perdona, no he podido '
     + 'procesar tu mensaje"</i>. Sigue respondiendo, pero no entiende nada: no coge citas, '
     + 'no mira huecos y no reconoce servicios.\n\n'
@@ -111,8 +118,8 @@ const MENSAJE_CUENTA = (codigo, contexto) =>
 
 const MENSAJE_TRANSITORIO = (codigo, contexto) =>
     '⚠️ <b>El asistente está fallando temporalmente</b>\n\n'
-    + `Han fallado <b>${FALLOS_PARA_AVISAR} conversaciones seguidas</b> por el mismo motivo `
-    + `(<code>${codigo}</code>).\n\n`
+    + `Han fallado <b>${FALLOS_PARA_AVISAR.transitorio} conversaciones seguidas</b> por el `
+    + `mismo motivo (<code>${codigo}</code>).\n\n`
     + 'Mientras dure, a cada clienta que escriba le contesta <i>"Perdona, no he podido '
     + 'procesar tu mensaje"</i> en lugar de atenderla.\n\n'
     + 'Suele ser una caída o una saturación del proveedor y se recupera solo. '
@@ -175,7 +182,8 @@ async function noteLlmResult(orgId, { ok, error = null, contexto = null } = {}) 
             orgId, codigo: clasificado.codigo, tipo: clasificado.tipo, consecutivos: estado.fallos,
         });
 
-        if (estado.fallos < FALLOS_PARA_AVISAR || estado.avisado) return;
+        const umbral = FALLOS_PARA_AVISAR[clasificado.tipo] ?? FALLOS_PARA_AVISAR.transitorio;
+        if (estado.fallos < umbral || estado.avisado) return;
 
         estado.avisado = true;
         const mensaje = clasificado.tipo === 'cuenta'
@@ -197,5 +205,6 @@ module.exports = {
     noteLlmResult,
     classifyLlmError,
     FALLOS_PARA_AVISAR,
+    UMBRAL_TRANSITORIO,
     _reset,
 };
