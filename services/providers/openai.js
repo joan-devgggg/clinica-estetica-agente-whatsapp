@@ -4,6 +4,10 @@ const config = require('../../config.json');
 const db = require('../db');
 const { getOrgType } = require('../org-registry');
 const { normalizeText, classifyLargoVariant, hasApellido, isReactiveOnlyCategory, offerableCatalog } = require('../helpers');
+// Observador de la salud del proveedor del modelo. No decide nada del flujo: solo cuenta.
+// summarizeHistory NO se instrumenta — no recibe orgId, y que falle un resumen no le llega
+// a ninguna clienta. El embudo que importa es este.
+const { noteLlmResult } = require('../llm-health');
 const logger = require('../../lib/logger');
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -1010,11 +1014,24 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
                 max_tokens: aiConfig.max_tokens ?? 450,
             });
             logger.info('llm_intento_ok', { attempt, latencia_ms: Date.now() - t0Attempt });
+            // El proveedor ha contestado: sea lo que sea lo que haya dicho, está en pie. Se
+            // reporta aquí y no al final de la función a propósito — lo que mide llm-health
+            // es la disponibilidad del PROVEEDOR, no si el modelo devolvió un JSON válido.
+            await noteLlmResult(orgId, { ok: true });
         } catch (e) {
             const status = e.status || e.statusCode || null;
             logger.warn('claude_api_error', { attempt, status, latencia_ms: Date.now() - t0Attempt, error: e.message?.slice(0, 200) });
             if (isLastAttempt) {
                 logger.error('claude_error_definitivo', { error: e.message, status, total_ms: Date.now() - t0Total });
+                // Solo en el intento DEFINITIVO, nunca en cada reintento: los MAX_ATTEMPTS
+                // intentos son UNA conversación. Si se contara cada uno, un tropiezo aislado
+                // ya llenaría la racha él solo. Misma regla que en waSendMessage
+                // (channel-health), y por el mismo motivo.
+                await noteLlmResult(orgId, {
+                    ok: false,
+                    error: e,
+                    contexto: `${MAX_ATTEMPTS} intentos en ${Date.now() - t0Total} ms`,
+                });
                 const fb = getFallbackResponse(orgId, clientLang);
                 fb._fallbackReason = `api_error:${status}:${e.message?.slice(0, 100)}`;
                 return fb;
