@@ -10,9 +10,15 @@
  * panel manda por defecto. Con el rango antiguo (`3460099xxxx`, un móvil español plausible),
  * lanzar la campaña de verano le habría escrito a un desconocido.
  *
- * Se prueba contra el `getBroadcastRecipients` REAL, con un doble de Supabase que imita la
- * semántica de PostgREST (incluido el NOT LIKE sobre NULL, que es la parte sutil). Un stub del
- * módulo db entero no probaría nada aquí: la función bajo prueba ES la consulta.
+ * Y la otra mitad, que importa más: entre los excluidos hay clientas REALES con cita cuyo
+ * teléfono está mal escrito (un 0 inicial pegado, un fijo de 9 dígitos, una ficha sin número).
+ * A esas la campaña no les llegaba tampoco antes — la diferencia es que ahora se sabe quiénes
+ * son y por qué. Filtrarlas evita el envío inútil; enseñarlas es lo que hace que alguien las
+ * llame.
+ *
+ * Se prueba contra `getBroadcastAudience` / `getBroadcastRecipients` REALES, con un doble de
+ * Supabase que imita la semántica de PostgREST. Un stub del módulo db entero no probaría nada
+ * aquí: lo que está bajo prueba ES la consulta y su reparto.
  */
 process.env.TZ = 'Europe/Madrid';
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
@@ -22,7 +28,9 @@ const assert = require('assert');
 const { SANTE_ORG_ID } = require('../services/org-registry');
 
 // ─── Doble de Supabase con semántica PostgREST ───────────────────────────────────────
-// Solo lo que usa getBroadcastRecipients: .eq, .or, .not(like), .in, .order.
+// Solo lo que usa la consulta: .eq, .or, .in, .order. A propósito no entiende nada más: si
+// alguien añade un filtro nuevo a la consulta, esto revienta en vez de ignorarlo en silencio
+// y dejar el test afirmando sobre una audiencia que ya no es la de producción.
 let filas = [];
 
 function valorDe(fila, col) { return fila[col]; }
@@ -42,16 +50,6 @@ function evaluaOr(fila, expr) {
     });
 }
 
-// NOT LIKE con semántica SQL: sobre NULL da NULL, y una fila con NULL NO pasa el filtro.
-// Es exactamente lo que hace Postgres, y es la razón de que un contacto sin teléfono quede
-// fuera de la audiencia. Si el doble no lo imitara, el test mentiría justo en el borde.
-function evaluaNotLike(fila, col, patron) {
-    const v = valorDe(fila, col);
-    if (v === null || v === undefined) return false;
-    const re = new RegExp(`^${String(patron).replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*')}$`);
-    return !re.test(String(v));
-}
-
 function makeBuilder() {
     const filtros = [];
     const b = {
@@ -59,11 +57,6 @@ function makeBuilder() {
         select() { return b; },
         eq(col, val) { filtros.push(f => valorDe(f, col) === val); return b; },
         or(expr) { filtros.push(f => evaluaOr(f, expr)); return b; },
-        not(col, op, val) {
-            if (op !== 'like') throw new Error(`.not con operador no soportado: ${op}`);
-            filtros.push(f => evaluaNotLike(f, col, val));
-            return b;
-        },
         in(col, vals) { filtros.push(f => vals.includes(valorDe(f, col))); return b; },
         order() { return Promise.resolve({ data: filas.filter(f => filtros.every(fn => fn(f))), error: null }); },
         then(res, rej) { return b.order().then(res, rej); },
@@ -78,7 +71,7 @@ require.cache[supabasePath] = {
 };
 
 const db = require('../services/db');
-const { TEST_PHONE_PREFIX } = require('../services/helpers');
+const { TEST_PHONE_PREFIX, isSendablePhone } = require('../services/helpers');
 
 const ARNES_1 = `${TEST_PHONE_PREFIX}6001000`;
 const ARNES_2 = `${TEST_PHONE_PREFIX}6001016`;   // el que se fugó de verdad, escenario 17
@@ -90,8 +83,14 @@ function seed() {
         { id: 'c3', organization_id: SANTE_ORG_ID, wa_phone: '34600333333', full_name: 'Bloqueada', origen: 'whatsapp', is_vip: false, is_blacklisted: true },
         { id: 't1', organization_id: SANTE_ORG_ID, wa_phone: ARNES_1, full_name: null, origen: 'whatsapp', is_vip: false, is_blacklisted: false },
         { id: 't2', organization_id: SANTE_ORG_ID, wa_phone: ARNES_2, full_name: null, origen: 'whatsapp', is_vip: false, is_blacklisted: false },
+        // Los tres casos REALES de Sante a 05/08/2026, con sus números tal cual: dos clientas
+        // con cita y el teléfono mal escrito, y una prueba antigua. Copiarlos de la base y no
+        // inventarlos es lo que hace que este test hable del problema que hay.
         { id: 'c4', organization_id: SANTE_ORG_ID, wa_phone: '', full_name: 'Alexandra (sin teléfono)', origen: 'manual', is_vip: false, is_blacklisted: false },
         { id: 'c5', organization_id: SANTE_ORG_ID, wa_phone: null, full_name: 'Sin número en absoluto', origen: 'manual', is_vip: false, is_blacklisted: false },
+        { id: 'c6', organization_id: SANTE_ORG_ID, wa_phone: '0789717626', full_name: 'Elena Baltaga', origen: 'manual', is_vip: false, is_blacklisted: false },
+        { id: 'c7', organization_id: SANTE_ORG_ID, wa_phone: '965288498', full_name: 'Tatiana Zotova', origen: 'manual', is_vip: false, is_blacklisted: false },
+        { id: 'c8', organization_id: SANTE_ORG_ID, wa_phone: '77777777', full_name: 'ja', origen: 'manual', is_vip: false, is_blacklisted: false },
         { id: 'x1', organization_id: 'otra-org', wa_phone: '34600999999', full_name: 'De otra org', origen: 'whatsapp', is_vip: false, is_blacklisted: false },
     ];
 }
@@ -151,15 +150,55 @@ async function test(name, fn) {
         assert.ok(!tel(d).includes('34600999999'));
     });
 
-    await test('sin número: la cadena vacía SE VE en la audiencia; el NULL no', async () => {
+    // ═══ Quién no puede recibir, y que se SEPA ════════════════════════════════════════
+    // La parte que de verdad importa: entre los excluidos hay clientas reales con cita cuyo
+    // teléfono está mal escrito. Filtrarlas evita el envío inútil; ENSEÑARLAS es lo que hace
+    // que alguien las llame. Una campaña que las salta en silencio deja el problema igual.
+
+    await test('un teléfono que no es E.164 no recibe, y sale con su motivo', async () => {
+        const { destinatarios, excluidos } = await db.getBroadcastAudience(SANTE_ORG_ID, { audience: 'todos' });
+        assert.ok(!tel(destinatarios).includes('0789717626'), 'el 0 inicial no viaja: no se le entrega');
+        assert.ok(!tel(destinatarios).includes('965288498'), 'un fijo de 9 dígitos tampoco');
+        assert.ok(!tel(destinatarios).includes(''), 'ni una ficha sin teléfono');
+
+        const porTel = Object.fromEntries(excluidos.map(e => [e.telefono, e.motivo]));
+        assert.strictEqual(porTel['0789717626'], 'numero_invalido');
+        assert.strictEqual(porTel['965288498'], 'numero_invalido');
+        assert.strictEqual(porTel[''], 'sin_numero');
+        assert.strictEqual(porTel[ARNES_1], 'prueba', 'el del arnés se distingue: se borra, no se llama');
+    });
+
+    await test('el excluido conserva el NOMBRE — sin él la lista no sirve de nada', async () => {
+        const { excluidos } = await db.getBroadcastAudience(SANTE_ORG_ID, { audience: 'todos' });
+        const alexandra = excluidos.find(e => e.telefono === '');
+        assert.ok(alexandra, 'tiene que estar en la lista, no desaparecer');
+        assert.strictEqual(alexandra.nombre, 'Alexandra (sin teléfono)',
+            'un teléfono suelto no permite reconocer a nadie ni ir a su ficha');
+    });
+
+    await test('quien sí puede recibir NO aparece entre los excluidos', async () => {
+        const { destinatarios, excluidos } = await db.getBroadcastAudience(SANTE_ORG_ID, { audience: 'todos' });
+        assert.ok(tel(destinatarios).includes('34600111111'));
+        assert.ok(!tel(excluidos).includes('34600111111'));
+        // Las dos listas juntas son la audiencia entera: nadie se pierde por el camino.
+        assert.strictEqual(destinatarios.length + excluidos.length, 9,
+            'los 9 de Sante no bloqueados (la de otra org no cuenta)');
+        assert.strictEqual(destinatarios.length, 2, 'solo dos tienen un número al que entregar');
+    });
+
+    await test('getBroadcastRecipients sigue devolviendo un array plano (runBroadcast no cambia)', async () => {
         const d = await db.getBroadcastRecipients(SANTE_ORG_ID, { audience: 'todos' });
-        // Una ficha con el teléfono en blanco tiene que verse: es una clienta real con el dato
-        // mal, y esconderla de la audiencia es esconder el problema.
-        assert.ok(tel(d).includes(''), 'la ficha con teléfono vacío sigue contándose');
-        // El NULL queda fuera por la semántica del NOT LIKE. Es lo que corresponde —no se
-        // escribe a quien no tiene número— pero se afirma aquí para que sea una decisión
-        // consciente y no una sorpresa el día que aparezca uno.
-        assert.strictEqual(d.filter(x => x.telefono === null || x.telefono === undefined).length, 0);
+        assert.ok(Array.isArray(d));
+        assert.deepStrictEqual(d, (await db.getBroadcastAudience(SANTE_ORG_ID, { audience: 'todos' })).destinatarios);
+    });
+
+    await test('isSendablePhone: la regla, en seco', () => {
+        for (const bueno of ['34600111111', '9996001000', '380672707832', '1954224098']) {
+            assert.ok(isSendablePhone(bueno), `${bueno} debería poder recibir`);
+        }
+        for (const malo of ['', '   ', '0789717626', '965288498', '77777777', '3460011111x', '3460011111122222', null, undefined]) {
+            assert.ok(!isSendablePhone(malo), `${JSON.stringify(malo)} NO debería poder recibir`);
+        }
     });
 
     if (!process.exitCode) console.log('\nTests de audiencia de campaña OK');

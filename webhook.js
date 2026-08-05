@@ -738,11 +738,19 @@ app.get('/api/campaigns/status', async (req, res) => {
         const { audience = 'todos', campaignKey } = req.query;
         const { MAX_DESTINATARIOS_24H } = require('./services/broadcast');
 
-        const destinatarios = await db.getBroadcastRecipients(orgId, { audience });
+        const { destinatarios, excluidos } = await db.getBroadcastAudience(orgId, { audience });
         const yaEnviados = campaignKey ? await db.getBroadcastSentPhones(orgId, campaignKey) : new Set();
         const pendientes = destinatarios.filter(c => !yaEnviados.has(db.sanitizePhone(c.telefono)));
         const enviados24h = await db.countBroadcastSendsLast24h(orgId);
         const cupo = Math.max(0, MAX_DESTINATARIOS_24H - enviados24h);
+
+        // A quién NO le va a llegar, y por qué, ANTES de disparar. No es un adorno: entre los
+        // excluidos hay clientas reales con cita cuyo teléfono está mal escrito, y una campaña
+        // que las salta en silencio deja el problema exactamente donde estaba. Con el nombre
+        // delante, alguien puede llamarlas. Van los datos crudos (teléfono, nombre, código de
+        // motivo) y el recuento por motivo; el texto lo pone el panel.
+        const porMotivo = {};
+        for (const c of excluidos) porMotivo[c.motivo] = (porMotivo[c.motivo] || 0) + 1;
 
         res.json({
             total_audiencia: destinatarios.length,
@@ -752,6 +760,8 @@ app.get('/api/campaigns/status', async (req, res) => {
             cupo_24h_restante: cupo,
             proxima_tanda: Math.min(pendientes.length, cupo),
             max_por_24h: MAX_DESTINATARIOS_24H,
+            excluidos: excluidos.map(c => ({ telefono: c.telefono, nombre: c.nombre, motivo: c.motivo })),
+            excluidos_por_motivo: porMotivo,
         });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });

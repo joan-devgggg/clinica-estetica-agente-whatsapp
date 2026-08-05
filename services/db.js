@@ -5,7 +5,7 @@
 
 const supabase = require('./supabase');
 const logger = require('../lib/logger');
-const { NO_STYLIST_KEY, computeServiceBilling, IDIOMAS_SOPORTADOS, resolveLanguageSource, TEST_PHONE_PREFIX } = require('./helpers');
+const { NO_STYLIST_KEY, computeServiceBilling, IDIOMAS_SOPORTADOS, resolveLanguageSource, motivoNoEnviable } = require('./helpers');
 
 const DEFAULT_ORG = process.env.ORGANIZATION_ID || 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
@@ -1642,37 +1642,34 @@ async function getVipList(orgId, { excludeBlacklisted = false } = {}) {
 // audience: 'todos' | 'no_vip' | 'nunca_reservado'
 // phones: array opcional de teléfonos → allowlist explícito (para pruebas seguras);
 //         si se pasa, IGNORA audience y apunta SOLO a esos números.
-async function getBroadcastRecipients(orgId, { audience = 'todos', phones } = {}) {
+/**
+ * La audiencia de una campaña, PARTIDA EN DOS: a quién se le puede entregar y a quién no, con
+ * el motivo. Es el embudo único —los dos endpoints de campaña pasan por aquí—, así que
+ * cualquier audiencia futura hereda las exclusiones sin que nadie tenga que acordarse.
+ *
+ * Devolver los excluidos, y no solo filtrarlos, es el punto entero de esta función. Un
+ * destinatario que desaparece en silencio es el mismo fallo que llevamos días arreglando en
+ * otras capas: la campaña sale, el número cuadra, y nadie se entera de que a tres clientas
+ * REALES no les ha llegado nada porque su teléfono está mal escrito. El filtro evita el envío
+ * inútil; la lista es la que hace que alguien las llame.
+ *
+ * Por eso los teléfonos del arnés se clasifican aquí y no se descartan en la consulta: lo que
+ * la consulta tira no se puede enseñar después.
+ */
+async function getBroadcastAudience(orgId, { audience = 'todos', phones } = {}) {
     const oid = resolveOrg(orgId);
     let query = supabase
         .from('contacts')
         .select('*')
         .eq('organization_id', oid)
-        .or('is_blacklisted.is.null,is_blacklisted.eq.false')
-        // Los teléfonos del ARNÉS DE PRUEBAS no son destinatarios de nada, nunca, sea cual sea
-        // la audiencia. Va aquí y no en cada llamada porque este es el embudo único: los dos
-        // endpoints de campaña pasan por él, y así cualquier audiencia futura lo hereda sin que
-        // nadie tenga que acordarse.
-        //
-        // Es la segunda red, no la primera. La primera es que esos números están en un prefijo
-        // que no puede ser de nadie (TEST_PHONE_PREFIX, ver helpers.js). Las dos existen porque
-        // protegen de cosas distintas: el prefijo evita el daño si el residuo se cuela, y este
-        // filtro lo evita otra vez si alguien cambia el prefijo del arnés y no cae en esto.
-        // Nace de un residuo real encontrado en Sante el 05/08/2026 (34600991016, que
-        // reaparecía en cada corrida), dentro de la audiencia 'todos' —la que el panel manda
-        // por defecto—. Había otro de una prueba vieja en San Remo.
-        //
-        // Un `wa_phone` a NULL también queda fuera por la semántica del NOT LIKE. Es lo que
-        // corresponde: no se puede escribir a quien no tiene número. Hoy no hay ninguno (sí una
-        // cadena vacía, que sí entra y se ve en la audiencia, que es donde debe verse).
-        .not('wa_phone', 'like', `${TEST_PHONE_PREFIX}%`);
+        .or('is_blacklisted.is.null,is_blacklisted.eq.false');
 
     const allowlist = Array.isArray(phones)
         ? phones.map(sanitizePhone).filter(Boolean)
         : null;
 
     if (allowlist) {
-        if (allowlist.length === 0) return [];
+        if (allowlist.length === 0) return { destinatarios: [], excluidos: [] };
         query = query.in('wa_phone', allowlist);
     } else if (audience === 'no_vip') {
         query = query.or('is_vip.is.null,is_vip.eq.false');
@@ -1681,7 +1678,24 @@ async function getBroadcastRecipients(orgId, { audience = 'todos', phones } = {}
     }
 
     const { data } = await query.order('updated_at', { ascending: false });
-    return (data || []).map(rowToPublic);
+
+    const destinatarios = [];
+    const excluidos = [];
+    for (const contacto of (data || []).map(rowToPublic)) {
+        const motivo = motivoNoEnviable(contacto.telefono);
+        if (motivo) excluidos.push({ ...contacto, motivo });
+        else destinatarios.push(contacto);
+    }
+    return { destinatarios, excluidos };
+}
+
+/**
+ * Solo los que pueden recibir. Es lo que quiere el envío —runBroadcast no tiene nada que hacer
+ * con una lista de excluidos—, así que la firma de siempre se conserva: un array de contactos.
+ * Quien necesite saber a quién se ha dejado fuera y por qué llama a getBroadcastAudience.
+ */
+async function getBroadcastRecipients(orgId, opciones = {}) {
+    return (await getBroadcastAudience(orgId, opciones)).destinatarios;
 }
 
 // ─── Broadcast sends (campañas por tandas) ───────────────────────────────────
@@ -2446,6 +2460,7 @@ module.exports = {
     getBlacklist,
     getVipList,
     getBroadcastRecipients,
+    getBroadcastAudience,
     getBroadcastSentPhones,
     resetStaleBroadcastClaims,
     claimBroadcastRecipient,

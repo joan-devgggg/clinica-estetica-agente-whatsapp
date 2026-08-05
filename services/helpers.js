@@ -51,9 +51,41 @@ function buildCyrillicRe(literales) {
 //
 // Vive aquí, y no en el arnés, porque lo tienen que compartir DOS sitios que no se hablan: el
 // que los genera (tests/verify-sante-robustez-llm.js) y el que los excluye de la audiencia
-// (db.getBroadcastRecipients). Si cada uno lleva su copia, el día que uno cambie el otro deja
-// de proteger sin que nada lo delate.
+// (motivoNoEnviable, aquí abajo, que usa db.getBroadcastAudience). Si cada uno lleva su copia,
+// el día que uno cambie el otro deja de proteger sin que nada lo delate.
 const TEST_PHONE_PREFIX = '999';
+
+// ¿A este número se le puede entregar algo? Es una propiedad del NÚMERO, no un juicio sobre la
+// persona — y esa distinción es justo el motivo de que esto no sea un `is_blacklisted` ni una
+// nota en la ficha. Alexandra no está bloqueada: está mal apuntada. Marcarlo en su ficha
+// cambiaría el significado del dato, se vería en el panel como un castigo y nadie lo revertiría
+// el día que alguien corrija el teléfono. Así, en cambio, vuelve a la audiencia ella sola.
+//
+// E.164 en su forma mínima: solo dígitos, de 10 a 15, y sin cero inicial (ningún número
+// internacional empieza por 0; el 0 es prefijo de salida nacional, que no viaja).
+//
+// A 05/08/2026 esto deja fuera a cuatro fichas de Sante, y a las cuatro NO les iba a llegar la
+// campaña de todos modos: una sin teléfono, una con `0789717626` (prefijo nacional pegado), un
+// `77777777` de prueba y un fijo de 9 dígitos. Excluirlas no les quita nada; lo que hay que
+// conseguir es que alguien SE ENTERE de que no pueden recibir, y de eso se encarga quien pinta
+// la lista de excluidas.
+function isSendablePhone(phone) {
+    return /^[1-9][0-9]{9,14}$/.test(String(phone ?? '').trim());
+}
+
+// Por qué un contacto no puede recibir una campaña, o null si sí puede. Devuelve un CÓDIGO, no
+// una frase: el texto es cosa de quien lo pinta, y aquí una frase se quedaría vieja en cuanto
+// alguien cambiara el panel.
+//
+// El orden importa: un número del arnés es 'prueba' aunque además fuera inválido, porque lo que
+// hay que hacer con él (borrarlo) no se parece en nada a lo que hay que hacer con el de una
+// clienta real (llamarla y corregirlo).
+function motivoNoEnviable(phone) {
+    const s = String(phone ?? '').trim();
+    if (s.startsWith(TEST_PHONE_PREFIX)) return 'prueba';
+    if (!s) return 'sin_numero';
+    return isSendablePhone(s) ? null : 'numero_invalido';
+}
 
 // Los cuatro idiomas que el salón sabe hablar. Es la lista que valida lo que entra por el
 // panel y la que eligen los constructores de mensajes; vivía copiada en seis sitios.
@@ -2952,6 +2984,8 @@ module.exports = {
     LANGUAGE_SOURCES,
     resolveLanguageSource,
     TEST_PHONE_PREFIX,
+    isSendablePhone,
+    motivoNoEnviable,
     classifyIncomingMedia,
     unsupportedMediaMsg,
     detectIntent,
