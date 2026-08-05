@@ -1074,13 +1074,44 @@ app.get('/api/reviews-pending', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Pide la reseña de VERDAD y solo entonces marca la cita.
+//
+// Hasta el 06/08/2026 esta ruta se llamaba `send` y no enviaba nada: ponía
+// `resena_enviada = true` y devolvía {ok:true}, y el panel cantaba "Reseña enviada". Y como
+// la cola del worker filtra por `resena_enviada = false`, el clic sacaba la cita también de
+// ahí: pulsar el botón era la forma más eficaz de garantizar que esa reseña no se pidiera
+// nunca. Cinco reseñas reales se perdieron así entre el 01 y el 05/08/2026.
+//
+// Ahora el envío pasa por el MISMO embudo que el worker (review.sendReviewForAppointment),
+// y cada motivo de no-envío tiene su código: el operador tiene que poder distinguir "esa
+// cita ya no está pendiente" de "WhatsApp no está conectado".
 app.post('/api/reviews/:appointmentId/send', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
-        await db.updateAppointment(orgId, req.params.appointmentId, {
-            resenaEnviada: true, actor: `panel:${req.authUserId || 'desconocido'}`,
+        const client = getOutboundClient(orgId);
+        if (!client) return res.status(503).json({ error: 'WhatsApp no conectado' });
+
+        const { sendReviewForAppointment } = require('./services/review');
+        const r = await sendReviewForAppointment(orgId, req.params.appointmentId, {
+            client, actor: `panel:${req.authUserId || 'desconocido'}`,
         });
-        res.json({ ok: true });
+
+        if (!r.ok) {
+            const HTTP = {
+                no_pendiente:  [404, 'Esa cita ya no está pendiente de reseña'],
+                sin_enlace:    [409, 'Falta el enlace de reseñas de Google en la configuración'],
+                sin_telefono:  [422, 'La clienta no tiene un teléfono utilizable'],
+                sin_plantilla: [409, 'Fuera de la ventana de 24 h y sin plantilla de reseña configurada'],
+                fallo:         [502, 'No se pudo enviar el mensaje por WhatsApp'],
+            };
+            const [codigo, mensaje] = HTTP[r.motivo] || [502, 'No se pudo enviar la reseña'];
+            return res.status(codigo).json({ error: mensaje, motivo: r.motivo });
+        }
+
+        // `registrado:false` = salió pero no se pudo marcar. Se responde 200 a propósito: un
+        // error haría que el operador volviera a pulsar y la clienta recibiera dos peticiones
+        // de reseña. El worker podría repetirla; es el mal menor y queda en el log.
+        res.json({ ok: true, registrado: r.registrado !== false });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

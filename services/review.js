@@ -46,11 +46,18 @@ function resolveChatId(telefono, waJid) {
  *
  * @returns {'enviado'|'fallo'|'sin_plantilla'}
  */
-async function sendReviewMessage(orgId, { telefono, language, waJid }, { mensaje, templateParams }) {
-    const entry = waClients?.get(orgId);
-    if (!entry?.client) {
-        logger.warn('review_wa_no_disponible', { orgId });
-        return 'fallo';
+async function sendReviewMessage(orgId, { telefono, language, waJid }, { mensaje, templateParams }, { client: clientOverride = null } = {}) {
+    // El panel resuelve su propio cliente saliente (getOutboundClient) y lo inyecta; el
+    // worker lo saca de su Map. Un solo embudo de envío para los dos, que es justo lo que
+    // faltaba: la ruta del panel no mandaba nada.
+    let client = clientOverride;
+    if (!client) {
+        const entry = waClients?.get(orgId);
+        if (!entry?.client) {
+            logger.warn('review_wa_no_disponible', { orgId });
+            return 'fallo';
+        }
+        client = resolveOutboundClient(orgId, entry.client);
     }
     const chatId = resolveChatId(telefono, waJid);
     if (!chatId) {
@@ -58,7 +65,6 @@ async function sendReviewMessage(orgId, { telefono, language, waJid }, { mensaje
         return 'fallo';
     }
 
-    const client = resolveOutboundClient(orgId, entry.client);
     if (!client) {
         logger.warn('review_wa_no_disponible', { orgId });
         return 'fallo';
@@ -95,6 +101,62 @@ async function sendReviewMessage(orgId, { telefono, language, waJid }, { mensaje
         noteSendResult(orgId, { ok: false, error: e, contexto: 'petición de reseña' });
         return 'fallo';
     }
+}
+
+/**
+ * Pide la reseña de UNA cita concreta y solo entonces la marca. La usa el botón del panel.
+ *
+ * Hasta el 06/08/2026 `POST /api/reviews/:id/send` NO enviaba nada: ponía
+ * `resena_enviada = true` y devolvía {ok:true}, y el panel cantaba "Reseña enviada". Como
+ * `getCompletedAppointmentsForReview` filtra por `resena_enviada = false`, el clic sacaba la
+ * cita TAMBIÉN de la cola del worker — o sea que era la forma más eficaz de garantizar que
+ * esa reseña no se pidiera nunca. Cinco reseñas reales se perdieron así.
+ *
+ * La cita se busca dentro de `getCompletedAppointmentsForReview`, no por id suelto, para que
+ * el botón solo pueda mandar lo que el worker también consideraría válido: completada, no
+ * enviada, pasada la ventana y con la clienta fuera de la lista negra. Un id que no esté ahí
+ * es un 'no_pendiente', no un envío.
+ *
+ * @returns {{ok: boolean, motivo?: string, registrado?: boolean}}
+ */
+async function sendReviewForAppointment(orgId, appointmentId, { client = null, actor = null } = {}) {
+    const agentCfg = await getAgentConfig(orgId);
+    const info = agentCfg?.business_info || {};
+    const googleLink = info.googleReviewLink;
+    if (!googleLink) return { ok: false, motivo: 'sin_enlace' };
+
+    const horasResenaDb = await getConfigValue(orgId, 'horas_resena');
+    const pendientes = await getCompletedAppointmentsForReview(orgId, Number(horasResenaDb) || 0);
+    const apt = (pendientes || []).find(a => a.id === appointmentId);
+    if (!apt) return { ok: false, motivo: 'no_pendiente' };
+
+    const telefono = apt.contacts?.wa_phone || apt.phone;
+    if (!telefono) return { ok: false, motivo: 'sin_telefono' };
+
+    const nombre = apt.contacts?.full_name || apt.full_name;
+    const language = apt.contacts?.language || 'es';
+    const waJid = apt.contacts?.metadata?.wa_jid || null;
+    const companyName = info.companyName || 'nuestro centro';
+    const mensaje = buildReviewMessage(nombre, companyName, googleLink, language);
+
+    const resultado = await sendReviewMessage(orgId, { telefono, language, waJid }, {
+        mensaje, templateParams: [nombre || '', googleLink],
+    }, { client });
+    if (resultado !== 'enviado') return { ok: false, motivo: resultado };
+
+    // Marcar va DESPUÉS del envío y nunca antes. Y si el marcado falla, el envío ya se hizo:
+    // devolver error haría que el operador volviera a pulsar y la clienta recibiera dos
+    // peticiones de reseña. Se informa de que salió pero no se pudo apuntar.
+    try {
+        await updateAppointment(orgId, apt.id, { resenaEnviada: true, actor });
+    } catch (e) {
+        logger.error('resena_enviada_sin_registrar', {
+            orgId, appointmentId: apt.id, telefono, error: e.message,
+        });
+        return { ok: true, registrado: false };
+    }
+    logger.info('resena_enviada', { orgId, appointmentId: apt.id, telefono, actor });
+    return { ok: true, registrado: true };
 }
 
 async function checkAndSendReviews() {
@@ -151,4 +213,7 @@ function startReviewWorker(clients) {
     setTimeout(checkAndSendReviews, 2 * 60 * 1000);
 }
 
-module.exports = { startReviewWorker, buildReviewMessage, checkAndSendReviews, setClients };
+module.exports = {
+    startReviewWorker, buildReviewMessage, checkAndSendReviews, setClients,
+    sendReviewForAppointment,
+};
