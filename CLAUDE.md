@@ -115,6 +115,74 @@ La traza va en `contacts.metadata.auto_return` (`at`, `dias_silencio`,
 `ultima_actividad_at`) y el Monitor la pinta mientras la conversación siga en auto: sin
 ella, una devuelta por el sistema y otra devuelta a mano son la misma fila.
 
+## El idioma de una clienta (`contacts.language`)
+
+Decide en qué idioma le habla el bot, y **qué plantilla de Meta recibe en una campaña**. Se
+escribe en tres sitios y solo tres: el INSERT de `saveLead` (default `'es'`),
+`updateContactLanguage` (observado en conversación) y `updateLeadById` (corregido a mano
+desde la ficha del panel). `IDIOMAS_SOPORTADOS` (`helpers.js`) es la lista única; un valor
+fuera de ella se rechaza — se usaría como clave contra `config.plantilla_*` y la campaña
+omitiría a esa clienta con un `sin_plantilla` que nadie relacionaría con la causa.
+
+**El campo mezcla tres calidades. Cuál es cada una lo dice `metadata.language_source`**
+(`'observed' | 'inferred' | 'default'`), que `rowToPublic` expone como `language_source`. A
+05/08/2026, de 721 contactos de Sante: 3 observados, 184 inferidos por nombre y 534 en el
+default que nadie tocó. **La columna `language` no cambia nunca por esto** — las plantillas
+de campaña salen igual; lo único que cambia es de qué se puede uno fiar. Segmentar con
+`metadata->>'language_source'`, no a ojo.
+
+Lo escriben los mismos tres sitios que escriben el idioma: `saveLead` (`'default'`, salvo que
+la clienta ya haya escrito en ese turno), `updateContactLanguage` (`'observed'`, y apaga la
+marca de inferido) y `updateLeadById` (`'observed'`: lo ha elegido una persona). El backfill
+de lo anterior es `034_language_source.sql`, y sus reglas son las mismas que aplica
+`resolveLanguageSource` (`helpers.js`) a una fila sin marca — si se separan, el backfill
+queda como una foto que la lógica desmiente en la primera fila nueva.
+
+**Un default NO se le pasa al LLM como idioma.** `bot.js` siembra `session.language` con el de
+la ficha solo si su fuente no es `'default'`; si lo es, deja null y el prompt entra por su rama
+de «aún no se conoce el idioma» (traza `idioma_ficha_por_defecto_ignorado`). Un `'inferred'` sí
+se pasa, pero anunciado como PROBABLE. Lo que costó no distinguirlo: 19542240982 (+1, EEUU)
+escribió «Thursday», su ficha llevaba el `'es'` del INSERT, el prompt se lo anunció como
+«último idioma detectado» y el bot la saludó en castellano — a ella y a la foto que mandó
+36 s después, que coge el idioma de la misma `session.language`.
+
+**Los días de la semana están en las dos listas de `detectLanguage`.** Un día suelto es de las
+respuestas más frecuentes que hay (se pregunta «¿qué día te viene bien?») y antes devolvía
+`null`: la lista inglesa tenía `tomorrow`/`today` pero ningún día. Van los siete en inglés y
+en español, sin solape entre ambas — si un día activara las dos listas, `detectLanguage`
+devolvería `null` y no habría arreglado nada.
+
+**Ucraniano.** `detectLanguage` marca `'uk'` por letras exclusivas (`і ї є ґ`) y, si no las
+hay, por una lista corta de frases que no existen en ruso (`dyakuyu`, `budʹ laska`, `dobryi
+denʹ`…). Esa segunda regla existe porque la primera es asimétrica: sin esas letras caía en
+`'ru'`, y el saludo y el gracias no las llevan — «Доброго дня» quedó marcado ruso. Los
+patrones cirílicos van SIEMPRE por `buildCyrillicRe` y se prueban contra `normalizeText`:
+sin eso no casan nunca (NFD descompone й/ё/ї, y `\b` es ASCII).
+
+## `session.leadId` puede venir vacío — usa `ensureLeadId`
+
+**Nunca leas `session.leadId` a pelo.** Se queda a null en dos situaciones normales: el
+primer mensaje de una desconocida (solo se asigna en la rama de sesión NUEVA, y ahí
+`findByPhone` aún devuelve null porque la fila la crea `saveMessage` un instante después) y
+cualquier sesión rehidratada (no viaja a SQLite, no está en `buildSessionExtra` — mientras
+que `bookedSlots` sí).
+
+Todo lo que colgaba de `if (session.leadId)` se saltaba en silencio en esos dos casos. Lo que
+costó, medido: el idioma no se escribía (el bot respondía en ruso con la ficha en `'es'`), la
+estilista habitual no se guardaba, y el barrido de abandono marcaba `'abandonado'` **sin
+llegar a comprobar si había cita** — el incidente del 04/08/2026, tres clientas confirmadas
+fuera del recordatorio de 24 h, cuyo arreglo estaba gateado justo por el campo vacío.
+
+`ensureLeadId(orgId, session)` (bot.js) resuelve por teléfono y cachea en la sesión; si ya hay
+`leadId` no consulta nada. Lo usan los cinco sitios que lo necesitan: idioma (×2), estilista
+preferida/última, reconciliación de cita viva, guarda de cita duplicada, red anti-cita-fantasma
+y el barrido de abandono. Trazas: `session_leadid_resuelto` / `session_leadid_backfill`.
+
+**Los defaults de las guardas van hacia el lado recuperable.** La guarda de cita duplicada, si
+no puede verificar, asume que la cita **sí** existe y no crea otra: un guardado de menos se
+recupera, un duplicado lo ve la clienta. Y no toca `reservaConfirmada` al hacerlo — ponerlo a
+true apaga cinco de las seis redes del salón, y ahí no se ha leído nada que lo justifique.
+
 ## Multi-tenancy
 
 - **Routing**: Cada org tiene su propio número WA. `server.js` crea un `Client` de whatsapp-web.js por org con `LocalAuth({ clientId })` separado. Cuando llega un mensaje, `server.js` pasa el `orgId` a `bot.js`.
@@ -260,6 +328,49 @@ Si alguien vuelve a añadir un `setInterval` de módulo, que lo pase por `unrefT
 Línea base con la que comparar: **OK 84 · GAP 9 · BUG 0**. Los GAP son deficiencias medidas,
 no regresiones. `verify:sante` sale **entero en verde** (los 4 fallos que arrastraba eran del
 test, no del sistema: 3 horarios copiados de la migración y un plural — ver abajo).
+
+### `verify:robustez:llm` — línea base y cómo leer un DEGRADADO
+
+Este llama al LLM de verdad, así que **no es determinista y su línea base es un rango**, no una
+cifra. Medida el 05/08/2026 con tres corridas seguidas del MISMO código:
+
+| | 1ª | 2ª | 3ª |
+|---|---|---|---|
+| OK | 20 | 21 | 20 |
+| DEGRADADO | 1 (esc. 3) | 0 | 1 (esc. 6) |
+| SILENCIO · BUCLE · ERROR · BUG | 0 | 0 | 0 |
+
+**Lo que se compara es la fila de abajo.** `BUG`, `SILENCIO`, `BUCLE` y `ERROR` a 0 son el
+invariante duro: cualquiera de ellos por encima de 0 es un hallazgo, siempre. **Un DEGRADADO
+suelto que cae en un escenario distinto en cada corrida es varianza del modelo, no una
+regresión** — antes de tocar nada, repetir. Dos corridas con el MISMO escenario degradado ya
+es otra cosa.
+
+(La tabla se midió con el check VIEJO del escenario 3, que se cambió ese mismo día — ver abajo.
+La fila de invariantes vale igual; el conteo de OK del 3 ya no es comparable.)
+
+**Una TANDA de degradados que comparten el texto `"Perdona, no he podido procesar tu mensaje"`
+no es una regresión: es el LLM caído o limitando.** Ese literal es el fallback de bot.js cuando
+la llamada falla, así que mide la red, no el salón. Medido el 05/08/2026: tras cinco corridas
+seguidas en una hora, una sexta salió con **OK 14 · DEGRADADO 7** y seis de esos siete llevaban
+ese texto. Antes de creerse un desplome así, mirar si el degradado es siempre la misma frase y
+esperar un rato.
+
+**Esc. 3 («valayage») — por qué ya no mide una palabra.** El check era
+`/balayage/i` sobre la respuesta del modelo. Daba DEGRADADO 1 de cada 3 corridas con el bot
+haciendo lo correcto, y **era ciego a lo único que importaba**. Medido con tres repeticiones
+limpias: en dos de ellas el bot contestó exactamente `"Genial. ¿Qué día te viene mejor?"` —sin
+nombrar el servicio, o sea rojo con el check viejo— y en una de esas dos el servicio SÍ estaba
+resuelto en la sesión y en la otra no. Texto idéntico, estado opuesto.
+
+Ahora afirma CONDUCTA sobre el ESTADO: se contesta el largo y se exige que
+`session.selectedService` quede resuelto con la categoría de balayage **leída del catálogo**, no
+de una constante (si la dueña la renombra, el escenario se declara no aplicable en vez de
+quedarse en rojo). Sigue degradando ~1 de cada 3, pero ya por un motivo real y no por
+redacción: el bot pasa a preguntar el día **sin haber resuelto el servicio** —`selectedService`
+a null y 0 huecos cargados—, y en la repetición que falló seguía sin resolverlo un turno
+después, proponiendo fechas para una cita cuyo servicio no sabía. Eso es de la familia de la
+cita fantasma y está sin investigar: no lo tapes subiendo el umbral del check.
 
 ### Los datos que edita la dueña no se verifican contra constantes
 

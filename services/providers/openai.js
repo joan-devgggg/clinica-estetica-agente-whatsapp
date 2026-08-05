@@ -345,10 +345,23 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
         : '';
 
     const lastStylist = partialData.__lastStylist || null;
+    // El idioma que trae la ficha, y con qué autoridad. La distinción no es cosmética: la
+    // columna `contacts.language` mezcla idiomas observados, deducidos del nombre y el 'es'
+    // por defecto del INSERT, y hasta 05/08/2026 los tres se anunciaban aquí como «último
+    // idioma detectado». Un default anunciado así es peor que no decir nada — el modelo lo
+    // trata como dato y se queda en castellano ante cualquier mensaje corto (caso real:
+    // "Thursday" desde un +1). bot.js ya no siembra la sesión con un default, así que ese
+    // caso llega aquí como null; 'inferred' sí llega, y es el que necesita su propia rama.
     const clientLanguage = partialData.__clientLanguage || null;
-    const langConstraint = clientLanguage
-        ? `Último idioma detectado: "${clientLanguage}". Úsalo SOLO si el mensaje actual no deja claro el idioma. Si el mensaje actual está en otro idioma, responde en ESE idioma y actualiza "idioma_detectado".`
-        : 'Aún no se conoce el idioma. Detecta el idioma de su PRIMER mensaje y responde en ese mismo idioma.';
+    const clientLanguageSource = partialData.__clientLanguageSource || null;
+    let langConstraint;
+    if (!clientLanguage) {
+        langConstraint = 'Aún no se conoce el idioma. Detecta el idioma de su PRIMER mensaje y responde en ese mismo idioma.';
+    } else if (clientLanguageSource === 'inferred') {
+        langConstraint = `Idioma PROBABLE de la clienta: "${clientLanguage}", deducido de su nombre y sin confirmar (la heurística no distingue ruso de ucraniano). El idioma del MENSAJE ACTUAL manda siempre que se pueda determinar; usa el probable solo si el mensaje no da ninguna pista. Actualiza "idioma_detectado" con el que uses.`;
+    } else {
+        langConstraint = `Último idioma detectado: "${clientLanguage}". Úsalo SOLO si el mensaje actual no deja claro el idioma. Si el mensaje actual está en otro idioma, responde en ESE idioma y actualiza "idioma_detectado".`;
+    }
 
     // Modes
     // Segunda reserva en la misma conversación (para un acompañante).

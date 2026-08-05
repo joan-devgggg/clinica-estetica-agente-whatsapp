@@ -39,6 +39,125 @@ function buildCyrillicRe(literales) {
     return new RegExp(alternativas.map(escapar).join('|'));
 }
 
+// Prefijo de los teléfonos del ARNÉS DE PRUEBAS. Todo lo que empiece por aquí es de una
+// conversación simulada y NO puede recibir un mensaje de campaña.
+//
+// `999` es un código de país SIN ASIGNAR en E.164: no es de nadie y no puede serlo, así que
+// ningún número real puede colisionar con el rango. Ese es todo el criterio — el rango que se
+// usaba antes (`3460099xxxx`) tenía la forma de un móvil español perfectamente plausible, y
+// los residuos que dejaba el arnés entraban en la audiencia 'todos' como una clienta más.
+// A 05/08/2026 quedaba uno en Sante (34600991016, del escenario de la ráfaga; reaparecía en
+// cada corrida) y otro de una prueba vieja en San Remo (34600999999, de junio).
+//
+// Vive aquí, y no en el arnés, porque lo tienen que compartir DOS sitios que no se hablan: el
+// que los genera (tests/verify-sante-robustez-llm.js) y el que los excluye de la audiencia
+// (motivoNoEnviable, aquí abajo, que usa db.getBroadcastAudience). Si cada uno lleva su copia,
+// el día que uno cambie el otro deja de proteger sin que nada lo delate.
+const TEST_PHONE_PREFIX = '999';
+
+// ¿A este número se le puede entregar algo? Es una propiedad del NÚMERO, no un juicio sobre la
+// persona — y esa distinción es justo el motivo de que esto no sea un `is_blacklisted` ni una
+// nota en la ficha. Alexandra no está bloqueada: está mal apuntada. Marcarlo en su ficha
+// cambiaría el significado del dato, se vería en el panel como un castigo y nadie lo revertiría
+// el día que alguien corrija el teléfono. Así, en cambio, vuelve a la audiencia ella sola.
+//
+// E.164 en su forma mínima: solo dígitos, de 10 a 15, y sin cero inicial (ningún número
+// internacional empieza por 0; el 0 es prefijo de salida nacional, que no viaja).
+//
+// A 05/08/2026 esto deja fuera a cuatro fichas de Sante, y a las cuatro NO les iba a llegar la
+// campaña de todos modos: una sin teléfono, una con `0789717626` (prefijo nacional pegado), un
+// `77777777` de prueba y un fijo de 9 dígitos. Excluirlas no les quita nada; lo que hay que
+// conseguir es que alguien SE ENTERE de que no pueden recibir, y de eso se encarga quien pinta
+// la lista de excluidas.
+function isSendablePhone(phone) {
+    return /^[1-9][0-9]{9,14}$/.test(String(phone ?? '').trim());
+}
+
+// Por qué un contacto no puede recibir una campaña, o null si sí puede. Devuelve un CÓDIGO, no
+// una frase: el texto es cosa de quien lo pinta, y aquí una frase se quedaría vieja en cuanto
+// alguien cambiara el panel.
+//
+// El orden importa: un número del arnés es 'prueba' aunque además fuera inválido, porque lo que
+// hay que hacer con él (borrarlo) no se parece en nada a lo que hay que hacer con el de una
+// clienta real (llamarla y corregirlo).
+function motivoNoEnviable(phone) {
+    const s = String(phone ?? '').trim();
+    if (s.startsWith(TEST_PHONE_PREFIX)) return 'prueba';
+    if (!s) return 'sin_numero';
+    return isSendablePhone(s) ? null : 'numero_invalido';
+}
+
+// Los cuatro idiomas que el salón sabe hablar. Es la lista que valida lo que entra por el
+// panel y la que eligen los constructores de mensajes; vivía copiada en seis sitios.
+const IDIOMAS_SOPORTADOS = ['es', 'en', 'ru', 'uk'];
+
+// De dónde salió `contacts.language`. La columna mezcla tres calidades muy distintas y hasta
+// ahora nada las separaba: a 05/08/2026, de 720 fichas de Sante, ~20 traían un idioma
+// observado en conversación, 184 uno deducido del nombre y ~516 el 'es' del INSERT que nadie
+// eligió. Las tres se usaban igual — para elegir plantilla de campaña y para decirle al LLM
+// "último idioma detectado" —, así que un default se comportaba como una observación.
+//
+//   observed → la clienta escribió y se detectó (detectLanguage o el LLM), o lo fijó una
+//              persona desde la ficha del panel. Es el único que se puede afirmar.
+//   inferred → conjetura del script de heurística por nombre. Vale como punto de partida,
+//              pero no distingue ruso de ucraniano y se equivoca con nombres neutros.
+//   default  → el 'es' del INSERT. No es un idioma: es la ausencia de uno.
+//
+// Vive en `contacts.metadata.language_source`, no en una columna nueva, para que sea
+// segmentable en SQL (`metadata->>'language_source'`) sin migrar el esquema.
+const LANGUAGE_SOURCES = ['observed', 'inferred', 'default'];
+
+// Fuente del idioma de una fila de `contacts`, con dos escalones de respaldo para las filas
+// que aún no tienen la marca (todo lo escrito antes de 05/08/2026).
+//
+// El segundo escalón es el que importa: sin marca, un idioma que NO es 'es' no pudo salir del
+// default —el default es siempre 'es'—, así que llegó por inferencia o por observación y se
+// respeta. Un 'es' sin marca sí es indistinguible de un default, y estadísticamente casi
+// siempre lo es (516 de 534 en Sante), así que se trata como tal. El coste de equivocarse ahí
+// es un turno en el que el LLM decide el idioma leyendo el mensaje —que es lo que hace bien—
+// y a partir de ese turno la ficha queda marcada 'observed'. Se corrige solo.
+function resolveLanguageSource(row) {
+    const meta = (row?.metadata && typeof row.metadata === 'object') ? row.metadata : {};
+    if (LANGUAGE_SOURCES.includes(meta.language_source)) return meta.language_source;
+    if (meta.language_inferred) return 'inferred';
+    return (row?.language && row.language !== 'es') ? 'observed' : 'default';
+}
+
+// Ucraniano SIN ninguna de sus letras exclusivas (і ї є ґ).
+//
+// La regla de las letras es correcta pero asimétrica: cuando aparecen, acierta; cuando no,
+// cae en 'ru' por defecto. Un 'uk' mal puesto no existe, un 'ru' mal puesto sí — y toca
+// justo a las dos frases que más se escriben, el saludo y el gracias. Caso real: el
+// contacto 34696073110 escribió «Доброго дня» y quedó marcado 'ru'.
+//
+// Se compila con buildCyrillicRe por las dos razones de siempre: normalizeText descompone
+// (добрий → добрии, porque й = и + breve) y \b es ASCII, así que un \b(…)\b no casaría
+// nunca contra cirílico. Por eso también se testea contra normalizeText(raw), no contra raw.
+//
+// La lista es corta a propósito: al no haber \b, cada literal casa como SUBCADENA, así que
+// solo entran frases que no existen en ruso. Se dejan fuera las tentadoras pero ambiguas
+// («на жаль», que contiene el «жаль» ruso).
+//
+// «доброго дня» es el único con solape real —el ruso lo usa, aunque su forma corriente es
+// «добрый день»—. Entra igual porque el error se corrige solo: detectLanguage se ejecuta en
+// CADA mensaje y manda el último, así que una rusa que salude así vuelve a 'ru' en cuanto
+// escriba cualquier otra cosa.
+const UCRANIANO_SIN_LETRAS_PROPIAS_RE = buildCyrillicRe([
+    'дякую',            // gracias (ru: спасибо)
+    'будь ласка',       // por favor (ru: пожалуйста)
+    'будь-ласка',       // misma frase con guion: normalizeText no lo quita
+    'вітаю',            // hola / enhorabuena — ya lo cazan las letras, aquí por claridad
+    'гарного дня',      // que tengas buen día (ru: хорошего дня)
+    'доброго дня',      // buenos días — ver nota de arriba
+    'добрий день',      // buenos días (ru: добрый день — и frente a ы)
+    'доброго ранку',    // buenos días (ru: доброе утро)
+    'доброго вечора',   // buenas tardes (ru: добрый вечер)
+    'до побачення',     // adiós (ru: до свидания)
+    'вибачте',          // perdona (ru: извините)
+    'перепрошую',       // disculpa (ru: прошу прощения)
+    'гаразд',           // de acuerdo (ru: хорошо / ладно)
+]);
+
 // ─── Detección de idioma (heurística, salón) ────────────────────────────────
 // Defensa para BUG 4: fija el idioma a partir del texto de la clienta ANTES de llamar
 // al LLM, para que los mensajes de fallback/límite salgan en su idioma aunque OpenAI
@@ -49,17 +168,29 @@ function detectLanguage(text) {
     const raw = text.trim();
     if (!raw) return null;
 
-    // Cirílico → ucraniano si tiene letras propias del ucraniano, si no ruso.
+    // Cirílico → ucraniano si tiene letras propias del ucraniano; si no, si usa una palabra
+    // que solo existe en ucraniano; y solo entonces, ruso.
     if (/[а-яёіїєґ]/i.test(raw)) {
         if (/[іїєґ]/i.test(raw)) return 'uk';
+        if (UCRANIANO_SIN_LETRAS_PROPIAS_RE.test(normalizeText(raw))) return 'uk';
         return 'ru';
     }
 
     const t = raw.toLowerCase();
     // Marcadores claros de español (signos, ñ, palabras frecuentes).
     if (/[ñ¿¡]/.test(raw)) return 'es';
-    const esWords = /\b(hola|buenas|quiero|quería|cita|gracias|por favor|cuánto|cuanto|para|reservar|reserva|qué|que tal|cómo|como estas|necesito|tengo|disponible|mañana|hoy|día|dia|tarde)\b/;
-    const enWords = /\b(hi|hello|hey|i'?d|i'?m|i want|i would|i need|please|thanks|thank you|appointment|book|booking|available|tomorrow|today|morning|afternoon|how much|can i|could i|would like|my name)\b/;
+    // Los días de la semana entran en las DOS listas. Caso real (05/08/2026): 19542240982,
+    // teléfono de EEUU, escribió "Thursday" a secas —el día de su cita— y aquí se devolvía
+    // null. Con null el idioma lo decide el LLM… al que se le pasa el idioma que ya tiene la
+    // ficha, y esa ficha llevaba el 'es' por defecto del INSERT que nadie eligió: contestó en
+    // castellano. La lista tenía tomorrow/today/morning/afternoon pero ningún día, y un día
+    // suelto es de las respuestas más frecuentes que hay ("¿qué día te viene bien?").
+    // Van los siete en los dos idiomas por simetría: "jueves" a secas tenía el mismo agujero
+    // en la dirección contraria (una clienta marcada 'ru' que responde en español).
+    // No hay solape entre las dos listas —ningún día español es subcadena de uno inglés ni al
+    // revés—, así que ninguno puede activar hasEs y hasEn a la vez.
+    const esWords = /\b(hola|buenas|quiero|quería|cita|gracias|por favor|cuánto|cuanto|para|reservar|reserva|qué|que tal|cómo|como estas|necesito|tengo|disponible|mañana|hoy|día|dia|tarde|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)\b/;
+    const enWords = /\b(hi|hello|hey|i'?d|i'?m|i want|i would|i need|please|thanks|thank you|appointment|book|booking|available|tomorrow|today|morning|afternoon|how much|can i|could i|would like|my name|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/;
     const hasEs = esWords.test(t);
     const hasEn = enWords.test(t);
     if (hasEn && !hasEs) return 'en';
@@ -1726,7 +1857,7 @@ function buildSpaPromoNote(date = new Date()) {
 }
 
 function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistNombre, precio, duracion, categoria, direccion, language, upsellSuggestion, upsellTono, spaPromo } = {}) {
-    const lang = ['es', 'en', 'ru', 'uk'].includes(language) ? language : 'es';
+    const lang = IDIOMAS_SOPORTADOS.includes(language) ? language : 'es';
     const dir = (direccion || '').trim();
     const emoji = _serviceEmoji(categoria);
     const fechaStr = _formatFechaHora(fecha, hora, lang);
@@ -1826,7 +1957,7 @@ function buildSanteConfirmationMessage({ nombre, fecha, hora, servicio, stylistN
 // que sí está guardada.
 // `citasReales`: [{ servicio, fecha, hora }] ya en hora local de negocio.
 function buildCitaFantasmaMsg({ citasReales = [], language } = {}) {
-    const lang = ['es', 'en', 'ru', 'uk'].includes(language) ? language : 'es';
+    const lang = IDIOMAS_SOPORTADOS.includes(language) ? language : 'es';
     const T = {
         es: {
             conCitas: 'Perdona, me he explicado mal 😅 De momento lo único que tengo apuntado es:',
@@ -2043,7 +2174,7 @@ function _lineaCita(c, lang) {
 // completa (fecha, hora, servicio y estilista) sea cual sea el campo preguntado: el dato
 // viene de Supabase y darlo entero cuesta lo mismo que darlo a medias.
 function buildCitasVivasMsg({ citas = [], campo = 'general', language } = {}) {
-    const lang = ['es', 'en', 'ru', 'uk'].includes(language) ? language : 'es';
+    const lang = IDIOMAS_SOPORTADOS.includes(language) ? language : 'es';
     const T = {
         es: {
             una: 'Tienes esta cita reservada:', varias: 'Tienes estas citas reservadas:',
@@ -2080,7 +2211,7 @@ function buildCitasVivasMsg({ citas = [], campo = 'general', language } = {}) {
 // intención inferida: se recita la cita concreta leída de Supabase y se espera un sí. Sin
 // esto, un "no puedo ir el miércoles" dicho de cualquier otra cosa borraba la cita.
 function buildCancelConfirmMsg({ cita, language } = {}) {
-    const lang = ['es', 'en', 'ru', 'uk'].includes(language) ? language : 'es';
+    const lang = IDIOMAS_SOPORTADOS.includes(language) ? language : 'es';
     const T = {
         es: { intro: 'Antes de cancelar, confírmame que es esta:', pregunta: '¿La cancelo?' },
         en: { intro: 'Before I cancel, let me check it\'s this one:', pregunta: 'Shall I cancel it?' },
@@ -2094,7 +2225,7 @@ function buildCancelConfirmMsg({ cita, language } = {}) {
 // Con dos citas vivas y un "cancela mi cita" a secas NO se adivina: adivinar mal cancela la
 // cita equivocada, que es el peor resultado posible de toda esta funcionalidad.
 function buildElegirCitaMsg({ citas = [], accion = 'cancelar', language } = {}) {
-    const lang = ['es', 'en', 'ru', 'uk'].includes(language) ? language : 'es';
+    const lang = IDIOMAS_SOPORTADOS.includes(language) ? language : 'es';
     const T = {
         es: { cancelar: '¿Cuál de estas quieres cancelar?', cambiar: '¿Cuál de estas quieres cambiar?', referir: '¿A cuál de estas te refieres?' },
         en: { cancelar: 'Which one would you like to cancel?', cambiar: 'Which one would you like to change?', referir: 'Which one do you mean?' },
@@ -2849,6 +2980,12 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
 module.exports = {
     normalizeText,
     detectLanguage,
+    IDIOMAS_SOPORTADOS,
+    LANGUAGE_SOURCES,
+    resolveLanguageSource,
+    TEST_PHONE_PREFIX,
+    isSendablePhone,
+    motivoNoEnviable,
     classifyIncomingMedia,
     unsupportedMediaMsg,
     detectIntent,

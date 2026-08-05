@@ -71,6 +71,7 @@ export function ClienteEditSheet({
         hora_cita: horaCita,
         allergies: form.get("allergies") as string,
         preferences: form.get("preferences") as string,
+        ...(isSalon && { language: form.get("language") as string }),
         ...(isSalon && { formula_coloracion: form.get("formula_coloracion") as string }),
         notas: form.get("notas") as string,
       });
@@ -107,9 +108,10 @@ export function ClienteEditSheet({
           {cliente.is_blacklisted && cliente.blacklist_reason && (
             <p className="text-[11.5px] text-destructive">Lista negra: {cliente.blacklist_reason}</p>
           )}
+          {/* El idioma sale de la cabecera: ahora es un campo editable del formulario y
+              pintarlo aquí además mostraría el valor viejo hasta recargar. */}
           <p className="text-[11.5px] text-muted-foreground">
             Visitas registradas: {cliente.visit_count}
-            {isSalon && cliente.language ? ` · Idioma: ${cliente.language.toUpperCase()}` : ""}
           </p>
         </SheetHeader>
 
@@ -232,6 +234,29 @@ export function ClienteEditSheet({
               placeholder={isSalon ? "Estilista habitual, tipo de corte..." : "Mesa junto a la ventana..."}
             />
           </div>
+          {isSalon && (
+            <div className="space-y-1.5">
+              <Label className="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground">
+                Idioma
+              </Label>
+              <Select name="language" defaultValue={cliente.language || "es"}>
+                <SelectTrigger className="h-9">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="es">Español</SelectItem>
+                  <SelectItem value="en">Inglés</SelectItem>
+                  <SelectItem value="ru">Ruso</SelectItem>
+                  <SelectItem value="uk">Ucraniano</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                {cliente.language_inferred
+                  ? "Deducido de su nombre, sin confirmar: el bot no distingue ruso de ucraniano por el nombre. Si lo sabes, corrígelo."
+                  : "En qué idioma le escriben el bot, los recordatorios y las campañas."}
+              </p>
+            </div>
+          )}
           {isSalon && (
             <div className="space-y-1.5">
               <Label className="text-[10.5px] uppercase tracking-[0.06em] font-semibold text-muted-foreground">

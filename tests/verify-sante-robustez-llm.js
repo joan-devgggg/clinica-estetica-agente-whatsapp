@@ -29,6 +29,7 @@ const db = require('../services/db');
 const supabase = require('../services/supabase');
 const { deleteClient } = require('../services/memory');
 const { SANTE_ORG_ID: ORG } = require('../services/org-registry');
+const { TEST_PHONE_PREFIX } = require('../services/helpers');
 const { Convo: BaseConvo, sleep } = require('./lib/convo');
 
 bot.setBotActivo(ORG, true, false);
@@ -160,8 +161,55 @@ async function cleanup(phone) {
     deleteClient(ORG, `${digits}@c.us`);
 }
 
+// Margen para que aterrice lo que quedó en vuelo (el último turno, su saveMessage saliente y
+// el UPDATE de la conversación). No hay evento al que engancharse: son promesas con `.catch()`
+// que nadie espera. Generoso a propósito — corre UNA vez al final de una tirada de minutos.
+const ASENTAMIENTO_MS = 8000;
+
+// Borra TODO contacto de la org cuyo teléfono esté en el rango del arnés. Devuelve los
+// teléfonos borrados para poder decirlo en voz alta.
+//
+// Basta con borrar el contacto: las FK de conversations, messages, appointments y
+// pending_actions van en CASCADE (verificado el 05/08/2026), así que no quedan huérfanos.
+// `broadcast_sends` es SET NULL y conserva el teléfono, que es lo que se quiere: si un número
+// de prueba llegó a recibir algo, ese rastro no se borra solo.
+async function barrerContactosDePrueba() {
+    const { data, error } = await supabase
+        .from('contacts')
+        .select('id, wa_phone')
+        .eq('organization_id', ORG)
+        .like('wa_phone', `${TEST_PHONE_PREFIX}%`);
+    if (error) {
+        console.log(`\n  ⚠️  no se pudo barrer contactos de prueba: ${error.message}`);
+        return [];
+    }
+    const borrados = [];
+    for (const fila of data || []) {
+        const { error: delError } = await supabase
+            .from('contacts').delete().eq('organization_id', ORG).eq('id', fila.id);
+        if (delError) {
+            console.log(`\n  ⚠️  quedó sin borrar ${fila.wa_phone}: ${delError.message}`);
+            continue;
+        }
+        deleteClient(ORG, `${fila.wa_phone}@c.us`);
+        borrados.push(fila.wa_phone);
+    }
+    return borrados;
+}
+
 let seq = 0;
-const nextPhone = () => `3460099${String(1000 + (seq++)).slice(-4)}`;
+// Estos escenarios corren contra la Supabase REAL de Sante —es lo que les da valor: catálogo,
+// estilistas y horarios de verdad, que la dueña edita—, así que cada conversación crea un
+// contacto real. Y la limpieza tiene una carrera que no se puede cerrar del todo: `saveMessage`
+// es fire-and-forget y el turno sigue vivo después del `finally`, así que una escritura en vuelo
+// puede RESUCITAR el contacto justo después de borrarlo (pasa siempre en el escenario de la
+// ráfaga, que por definición deja trabajo fuera de la ventana del buffer).
+//
+// Por eso el número importa: el rango de antes (`3460099xxxx`) era un móvil español plausible,
+// y un residuo se colaba en la audiencia de una campaña como una clienta más. `999` es un código
+// de país sin asignar en E.164 — no puede ser de nadie —, y db.getBroadcastRecipients excluye
+// ese prefijo de toda audiencia. Dos redes: aunque el residuo se quede, no le llega nada a nadie.
+const nextPhone = () => `${TEST_PHONE_PREFIX}600${String(1000 + (seq++)).slice(-4)}`;
 
 const only = process.argv[2] ? Number(process.argv[2]) : null;
 // Teléfonos que ha usado esta ejecución: al final se barren todos contra `citasSinNombre`.
@@ -244,11 +292,47 @@ async function turno(c, texto) {
         rec('OK', r.txt.slice(0, 90));
     });
 
+    // Este check NO mira si el modelo escribe la palabra "balayage" en su respuesta. Eso es
+    // redacción, y medirlo así daba DEGRADADO en 1 de cada 3 corridas (05/08/2026) con el bot
+    // haciendo exactamente lo correcto: reconocía el typo y preguntaba el largo, pero sin
+    // nombrar el servicio. Un check que falla por cómo redacta el modelo enseña a ignorar los
+    // degradados, que es peor que no tenerlo.
+    //
+    // Lo que se afirma es la CONDUCTA, en el estado y no en la prosa: el typo entra en el flujo
+    // de largo y, al contestarlo, el servicio queda RESUELTO en la sesión con la categoría del
+    // catálogo — en vez de reconducir a "¿qué servicio quieres?", que es el fallo real que este
+    // escenario busca. `selectedService` no depende de cómo redacte el modelo.
     await escenario('Servicio con falta de ortografía ("valayage")', async (c, rec) => {
+        // La categoría se saca del CATÁLOGO, no de una constante escrita aquí: si la dueña
+        // renombra el servicio, el escenario deja de aplicar en vez de quedarse en rojo para
+        // siempre (los datos que ella edita no se verifican contra listas fijas).
+        const catBalayage = [...new Set(catalog.map(s => s.categoria).filter(Boolean))]
+            .find(cat => /balayage/i.test(cat));
+        if (!catBalayage) return rec('OK', 'el catálogo ya no tiene balayage: escenario no aplicable');
+
         await turno(c, 'hola');
         const r = await turno(c, 'kiero un valayage');
         if (r.vacio) return rec('SILENCIO');
-        rec(/balayage/i.test(r.txt) ? 'OK' : 'DEGRADADO', r.txt.slice(0, 90));
+        if (r.generico) return rec('DEGRADADO', r.txt.slice(0, 80));
+
+        // El largo es lo que el flujo de balayage pregunta; contestarlo es el turno en el que
+        // el servicio tiene que aterrizar en la sesión. Si el bot hubiera reconducido a
+        // catálogo, aquí no hay nada que resolver y selectedService se queda a null.
+        const r2 = await turno(c, 'medio');
+        if (r2.vacio) return rec('SILENCIO', 'se calló al contestar el largo');
+
+        // La nota tiene que decir CUÁL de los dos fallos posibles fue, o el rojo no se puede
+        // leer: que no reconociera el typo (el asunto del escenario) o que lo reconociera y
+        // el servicio no aterrizara en la sesión. Por eso van los dos turnos en el mensaje.
+        const svc = bot._internals.getSession(ORG, c.phone)?.selectedService;
+        if (!svc) {
+            return rec('DEGRADADO',
+                `servicio sin resolver tras el largo · T2:"${r.txt.slice(0, 45)}" → T3:"${r2.txt.slice(0, 45)}"`);
+        }
+        if (norm(svc.categoria) !== norm(catBalayage)) {
+            return rec('DEGRADADO', `resolvió "${svc.categoria} · ${svc.nombre}" y no ${catBalayage}`);
+        }
+        rec('OK', `${svc.categoria} · ${svc.nombre}${svc.precio ? ` (${svc.precio} €)` : ''}`);
     });
 
     await escenario('Cambio de opinión en mitad del flujo', async (c, rec) => {
@@ -510,6 +594,27 @@ async function turno(c, texto) {
             nota: `${h.telefono} · ${h.service} ${String(h.starts_at).slice(0, 16)}`,
         });
         console.log(`\n  ${ICON.BUG} BUG — cita sin nombre: ${h.telefono} · ${h.service}`);
+    }
+
+    // ─── Barrido final: ningún contacto de prueba se queda en la base ─────────────────
+    // El cleanup por escenario NO basta, y no es que esté mal escrito: es una carrera. Corre en
+    // el `finally`, pero `saveMessage` es fire-and-forget y el turno sigue vivo detrás, así que
+    // una escritura en vuelo RESUCITA el contacto justo después de borrarlo. Medido el
+    // 05/08/2026: en dos corridas seguidas sobrevivió el mismo número, el del escenario 17 —el
+    // de la ráfaga, que por definición deja trabajo fuera de la ventana del buffer—.
+    //
+    // Por eso este barrido va por PREFIJO y no por la lista de teléfonos usados: el problema no
+    // es CUÁLES, es CUÁNDO. Barrer por lista con el mismo `await` volvería a llegar pronto.
+    // Y por eso hay un margen de asentamiento antes: se le da tiempo a lo que quede en vuelo a
+    // aterrizar, para borrarlo después en vez de correr contra ello otra vez.
+    //
+    // Lo que encuentre se IMPRIME. Un barrido silencioso convertiría una fuga permanente en una
+    // limpieza invisible, y nadie volvería a enterarse de que la carrera existe.
+    await sleep(ASENTAMIENTO_MS);
+    const residuos = await barrerContactosDePrueba();
+    if (residuos.length) {
+        console.log(`\n  🧹 ${residuos.length} contacto(s) de prueba borrados en el barrido final: ${residuos.join(', ')}`);
+        console.log('     (los dejó una escritura en vuelo tras el cleanup de su escenario)');
     }
 
     // ─── Resumen ──────────────────────────────────────────────────────────────────────

@@ -5,7 +5,7 @@
 
 const supabase = require('./supabase');
 const logger = require('../lib/logger');
-const { NO_STYLIST_KEY, computeServiceBilling } = require('./helpers');
+const { NO_STYLIST_KEY, computeServiceBilling, IDIOMAS_SOPORTADOS, resolveLanguageSource, motivoNoEnviable } = require('./helpers');
 
 const DEFAULT_ORG = process.env.ORGANIZATION_ID || 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
@@ -166,6 +166,17 @@ function rowToPublic(row) {
         preferred_stylist_id:  row.preferred_stylist_id || null,
         last_stylist:          row.last_stylist || null,
         language:              row.language || 'es',
+        // ¿El idioma es una CONJETURA por el nombre (script de clasificación) o se observó en
+        // conversación? Sin distinguirlo, el selector de la ficha es inútil: 184 de las 720
+        // fichas de Sante llevan un idioma inferido y son indistinguibles de las verificadas,
+        // así que nadie sabe cuál merece la pena revisar.
+        language_inferred:     !!(row.metadata && typeof row.metadata === 'object' && row.metadata.language_inferred),
+        // La misma pregunta, con las tres respuestas posibles en vez de un booleano:
+        // 'observed' | 'inferred' | 'default'. El booleano de arriba solo separaba la
+        // conjetura por nombre; dejaba juntos el idioma que la clienta demostró y el 'es'
+        // del INSERT que no eligió nadie, que son justo los dos que hay que distinguir para
+        // decidir si el bot puede fiarse de la columna. Ver resolveLanguageSource (helpers).
+        language_source:       resolveLanguageSource(row),
         wa_jid:                (row.metadata && typeof row.metadata === 'object') ? (row.metadata.wa_jid || null) : null,
         // Traza del retorno automático a 'auto' (opción C). Sin esto, en el panel un
         // contacto devuelto por el barrido y uno devuelto a mano son la misma fila: nadie
@@ -331,6 +342,13 @@ async function saveLead(orgId, datos) {
             formula_coloracion: datos.formula_coloracion || null,
             appointment_id:     datos.appointment_id || null,
             language:           datos.language || 'es',
+            // De dónde sale ese idioma, marcado EN EL MISMO INSERT que lo escribe. Sin esto
+            // el 'es' de arriba —que es un valor de relleno, no una observación— queda en la
+            // columna con el mismo aspecto que uno detectado en conversación, y aguas abajo
+            // se usa igual: el prompt se lo presenta al LLM como "último idioma detectado" y
+            // la campaña le manda la plantilla española. `datos.language` solo llega relleno
+            // cuando la clienta YA ha escrito algo en este turno, así que ahí sí es observado.
+            metadata:           { language_source: datos.language ? 'observed' : 'default' },
             updated_at:         now(),
         })
         .select('id')
@@ -434,10 +452,49 @@ async function updateLeadById(orgId, id, campos) {
         preferences:    'preferences',
         formula_coloracion: 'formula_coloracion',
         appointment_id: 'appointment_id',
+        // `language` decide qué plantilla de Meta recibe cada clienta en las campañas, y hasta
+        // ahora NADIE podía corregirlo desde fuera del bot: no estaba en este mapa ni en el de
+        // updateLead, así que la única escritura era updateContactLanguage (detección
+        // automática). Una dueña que SABE que una clienta es ucraniana no tenía forma de
+        // decirlo — y por la vía automática 'uk' es casi inalcanzable.
+        language:       'language',
     };
     const updates = { updated_at: now() };
     for (const [oldKey, newKey] of Object.entries(fieldMap)) {
         if (campos[oldKey] !== undefined) updates[newKey] = campos[oldKey];
+    }
+    // Un idioma fuera de lista no es un campo mal rellenado que se pueda normalizar: se
+    // usaría como clave contra `config.plantilla_*` y la campaña omitiría a esa clienta
+    // ('sin_plantilla') sin que nadie relacione una cosa con la otra.
+    if (updates.language !== undefined && !IDIOMAS_SOPORTADOS.includes(updates.language)) {
+        throw new Error(`Idioma no soportado: '${updates.language}'. Válidos: ${IDIOMAS_SOPORTADOS.join(', ')}`);
+    }
+    // Lo ha elegido una PERSONA mirando la ficha: es la fuente más fiable que puede tener esta
+    // columna y tiene que quedar dicho. Sin la marca, un idioma corregido a mano conserva la de
+    // 'default' o 'inferred' y el bot sigue sin fiarse de él — la dueña corrige y no pasa nada.
+    // Solo entra por aquí el salón (el selector está gateado con isSalon), así que San Remo no
+    // paga esta lectura extra. La fusión es obligatoria: un UPDATE de jsonb sustituye el objeto
+    // entero y se llevaría wa_jid y auto_return por delante.
+    if (updates.language !== undefined) {
+        const { data: row, error: readError } = await supabase
+            .from('contacts')
+            .select('metadata')
+            .eq('id', id)
+            .eq('organization_id', oid)
+            .maybeSingle();
+        if (readError) {
+            // Se guarda el idioma sin la marca antes que arriesgar el resto de metadata con un
+            // objeto incompleto: el dato que la dueña acaba de escribir no se pierde.
+            logger.warn('idioma_fuente_no_marcada', { orgId: oid, contactId: id, error: readError.message });
+        } else {
+            const meta = (row?.metadata && typeof row.metadata === 'object') ? row.metadata : {};
+            updates.metadata = {
+                ...meta,
+                language_source: 'observed',
+                language_observed_at: now(),
+                language_inferred: false,
+            };
+        }
     }
     resetRecordatorioIfConfirmado(updates, campos.estado_cita);
     normalizeContactUpdates(updates);
@@ -1585,7 +1642,21 @@ async function getVipList(orgId, { excludeBlacklisted = false } = {}) {
 // audience: 'todos' | 'no_vip' | 'nunca_reservado'
 // phones: array opcional de teléfonos → allowlist explícito (para pruebas seguras);
 //         si se pasa, IGNORA audience y apunta SOLO a esos números.
-async function getBroadcastRecipients(orgId, { audience = 'todos', phones } = {}) {
+/**
+ * La audiencia de una campaña, PARTIDA EN DOS: a quién se le puede entregar y a quién no, con
+ * el motivo. Es el embudo único —los dos endpoints de campaña pasan por aquí—, así que
+ * cualquier audiencia futura hereda las exclusiones sin que nadie tenga que acordarse.
+ *
+ * Devolver los excluidos, y no solo filtrarlos, es el punto entero de esta función. Un
+ * destinatario que desaparece en silencio es el mismo fallo que llevamos días arreglando en
+ * otras capas: la campaña sale, el número cuadra, y nadie se entera de que a tres clientas
+ * REALES no les ha llegado nada porque su teléfono está mal escrito. El filtro evita el envío
+ * inútil; la lista es la que hace que alguien las llame.
+ *
+ * Por eso los teléfonos del arnés se clasifican aquí y no se descartan en la consulta: lo que
+ * la consulta tira no se puede enseñar después.
+ */
+async function getBroadcastAudience(orgId, { audience = 'todos', phones } = {}) {
     const oid = resolveOrg(orgId);
     let query = supabase
         .from('contacts')
@@ -1598,7 +1669,7 @@ async function getBroadcastRecipients(orgId, { audience = 'todos', phones } = {}
         : null;
 
     if (allowlist) {
-        if (allowlist.length === 0) return [];
+        if (allowlist.length === 0) return { destinatarios: [], excluidos: [] };
         query = query.in('wa_phone', allowlist);
     } else if (audience === 'no_vip') {
         query = query.or('is_vip.is.null,is_vip.eq.false');
@@ -1607,7 +1678,24 @@ async function getBroadcastRecipients(orgId, { audience = 'todos', phones } = {}
     }
 
     const { data } = await query.order('updated_at', { ascending: false });
-    return (data || []).map(rowToPublic);
+
+    const destinatarios = [];
+    const excluidos = [];
+    for (const contacto of (data || []).map(rowToPublic)) {
+        const motivo = motivoNoEnviable(contacto.telefono);
+        if (motivo) excluidos.push({ ...contacto, motivo });
+        else destinatarios.push(contacto);
+    }
+    return { destinatarios, excluidos };
+}
+
+/**
+ * Solo los que pueden recibir. Es lo que quiere el envío —runBroadcast no tiene nada que hacer
+ * con una lista de excluidos—, así que la firma de siempre se conserva: un array de contactos.
+ * Quien necesite saber a quién se ha dejado fuera y por qué llama a getBroadcastAudience.
+ */
+async function getBroadcastRecipients(orgId, opciones = {}) {
+    return (await getBroadcastAudience(orgId, opciones)).destinatarios;
 }
 
 // ─── Broadcast sends (campañas por tandas) ───────────────────────────────────
@@ -2007,20 +2095,84 @@ async function getContactStats(orgId) {
 
 // ─── Contact language / preferred stylist ─────────────────────────────────────
 
+// Fija el idioma OBSERVADO en conversación. Lo llama bot.js en cada turno del salón, en
+// fire-and-forget, así que aquí se hacen las dos comprobaciones que el llamador no puede:
+//
+//   1. El valor. detectLanguage solo devuelve los cuatro soportados, pero el otro call site
+//      pasa `idioma_detectado` del LLM, que puede inventarse cualquier cosa. Un 'pt' escrito
+//      aquí se usaría luego como clave contra `config.plantilla_*` y la campaña omitiría a
+//      esa clienta en silencio. Se rechaza y se avisa; no se escribe nada.
+//   2. Que la escritura ocurra. Esta función devolvía `true` sin mirar `error` NI cuántas
+//      filas tocó: una escritura perdida era indistinguible de una correcta, y como los dos
+//      call sites hacen `.catch()`, tampoco había traza. Ese vacío es lo que hizo imposible
+//      saber por qué 34696073110 respondía en ruso con la ficha en 'es'.
 async function updateContactLanguage(orgId, contactId, language) {
     const oid = resolveOrg(orgId);
-    await supabase
+    if (!IDIOMAS_SOPORTADOS.includes(language)) {
+        logger.warn('idioma_no_soportado_descartado', { orgId: oid, contactId, language });
+        return false;
+    }
+    // Lectura previa para poder FUSIONAR metadata: un UPDATE de jsonb sustituye el objeto
+    // entero, así que escribir { language_source } a pelo se llevaría por delante wa_jid
+    // (con el que el panel manda mensajes al chat correcto) y auto_return. Mismo patrón que
+    // setContactJid y setInferredContactLanguage.
+    const { data: row, error: readError } = await supabase
         .from('contacts')
-        .update({ language, updated_at: now() })
+        .select('language, metadata')
         .eq('id', contactId)
-        .eq('organization_id', oid);
+        .eq('organization_id', oid)
+        .maybeSingle();
+
+    if (readError) {
+        // Degradación deliberada: se pierde la MARCA, nunca el idioma. Abortar aquí dejaría
+        // al bot hablando en el idioma correcto con la ficha en el equivocado, que es
+        // exactamente el fallo que esta función existe para no cometer.
+        logger.warn('idioma_fuente_no_leida', { orgId: oid, contactId, language, error: readError.message });
+        const { data, error } = await supabase
+            .from('contacts')
+            .update({ language, updated_at: now() })
+            .eq('id', contactId)
+            .eq('organization_id', oid)
+            .select('id');
+        assertRowsAffected(error, data, 'contacts', 'updateContactLanguage');
+        return true;
+    }
+
+    const meta = (row?.metadata && typeof row.metadata === 'object') ? row.metadata : {};
+    // Ni el idioma ni su procedencia cambian: no se escribe. Esto se llama en CADA turno del
+    // salón en el que se detecta idioma, y hasta ahora hacía un UPDATE por mensaje para
+    // dejar la fila igual que estaba.
+    if (row && row.language === language && meta.language_source === 'observed' && !meta.language_inferred) {
+        return true;
+    }
+
+    const { data, error } = await supabase
+        .from('contacts')
+        .update({
+            language,
+            metadata: {
+                ...meta,
+                language_source: 'observed',
+                language_observed_at: now(),
+                // La conjetura por nombre queda superada: la clienta ha escrito y se ha visto
+                // en qué idioma. Dejar la marca puesta haría que la ficha siguiera avisando
+                // «deducido de su nombre» sobre un idioma ya observado — y que el prompt lo
+                // tratara como una probabilidad cuando ya es un hecho.
+                language_inferred: false,
+            },
+            updated_at: now(),
+        })
+        .eq('id', contactId)
+        .eq('organization_id', oid)
+        .select('id');
+    assertRowsAffected(error, data, 'contacts', 'updateContactLanguage');
     return true;
 }
 
 // Fija un idioma INFERIDO por heurística de nombre (scripts/classify-sante-language-by-name.js),
-// no confirmado por conversación real. Se marca en metadata.language_inferred para que quede
-// distinguible de un idioma verificado — updateContactLanguage (llamado por detectLanguage en
-// cada turno real) lo pisa en cuanto la clienta escribe, pero no borra la marca; por eso el
+// no confirmado por conversación real. Se marca en metadata (language_source:'inferred' y el
+// booleano histórico language_inferred) para que quede distinguible de un idioma verificado.
+// updateContactLanguage lo pisa —marca y todo— en cuanto la clienta escribe; aun así el
 // caller del script solo debe usar esta función en contactos sin ningún inbound registrado.
 async function setInferredContactLanguage(orgId, contactId, language, matched) {
     const oid = resolveOrg(orgId);
@@ -2037,6 +2189,7 @@ async function setInferredContactLanguage(orgId, contactId, language, matched) {
             language,
             metadata: {
                 ...meta,
+                language_source: 'inferred',
                 language_inferred: true,
                 language_inference_source: 'name_heuristic',
                 language_inference_matched: matched,
@@ -2050,23 +2203,32 @@ async function setInferredContactLanguage(orgId, contactId, language, matched) {
     return true;
 }
 
+// Las dos de abajo tenían el mismo agujero que updateContactLanguage: `await supabase…` sin
+// mirar `error` ni las filas tocadas, y `return true` pasara lo que pasara. Con el .catch()
+// mudo de sus call sites, una escritura perdida no dejaba ni rastro — y lo que se pierde es
+// la memoria del salón: la clienta vuelve y el bot no le ofrece su estilista de siempre,
+// sin que nadie pueda saber por qué. `.select('id')` es lo que permite contar las filas.
 async function updateContactPreferredStylist(orgId, contactId, stylistId) {
     const oid = resolveOrg(orgId);
-    await supabase
+    const { data, error } = await supabase
         .from('contacts')
         .update({ preferred_stylist_id: stylistId, updated_at: now() })
         .eq('id', contactId)
-        .eq('organization_id', oid);
+        .eq('organization_id', oid)
+        .select('id');
+    assertRowsAffected(error, data, 'contacts', 'updateContactPreferredStylist');
     return true;
 }
 
 async function updateContactLastStylist(orgId, contactId, stylistName) {
     const oid = resolveOrg(orgId);
-    await supabase
+    const { data, error } = await supabase
         .from('contacts')
         .update({ last_stylist: stylistName, updated_at: now() })
         .eq('id', contactId)
-        .eq('organization_id', oid);
+        .eq('organization_id', oid)
+        .select('id');
+    assertRowsAffected(error, data, 'contacts', 'updateContactLastStylist');
     return true;
 }
 
@@ -2298,6 +2460,7 @@ module.exports = {
     getBlacklist,
     getVipList,
     getBroadcastRecipients,
+    getBroadcastAudience,
     getBroadcastSentPhones,
     resetStaleBroadcastClaims,
     claimBroadcastRecipient,

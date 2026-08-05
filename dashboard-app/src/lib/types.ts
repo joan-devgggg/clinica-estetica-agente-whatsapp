@@ -32,6 +32,8 @@ export interface Cliente {
   origen?: string;
   preferred_stylist_id?: string;
   language?: string;
+  /** El idioma se dedujo del nombre (script de clasificación), no se observó escribiendo. */
+  language_inferred?: boolean;
   created_at?: string;
   updated_at?: string;
   total_visitas?: number;

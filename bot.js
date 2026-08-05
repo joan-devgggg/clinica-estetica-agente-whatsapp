@@ -635,6 +635,9 @@ function buildSessionExtra(session) {
         selectedService:   session.selectedService || null,
         selectedStylist:   session.selectedStylist || null,
         language:          session.language || null,
+        // Viaja junto al idioma, no puede quedarse atrás: un idioma rehidratado sin su fuente
+        // se lee como 'default' y el bot deja de fiarse de algo que sí se había observado.
+        languageSource:    session.languageSource || null,
         upsellingAccepted: session.upsellingAccepted || [],
         upsellingSuggested: !!session.upsellingSuggested,
         preferredStylistId: session.preferredStylistId || null,
@@ -1224,11 +1227,52 @@ function asksForBookingApproval(text) {
 // secundarias y los dos guards de "sin servicio"), y encima en muchas más sesiones que antes.
 // Es exactamente el bug del 30/07/2026. Para que la sesión "sepa" que hay una cita basta con
 // appointmentId + citaEnCurso, que es para lo que existe citaEnCurso.
+/**
+ * El contact_id de esta conversación, resolviéndolo contra la BD si aún no lo tenemos.
+ *
+ * `session.leadId` es un dato que PUEDE venir vacío, y durante mucho tiempo se leyó como si
+ * siempre estuviera. Se queda a null en dos situaciones nada exóticas:
+ *
+ *   · Primer mensaje de una desconocida. Solo se asigna en la rama de sesión NUEVA, y ahí
+ *     `findByPhone` todavía devuelve null — la fila la crea `saveMessage` un instante
+ *     después. Nada la rellenaba en el resto de esa sesión.
+ *   · Sesión rehidratada. `leadId` no viaja a SQLite (no está en buildSessionExtra), así que
+ *     tras un reinicio o un timeout vuelve vacío… mientras que `bookedSlots` SÍ se persiste.
+ *
+ * Todo lo que colgaba de `if (session.leadId)` se saltaba en silencio en esos dos casos: el
+ * idioma no se escribía, la estilista habitual tampoco, y el barrido de abandono marcaba
+ * 'abandonado' sin llegar a comprobar si había cita —que es el incidente del 04/08/2026,
+ * cuyo arreglo estaba gateado justo por el campo que estaba nulo—. Auditoría 05/08/2026.
+ *
+ * Resolver AQUÍ y no en cada call site es el punto de la función: ninguno tiene que
+ * acordarse. Cachea en la propia sesión, que es donde el resto del código mira después.
+ *
+ * Devuelve null solo si de verdad no hay contacto para ese teléfono, o si la lectura falló
+ * (y entonces avisa). El fallo no se cachea a propósito: son casos raros, la siguiente
+ * llamada puede acertar y ninguno de los llamadores está en un bucle caliente.
+ */
+async function ensureLeadId(orgId, session) {
+    if (session.leadId) return session.leadId;
+    const telefono = session.partialData?.telefono;
+    if (!telefono) return null;
+    try {
+        const contact = await findByPhone(orgId, telefono);
+        if (!contact?.id) return null;
+        session.leadId = contact.id;
+        logger.info('session_leadid_resuelto', { orgId, telefono, leadId: contact.id });
+        return contact.id;
+    } catch (e) {
+        logger.warn('session_leadid_resolucion_fallida', { orgId, telefono, error: e.message });
+        return null;
+    }
+}
+
 async function reconciliarCitaViva(orgId, session, userPhone) {
     if (!session._decidirCitaVivaAlRecargar) return;
     delete session._decidirCitaVivaAlRecargar;
 
-    if (!session.leadId) {
+    const leadId = await ensureLeadId(orgId, session);
+    if (!leadId) {
         // Sin contacto no hay nada que consultar: se conserva el comportamiento anterior.
         session.clienteRecurrente = true;
         clearServiceState(session);
@@ -1237,13 +1281,13 @@ async function reconciliarCitaViva(orgId, session, userPhone) {
 
     let citas;
     try {
-        citas = await getUpcomingAppointments(orgId, session.leadId);
+        citas = await getUpcomingAppointments(orgId, leadId);
     } catch (e) {
         // Conservador y deliberado: ante un fallo de lectura NO se destruye estado (no se
         // limpia el servicio) y NO se afirma que hay cita (no se fija appointmentId ni
         // citaEnCurso). Lo contrario sería elegir entre dos mentiras con la BD caída.
         logger.warn('recarga_cita_viva_lectura_fallida', {
-            orgId, telefono: userPhone, contactId: session.leadId, error: e.message,
+            orgId, telefono: userPhone, contactId: leadId, error: e.message,
         });
         return;
     }
@@ -1281,7 +1325,10 @@ async function blockPhantomBookingClaim(orgId, session, userPhone, aiResponse, s
     // rectificar, y el turno siguiente (el "sí") sí pasa por aquí ya como afirmación.
     if (asksForBookingApproval(aiResponse.respuesta)) return false;
     try {
-        const citasReales = await getUpcomingAppointments(orgId, session.leadId);
+        // Va por ensureLeadId como los cuatro anteriores, y aquí importa en la dirección
+        // contraria: con el contacto sin resolver esta lectura devolvía SIEMPRE cero citas,
+        // así que la red daba por fantasma una confirmación legítima y la desmontaba.
+        const citasReales = await getUpcomingAppointments(orgId, await ensureLeadId(orgId, session));
         const citasFmt = citasReales.map(c => ({
             servicio: c.service,
             fecha: toLocalDateStr(new Date(c.starts_at)),
@@ -2577,9 +2624,28 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
     const slotSig = `${fecha}|${hora}|${stylistId || ''}`;
     if (!Array.isArray(session.bookedSlots)) session.bookedSlots = [];
     if (session.bookedSlots.includes(slotSig)) {
-        const alreadySaved = session.leadId
-            ? await hasActiveAppointmentForSlot(orgId, session.leadId, fecha, hora)
-            : false;
+        // Llegar aquí significa que ESTA sesión ya registró haber reservado este hueco
+        // exacto (slotSig solo se añade tras un guardado correcto). La consulta a Supabase
+        // es una RE-verificación, para cazar el caso de que aquel guardado fallara.
+        //
+        // Cuando no se puede verificar, el default es "sí existe". Antes era `false` —"no
+        // existe, adelante"— y eso es la dirección insegura: un guardado de menos se
+        // recupera, una cita duplicada la ve la clienta. Y el estado sin verificar es
+        // alcanzable de verdad: `bookedSlots` se persiste en SQLite y `leadId` no, así que
+        // una sesión rehidratada vuelve con la marca puesta y el contacto sin resolver.
+        const leadIdGuarda = await ensureLeadId(orgId, session);
+        if (!leadIdGuarda) {
+            logger.warn('cita_sante_duplicada_sin_verificar', {
+                orgId, telefono: userPhone, slotSig,
+                motivo: 'sin contacto resoluble: se asume que la cita existe y no se crea otra',
+            });
+            // NO se toca `reservaConfirmada`: ponerlo a true apaga cinco de las seis redes
+            // del salón, y aquí no se ha leído nada que lo justifique. Se evita el duplicado
+            // sin afirmar de más; si la suposición fuera falsa, la red anti-cita-fantasma
+            // vuelve a leer Supabase después y lo corrige.
+            return true;
+        }
+        const alreadySaved = await hasActiveAppointmentForSlot(orgId, leadIdGuarda, fecha, hora);
         if (alreadySaved) {
             logger.warn('cita_sante_duplicada_evitada', { orgId, telefono: userPhone, slotSig });
             session.reservaConfirmada = true;
@@ -2763,12 +2829,24 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
             });
         }
         // Update preferred stylist for returning visits
-        if (stylistId && session.leadId) {
-            updateContactPreferredStylist(orgId, session.leadId, stylistId).catch(() => {});
+        //
+        // Sigue siendo fire-and-forget (la reserva no espera a esto), pero ya no es mudo:
+        // esto es la memoria del salón —"¿con Veronika, como siempre?"— y cuando se perdía,
+        // el síntoma era que el bot dejaba de reconocer a una clienta habitual, sin una
+        // sola línea que lo relacionara con una escritura fallida.
+        const leadIdEstilista = stylistId ? await ensureLeadId(orgId, session) : null;
+        if (leadIdEstilista) {
+            updateContactPreferredStylist(orgId, leadIdEstilista, stylistId)
+                .catch(e => logger.warn('estilista_preferida_no_persistida', {
+                    orgId, telefono: userPhone, leadId: leadIdEstilista, stylistId, error: e.message,
+                }));
             const stylistName = session.selectedStylist?.nombre || slot.stylistName || null;
             if (stylistName) {
                 session.lastStylist = stylistName;
-                updateContactLastStylist(orgId, session.leadId, stylistName).catch(() => {});
+                updateContactLastStylist(orgId, leadIdEstilista, stylistName)
+                    .catch(e => logger.warn('ultima_estilista_no_persistida', {
+                        orgId, telefono: userPhone, leadId: leadIdEstilista, stylistName, error: e.message,
+                    }));
             }
         }
 
@@ -3147,7 +3225,23 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     if (contact.is_blacklisted) { session.isBlacklisted = true; logger.info('process_core_blacklisted', { orgId, telefono: userPhone }); }
                     else if (session.isBlacklisted) { session.isBlacklisted = false; session.blacklistNotified = false; logger.info('process_core_blacklist_cleared', { orgId, telefono: userPhone, source: 'db_no_blacklist' }); }
                     session.leadId = session.leadId || contact.id;
-                    session.language = contact.language || null;
+                    // Un 'es' que no ha elegido nadie NO es una observación: es el default del
+                    // INSERT, y son 516 de las 720 fichas de Sante. Sembrar la sesión con él
+                    // tiene una consecuencia muy concreta aguas abajo: se le pasa al LLM como
+                    // «último idioma detectado» (__clientLanguage → openai.js) y, ante un
+                    // mensaje corto, el modelo se queda en ese idioma en vez de leer el del
+                    // mensaje. Caso real 05/08/2026: 19542240982, teléfono de EEUU, escribe
+                    // "Thursday" y recibe el saludo en castellano.
+                    // Con null, el prompt entra por su rama de «aún no se conoce el idioma» y
+                    // decide leyendo. La ficha conserva su 'es' —las plantillas de campaña
+                    // siguen saliendo igual—: lo único que cambia es de qué se fía el bot.
+                    session.languageSource = contact.language_source || 'default';
+                    session.language = session.languageSource === 'default' ? null : (contact.language || null);
+                    if (contact.language && !session.language) {
+                        logger.info('idioma_ficha_por_defecto_ignorado', {
+                            orgId, telefono: userPhone, language: contact.language,
+                        });
+                    }
                     session.preferredStylistId = contact.preferred_stylist_id || null;
                     session.lastStylist = contact.last_stylist || null;
                     if (!loadedFromSQLite) {
@@ -3198,6 +3292,20 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             try {
                 const _reconContact = await findByPhone(orgId, session.partialData.telefono);
                 if (_reconContact) {
+                    // El leadId se asignaba SOLO en la rama de sesión nueva, y ahí puede no
+                    // haber contacto todavía: en el primer mensaje de una desconocida,
+                    // findByPhone devuelve null y es saveMessage quien crea la fila un
+                    // instante después. La sesión seguía entonces con leadId a null para
+                    // siempre, y todo lo que cuelga de él quedaba mudo —updateContactLanguage
+                    // el primero, que es fire-and-forget bajo `if (session.leadId)`—. Efecto
+                    // observado: el bot detecta el ruso y responde en ruso, pero la ficha se
+                    // queda en 'es' y la campaña le manda la plantilla española.
+                    // Aquí ya tenemos la fila releída, así que se rellena el hueco. Nunca
+                    // pisa un leadId existente.
+                    if (!session.leadId && _reconContact.id) {
+                        session.leadId = _reconContact.id;
+                        logger.info('session_leadid_backfill', { orgId, telefono: userPhone, leadId: _reconContact.id });
+                    }
                     if (_reconContact.bot_mode === 'manual' && session.botActivo) {
                         session.botActivo = false;
                         logger.info('session_botActivo_pause_from_db', { orgId, telefono: userPhone, source: 'panel_manual_reconcile' });
@@ -3378,7 +3486,24 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             const lang = detectLanguage(sanitized);
             if (lang) {
                 session.language = lang;
-                if (session.leadId) updateContactLanguage(orgId, session.leadId, lang).catch(() => {});
+                // A partir de aquí es un idioma OBSERVADO, no el que traía la ficha: deja de
+                // ser una conjetura para el prompt y para cualquiera que segmente la columna.
+                session.languageSource = 'observed';
+                // El .catch() sigue siendo fire-and-forget (el turno no espera a esto), pero
+                // ya no es mudo: sin la traza, una ficha que se queda en el idioma que no es
+                // no deja ni un rastro que permita saber si es que no se intentó o es que
+                // falló. Ahora updateContactLanguage lanza si el UPDATE no toca ninguna fila.
+                // También por ensureLeadId: es lo que cierra el único hueco que quedaba, el
+                // PRIMER turno de una desconocida (la fila la acaba de crear saveMessage y
+                // el relleno de la reconciliación aún no ha pasado). Cuando ya hay leadId
+                // esto no consulta nada.
+                const leadIdIdioma = await ensureLeadId(orgId, session);
+                if (leadIdIdioma) {
+                    updateContactLanguage(orgId, leadIdIdioma, lang)
+                        .catch(e => logger.warn('idioma_no_persistido', {
+                            orgId, telefono: userPhone, leadId: leadIdIdioma, lang, error: e.message,
+                        }));
+                }
             }
         } else {
             // Restaurant: extract name, personas, preference
@@ -4123,6 +4248,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             session.stylistMentionCorrected = null;
             session.stylistMentionNoSkill = null;
             partialDataWithCtx.__clientLanguage = session.language;
+            // Con qué autoridad se le da ese idioma. Un idioma deducido del nombre no puede
+            // pesar lo mismo que uno que la clienta ha demostrado escribiendo: la heurística
+            // por nombre no separa ruso de ucraniano y falla con los nombres neutros.
+            partialDataWithCtx.__clientLanguageSource = session.languageSource || null;
             if (session.preferredStylistId) {
                 const stylists = await getStylistsByOrg(orgId);
                 const pref = stylists.find(s => s.id === session.preferredStylistId);
@@ -4370,8 +4499,14 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // Language detection
             if (aiResponse.idioma_detectado && aiResponse.idioma_detectado !== session.language) {
                 session.language = aiResponse.idioma_detectado;
-                if (session.leadId) {
-                    updateContactLanguage(orgId, session.leadId, session.language).catch(() => {});
+                session.languageSource = 'observed';   // el modelo lo ha leído del mensaje
+                const leadIdIdiomaLlm = await ensureLeadId(orgId, session);
+                if (leadIdIdiomaLlm) {
+                    updateContactLanguage(orgId, leadIdIdiomaLlm, session.language)
+                        .catch(e => logger.warn('idioma_no_persistido', {
+                            orgId, telefono: userPhone, leadId: leadIdIdiomaLlm,
+                            lang: session.language, origen: 'llm', error: e.message,
+                        }));
                 }
             }
 
@@ -5256,9 +5391,14 @@ unrefTimer(setInterval(() => {
 // las sacó del filtro de getLeadsPendientesRecordatorio (db.js:475, exige estado='confirmado')
 // → se quedaron sin el recordatorio de 24 h. Una tenía la cita ese mismo día.
 async function marcarAbandonadaSiNoTieneCita(orgId, key, session) {
-    if (session.leadId) {
+    // El `if (session.leadId)` de antes convertía esta comprobación en opcional justo para
+    // las conversaciones que más la necesitan: sin contacto resuelto no se consultaba nada y
+    // se marcaba 'abandonado' a ciegas. La red escrita para el incidente del 04/08 estaba
+    // gateada por el campo que estaba vacío. Ahora se resuelve antes de decidir.
+    const leadId = await ensureLeadId(orgId, session);
+    if (leadId) {
         try {
-            const citas = await getUpcomingAppointments(orgId, session.leadId);
+            const citas = await getUpcomingAppointments(orgId, leadId);
             if (citas.length) {
                 // Que la sesión lo sepa: así el barrido ni siquiera vuelve a preguntarlo.
                 session.appointmentId = citas[0].id;
@@ -5379,6 +5519,8 @@ module.exports = {
         isUpsellingAcceptance, matchesServiceName, resetForSecondBooking, stylistCanDoService,
         // Recarga de sesión con cita viva y barrido de abandono (deciden contra Supabase):
         reconciliarCitaViva, marcarAbandonadaSiNoTieneCita,
+        // Resolución del contact_id: ningún call site debe leer session.leadId a pelo.
+        ensureLeadId,
         // Nombre antes de reservar:
         evaluarNombreAntesDeReservar, handleNombreParaCita, handleApellidoParaCita,
         leerNombreDeRespuesta, preguntaNombreMsg, preguntaApellidoMsg, PENDIENTE_NOMBRE,

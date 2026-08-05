@@ -38,6 +38,34 @@ const CAMPAIGNS = [
   },
 ] as const;
 
+// A quién NO le va a llegar la campaña. Se enseña ANTES de disparar y con nombre: entre los
+// excluidos hay clientas reales con cita cuyo teléfono está mal escrito, y una campaña que las
+// salta en silencio deja el problema donde estaba. El motivo llega como código desde la API;
+// la frase se pone aquí.
+type ContactoExcluido = {
+  telefono: string | null;
+  nombre: string | null;
+  motivo: string;
+};
+
+const MOTIVO_LABELS: Record<string, string> = {
+  sin_numero: "sin teléfono",
+  numero_invalido: "número mal escrito",
+  prueba: "contacto de prueba",
+};
+
+// "3 con el número mal, 2 de prueba". Las dos formas de tener el número mal se cuentan juntas
+// —para quien lee, es el mismo problema y la misma acción: llamarla y corregirlo—, pero en la
+// lista de abajo cada una dice lo suyo.
+function resumenExclusiones(porMotivo: Record<string, number>): string {
+  const numeroMal = (porMotivo.sin_numero ?? 0) + (porMotivo.numero_invalido ?? 0);
+  const prueba = porMotivo.prueba ?? 0;
+  const partes: string[] = [];
+  if (numeroMal) partes.push(`${numeroMal} con el número mal`);
+  if (prueba) partes.push(`${prueba} de prueba`);
+  return partes.join(", ");
+}
+
 type CampaignStatus = {
   total_audiencia: number;
   ya_enviados: number;
@@ -46,6 +74,8 @@ type CampaignStatus = {
   cupo_24h_restante: number;
   proxima_tanda: number;
   max_por_24h: number;
+  excluidos?: ContactoExcluido[];
+  excluidos_por_motivo?: Record<string, number>;
 };
 
 export default function CampanasPage() {
@@ -59,13 +89,16 @@ export default function CampanasPage() {
   const [sending, setSending] = useState(false);
   const [status, setStatus] = useState<CampaignStatus | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
+  const [verExcluidos, setVerExcluidos] = useState(false);
 
   const campaign = CAMPAIGNS.find((c) => c.key === campaignKey) ?? CAMPAIGNS[0];
+  const excluidos = status?.excluidos ?? [];
 
   // Estado de la campaña: cuántas faltan y cuánto cupo queda hoy. Se consulta antes de
   // enviar para que la tanda no se dispare a ciegas, y se refresca tras cada envío.
+  // Se consulta SIEMPRE, también con texto libre: el progreso de tandas solo aplica a las
+  // plantillas, pero saber a quién no le va a llegar y por qué importa igual en los dos modos.
   const loadStatus = useCallback(async () => {
-    if (!useTemplate) { setStatus(null); return; }
     setLoadingStatus(true);
     try {
       const qs = new URLSearchParams({ audience, campaignKey });
@@ -223,6 +256,62 @@ export default function CampanasPage() {
                 <Info size={12} className="flex-shrink-0" />
                 Los contactos en lista negra siempre se excluyen.
               </p>
+
+              {status && (
+                <div className="space-y-1.5 pt-0.5">
+                  <p className="text-[11.5px] text-foreground">
+                    <span className="font-semibold tabular-nums">{status.total_audiencia}</span>{" "}
+                    destinatario{status.total_audiencia !== 1 ? "s" : ""}
+                    {excluidos.length > 0 && (
+                      <>
+                        {" · "}
+                        <span className="font-semibold tabular-nums">{excluidos.length}</span> fuera:{" "}
+                        {resumenExclusiones(status.excluidos_por_motivo ?? {})}
+                      </>
+                    )}
+                  </p>
+
+                  {excluidos.length > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setVerExcluidos((v) => !v)}
+                        className="text-[11.5px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                      >
+                        {verExcluidos ? "Ocultar" : "Ver quiénes"}
+                      </button>
+
+                      {verExcluidos && (
+                        <>
+                          <ul className="divide-y divide-border/50 rounded-md border border-border/60 bg-muted/30">
+                            {excluidos.map((e, i) => (
+                              <li
+                                key={`${e.telefono ?? ""}-${i}`}
+                                className="flex items-center justify-between gap-2 px-2.5 py-1.5"
+                              >
+                                <span className="truncate text-[11.5px] text-foreground">
+                                  {e.nombre?.trim() || "Sin nombre"}
+                                  <span className="text-muted-foreground">
+                                    {" · "}
+                                    {e.telefono?.trim() || "sin teléfono"}
+                                  </span>
+                                </span>
+                                <span className="whitespace-nowrap text-[10.5px] text-muted-foreground">
+                                  {MOTIVO_LABELS[e.motivo] ?? e.motivo}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                          <p className="text-[11px] text-muted-foreground">
+                            No se les puede entregar nada por WhatsApp con ese número. Corrígelo en
+                            su ficha y volverán a entrar en la audiencia solas.
+                          </p>
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
 
