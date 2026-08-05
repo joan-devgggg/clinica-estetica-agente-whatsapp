@@ -5,7 +5,7 @@
 
 const supabase = require('./supabase');
 const logger = require('../lib/logger');
-const { NO_STYLIST_KEY, computeServiceBilling, IDIOMAS_SOPORTADOS, resolveLanguageSource } = require('./helpers');
+const { NO_STYLIST_KEY, computeServiceBilling, IDIOMAS_SOPORTADOS, resolveLanguageSource, TEST_PHONE_PREFIX } = require('./helpers');
 
 const DEFAULT_ORG = process.env.ORGANIZATION_ID || 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
@@ -1648,7 +1648,23 @@ async function getBroadcastRecipients(orgId, { audience = 'todos', phones } = {}
         .from('contacts')
         .select('*')
         .eq('organization_id', oid)
-        .or('is_blacklisted.is.null,is_blacklisted.eq.false');
+        .or('is_blacklisted.is.null,is_blacklisted.eq.false')
+        // Los teléfonos del ARNÉS DE PRUEBAS no son destinatarios de nada, nunca, sea cual sea
+        // la audiencia. Va aquí y no en cada llamada porque este es el embudo único: los dos
+        // endpoints de campaña pasan por él, y así cualquier audiencia futura lo hereda sin que
+        // nadie tenga que acordarse.
+        //
+        // Es la segunda red, no la primera. La primera es que esos números están en un prefijo
+        // que no puede ser de nadie (TEST_PHONE_PREFIX, ver helpers.js). Las dos existen porque
+        // protegen de cosas distintas: el prefijo evita el daño si el residuo se cuela, y este
+        // filtro lo evita otra vez si alguien cambia el prefijo del arnés y no cae en esto.
+        // Nace de dos residuos reales encontrados en la base de Sante el 05/08/2026, ambos
+        // dentro de la audiencia 'todos' —la que el panel manda por defecto—.
+        //
+        // Un `wa_phone` a NULL también queda fuera por la semántica del NOT LIKE. Es lo que
+        // corresponde: no se puede escribir a quien no tiene número. Hoy no hay ninguno (sí una
+        // cadena vacía, que sí entra y se ve en la audiencia, que es donde debe verse).
+        .not('wa_phone', 'like', `${TEST_PHONE_PREFIX}%`);
 
     const allowlist = Array.isArray(phones)
         ? phones.map(sanitizePhone).filter(Boolean)
