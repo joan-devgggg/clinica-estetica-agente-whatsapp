@@ -39,6 +39,21 @@ function buildCyrillicRe(literales) {
     return new RegExp(alternativas.map(escapar).join('|'));
 }
 
+// Prefijo de los teléfonos del ARNÉS DE PRUEBAS. Todo lo que empiece por aquí es de una
+// conversación simulada y NO puede recibir un mensaje de campaña.
+//
+// `999` es un código de país SIN ASIGNAR en E.164: no es de nadie y no puede serlo, así que
+// ningún número real puede colisionar con el rango. Ese es todo el criterio — el rango que se
+// usaba antes (`3460099xxxx`) tenía la forma de un móvil español perfectamente plausible, y
+// los residuos que dejaba el arnés entraban en la audiencia 'todos' como una clienta más.
+// A 05/08/2026 había dos en la base de Sante.
+//
+// Vive aquí, y no en el arnés, porque lo tienen que compartir DOS sitios que no se hablan: el
+// que los genera (tests/verify-sante-robustez-llm.js) y el que los excluye de la audiencia
+// (db.getBroadcastRecipients). Si cada uno lleva su copia, el día que uno cambie el otro deja
+// de proteger sin que nada lo delate.
+const TEST_PHONE_PREFIX = '999';
+
 // Los cuatro idiomas que el salón sabe hablar. Es la lista que valida lo que entra por el
 // panel y la que eligen los constructores de mensajes; vivía copiada en seis sitios.
 const IDIOMAS_SOPORTADOS = ['es', 'en', 'ru', 'uk'];
@@ -2935,6 +2950,7 @@ module.exports = {
     IDIOMAS_SOPORTADOS,
     LANGUAGE_SOURCES,
     resolveLanguageSource,
+    TEST_PHONE_PREFIX,
     classifyIncomingMedia,
     unsupportedMediaMsg,
     detectIntent,

@@ -29,6 +29,7 @@ const db = require('../services/db');
 const supabase = require('../services/supabase');
 const { deleteClient } = require('../services/memory');
 const { SANTE_ORG_ID: ORG } = require('../services/org-registry');
+const { TEST_PHONE_PREFIX } = require('../services/helpers');
 const { Convo: BaseConvo, sleep } = require('./lib/convo');
 
 bot.setBotActivo(ORG, true, false);
@@ -161,7 +162,18 @@ async function cleanup(phone) {
 }
 
 let seq = 0;
-const nextPhone = () => `3460099${String(1000 + (seq++)).slice(-4)}`;
+// Estos escenarios corren contra la Supabase REAL de Sante —es lo que les da valor: catálogo,
+// estilistas y horarios de verdad, que la dueña edita—, así que cada conversación crea un
+// contacto real. Y la limpieza tiene una carrera que no se puede cerrar del todo: `saveMessage`
+// es fire-and-forget y el turno sigue vivo después del `finally`, así que una escritura en vuelo
+// puede RESUCITAR el contacto justo después de borrarlo (pasa siempre en el escenario de la
+// ráfaga, que por definición deja trabajo fuera de la ventana del buffer).
+//
+// Por eso el número importa: el rango de antes (`3460099xxxx`) era un móvil español plausible,
+// y un residuo se colaba en la audiencia de una campaña como una clienta más. `999` es un código
+// de país sin asignar en E.164 — no puede ser de nadie —, y db.getBroadcastRecipients excluye
+// ese prefijo de toda audiencia. Dos redes: aunque el residuo se quede, no le llega nada a nadie.
+const nextPhone = () => `${TEST_PHONE_PREFIX}600${String(1000 + (seq++)).slice(-4)}`;
 
 const only = process.argv[2] ? Number(process.argv[2]) : null;
 // Teléfonos que ha usado esta ejecución: al final se barren todos contra `citasSinNombre`.
