@@ -14,6 +14,7 @@
 
 const { resolveAutomatedSend, parseTemplateConfig, isCloudChannel } = require('./outbound');
 const { noteSendResult } = require('./channel-health');
+const { alertOnce } = require('./admin-alerts');
 const logger = require('../lib/logger');
 
 // Tope de destinatarios por número y 24 h. No es una cifra nuestra: la impone Meta, y este
@@ -24,6 +25,17 @@ const MAX_DESTINATARIOS_24H = 250;
 // Envíos en paralelo. 250 POST secuenciales a Meta no caben en una petición HTTP del panel;
 // con 4 en vuelo la tanda baja a ~15 s. Subirlo más tienta el rate limit de Cloud API.
 const CONCURRENCIA = 4;
+
+// Intentos de marcar 'sent' una entrega YA hecha. No es un envío: es una sola fila por id, y
+// no dejar constancia de algo entregado no tiene ninguna salida buena, así que se insiste.
+const REINTENTOS_REGISTRO = 3;
+
+const MENSAJE_SIN_REGISTRAR = (telefono, campaignKey) =>
+    '⚠️ <b>Un mensaje de campaña salió pero no se pudo registrar</b>\n\n'
+    + `Número: <code>${telefono}</code>${campaignKey ? ` · Campaña: <code>${campaignKey}</code>` : ''}\n\n`
+    + 'La clienta <b>sí lo ha recibido</b>. Lo que ha fallado es apuntarlo, así que si se '
+    + 'relanza la campaña podría llegarle por segunda vez.\n\n'
+    + 'Si vas a relanzarla, conviene quitar ese número de la lista.';
 
 /** JID de destino: el canónico guardado (puede ser @lid) y, si no hay, el WID clásico. */
 function resolveChatId(contacto) {
@@ -81,6 +93,10 @@ async function runBroadcast(orgId, {
         por_plantilla: 0,
         texto_libre: 0,
         omitidos: 0,
+        // Entregados a la clienta que NO se pudieron apuntar. Cuentan aparte a propósito: no
+        // son un fallo de envío (el mensaje llegó) ni un envío limpio (no hay constancia).
+        // Meterlos en `omitidos` era justo lo que hacía que el resumen no cuadrara.
+        registro_fallido: 0,
         restantes: 0,
         cupo_24h_restante: null,
         recortado_por_tope: false,
@@ -171,6 +187,21 @@ async function runBroadcast(orgId, {
             if (!claimId) return; // otro proceso la tiene: ni enviamos ni la contamos como fallo
         }
 
+        // ── ENVIAR y REGISTRAR son dos cosas, y el `try` de una no puede tapar a la otra ──
+        //
+        // Estaban en el mismo bloque: `finishBroadcastSend('sent')` iba DENTRO del try del
+        // envío y lanza (assertRowsAffected). Cuando lanzaba, con el mensaje ya entregado:
+        // el contacto se contaba en `enviados` Y en `omitidos` (el resumen no cuadraba
+        // consigo mismo), y el claim se marcaba 'failed' — que es justo lo que
+        // resetStaleBroadcastClaims BORRA al empezar la tanda siguiente. El contacto volvía
+        // a ser elegible y la clienta recibía la campaña dos veces. El UNIQUE de
+        // broadcast_sends existe para impedirlo, y este camino lo rodeaba borrando su fila.
+        //
+        // Regla, y es la que sostiene el invariante: **después de una entrega confirmada, el
+        // registro NUNCA puede marcar 'failed' ni contar como fallo.** Un fallo de registro
+        // es un problema de contabilidad; un 'failed' sobre algo entregado es un WhatsApp de
+        // más en el móvil de una clienta.
+        let entregado = false;
         try {
             if (modo === 'template') {
                 // Las plantillas de campaña no llevan variables: sin `params`, sendTemplate
@@ -184,18 +215,7 @@ async function runBroadcast(orgId, {
                 await enviarTexto(client, chatId, mensaje);
                 resumen.texto_libre++;
             }
-            // Salud del canal, UNA vez por destinatario y por las dos vías. `enviarTexto` es
-            // waSendMessage, al que a propósito NO se le pasa orgId: reportaría el mismo
-            // envío otra vez y una tanda contaría el doble.
-            noteSendResult(orgId, { ok: true });
-            resumen.enviados++;
-            if (claimId) {
-                await db.finishBroadcastSend(orgId, claimId, {
-                    status: 'sent',
-                    mode: modo,
-                    templateName: modo === 'template' ? plantilla.name : null,
-                });
-            }
+            entregado = true;
         } catch (e) {
             resumen.omitidos++;
             resumen.fallos.push({ telefono, motivo: e.message });
@@ -203,14 +223,76 @@ async function runBroadcast(orgId, {
             // Los fallos por destinatario (fuera de ventana, plantilla) los descarta
             // classifyChannelError: una campaña normal los acumula por decenas y con ellos
             // en la cuenta el aviso saltaría en cada envío masivo.
-            noteSendResult(orgId, { ok: false, error: e, contexto: `campaña a ${telefono}` });
-            // Se marca 'failed', no se borra: resetStaleBroadcastClaims la liberará al
-            // empezar la siguiente tanda, así que se reintenta sola.
+            await noteSendResult(orgId, { ok: false, error: e, contexto: `campaña a ${telefono}` });
+            // Aquí SÍ es correcto 'failed': no se entregó nada, así que reintentarlo en la
+            // tanda siguiente es lo que queremos.
             if (claimId) {
-                await db.finishBroadcastSend(orgId, claimId, {
-                    status: 'failed', mode: modo, error: e.message,
-                }).catch(() => {});
+                try {
+                    await db.finishBroadcastSend(orgId, claimId, {
+                        status: 'failed', mode: modo, error: e.message,
+                    });
+                } catch (e2) {
+                    // Antes era un `.catch(() => {})` mudo. El claim se queda en 'pending' y
+                    // caducará solo, así que el comportamiento se recupera — pero perder el
+                    // único rastro de que la contabilidad se rompió, justo donde ya sabemos
+                    // que algo va mal, no.
+                    logger.error('campana_registro_fallo_no_guardado', {
+                        orgId, telefono, error: e2.message,
+                    });
+                }
             }
+            return;
+        }
+
+        // A partir de aquí el mensaje ESTÁ en el móvil de la clienta.
+        // Salud del canal, UNA vez por destinatario y por las dos vías. `enviarTexto` es
+        // waSendMessage, al que a propósito NO se le pasa orgId: reportaría el mismo envío
+        // otra vez y una tanda contaría el doble.
+        await noteSendResult(orgId, { ok: true });
+        resumen.enviados++;
+
+        if (!claimId) return;
+
+        // El registro se reintenta: es una sola fila por id y un fallo aquí no tiene ninguna
+        // salida buena, así que vale la pena insistir antes de rendirse.
+        let registrado = false;
+        let ultimoError = null;
+        for (let intento = 0; intento < REINTENTOS_REGISTRO && !registrado; intento++) {
+            if (intento > 0) await new Promise(r => setTimeout(r, 200 * intento));
+            try {
+                await db.finishBroadcastSend(orgId, claimId, {
+                    status: 'sent',
+                    mode: modo,
+                    templateName: modo === 'template' ? plantilla.name : null,
+                });
+                registrado = true;
+            } catch (e) {
+                ultimoError = e;
+            }
+        }
+
+        if (!registrado) {
+            // Se entregó y no se pudo dejar constancia. NO se marca 'failed' (ver arriba) y
+            // NO cuenta como fallo de envío: la clienta lo recibió. Va a su propio contador
+            // para que el resumen del operador cuadre y para que esto se vea.
+            //
+            // LÍMITE CONOCIDO, y no se puede cerrar desde aquí: la fila se queda en
+            // 'pending' y resetStaleBroadcastClaims la borra a los 15 min, así que una
+            // tanda posterior podría reenviarle. No hay forma de evitarlo sin una
+            // transacción entre WhatsApp y Postgres, que no existe. Lo que sí se hace es
+            // que sea RARO (reintentos), que no sea el camino rápido (nunca 'failed') y que
+            // una persona se entere.
+            resumen.registro_fallido++;
+            resumen.fallos.push({
+                telefono,
+                motivo: `ENTREGADO pero sin registrar (${ultimoError?.message || 'sin detalle'}) — `
+                    + 'riesgo de reenvío si la campaña se relanza',
+            });
+            logger.error('campana_entregado_sin_registrar', {
+                orgId, telefono, campaignKey, claimId, error: ultimoError?.message || null,
+            });
+            await alertOnce(orgId, `campana_sin_registrar|${campaignKey}|${telefono}`,
+                MENSAJE_SIN_REGISTRAR(telefono, campaignKey));
         }
     });
 
