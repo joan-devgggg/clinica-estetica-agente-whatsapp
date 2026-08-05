@@ -28,6 +28,10 @@ server.js              ← Punto de entrada: crea N clientes WA, arranca workers
     ├── review.js          ← Worker: reseña Google N horas tras cita completada
     ├── reminder.js        ← Worker: recordatorio 24h antes + auto-completar citas
     ├── auto-return.js     ← Worker: devuelve a 'auto' lo que lleva 7 días mudo en manual
+    ├── admin-alerts.js    ← alertOnce: un aviso por asunto, y SOLO si Telegram lo confirma
+    ├── channel-health.js  ← Aviso de canal caído: 3 fallos de plataforma seguidos
+    ├── bot-pause-alert.js ← Bot pausado: al tirar un mensaje, y a las 2 h de apertura
+    ├── horario-apertura.js← Puro: cuánto tiempo de ATENCIÓN hay entre dos instantes
     ├── telegram.js        ← Bot admin multi-org (mismo token, admins por org)
     ├── helpers.js         ← Extracción de datos (restaurante + salón)
     ├── memory.js          ← Sesiones SQLite (clave compuesta orgId:phone)
@@ -64,6 +68,32 @@ La ventana se calcula sobre `messages.direction = 'inbound'` — nunca sobre `co
 Plantillas aprobadas (Sante): `sante_recordatorio_cita` ({{1}}=nombre, {{2}}=hora) y `sante_solicitud_resena` ({{1}}=nombre, {{2}}=enlace). Los nombres viven en `config` (`plantilla_recordatorio`, `plantilla_resena`), no en el código. `sanitizeTemplateParam` limpia saltos de línea/tabuladores/espacios múltiples: Meta rechaza el mensaje entero (132000) si un parámetro los lleva.
 
 **La resolución de proveedor saliente es única**: `services/outbound.js` → `resolveOutboundClient(orgId, fallback)`, que enruta por `getOrgChannel` (registry), no por `SANTE_360_API_KEY`. La usan el panel (`webhook.js` → `getOutboundClient`) y los dos workers.
+
+## Avisos al admin: solo cuentan si llegan
+
+`alertOnce` (`services/admin-alerts.js`) marca la clave **después** de que Telegram confirme,
+no antes. Hasta el 05/08/2026 la marcaba primero y `notifyOrgAdmin` ni siquiera se esperaba:
+un proceso sin bot, una org sin admins o un rechazo daban exactamente el mismo resultado que
+un envío correcto —`admin_alert_enviado` en el log y cero reintentos—. El único log que
+prueba entrega es `telegram_notify_ok`. Si no hay entrega, la clave se libera y el siguiente
+tic reintenta. `clearAlert(orgId, clave)` la libera a mano (lo usan los dos avisos de abajo
+al recuperarse).
+
+**Canal caído** (`channel-health.js`): 3 fallos consecutivos de PLATAFORMA en una org (401/403,
+429, 5xx, frame de puppeteer muerto) → aviso; el primer envío bueno después → "ha vuelto" y
+clave liberada. Los fallos de DESTINATARIO no cuentan (131047 fuera de ventana, 132000/1
+plantilla): una campaña normal acumula decenas seguidos y el aviso saltaría en cada envío
+masivo. Instrumentados los 4 embudos de envío —`waSendMessage`, reminder, review, broadcast—,
+nunca los call sites; en `waSendMessage` el reporte va FUERA del bucle de reintentos (cuatro
+intentos son un envío, no cuatro). Nace de los bloqueos de 360dialog del 1-2/08/2026: entraba
+tráfico, no salía nada, y cada fallo moría en su propio `catch` sin que nadie sumara.
+
+**Bot pausado demasiado tiempo** (`bot-pause-alert.js`): además del aviso reactivo al tirar un
+mensaje, un vigilante cada 10 min mira el ESTADO. Umbral: **2 h de horario de apertura**
+(`config.horario`), no de reloj — con el reloj corriendo de noche, una pausa inocua a las
+23:00 mandaría un Telegram a la 1:00. Si el salón abre con el bot ya pausado de antes, avisa
+al abrir sin esperar. "Pausado desde" = `config.updated_at` de `bot_activo`, sin columna
+nueva. Una org sin `horario` (hoy San Remo) cuenta reloj, y se dice: no se le inventa jornada.
 
 ## Retorno automático a `auto` tras silencio (`services/auto-return.js`)
 

@@ -504,6 +504,30 @@ async function getConfigValue(orgId, clave) {
     try { return JSON.parse(data.valor); } catch { return data.valor; }
 }
 
+/**
+ * Como getConfigValue, pero además con el `updated_at` de la fila.
+ *
+ * Lo necesita el vigilante de "bot pausado demasiado tiempo": el instante en que se pausó es
+ * exactamente ese `updated_at` —setConfigValue lo escribe en cada upsert—, así que no hace
+ * falta ninguna columna nueva para saber desde cuándo dura la pausa.
+ *
+ * @returns {Promise<{valor: any, updated_at: string} | null>}
+ */
+async function getConfigEntry(orgId, clave) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('config')
+        .select('valor, updated_at')
+        .eq('organization_id', oid)
+        .eq('clave', clave)
+        .maybeSingle();
+    assertRead(error, 'config');
+    if (!data) return null;
+    let valor = data.valor;
+    try { valor = JSON.parse(data.valor); } catch { /* texto plano */ }
+    return { valor, updated_at: data.updated_at };
+}
+
 async function setConfigValue(orgId, clave, valor) {
     const oid = resolveOrg(orgId);
     const valorStr = typeof valor === 'string' ? valor : JSON.stringify(valor);
@@ -2231,6 +2255,7 @@ module.exports = {
     marcarRecordatorioSent,
     getLeadsPendientesRecordatorio,
     getConfigValue,
+    getConfigEntry,
     setConfigValue,
     getAllLeads,
     getLeadsByDateRange,
