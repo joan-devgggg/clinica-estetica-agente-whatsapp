@@ -115,6 +115,74 @@ La traza va en `contacts.metadata.auto_return` (`at`, `dias_silencio`,
 `ultima_actividad_at`) y el Monitor la pinta mientras la conversación siga en auto: sin
 ella, una devuelta por el sistema y otra devuelta a mano son la misma fila.
 
+## El idioma de una clienta (`contacts.language`)
+
+Decide en qué idioma le habla el bot, y **qué plantilla de Meta recibe en una campaña**. Se
+escribe en tres sitios y solo tres: el INSERT de `saveLead` (default `'es'`),
+`updateContactLanguage` (observado en conversación) y `updateLeadById` (corregido a mano
+desde la ficha del panel). `IDIOMAS_SOPORTADOS` (`helpers.js`) es la lista única; un valor
+fuera de ella se rechaza — se usaría como clave contra `config.plantilla_*` y la campaña
+omitiría a esa clienta con un `sin_plantilla` que nadie relacionaría con la causa.
+
+**El campo mezcla tres calidades. Cuál es cada una lo dice `metadata.language_source`**
+(`'observed' | 'inferred' | 'default'`), que `rowToPublic` expone como `language_source`. A
+05/08/2026, de 721 contactos de Sante: 3 observados, 184 inferidos por nombre y 534 en el
+default que nadie tocó. **La columna `language` no cambia nunca por esto** — las plantillas
+de campaña salen igual; lo único que cambia es de qué se puede uno fiar. Segmentar con
+`metadata->>'language_source'`, no a ojo.
+
+Lo escriben los mismos tres sitios que escriben el idioma: `saveLead` (`'default'`, salvo que
+la clienta ya haya escrito en ese turno), `updateContactLanguage` (`'observed'`, y apaga la
+marca de inferido) y `updateLeadById` (`'observed'`: lo ha elegido una persona). El backfill
+de lo anterior es `034_language_source.sql`, y sus reglas son las mismas que aplica
+`resolveLanguageSource` (`helpers.js`) a una fila sin marca — si se separan, el backfill
+queda como una foto que la lógica desmiente en la primera fila nueva.
+
+**Un default NO se le pasa al LLM como idioma.** `bot.js` siembra `session.language` con el de
+la ficha solo si su fuente no es `'default'`; si lo es, deja null y el prompt entra por su rama
+de «aún no se conoce el idioma» (traza `idioma_ficha_por_defecto_ignorado`). Un `'inferred'` sí
+se pasa, pero anunciado como PROBABLE. Lo que costó no distinguirlo: 19542240982 (+1, EEUU)
+escribió «Thursday», su ficha llevaba el `'es'` del INSERT, el prompt se lo anunció como
+«último idioma detectado» y el bot la saludó en castellano — a ella y a la foto que mandó
+36 s después, que coge el idioma de la misma `session.language`.
+
+**Los días de la semana están en las dos listas de `detectLanguage`.** Un día suelto es de las
+respuestas más frecuentes que hay (se pregunta «¿qué día te viene bien?») y antes devolvía
+`null`: la lista inglesa tenía `tomorrow`/`today` pero ningún día. Van los siete en inglés y
+en español, sin solape entre ambas — si un día activara las dos listas, `detectLanguage`
+devolvería `null` y no habría arreglado nada.
+
+**Ucraniano.** `detectLanguage` marca `'uk'` por letras exclusivas (`і ї є ґ`) y, si no las
+hay, por una lista corta de frases que no existen en ruso (`dyakuyu`, `budʹ laska`, `dobryi
+denʹ`…). Esa segunda regla existe porque la primera es asimétrica: sin esas letras caía en
+`'ru'`, y el saludo y el gracias no las llevan — «Доброго дня» quedó marcado ruso. Los
+patrones cirílicos van SIEMPRE por `buildCyrillicRe` y se prueban contra `normalizeText`:
+sin eso no casan nunca (NFD descompone й/ё/ї, y `\b` es ASCII).
+
+## `session.leadId` puede venir vacío — usa `ensureLeadId`
+
+**Nunca leas `session.leadId` a pelo.** Se queda a null en dos situaciones normales: el
+primer mensaje de una desconocida (solo se asigna en la rama de sesión NUEVA, y ahí
+`findByPhone` aún devuelve null porque la fila la crea `saveMessage` un instante después) y
+cualquier sesión rehidratada (no viaja a SQLite, no está en `buildSessionExtra` — mientras
+que `bookedSlots` sí).
+
+Todo lo que colgaba de `if (session.leadId)` se saltaba en silencio en esos dos casos. Lo que
+costó, medido: el idioma no se escribía (el bot respondía en ruso con la ficha en `'es'`), la
+estilista habitual no se guardaba, y el barrido de abandono marcaba `'abandonado'` **sin
+llegar a comprobar si había cita** — el incidente del 04/08/2026, tres clientas confirmadas
+fuera del recordatorio de 24 h, cuyo arreglo estaba gateado justo por el campo vacío.
+
+`ensureLeadId(orgId, session)` (bot.js) resuelve por teléfono y cachea en la sesión; si ya hay
+`leadId` no consulta nada. Lo usan los cinco sitios que lo necesitan: idioma (×2), estilista
+preferida/última, reconciliación de cita viva, guarda de cita duplicada, red anti-cita-fantasma
+y el barrido de abandono. Trazas: `session_leadid_resuelto` / `session_leadid_backfill`.
+
+**Los defaults de las guardas van hacia el lado recuperable.** La guarda de cita duplicada, si
+no puede verificar, asume que la cita **sí** existe y no crea otra: un guardado de menos se
+recupera, un duplicado lo ve la clienta. Y no toca `reservaConfirmada` al hacerlo — ponerlo a
+true apaga cinco de las seis redes del salón, y ahí no se ha leído nada que lo justifique.
+
 ## Multi-tenancy
 
 - **Routing**: Cada org tiene su propio número WA. `server.js` crea un `Client` de whatsapp-web.js por org con `LocalAuth({ clientId })` separado. Cuando llega un mensaje, `server.js` pasa el `orgId` a `bot.js`.
