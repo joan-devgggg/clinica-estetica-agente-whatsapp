@@ -244,11 +244,47 @@ async function turno(c, texto) {
         rec('OK', r.txt.slice(0, 90));
     });
 
+    // Este check NO mira si el modelo escribe la palabra "balayage" en su respuesta. Eso es
+    // redacción, y medirlo así daba DEGRADADO en 1 de cada 3 corridas (05/08/2026) con el bot
+    // haciendo exactamente lo correcto: reconocía el typo y preguntaba el largo, pero sin
+    // nombrar el servicio. Un check que falla por cómo redacta el modelo enseña a ignorar los
+    // degradados, que es peor que no tenerlo.
+    //
+    // Lo que se afirma es la CONDUCTA, en el estado y no en la prosa: el typo entra en el flujo
+    // de largo y, al contestarlo, el servicio queda RESUELTO en la sesión con la categoría del
+    // catálogo — en vez de reconducir a "¿qué servicio quieres?", que es el fallo real que este
+    // escenario busca. `selectedService` no depende de cómo redacte el modelo.
     await escenario('Servicio con falta de ortografía ("valayage")', async (c, rec) => {
+        // La categoría se saca del CATÁLOGO, no de una constante escrita aquí: si la dueña
+        // renombra el servicio, el escenario deja de aplicar en vez de quedarse en rojo para
+        // siempre (los datos que ella edita no se verifican contra listas fijas).
+        const catBalayage = [...new Set(catalog.map(s => s.categoria).filter(Boolean))]
+            .find(cat => /balayage/i.test(cat));
+        if (!catBalayage) return rec('OK', 'el catálogo ya no tiene balayage: escenario no aplicable');
+
         await turno(c, 'hola');
         const r = await turno(c, 'kiero un valayage');
         if (r.vacio) return rec('SILENCIO');
-        rec(/balayage/i.test(r.txt) ? 'OK' : 'DEGRADADO', r.txt.slice(0, 90));
+        if (r.generico) return rec('DEGRADADO', r.txt.slice(0, 80));
+
+        // El largo es lo que el flujo de balayage pregunta; contestarlo es el turno en el que
+        // el servicio tiene que aterrizar en la sesión. Si el bot hubiera reconducido a
+        // catálogo, aquí no hay nada que resolver y selectedService se queda a null.
+        const r2 = await turno(c, 'medio');
+        if (r2.vacio) return rec('SILENCIO', 'se calló al contestar el largo');
+
+        // La nota tiene que decir CUÁL de los dos fallos posibles fue, o el rojo no se puede
+        // leer: que no reconociera el typo (el asunto del escenario) o que lo reconociera y
+        // el servicio no aterrizara en la sesión. Por eso van los dos turnos en el mensaje.
+        const svc = bot._internals.getSession(ORG, c.phone)?.selectedService;
+        if (!svc) {
+            return rec('DEGRADADO',
+                `servicio sin resolver tras el largo · T2:"${r.txt.slice(0, 45)}" → T3:"${r2.txt.slice(0, 45)}"`);
+        }
+        if (norm(svc.categoria) !== norm(catBalayage)) {
+            return rec('DEGRADADO', `resolvió "${svc.categoria} · ${svc.nombre}" y no ${catBalayage}`);
+        }
+        rec('OK', `${svc.categoria} · ${svc.nombre}${svc.precio ? ` (${svc.precio} €)` : ''}`);
     });
 
     await escenario('Cambio de opinión en mitad del flujo', async (c, rec) => {

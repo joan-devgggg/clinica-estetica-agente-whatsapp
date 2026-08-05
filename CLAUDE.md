@@ -329,6 +329,49 @@ Línea base con la que comparar: **OK 84 · GAP 9 · BUG 0**. Los GAP son defici
 no regresiones. `verify:sante` sale **entero en verde** (los 4 fallos que arrastraba eran del
 test, no del sistema: 3 horarios copiados de la migración y un plural — ver abajo).
 
+### `verify:robustez:llm` — línea base y cómo leer un DEGRADADO
+
+Este llama al LLM de verdad, así que **no es determinista y su línea base es un rango**, no una
+cifra. Medida el 05/08/2026 con tres corridas seguidas del MISMO código:
+
+| | 1ª | 2ª | 3ª |
+|---|---|---|---|
+| OK | 20 | 21 | 20 |
+| DEGRADADO | 1 (esc. 3) | 0 | 1 (esc. 6) |
+| SILENCIO · BUCLE · ERROR · BUG | 0 | 0 | 0 |
+
+**Lo que se compara es la fila de abajo.** `BUG`, `SILENCIO`, `BUCLE` y `ERROR` a 0 son el
+invariante duro: cualquiera de ellos por encima de 0 es un hallazgo, siempre. **Un DEGRADADO
+suelto que cae en un escenario distinto en cada corrida es varianza del modelo, no una
+regresión** — antes de tocar nada, repetir. Dos corridas con el MISMO escenario degradado ya
+es otra cosa.
+
+(La tabla se midió con el check VIEJO del escenario 3, que se cambió ese mismo día — ver abajo.
+La fila de invariantes vale igual; el conteo de OK del 3 ya no es comparable.)
+
+**Una TANDA de degradados que comparten el texto `"Perdona, no he podido procesar tu mensaje"`
+no es una regresión: es el LLM caído o limitando.** Ese literal es el fallback de bot.js cuando
+la llamada falla, así que mide la red, no el salón. Medido el 05/08/2026: tras cinco corridas
+seguidas en una hora, una sexta salió con **OK 14 · DEGRADADO 7** y seis de esos siete llevaban
+ese texto. Antes de creerse un desplome así, mirar si el degradado es siempre la misma frase y
+esperar un rato.
+
+**Esc. 3 («valayage») — por qué ya no mide una palabra.** El check era
+`/balayage/i` sobre la respuesta del modelo. Daba DEGRADADO 1 de cada 3 corridas con el bot
+haciendo lo correcto, y **era ciego a lo único que importaba**. Medido con tres repeticiones
+limpias: en dos de ellas el bot contestó exactamente `"Genial. ¿Qué día te viene mejor?"` —sin
+nombrar el servicio, o sea rojo con el check viejo— y en una de esas dos el servicio SÍ estaba
+resuelto en la sesión y en la otra no. Texto idéntico, estado opuesto.
+
+Ahora afirma CONDUCTA sobre el ESTADO: se contesta el largo y se exige que
+`session.selectedService` quede resuelto con la categoría de balayage **leída del catálogo**, no
+de una constante (si la dueña la renombra, el escenario se declara no aplicable en vez de
+quedarse en rojo). Sigue degradando ~1 de cada 3, pero ya por un motivo real y no por
+redacción: el bot pasa a preguntar el día **sin haber resuelto el servicio** —`selectedService`
+a null y 0 huecos cargados—, y en la repetición que falló seguía sin resolverlo un turno
+después, proponiendo fechas para una cita cuyo servicio no sabía. Eso es de la familia de la
+cita fantasma y está sin investigar: no lo tapes subiendo el umbral del check.
+
 ### Los datos que edita la dueña no se verifican contra constantes
 
 `stylist_schedules`, `stylists.name`, `stylists.skills`, `agent_configs.services` y
