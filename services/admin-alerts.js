@@ -43,26 +43,56 @@ function _podar(ahora) {
 
 /**
  * Manda `mensaje` al admin de la org UNA vez por `clave`.
- * @returns {boolean} true si se ha enviado, false si estaba throttleado.
+ *
+ * La clave se marca SOLO si Telegram confirmó la entrega. Antes se marcaba antes de enviar
+ * y `notifyOrgAdmin` no se esperaba: si no había bot arrancado, si la org no tenía admins o
+ * si Telegram rechazaba el mensaje, esto registraba `admin_alert_enviado`, daba la clave por
+ * avisada y **el aviso no se reintentaba jamás**. El caso que lo destapó (05/08/2026) fue un
+ * recordatorio bloqueado por falta de nombre: el único log que prueba entrega es
+ * `telegram_notify_ok`, y podía no existir.
+ *
+ * La clave se reserva ANTES del await y se libera si el envío falla. Sin la reserva, dos
+ * tics solapados del mismo worker mandarían el aviso dos veces; sin la liberación,
+ * volveríamos al bug.
+ *
+ * @returns {Promise<boolean>} true solo si el aviso llegó a Telegram.
  */
-function alertOnce(orgId, clave, mensaje) {
+async function alertOnce(orgId, clave, mensaje) {
     const k = `${orgId}|${clave}`;
     const ahora = Date.now();
     if (_avisados.has(k)) return false;
     _podar(ahora);
     _avisados.set(k, ahora);
+
+    let entregado = false;
     try {
-        notifyOrgAdmin(orgId, mensaje);
+        entregado = await notifyOrgAdmin(orgId, mensaje);
     } catch (e) {
         // Que no se pueda avisar no puede tumbar al worker que estaba avisando.
         logger.error('admin_alert_error', { orgId, clave, error: e.message });
+    }
+
+    if (!entregado) {
+        _avisados.delete(k);
+        logger.error('admin_alert_no_entregado', { orgId, clave });
         return false;
     }
+
     logger.info('admin_alert_enviado', { orgId, clave });
     return true;
+}
+
+/**
+ * Olvida una clave concreta para que su próximo aviso vuelva a salir.
+ *
+ * Lo usa el aviso de canal caído: cuando el canal se recupera hay que liberar la clave, o el
+ * siguiente corte del mismo tipo quedaría callado para siempre.
+ */
+function clearAlert(orgId, clave) {
+    return _avisados.delete(`${orgId}|${clave}`);
 }
 
 /** Solo para tests: olvida el throttle. */
 function _resetThrottle() { _avisados.clear(); }
 
-module.exports = { alertOnce, _resetThrottle };
+module.exports = { alertOnce, clearAlert, _resetThrottle };

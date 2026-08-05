@@ -79,17 +79,48 @@ function getAdminIdsForOrg(orgId) {
     return ids;
 }
 
-function notifyOrgAdmin(orgId, mensaje) {
+/**
+ * Manda un mensaje a los admins de una org y dice **si de verdad salió**.
+ *
+ * Antes disparaba `.then/.catch` y volvía sin esperar, así que quien llamaba no podía
+ * distinguir "entregado" de "no hay bot arrancado" ni de "Telegram lo rechazó". Eso es lo
+ * que dejaba a `alertOnce` marcando una clave como avisada sobre un mensaje que no existía:
+ * el aviso se perdía y, por el throttle, ya no se reintentaba nunca.
+ *
+ * Entregado = al menos un admin recibió el mensaje con `message_id`. Con varios admins basta
+ * uno: el aviso ya está en manos de una persona, y bloquearlo porque a otro le falle el chat
+ * lo repetiría eternamente a quien sí lo recibe.
+ *
+ * No lanza nunca: avisar de un fallo no puede provocar otro.
+ *
+ * @returns {Promise<boolean>} true solo si algún envío se confirmó.
+ */
+async function notifyOrgAdmin(orgId, mensaje) {
     if (!_botInstance) {
-        logger.warn('telegram_no_iniciado_notify');
-        return;
+        logger.warn('telegram_no_iniciado_notify', { orgId });
+        return false;
     }
     const admins = getAdminIdsForOrg(orgId);
-    for (const userId of admins) {
-        _botInstance.sendMessage(userId, mensaje, { parse_mode: 'HTML' })
-            .then(res => logger.info('telegram_notify_ok', { userId, orgId, messageId: res.message_id }))
-            .catch(e => logger.error('telegram_notify_error', { error: e.message, userId, orgId }));
+    if (!admins.length) {
+        // Sin destinatario no hay aviso posible. Callarlo es como se pierde: la org existe,
+        // el fallo existe, y no hay nadie a quien contárselo.
+        logger.error('telegram_sin_admins', { orgId });
+        return false;
     }
+
+    const resultados = await Promise.all(admins.map(userId =>
+        _botInstance.sendMessage(userId, mensaje, { parse_mode: 'HTML' })
+            .then(res => {
+                logger.info('telegram_notify_ok', { userId, orgId, messageId: res?.message_id });
+                return true;
+            })
+            .catch(e => {
+                logger.error('telegram_notify_error', { error: e.message, userId, orgId });
+                return false;
+            })
+    ));
+
+    return resultados.some(Boolean);
 }
 
 // Instancia solo-envío (sin polling) para disparar notificaciones desde scripts

@@ -238,9 +238,14 @@ test('cinco tics seguidos → UN solo aviso', async () => {
     assert.strictEqual(state.alertas.length, 1, 'el worker tica cada 5 min: sin throttle serían ~288');
 });
 
-test('el throttle REAL de admin-alerts es por clave', () => {
+test('el throttle REAL de admin-alerts es por clave', async () => {
     // Contra el módulo de verdad, no el stub: `alertOnce` es la pieza que reutilizará
     // el aviso de fallo de canal.
+    //
+    // `alertOnce` es ASÍNCRONA desde el 05/08/2026: espera a Telegram y solo marca la clave
+    // si la entrega se confirma. Por eso el doble de notifyOrgAdmin tiene que devolver
+    // `true` — devolver cualquier otra cosa significa "no entregado" y la clave quedaría
+    // libre, que es justo el comportamiento nuevo que protege tests/admin-alert-reintento.
     const realPath = require.resolve('../services/admin-alerts');
     const cached = require.cache[realPath];
     delete require.cache[realPath];
@@ -248,13 +253,13 @@ test('el throttle REAL de admin-alerts es por clave', () => {
     const enviados = [];
     require.cache[telegramPath] = {
         id: telegramPath, filename: telegramPath, loaded: true,
-        exports: { notifyOrgAdmin: (orgId, msg) => enviados.push({ orgId, msg }) },
+        exports: { notifyOrgAdmin: async (orgId, msg) => { enviados.push({ orgId, msg }); return true; } },
     };
     const alerts = require(realPath);
 
-    assert.strictEqual(alerts.alertOnce('org', 'cita-1', 'hola'), true);
-    assert.strictEqual(alerts.alertOnce('org', 'cita-1', 'hola'), false, 'segunda vez: throttleada');
-    assert.strictEqual(alerts.alertOnce('org', 'cita-2', 'hola'), true, 'otra cita: sí avisa');
+    assert.strictEqual(await alerts.alertOnce('org', 'cita-1', 'hola'), true);
+    assert.strictEqual(await alerts.alertOnce('org', 'cita-1', 'hola'), false, 'segunda vez: throttleada');
+    assert.strictEqual(await alerts.alertOnce('org', 'cita-2', 'hola'), true, 'otra cita: sí avisa');
     assert.strictEqual(enviados.length, 2);
 
     delete require.cache[telegramPath];

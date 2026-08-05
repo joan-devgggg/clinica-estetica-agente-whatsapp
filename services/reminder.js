@@ -92,7 +92,7 @@ function fechaEnCastellano(fecha, hora) {
 
 // El aviso se throttlea por CITA (contacto + fecha + hora), no por intento: el worker tica
 // cada 5 min y la ventana dura 24 h, así que sin throttle serían ~288 mensajes a Yulia.
-function avisarRecordatorioBloqueado(orgId, record, motivo) {
+async function avisarRecordatorioBloqueado(orgId, record, motivo) {
     logger.warn('recordatorio_bloqueado', {
         orgId, motivo, contactId: record.id,
         telefono: record.telefono || null,
@@ -108,7 +108,10 @@ function avisarRecordatorioBloqueado(orgId, record, motivo) {
         // Sin "y te lo mando yo": si completa la ficha después de la hora de la cita ya no
         // sale nada (minutosRestantes < 0), y sería prometerle algo que no va a pasar.
         + 'Escríbele tú, o completa la ficha en el panel.';
-    alertOnce(orgId, `recordatorio|${record.id}|${record.fecha_cita}|${record.hora_cita || ''}|${motivo}`, mensaje);
+    // Se espera: si el aviso no llega a Telegram, alertOnce deja la clave libre y el
+    // siguiente tic (5 min) lo reintenta. Sin await, el reintento no serviría de nada porque
+    // el worker seguiría adelante sin saber si salió.
+    await alertOnce(orgId, `recordatorio|${record.id}|${record.fecha_cita}|${record.hora_cita || ''}|${motivo}`, mensaje);
 }
 
 /**
@@ -217,7 +220,7 @@ async function checkAndSendReminders() {
                 // reevalúa en cada pasada, no cierra la cita para siempre.
                 const motivo = motivoNoEnviable(record);
                 if (motivo) {
-                    avisarRecordatorioBloqueado(orgId, record, motivo);
+                    await avisarRecordatorioBloqueado(orgId, record, motivo);
                     continue;
                 }
 
