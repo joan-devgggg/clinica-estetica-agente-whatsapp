@@ -46,7 +46,8 @@ function buildCyrillicRe(literales) {
 // ningún número real puede colisionar con el rango. Ese es todo el criterio — el rango que se
 // usaba antes (`3460099xxxx`) tenía la forma de un móvil español perfectamente plausible, y
 // los residuos que dejaba el arnés entraban en la audiencia 'todos' como una clienta más.
-// A 05/08/2026 había dos en la base de Sante.
+// A 05/08/2026 quedaba uno en Sante (34600991016, del escenario de la ráfaga; reaparecía en
+// cada corrida) y otro de una prueba vieja en San Remo (34600999999, de junio).
 //
 // Vive aquí, y no en el arnés, porque lo tienen que compartir DOS sitios que no se hablan: el
 // que los genera (tests/verify-sante-robustez-llm.js) y el que los excluye de la audiencia

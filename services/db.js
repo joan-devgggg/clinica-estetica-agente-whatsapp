@@ -1658,8 +1658,9 @@ async function getBroadcastRecipients(orgId, { audience = 'todos', phones } = {}
         // que no puede ser de nadie (TEST_PHONE_PREFIX, ver helpers.js). Las dos existen porque
         // protegen de cosas distintas: el prefijo evita el daño si el residuo se cuela, y este
         // filtro lo evita otra vez si alguien cambia el prefijo del arnés y no cae en esto.
-        // Nace de dos residuos reales encontrados en la base de Sante el 05/08/2026, ambos
-        // dentro de la audiencia 'todos' —la que el panel manda por defecto—.
+        // Nace de un residuo real encontrado en Sante el 05/08/2026 (34600991016, que
+        // reaparecía en cada corrida), dentro de la audiencia 'todos' —la que el panel manda
+        // por defecto—. Había otro de una prueba vieja en San Remo.
         //
         // Un `wa_phone` a NULL también queda fuera por la semántica del NOT LIKE. Es lo que
         // corresponde: no se puede escribir a quien no tiene número. Hoy no hay ninguno (sí una
