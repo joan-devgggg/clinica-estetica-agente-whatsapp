@@ -161,6 +161,42 @@ async function cleanup(phone) {
     deleteClient(ORG, `${digits}@c.us`);
 }
 
+// Margen para que aterrice lo que quedó en vuelo (el último turno, su saveMessage saliente y
+// el UPDATE de la conversación). No hay evento al que engancharse: son promesas con `.catch()`
+// que nadie espera. Generoso a propósito — corre UNA vez al final de una tirada de minutos.
+const ASENTAMIENTO_MS = 8000;
+
+// Borra TODO contacto de la org cuyo teléfono esté en el rango del arnés. Devuelve los
+// teléfonos borrados para poder decirlo en voz alta.
+//
+// Basta con borrar el contacto: las FK de conversations, messages, appointments y
+// pending_actions van en CASCADE (verificado el 05/08/2026), así que no quedan huérfanos.
+// `broadcast_sends` es SET NULL y conserva el teléfono, que es lo que se quiere: si un número
+// de prueba llegó a recibir algo, ese rastro no se borra solo.
+async function barrerContactosDePrueba() {
+    const { data, error } = await supabase
+        .from('contacts')
+        .select('id, wa_phone')
+        .eq('organization_id', ORG)
+        .like('wa_phone', `${TEST_PHONE_PREFIX}%`);
+    if (error) {
+        console.log(`\n  ⚠️  no se pudo barrer contactos de prueba: ${error.message}`);
+        return [];
+    }
+    const borrados = [];
+    for (const fila of data || []) {
+        const { error: delError } = await supabase
+            .from('contacts').delete().eq('organization_id', ORG).eq('id', fila.id);
+        if (delError) {
+            console.log(`\n  ⚠️  quedó sin borrar ${fila.wa_phone}: ${delError.message}`);
+            continue;
+        }
+        deleteClient(ORG, `${fila.wa_phone}@c.us`);
+        borrados.push(fila.wa_phone);
+    }
+    return borrados;
+}
+
 let seq = 0;
 // Estos escenarios corren contra la Supabase REAL de Sante —es lo que les da valor: catálogo,
 // estilistas y horarios de verdad, que la dueña edita—, así que cada conversación crea un
@@ -558,6 +594,27 @@ async function turno(c, texto) {
             nota: `${h.telefono} · ${h.service} ${String(h.starts_at).slice(0, 16)}`,
         });
         console.log(`\n  ${ICON.BUG} BUG — cita sin nombre: ${h.telefono} · ${h.service}`);
+    }
+
+    // ─── Barrido final: ningún contacto de prueba se queda en la base ─────────────────
+    // El cleanup por escenario NO basta, y no es que esté mal escrito: es una carrera. Corre en
+    // el `finally`, pero `saveMessage` es fire-and-forget y el turno sigue vivo detrás, así que
+    // una escritura en vuelo RESUCITA el contacto justo después de borrarlo. Medido el
+    // 05/08/2026: en dos corridas seguidas sobrevivió el mismo número, el del escenario 17 —el
+    // de la ráfaga, que por definición deja trabajo fuera de la ventana del buffer—.
+    //
+    // Por eso este barrido va por PREFIJO y no por la lista de teléfonos usados: el problema no
+    // es CUÁLES, es CUÁNDO. Barrer por lista con el mismo `await` volvería a llegar pronto.
+    // Y por eso hay un margen de asentamiento antes: se le da tiempo a lo que quede en vuelo a
+    // aterrizar, para borrarlo después en vez de correr contra ello otra vez.
+    //
+    // Lo que encuentre se IMPRIME. Un barrido silencioso convertiría una fuga permanente en una
+    // limpieza invisible, y nadie volvería a enterarse de que la carrera existe.
+    await sleep(ASENTAMIENTO_MS);
+    const residuos = await barrerContactosDePrueba();
+    if (residuos.length) {
+        console.log(`\n  🧹 ${residuos.length} contacto(s) de prueba borrados en el barrido final: ${residuos.join(', ')}`);
+        console.log('     (los dejó una escritura en vuelo tras el cleanup de su escenario)');
     }
 
     // ─── Resumen ──────────────────────────────────────────────────────────────────────
