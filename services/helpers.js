@@ -2316,6 +2316,15 @@ function detectLargoCategory(text, servicesCatalog) {
         { kw: ['total blond', 'decoloracion', 'decolorar', 'deco'], cat: 'deco total blond' },
         { kw: ['antifrizz', 'anti frizz', 'encrespamiento', 'anti-encrespamiento'], cat: 'anti-encrespamiento' },
         { kw: ['color completo'], cat: 'color premium' },
+        // Faltaba, y era la única categoría con variantes de largo sin entrada aquí. El
+        // match por nombre completo de arriba exige "mechas balayage" literal, así que
+        // "quiero un balayage" —o "reflejos o balayage", que es como lo escribió una clienta
+        // el 03/08/2026— no entraba por ningún lado: pendingLargoCategory se quedaba a null,
+        // el turno del largo no resolvía nada y el servicio solo aterrizaba si el LLM
+        // rellenaba `datos.servicio` por su cuenta. Fallaba 1 de cada 3 veces, y con el
+        // nombre bien escrito — el typo del escenario 3 era una pista falsa.
+        // Ver docs/escenario-3-servicio-sin-resolver.md.
+        { kw: ['balayage', 'balaiage', 'valayage'], cat: 'mechas balayage' },
     ];
 
     for (const { kw, cat: catKey } of largoKeywords) {

@@ -30,6 +30,7 @@ server.js              ← Punto de entrada: crea N clientes WA, arranca workers
     ├── auto-return.js     ← Worker: devuelve a 'auto' lo que lleva 7 días mudo en manual
     ├── admin-alerts.js    ← alertOnce: un aviso por asunto, y SOLO si Telegram lo confirma
     ├── channel-health.js  ← Aviso de canal caído: 3 fallos de plataforma seguidos
+    ├── llm-health.js      ← Aviso de proveedor del modelo caído (cuenta: 1 fallo · transitorio: 3)
     ├── bot-pause-alert.js ← Bot pausado: al tirar un mensaje, y a las 2 h de apertura
     ├── horario-apertura.js← Puro: cuánto tiempo de ATENCIÓN hay entre dos instantes
     ├── telegram.js        ← Bot admin multi-org (mismo token, admins por org)
@@ -87,6 +88,24 @@ masivo. Instrumentados los 4 embudos de envío —`waSendMessage`, reminder, rev
 nunca los call sites; en `waSendMessage` el reporte va FUERA del bucle de reintentos (cuatro
 intentos son un envío, no cuatro). Nace de los bloqueos de 360dialog del 1-2/08/2026: entraba
 tráfico, no salía nada, y cada fallo moría en su propio `catch` sin que nadie sumara.
+
+**El modelo no responde** (`llm-health.js`): el 05/08/2026 se acabó el saldo de OpenRouter,
+cada llamada devolvía 402 y el bot devolvía su fallback —"Perdona, no he podido procesar tu
+mensaje"— a todas las clientas. Siguió contestando con educación sin entender nada: sin coger
+citas, sin mirar huecos. Nadie se enteró hasta mirar un log a mano. Mismo agujero que el canal
+caído, un piso más abajo: allí no SALÍA nada, aquí sale algo que no significa nada.
+
+El umbral depende del tipo, y esa es la parte que importa: **cuenta (402/401/403) avisa al
+PRIMER fallo**, porque un "sin saldo" es cierto desde el primer intento y esperar a tres solo
+garantiza que tres clientas se lleven el fallback; **transitorio (429/5xx/red) espera a 3**,
+porque ahí un tropiezo aislado sí existe. Y son dos textos distintos: mandar recargar saldo por
+una caída de diez minutos del proveedor sería la peor instrucción posible.
+
+NO cuentan un 400 (es nuestro payload) ni un JSON mal formado (el proveedor contestó; eso mide
+la calidad del modelo, que es otra cosa y con otro umbral). Instrumentado el embudo
+(`getChatbotResponse`) y solo en el intento DEFINITIVO — los reintentos son una conversación,
+no varias. `summarizeHistory` se queda fuera a propósito: no recibe orgId y un resumen fallido
+no le llega a ninguna clienta.
 
 **Bot pausado demasiado tiempo** (`bot-pause-alert.js`): además del aviso reactivo al tirar un
 mensaje, un vigilante cada 10 min mira el ESTADO. Umbral: **2 h de horario de apertura**
@@ -399,18 +418,27 @@ test, no del sistema: 3 horarios copiados de la migración y un plural — ver a
 ### `verify:robustez:llm` — línea base y cómo leer un DEGRADADO
 
 Este llama al LLM de verdad, así que **no es determinista y su línea base es un rango**, no una
-cifra. Re-medida el **05/08/2026 con el check NUEVO del escenario 3** (el que afirma estado, no
-redacción — ver abajo), tres corridas seguidas del MISMO código:
+cifra. Medida el **06/08/2026, después de arreglar balayage** (ver abajo), tres corridas
+seguidas del MISMO código:
 
 | | 1ª | 2ª | 3ª |
 |---|---|---|---|
-| OK | 20 | 21 | 20 |
-| DEGRADADO | 1 (**esc. 3**) | 0 | 1 (**esc. 3**) |
+| OK | 20 | 20 | 20 |
+| DEGRADADO | 1 (esc. 15) | 1 (esc. 15) | 1 (esc. 15) |
 | SILENCIO · BUCLE · ERROR · BUG | 0 | 0 | 0 |
+
+El **escenario 3 sale en verde las tres veces**, con el mismo resultado exacto
+(`Mechas Balayage · Cabello medio (190 €)`). Antes del arreglo degradaba 2 de cada 3.
 
 Las tres corridas salieron con **cero** mensajes `"Perdona, no he podido procesar tu mensaje"`,
 que es lo que hace válida la medición: el proveedor estuvo en pie de principio a fin (ver el
-párrafo de la TANDA, más abajo — ese mismo día hubo tres corridas que hubo que tirar por un 402).
+párrafo de la TANDA, más abajo — el 05/08 hubo tres corridas que hubo que tirar por un 402).
+
+**El esc. 15 NO es una regresión** y conviene no perseguirlo: aislado (`-- 15`) degrada ~1 de
+cada 3 **igual con el arreglo de balayage que sin él** — comprobado con 3+3 corridas. Su check
+exige una hora concreta (`\d{1,2}:\d{2}`) en la respuesta, y el modelo a veces propone primero
+el día ("mañana viernes, ¿te va bien?"), que es conducta correcta. Es la MISMA debilidad que
+tenía el check del esc. 3 antes de cambiarlo: mide redacción, no estado.
 
 **Lo que se compara es la fila de abajo.** `BUG`, `SILENCIO`, `BUCLE` y `ERROR` a 0 son el
 invariante duro: cualquiera de ellos por encima de 0 es un hallazgo, siempre. **Un DEGRADADO
@@ -418,14 +446,14 @@ suelto que cae en un escenario distinto en cada corrida es varianza del modelo, 
 regresión** — antes de tocar nada, repetir. Dos corridas con el MISMO escenario degradado ya
 es otra cosa.
 
-⚠️ **Y eso es exactamente lo que pasa aquí ahora: el degradado repite en el escenario 3, 2 de 3
-corridas.** Por la regla de arriba, eso NO es varianza — es una deficiencia medida, y está
-diagnosticada en [`docs/escenario-3-servicio-sin-resolver.md`](docs/escenario-3-servicio-sin-resolver.md).
-Resumen: balayage no tiene capa determinista (`detectLargoCategory` casa la categoría por
-subcadena completa y no tiene `balayage` en `largoKeywords`), así que el servicio solo aterriza
-si el modelo rellena `datos.servicio` — y 1 de cada 3 veces no lo hace. El typo del nombre del
-escenario es una pista falsa: falla igual con "balayage" bien escrito. **No lo tapes subiendo
-el umbral del check.**
+Así se cazó lo de balayage: el degradado dejó de bailar y repitió en el escenario 3 dos de
+cada tres corridas. Diagnóstico en
+[`docs/escenario-3-servicio-sin-resolver.md`](docs/escenario-3-servicio-sin-resolver.md) y
+arreglo el 06/08/2026 — `detectLargoCategory` casaba la categoría exigiendo su nombre completo
+como subcadena y `largoKeywords` no tenía entrada para balayage, la única categoría con
+variantes de largo que faltaba. El typo del nombre del escenario era una pista falsa: fallaba
+igual con "balayage" bien escrito. Red determinista:
+`tests/balayage-resuelve.test.js`.
 
 **Una TANDA de degradados que comparten el texto `"Perdona, no he podido procesar tu mensaje"`
 no es una regresión: es el LLM caído o limitando.** Ese literal es el fallback de bot.js cuando
