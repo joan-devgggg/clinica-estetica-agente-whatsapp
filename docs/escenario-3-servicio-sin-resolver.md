@@ -82,17 +82,31 @@ Confirmado también con datos: **cero citas de Sante con `service = 'Reserva'`**
 ### Pero el molde de la cita fantasma está montado
 
 Si alguna de esas tres guardas se relajara, el camino existe entero y no hay nada más que lo
-pare:
+pare — `finalizarCitaSante` **no comprueba el servicio por su cuenta**:
 
 ```
 finalizarCitaSante  →  buildFullServiceName(null, catálogo)  →  null
                     →  allServices = [null, ...upsells].filter(Boolean).join(' + ')  →  ''
-db.js ~1159         →  service: servicio || 'Reserva'
+bot.js ~2777        →  servicio: allServices || session.selectedService?.nombre || 'Cita'
 ```
 
-O sea: una cita real, ocupando agenda, con `service = 'Reserva'`, que no resuelve contra el
-catálogo y cae a "sin poder calcular" en Facturación. **Hoy eso lo detienen tres `if` y nada
-más — no hay ni un test que los afirme.** Es la recomendación (3) de abajo.
+O sea: una cita real, ocupando agenda, con `service = 'Cita'`, que no resuelve contra el
+catálogo y cae a "sin poder calcular" en Facturación. Y con 60 minutos: `resolveAppointmentDurationMin(null)`
+devuelve `{minutos: 60, resuelto: false}`, así que si aquello era un balayage se publican tres
+horas libres encima de la propia clienta.
+
+> **Corrección (06/08/2026):** arriba decía `service = 'Reserva'`. Ese es el fallback de
+> `db.js ~1159` (`servicio || 'Reserva'`) y **por este camino no se alcanza**, porque `bot.js`
+> ya manda el literal `'Cita'`, que es truthy. El daño es idéntico; el nombre que habría que
+> buscar en la tabla, no.
+
+**Ya no lo detienen solo tres `if`: hay test** — `tests/cita-exige-servicio.test.js`
+(06/08/2026), en `npm test`. Afirma la conducta de `resolveSalonConfirmation` (con control de
+no-vacuidad), pone un cable trampa estructural sobre las otras dos guardas y sobre los tres
+`loadAvailableSlots` —que están dentro de `processMessageCore`, sin exportar y no ejercitables
+sin LLM ni Supabase—, y mide la consecuencia de arriba para que el cable trampa se entienda.
+Comprobado por mutación: quitar cualquiera de las cinco condiciones lo pone en rojo. Era la
+recomendación (3) de abajo.
 
 ---
 
@@ -159,9 +173,8 @@ Nada de esto está hecho.
    `selectedService` a null, el próximo paso es el servicio, nunca la fecha. Ataca la familia
    entera y no solo balayage — es lo que habría evitado que Mariana contestara "Miércoles" y
    "Por la tarde" para nada.
-3. **Un test que afirme las tres guardas de escritura**: con `selectedService` a null no se
-   escribe cita por ninguno de los tres caminos. Hoy eso se sostiene solo por lectura del
-   código, y es lo único que separa "molesto" de "cita fantasma".
+3. ~~**Un test que afirme las tres guardas de escritura**~~ — **HECHO 06/08/2026**,
+   `tests/cita-exige-servicio.test.js`. Ver §2.
 4. **La 5ª variante de "evaluar".** Más barato que ampliar la regex: que el streak abra el
    menú a la **primera** cuando la clienta ya ha dado día u hora — porque ahí ya se sabe que
    la conversación va de reservar y que lo que falta es el servicio.
