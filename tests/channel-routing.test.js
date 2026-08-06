@@ -102,8 +102,33 @@ const ID_WAMID  = 'wamid.HBgLMzQ2NDEwMjkxMDQVAgASGCA1RjZBN0I4QzlEMEUxRjJBAA==';
 
     // ─── 1. El canal sale del registry, no de las env vars ───────────────────────────
     console.log('1) Registry');
-    check('Sante está en 360dialog SIN SANTE_360_API_KEY en el entorno', () => {
-        assert.strictEqual(process.env.SANTE_360_API_KEY, undefined, 'el test debe correr sin la key');
+    // El canal NO depende de la key: se comprueba con ella y sin ella, en procesos aparte.
+    //
+    // Antes esto se afirmaba mirando el entorno del propio test (`SANTE_360_API_KEY ===
+    // undefined`), y era una medida de la MÁQUINA, no del sistema: el `delete` de la
+    // cabecera lo deshace el `require('dotenv').config()` de bot.js, que se carga después.
+    // Mientras el portátil no tuvo la key, pasaba; el 05/08/2026 se añadió al .env para
+    // poder enviar una campaña de prueba y `npm test` se cayó entero por un fichero que no
+    // tiene nada que ver con las campañas. Un check que caduca en cuanto la máquina se
+    // parece a producción no protege nada: mide antigüedad.
+    const canalEnSubproceso = (envExtra) => {
+        const script = `const r=require(${JSON.stringify(path.join(__dirname, '..', 'services', 'org-registry.js'))});`
+            + `process.stdout.write(r.getOrgChannel(${JSON.stringify(SANTE_ORG)}));`;
+        const env = { ...process.env, SANTE_CHANNEL: '', ...envExtra };
+        for (const [k, v] of Object.entries(envExtra)) if (v === undefined) delete env[k];
+        return execFileSync(process.execPath, ['-e', script], { env, encoding: 'utf8' }).trim();
+    };
+
+    check('Sante está en 360dialog CON la key en el entorno', () => {
+        assert.strictEqual(canalEnSubproceso({ SANTE_360_API_KEY: 'clave-de-prueba' }), CHANNEL_360);
+    });
+    check('…y SIN la key también: el canal sale del registry, no de la env var', () => {
+        // Es la mitad que de verdad importa: si el canal dependiera de la key, una máquina
+        // sin ella volvería a levantar el cliente wwebjs de Sante y reabriría la doble
+        // entrada sobre el mismo número — el proceso que causó el incidente.
+        assert.strictEqual(canalEnSubproceso({ SANTE_360_API_KEY: undefined }), CHANNEL_360);
+    });
+    check('el registry cargado en este proceso dice lo mismo', () => {
         assert.strictEqual(getOrgChannel(SANTE_ORG), CHANNEL_360);
     });
     check('San Remo sigue en wwebjs', () => {
