@@ -173,7 +173,9 @@ test('enviado pero sin poder marcar → ok con registrado:false, no un error', a
     assert.deepStrictEqual(r, { ok: true, registrado: false });
     assert.ok(state.logs.some(l => l.evento === 'resena_enviada_sin_registrar'));
     // Devolver error haría que el operador volviera a pulsar y la clienta recibiera dos
-    // peticiones de reseña. El mal menor es que el worker pueda repetirla.
+    // peticiones de reseña. Y el worker tampoco la repite: el fallo queda anotado en
+    // `enviadasSinMarcar` y el tic siguiente reintenta el MARCADO, no el envío
+    // (tests/resena-no-se-repite.test.js).
 });
 
 test('el idioma de la clienta manda en el texto', async () => {

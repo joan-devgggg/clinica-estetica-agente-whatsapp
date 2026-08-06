@@ -71,7 +71,7 @@ rodea: la fila que lo garantizaba se borró.
 
 ---
 
-## 🟠 3 · Una reseña que se envía y no se marca se reenvía cada 5 minutos
+## 🟠 3 · Una reseña que se envía y no se marca se reenvía cada 5 minutos — ✅ ARREGLADO 06/08/2026
 
 **RESEÑAS** · [`review.js:130-137`](../services/review.js)
 
@@ -95,6 +95,24 @@ escritura después de un envío correcto:
 El envío y su marcado no son atómicos y no hay compensación en el lado del envío. Es el
 espejo exacto del `resena_enviada` que se marcaba antes de tiempo (arreglado en su día): ahora
 el riesgo se ha movido al otro lado.
+
+**Arreglo:** el marcado pasa por `marcarResenaEnviada`, que reintenta 3 veces, y lo que aun
+así no se pudo apuntar queda en `enviadasSinMarcar` (Map en RAM, clave `orgId|aptId`) — el tic
+siguiente ve la cita pendiente en BD, mira ese Map y reintenta el **marcado**, nunca el envío.
+Si ni con reintentos se apunta, `alertOnce` avisa a una persona (throttle por cita). El
+`try/catch` baja al nivel de la CITA: un fallo ya no aborta las demás de la org. El Map se poda
+con las citas que dejan de estar pendientes. Mismo camino para el botón del panel, que dejaba
+la cita pendiente y por tanto expuesta al reenvío del worker. Red:
+`tests/resena-no-se-repite.test.js`.
+
+**Límite conocido y aceptado**, el mismo de `admin-alerts` y del registro de campañas: el Map
+vive en RAM, así que un reinicio entre el envío y el marcado permite una segunda petición. Se
+asume porque la alternativa —persistirlo— es escribir la fila, que es justo lo que no se ha
+podido hacer.
+
+**Mismo agujero, sin tocar:** `reminder.js:239` marca con `marcarRecordatorioSent` dentro de un
+`try` de nivel org. Un recordatorio entregado y no marcado se reenvía cada 5 min igual. No
+entraba en el alcance de esta auditoría (que era reseñas/campañas/facturación); queda apuntado.
 
 ---
 

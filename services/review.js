@@ -7,6 +7,7 @@
 const { getCompletedAppointmentsForReview, getConfigValue, getAgentConfig, updateAppointment } = require('./db');
 const { resolveOutboundClient, resolveAutomatedSend } = require('./outbound');
 const { noteSendResult } = require('./channel-health');
+const { alertOnce } = require('./admin-alerts');
 const logger = require('../lib/logger');
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -103,6 +104,70 @@ async function sendReviewMessage(orgId, { telefono, language, waJid }, { mensaje
     }
 }
 
+// ─── Enviar y APUNTAR son dos cosas, y entre las dos cabe una reseña repetida ────────────
+//
+// El envío marcaba con un `updateAppointment` suelto, y esa función LANZA ante cualquier
+// error de escritura. El `try` que lo recogía estaba al nivel de la ORG, fuera del bucle de
+// citas, así que un fallo de marcado con el mensaje ya entregado hacía dos cosas: abortaba el
+// resto de citas pendientes de esa org en ese tic, y dejaba `resena_enviada` en false — o sea
+// que al tic siguiente (5 min) la misma cita volvía a estar pendiente y la clienta recibía la
+// petición otra vez. Y otra. Cada cinco minutos hasta que la escritura funcionara.
+//
+// Regla, la misma que sostiene el registro de campañas: **después de un envío entregado, el
+// marcado se reintenta y su fallo NUNCA puede convertirse en un segundo envío.**
+//
+// Tres piezas: reintentos, memoria de lo entregado-sin-apuntar (para que el tic siguiente
+// reintente el MARCADO en vez de reenviar), y aviso a una persona cuando aun así no se pudo.
+const REINTENTOS_MARCADO = 3;
+
+// `${orgId}|${appointmentId}` → { desde }. En RAM y a propósito: un reinicio la pierde y esa
+// cita podría recibir una segunda petición, que es exactamente el riesgo que ya se asume en
+// `admin-alerts` y en el registro de campañas. Persistirlo es marcar la fila, y marcar la
+// fila es justo lo que no se ha podido hacer.
+const enviadasSinMarcar = new Map();
+const claveMarcado = (orgId, appointmentId) => `${orgId}|${appointmentId}`;
+
+const MENSAJE_SIN_MARCAR = (nombre, telefono) =>
+    '⚠️ <b>Reseña pedida y sin apuntar</b>\n\n'
+    + `Le he pedido la reseña a ${nombre || 'una clienta'} (${telefono || 'sin teléfono'}) y el `
+    + 'mensaje salió, pero no he podido dejar constancia en su cita.\n\n'
+    + 'No se la voy a volver a pedir. Si el problema sigue, márcala a mano en el panel.';
+
+/**
+ * Marca `resena_enviada` de una cita cuyo mensaje YA salió. Nunca lanza.
+ *
+ * @returns {Promise<boolean>} true si quedó apuntado.
+ */
+async function marcarResenaEnviada(orgId, { id, telefono, nombre }, actor) {
+    const clave = claveMarcado(orgId, id);
+    let ultimoError = null;
+
+    for (let intento = 0; intento < REINTENTOS_MARCADO; intento++) {
+        if (intento > 0) await new Promise(r => setTimeout(r, 200 * intento));
+        try {
+            await updateAppointment(orgId, id, { resenaEnviada: true, actor });
+            enviadasSinMarcar.delete(clave);
+            logger.info('resena_enviada', { orgId, appointmentId: id, telefono, actor });
+            return true;
+        } catch (e) {
+            ultimoError = e;
+        }
+    }
+
+    // Se entregó y no se pudo apuntar. Queda anotado en memoria para que el worker NO lo
+    // reenvíe: el tic siguiente reintentará este mismo marcado.
+    if (!enviadasSinMarcar.has(clave)) enviadasSinMarcar.set(clave, { desde: Date.now() });
+    logger.error('resena_enviada_sin_registrar', {
+        orgId, appointmentId: id, telefono, actor: actor || null,
+        error: ultimoError?.message || null,
+    });
+    await alertOnce(orgId, `resena_sin_marcar|${id}`, MENSAJE_SIN_MARCAR(nombre, telefono));
+    return false;
+}
+
+/** Solo para tests: olvida lo entregado-sin-apuntar. */
+function _resetPendientesDeMarcar() { enviadasSinMarcar.clear(); }
+
 /**
  * Pide la reseña de UNA cita concreta y solo entonces la marca. La usa el botón del panel.
  *
@@ -147,16 +212,12 @@ async function sendReviewForAppointment(orgId, appointmentId, { client = null, a
     // Marcar va DESPUÉS del envío y nunca antes. Y si el marcado falla, el envío ya se hizo:
     // devolver error haría que el operador volviera a pulsar y la clienta recibiera dos
     // peticiones de reseña. Se informa de que salió pero no se pudo apuntar.
-    try {
-        await updateAppointment(orgId, apt.id, { resenaEnviada: true, actor });
-    } catch (e) {
-        logger.error('resena_enviada_sin_registrar', {
-            orgId, appointmentId: apt.id, telefono, error: e.message,
-        });
-        return { ok: true, registrado: false };
-    }
-    logger.info('resena_enviada', { orgId, appointmentId: apt.id, telefono, actor });
-    return { ok: true, registrado: true };
+    //
+    // El fallo se anota además en `enviadasSinMarcar`, que es lo que impide que el worker
+    // —que sigue viendo la cita pendiente porque la fila no se escribió— se la mande otra vez
+    // dentro de cinco minutos.
+    const registrado = await marcarResenaEnviada(orgId, { id: apt.id, telefono, nombre }, actor);
+    return registrado ? { ok: true, registrado: true } : { ok: true, registrado: false };
 }
 
 async function checkAndSendReviews() {
@@ -177,22 +238,45 @@ async function checkAndSendReviews() {
             const pendientes = await getCompletedAppointmentsForReview(orgId, horasResena);
 
             for (const apt of pendientes) {
-                const phone = apt.contacts?.wa_phone || apt.phone;
-                const nombre = apt.contacts?.full_name || apt.full_name;
-                const language = apt.contacts?.language || 'es';
-                const waJid = apt.contacts?.metadata?.wa_jid || null;
-                if (!phone) continue;
+                // El try va por CITA, no por org. Estaba fuera del bucle: cualquier fallo en
+                // una cita se llevaba por delante a todas las siguientes de esa org en ese
+                // tic, sin dejar rastro de cuáles.
+                try {
+                    const phone = apt.contacts?.wa_phone || apt.phone;
+                    const nombre = apt.contacts?.full_name || apt.full_name;
+                    const language = apt.contacts?.language || 'es';
+                    const waJid = apt.contacts?.metadata?.wa_jid || null;
+                    if (!phone) continue;
 
-                const mensaje = buildReviewMessage(nombre, companyName, googleLink, language);
-                const resultado = await sendReviewMessage(orgId, { telefono: phone, language, waJid }, {
-                    mensaje,
-                    templateParams: [nombre || '', googleLink],
-                });
+                    // Ya se le pidió y solo faltó apuntarlo: se reintenta el MARCADO, jamás
+                    // el envío. Sin esto la cita sigue "pendiente" en BD y se le vuelve a
+                    // pedir la reseña cada cinco minutos.
+                    if (enviadasSinMarcar.has(claveMarcado(orgId, apt.id))) {
+                        await marcarResenaEnviada(orgId, { id: apt.id, telefono: phone, nombre }, 'worker:review');
+                        continue;
+                    }
 
-                if (resultado === 'enviado') {
-                    await updateAppointment(orgId, apt.id, { resenaEnviada: true, actor: 'worker:review' });
-                    logger.info('resena_enviada', { orgId, nombre, telefono: phone });
+                    const mensaje = buildReviewMessage(nombre, companyName, googleLink, language);
+                    const resultado = await sendReviewMessage(orgId, { telefono: phone, language, waJid }, {
+                        mensaje,
+                        templateParams: [nombre || '', googleLink],
+                    });
+
+                    if (resultado === 'enviado') {
+                        await marcarResenaEnviada(orgId, { id: apt.id, telefono: phone, nombre }, 'worker:review');
+                    }
+                } catch (e) {
+                    logger.error('review_error_cita', { orgId, appointmentId: apt.id, error: e.message });
                 }
+            }
+
+            // Poda: lo que ya no está pendiente en BD está apuntado (a mano o por un
+            // reintento), así que su entrada sobra. Sin esto el Map crece con citas muertas
+            // en un proceso de vida larga.
+            const idsPendientes = new Set(pendientes.map(a => a.id));
+            for (const clave of enviadasSinMarcar.keys()) {
+                const [org, aptId] = clave.split('|');
+                if (org === orgId && !idsPendientes.has(aptId)) enviadasSinMarcar.delete(clave);
             }
         } catch (e) {
             logger.error('review_error_org', { orgId, error: e.message });
@@ -216,4 +300,5 @@ function startReviewWorker(clients) {
 module.exports = {
     startReviewWorker, buildReviewMessage, checkAndSendReviews, setClients,
     sendReviewForAppointment,
+    _resetPendientesDeMarcar,
 };
