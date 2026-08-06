@@ -44,19 +44,26 @@ require.cache[telegramPath] = {
 
 // Supabase falso: registra los upsert de `config` para poder afirmar que un valor rechazado
 // no llega a escribirse.
+//
+// El upsert devuelve la fila escrita, como el real con `.select('clave')`: desde que
+// `setConfigValue` usa assertRowsAffected, un doble que devolviera [] significaría «no se
+// escribió nada» y haría fallar el camino bueno. El doble tiene que mentir lo menos posible.
 const upserts = [];
 const supabasePath = require.resolve('../services/supabase');
 require.cache[supabasePath] = {
     id: supabasePath, filename: supabasePath, loaded: true,
     exports: {
         from(tabla) {
+            const q = { op: null, payload: null };
             const b = {
                 select: () => b, eq: () => b, is: () => b, in: () => b, order: () => b, limit: () => b,
                 update: () => b, insert: () => b,
-                upsert: (payload) => { upserts.push({ tabla, payload }); return b; },
+                upsert: (payload) => { q.op = 'upsert'; q.payload = payload; upserts.push({ tabla, payload }); return b; },
                 single: async () => ({ data: null, error: null }),
                 maybeSingle: async () => ({ data: null, error: null }),
-                then: (f, r) => Promise.resolve({ data: [], error: null }).then(f, r),
+                then: (f, r) => Promise.resolve(
+                    q.op === 'upsert' ? { data: [{ clave: q.payload.clave }], error: null }
+                                      : { data: [], error: null }).then(f, r),
             };
             return b;
         },

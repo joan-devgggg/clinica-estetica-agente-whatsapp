@@ -85,7 +85,22 @@ function setBotActivo(orgId, v, persist = true) {
     if (v) resetPauseAlert(orgId);
     if (persist) {
         const { setConfigValue } = require('./services/db');
-        setConfigValue(orgId, 'bot_activo', !!v);
+        // `setBotActivo` es SÍNCRONA y la llaman el handler de Telegram y el arranque, así que
+        // aquí no se puede esperar. Pero desde que `setConfigValue` lanza, dejarlo suelto sería
+        // un unhandled rejection —que en Node moderno tumba el proceso—, así que el catch no es
+        // cortesía: es obligatorio.
+        //
+        // Y va a nivel ERROR porque el fallo no es cosmético. El estado en MEMORIA queda como
+        // pidió Yulia (el bot calla ahora mismo), pero el de BD no, y `server.js` recarga
+        // `bot_activo` de `config` al arrancar: el primer reinicio o despliegue **revive el bot
+        // que ella había pausado** y vuelve a contestar a clientas que había silenciado. Sin
+        // esta traza, eso pasa sin dejar rastro de por qué.
+        setConfigValue(orgId, 'bot_activo', !!v).catch(e => {
+            logger.error('bot_activo_no_persistido', {
+                orgId, valor: !!v, error: e.message,
+                nota: 'queda aplicado en memoria; un reinicio lo revierte',
+            });
+        });
     }
 }
 

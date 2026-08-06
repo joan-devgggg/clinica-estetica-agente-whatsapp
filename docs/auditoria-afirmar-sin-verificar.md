@@ -16,10 +16,31 @@
 El gemelo del punto 3 en `reminder.js`, que quedó apuntado y fuera del alcance, **también está
 arreglado** (06/08/2026, ver el párrafo al final del punto 3).
 
-Lo que sigue vivo, de la misma familia y sin tocar: **`setConfigValue` (`db.js:588`) hace el
-`upsert` sin mirar el error** y devuelve `true` igual, así que el panel puede decir «guardado»
-sobre una escritura que no ocurrió. Arreglarlo obliga a tocar el call site de `bot.js:88`, que
-llama sin `await` ni `catch` y se comería un throw como rechazo sin manejar.
+**`setConfigValue` — ✅ ARREGLADO 06/08/2026**, y era el último superviviente de la familia.
+Hacía el `upsert` **sin mirar el error ni cuántas filas tocó** y devolvía `true` igual, así que
+el panel decía «guardado» y dejaba el toggle puesto en pantalla sobre una escritura que no
+había ocurrido; al recargar volvía el valor viejo. De esa tabla cuelga todo lo que la dueña
+configura: `bot_activo`, la ventana del recordatorio, las horas de la reseña, las plantillas.
+
+Ahora usa `assertRowsAffected` con `.select('clave')` —`config` no tiene `id`, su PK es
+`(organization_id, clave)`— y **lanza**. Los dos call sites lo saben:
+
+- `PUT /api/config/:clave` lo convierte en **500** en vez de `{ok:true}`.
+- `setBotActivo` (`bot.js`) **no puede esperarlo**: es síncrona y la llaman el handler de
+  Telegram y el arranque. Lleva un `.catch()` que loguea a nivel **error**, y el nivel no es
+  decorativo: el estado en MEMORIA queda como se pidió (el bot calla ahora), pero el de BD no,
+  y `server.js` recarga `bot_activo` de `config` al arrancar — **el primer reinicio revive el
+  bot que alguien había pausado**. Sin `.catch()`, además, sería un rechazo sin manejar, que en
+  Node moderno tumba el proceso: o sea el bot de las dos orgs.
+
+Red: `tests/config-escritura-verificada.test.js`, con un vigilante de `unhandledRejection` en
+el propio test. Comprobado por mutación (quitar el `assertRowsAffected` tumba A1/A2/B1; quitar
+el `.catch()` tumba C1/C2).
+
+**Queda apuntado y NO tocado:** `telegram.js` llama a `setBotActivoFn(orgId, false)` y responde
+«Bot pausado» al admin sin poder saber si se guardó — `setBotActivo` no devuelve la promesa. Es
+la misma familia un piso más arriba y se arregla dejando que la devuelva y que el handler la
+espere; no se ha hecho por no ampliar el encargo.
 
 La familia que más daño ha hecho estos días: código que **dice que algo pasó sin comprobarlo**.
 Se buscan tres formas concretas — escrituras que devuelven éxito sin mirar el error o las filas

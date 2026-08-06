@@ -216,10 +216,11 @@ no puede además dejar citas pasadas sin completar ni sin facturar.
 Red: `tests/config-recordatorio-valida.test.js` (15 asertos, los tres niveles: validador puro,
 `PUT` real por HTTP contra un Supabase falso, y el worker real). Comprobado por mutación.
 
-**Queda apuntado y NO tocado:** `setConfigValue` (`db.js:588`) hace el `upsert` **sin mirar el
-error** y devuelve `true` igual — o sea que el panel puede decir «guardado» sobre una escritura
-que no ocurrió. Es de la otra familia (`docs/auditoria-afirmar-sin-verificar.md`), no de esta, y
-arreglarlo obliga a tocar el call site de `bot.js:88`, que llama sin `await` ni `catch`.
+**El apunte que quedaba aquí ya está cerrado:** `setConfigValue` verificaba tan poco que la
+validación de arriba podía rechazarse bien y perderse igual al escribir. Arreglado el mismo día
+—`assertRowsAffected` + `500` en el endpoint + `.catch()` en `bot.js`— y contado en la otra
+auditoría, que es a la que pertenece:
+[`auditoria-afirmar-sin-verificar.md`](auditoria-afirmar-sin-verificar.md).
 
 ---
 

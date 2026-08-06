@@ -594,15 +594,29 @@ async function getConfigEntry(orgId, clave) {
     return { valor, updated_at: data.updated_at };
 }
 
+// Devolvía `true` sin mirar el error NI cuántas filas tocó, y de aquí cuelga todo lo que la
+// dueña configura: `bot_activo`, la ventana del recordatorio, las horas de la reseña, las
+// plantillas. El panel decía "guardado" y el toggle se quedaba puesto en pantalla sobre una
+// escritura que no había ocurrido; al recargar volvía el valor viejo y no había forma de saber
+// si es que no se intentó o es que falló.
+//
+// `.select('clave')` es lo que permite contar filas: sin él, un upsert que no casa nada
+// devuelve error=null y se leía como éxito (es justo el límite que documenta assertWrite).
+// `config` no tiene `id` — su PK es (organization_id, clave) —, por eso se pide `clave`.
+//
+// LANZA. Los dos call sites lo saben: `PUT /api/config/:clave` lo convierte en 500, y
+// `setBotActivo` (bot.js) no puede esperarlo y lo recoge con un catch que loguea.
 async function setConfigValue(orgId, clave, valor) {
     const oid = resolveOrg(orgId);
     const valorStr = typeof valor === 'string' ? valor : JSON.stringify(valor);
-    await supabase
+    const { data, error } = await supabase
         .from('config')
         .upsert(
             { organization_id: oid, clave, valor: valorStr, updated_at: now() },
             { onConflict: 'organization_id,clave' }
-        );
+        )
+        .select('clave');
+    assertRowsAffected(error, data, 'config', `upsert ${clave}`);
     return true;
 }
 
