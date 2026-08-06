@@ -11,6 +11,7 @@ const db = require('./services/db');
 const config = require('./config.json');
 const { notifyBlacklistAlert } = require('./services/telegram');
 const { alertOnce } = require('./services/admin-alerts');
+const { validateConfigValue } = require('./services/helpers');
 const logger = require('./lib/logger');
 
 const DEFAULT_ORG = process.env.ORGANIZATION_ID || 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
@@ -825,7 +826,21 @@ app.get('/api/config', async (req, res) => {
 app.put('/api/config/:clave', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
-        await db.setConfigValue(orgId, req.params.clave, req.body.valor);
+        // Un número mal escrito aquí no se queda en el panel: `horas_recordatorio` alimenta
+        // la única guarda que decide a qué citas les toca el recordatorio, y un valor no
+        // numérico la desarma entera (`Number('24 horas')` es NaN, y `x > NaN` es false), así
+        // que se mandaría el recordatorio de TODAS las citas futuras de golpe. Se rechaza al
+        // escribir, con el mensaje que hay que enseñarle a quien lo está editando.
+        const check = validateConfigValue(req.params.clave, req.body.valor);
+        if (!check.ok) {
+            logger.warn('config_valor_rechazado', {
+                orgId, clave: req.params.clave, valor: String(req.body.valor).slice(0, 40), motivo: check.motivo,
+            });
+            return res.status(400).json({ error: check.mensaje, clave: req.params.clave, motivo: check.motivo });
+        }
+        // Se guarda NORMALIZADO: el '24' del formulario entra como 24 y ningún lector tiene
+        // que volver a adivinar de qué tipo era.
+        await db.setConfigValue(orgId, req.params.clave, check.valor);
         // El toggle del bot es POR organización: solo afecta a la org de la petición.
         // La config ya quedó persistida arriba → actualizamos memoria sin re-escribir.
         if (req.params.clave === 'bot_activo' && _setBotActivo) {

@@ -152,7 +152,7 @@ dónde sale esa duración, se supone y punto.
 
 ---
 
-## 🟠 3 · Un `horas_recordatorio` mal escrito manda el recordatorio a TODAS las citas futuras
+## 🟠 3 · Un `horas_recordatorio` mal escrito manda el recordatorio a TODAS las citas futuras — ✅ ARREGLADO 06/08/2026
 
 **RECORDATORIOS** · [`reminder.js:198-220`](../services/reminder.js)
 
@@ -191,6 +191,35 @@ Dos cosas distintas, y la segunda no es un default sino lo que el default tapa:
 **Disparando hoy: no.** Los dos valores en producción son numéricos (`minutos_recordatorio` =
 `1440` en San Remo, `horas_recordatorio` = `24` en Sante). Es un cargador puesto y la dueña
 edita config desde el panel.
+
+**Arreglo (06/08/2026), por los dos lados:**
+
+- **Al escribir** — `PUT /api/config/:clave` valida contra `CONFIG_NUMERICAS` (`helpers.js`) y
+  responde **400** con el mensaje que hay que enseñarle a quien está editando, en vez de
+  guardar. Acepta el número y la cadena que SOLO contiene un número (`'24'`, que es lo que
+  manda un `<input>`) y lo guarda **normalizado**; rechaza `'24 horas'`, negativos y valores
+  absurdos. Un mes de ventana hace el mismo daño práctico que el `NaN`.
+- **Al leer** — `resolveReminderWindowMin` (`helpers.js`, puro) devuelve
+  `{ok, minutos, via}` o `{ok:false, clave, valor, mensaje}`, y `reminder.js` con `ok:false`
+  **no manda nada** de esa org y avisa por Telegram diciendo qué campo, con qué valor está y
+  que las citas siguen pendientes. Throttle por clave **y valor**: si se corrige y se vuelve a
+  fallar de otra forma, el aviso sale otra vez.
+
+Dos decisiones que conviene no deshacer: **un valor inválido NO cae al de al lado ni al
+default** (enterrar el error justo cuando hay que enseñarlo sería el mismo problema con otra
+cara), y **ausente NO es inválido** — sin ninguna de las dos claves sigue el 1440 de siempre,
+que está declarado. No es lo mismo «no lo he configurado» que «lo he configurado mal».
+
+El `continue` va DESPUÉS de `autoCompleteAppointments`, que ya ha corrido: una ventana ilegible
+no puede además dejar citas pasadas sin completar ni sin facturar.
+
+Red: `tests/config-recordatorio-valida.test.js` (15 asertos, los tres niveles: validador puro,
+`PUT` real por HTTP contra un Supabase falso, y el worker real). Comprobado por mutación.
+
+**Queda apuntado y NO tocado:** `setConfigValue` (`db.js:588`) hace el `upsert` **sin mirar el
+error** y devuelve `true` igual — o sea que el panel puede decir «guardado» sobre una escritura
+que no ocurrió. Es de la otra familia (`docs/auditoria-afirmar-sin-verificar.md`), no de esta, y
+arreglarlo obliga a tocar el call site de `bot.js:88`, que llama sin `await` ni `catch`.
 
 ---
 

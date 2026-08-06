@@ -91,6 +91,105 @@ function motivoNoEnviable(phone) {
 // panel y la que eligen los constructores de mensajes; vivía copiada en seis sitios.
 const IDIOMAS_SOPORTADOS = ['es', 'en', 'ru', 'uk'];
 
+// ─── Claves de `config` que son NÚMEROS ──────────────────────────────────────────────────
+//
+// De estas cuelga que salga o no un mensaje a una clienta, así que un valor que no sea un
+// número no puede llegar a los workers. `getConfigValue` hace `JSON.parse` y, si falla,
+// devuelve la cadena tal cual: un «24 horas» o un «veinticuatro» escritos a mano —o desde el
+// panel, que desde el 05/08/2026 deja editar este campo— pasan enteros.
+//
+// Y lo que hacía `Number()` con eso no era quedarse corto, era desarmar la guarda:
+//
+//     const minutosAntes = Number('24 horas');            // NaN
+//     if (minutosRestantes > minutosAntes) continue;      // NaN → false → NO descarta nada
+//
+// O sea que el recordatorio de 24 h se le mandaba a TODAS las citas futuras de la org de
+// golpe, se marcaban como enviadas, y el día de antes ya no salía ninguna. La consulta que
+// las trae (`getLeadsPendientesRecordatorio`) no acota por fecha: esta comparación era el
+// único límite que había.
+//
+// Los máximos no son decoración: un `minutos_recordatorio` de 100000 (dos meses) tiene la
+// misma consecuencia práctica que el NaN, y un cero negativo tampoco significa nada.
+const CONFIG_NUMERICAS = {
+    minutos_recordatorio: { max: 60 * 24 * 30, unidad: 'minutos' },
+    horas_recordatorio:   { max: 24 * 30,      unidad: 'horas' },
+    horas_resena:         { max: 24 * 30,      unidad: 'horas' },
+    dias_retorno_auto:    { max: 365,          unidad: 'días' },
+};
+
+/**
+ * Valida un valor que entra en `config`. Las claves que no son numéricas pasan sin tocar.
+ *
+ * Acepta el número y también la cadena que SOLO contiene un número ('24'), porque es lo que
+ * manda un <input> del panel. No acepta '24 horas', ni true, ni objetos: eso no es que
+ * necesite normalizarse, es que quien lo escribió quería decir otra cosa.
+ *
+ * @returns {{ok: true, valor: any}|{ok: false, motivo: string, mensaje: string}}
+ */
+function validateConfigValue(clave, valor) {
+    const regla = CONFIG_NUMERICAS[clave];
+    if (!regla) return { ok: true, valor };
+
+    const esNumero = typeof valor === 'number';
+    // `Number('')` es 0 y `Number(' ')` también: se descartan antes de convertir.
+    const esCadenaNumerica = typeof valor === 'string' && valor.trim() !== '' && Number.isFinite(Number(valor));
+    if (!esNumero && !esCadenaNumerica) {
+        return {
+            ok: false,
+            motivo: 'no_numerico',
+            mensaje: `«${clave}» tiene que ser un número en ${regla.unidad} (por ejemplo 24), no «${String(valor)}».`,
+        };
+    }
+
+    const n = Number(valor);
+    if (!Number.isFinite(n)) {
+        return { ok: false, motivo: 'no_numerico', mensaje: `«${clave}» no es un número válido.` };
+    }
+    if (n < 0) {
+        return { ok: false, motivo: 'negativo', mensaje: `«${clave}» no puede ser negativo.` };
+    }
+    if (n > regla.max) {
+        return {
+            ok: false,
+            motivo: 'fuera_de_rango',
+            mensaje: `«${clave}» no puede pasar de ${regla.max} ${regla.unidad}.`,
+        };
+    }
+    // Se devuelve NORMALIZADO a número: así el '24' del formulario se guarda como 24 y
+    // ningún lector tiene que volver a adivinar de qué tipo era.
+    return { ok: true, valor: n };
+}
+
+/**
+ * Cuántos minutos antes de la cita sale el recordatorio, o por qué no se puede saber.
+ *
+ * Las dos claves existen porque las orgs no las escriben igual (San Remo tiene
+ * `minutos_recordatorio`, Sante `horas_recordatorio`). `minutos` manda si está presente.
+ *
+ * Un valor inválido NO cae al de al lado ni al default: eso enterraría el error justo cuando
+ * lo que hay que hacer es enseñarlo. Devuelve `ok:false` y quien llama no manda nada.
+ *
+ * Las DOS ausentes sí son el default de 1440 (24 h), que es lo de siempre y está declarado.
+ * No es lo mismo «no lo he configurado» que «lo he configurado mal».
+ *
+ * @returns {{ok:true, minutos:number, via:'minutos'|'horas'|'default'}|{ok:false, clave, valor, mensaje}}
+ */
+function resolveReminderWindowMin({ minutos = null, horas = null } = {}) {
+    if (minutos !== null && minutos !== undefined) {
+        const v = validateConfigValue('minutos_recordatorio', minutos);
+        return v.ok
+            ? { ok: true, minutos: v.valor, via: 'minutos' }
+            : { ok: false, clave: 'minutos_recordatorio', valor: minutos, mensaje: v.mensaje };
+    }
+    if (horas !== null && horas !== undefined) {
+        const v = validateConfigValue('horas_recordatorio', horas);
+        return v.ok
+            ? { ok: true, minutos: v.valor * 60, via: 'horas' }
+            : { ok: false, clave: 'horas_recordatorio', valor: horas, mensaje: v.mensaje };
+    }
+    return { ok: true, minutos: 1440, via: 'default' };
+}
+
 // De dónde salió `contacts.language`. La columna mezcla tres calidades muy distintas y hasta
 // ahora nada las separaba: a 05/08/2026, de 720 fichas de Sante, ~20 traían un idioma
 // observado en conversación, 184 uno deducido del nombre y ~516 el 'es' del INSERT que nadie
@@ -3022,6 +3121,9 @@ module.exports = {
     normalizeText,
     detectLanguage,
     IDIOMAS_SOPORTADOS,
+    CONFIG_NUMERICAS,
+    validateConfigValue,
+    resolveReminderWindowMin,
     LANGUAGE_SOURCES,
     resolveLanguageSource,
     TEST_PHONE_PREFIX,

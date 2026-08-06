@@ -6,7 +6,7 @@
 
 const { getAppointmentsPendientesRecordatorio, marcarRecordatorioSent, getConfigValue, getAgentConfig, autoCompleteAppointments } = require('./db');
 const { resolveOutboundClient, resolveAutomatedSend } = require('./outbound');
-const { isUsableName } = require('./helpers');
+const { isUsableName, resolveReminderWindowMin } = require('./helpers');
 const { alertOnce } = require('./admin-alerts');
 const { noteSendResult } = require('./channel-health');
 const logger = require('../lib/logger');
@@ -115,6 +115,23 @@ async function avisarRecordatorioBloqueado(orgId, record, motivo) {
     await alertOnce(orgId, `recordatorio|${record.id}|${record.fecha_cita}|${record.hora_cita || ''}|${motivo}`, mensaje);
 }
 
+// La ventana no se entiende → no sale ningún recordatorio de esa org, y lo sabe una persona.
+// Throttle por CLAVE Y VALOR: si Yulia corrige el campo y vuelve a equivocarse con otra cosa,
+// el aviso tiene que volver a salir. Si lo deja igual, no se repite cada cinco minutos.
+async function avisarVentanaInvalida(orgId, ventana) {
+    logger.error('recordatorio_config_invalida', {
+        orgId, clave: ventana.clave, valor: String(ventana.valor).slice(0, 40),
+    });
+    const mensaje =
+        '⚠️ <b>Recordatorios parados</b>\n\n'
+        + `El campo <b>${ventana.clave}</b> tiene el valor «${String(ventana.valor).slice(0, 40)}», `
+        + 'que no es un número.\n\n'
+        + `${ventana.mensaje}\n\n`
+        + 'Mientras siga así no sale ningún recordatorio de 24 h. Corrígelo en Configuración y '
+        + 'volverán a salir solos: las citas siguen pendientes, no se ha perdido ninguna.';
+    await alertOnce(orgId, `recordatorio_config|${ventana.clave}|${ventana.valor}`, mensaje);
+}
+
 /**
  * Envía el recordatorio por la vía que corresponda.
  *
@@ -197,11 +214,24 @@ async function checkAndSendReminders() {
             // `minutos_recordatorio`, Sante `horas_recordatorio`. Mirando solo la primera, el
             // 24 de Sante era una config muerta —funcionaba por el default de 1440— y
             // cambiarla no habría surtido ningún efecto.
+            //
+            // Y se VALIDA antes de usarla. Aquí había un `Number(...)` a pelo, y con un valor
+            // no numérico —«24 horas», «veinticuatro»— eso no daba un número corto: daba NaN,
+            // y `minutosRestantes > NaN` es false, o sea que la guarda de abajo dejaba de
+            // descartar nada. Un solo tic mandaba el recordatorio de TODAS las citas futuras
+            // de la org, las marcaba como enviadas, y el día de antes ya no salía ninguna.
+            // La consulta que las trae no acota por fecha: esa comparación es el único límite.
             const minutosDb = await getConfigValue(orgId, 'minutos_recordatorio');
             const horasDb   = minutosDb === null ? await getConfigValue(orgId, 'horas_recordatorio') : null;
-            const minutosAntes = minutosDb !== null ? Number(minutosDb)
-                               : horasDb !== null ? Number(horasDb) * 60
-                               : 1440;
+            const ventana = resolveReminderWindowMin({ minutos: minutosDb, horas: horasDb });
+            if (!ventana.ok) {
+                // No se manda NADA con una ventana que no se entiende: la alternativa es
+                // elegir por la dueña a cuántas clientas se escribe, y en la dirección mala.
+                // El barrido de auto-completar ya ha corrido arriba, así que eso no se pierde.
+                await avisarVentanaInvalida(orgId, ventana);
+                continue;
+            }
+            const minutosAntes = ventana.minutos;
 
             const agentCfg = await getAgentConfig(orgId);
             const info = agentCfg?.business_info || {};
