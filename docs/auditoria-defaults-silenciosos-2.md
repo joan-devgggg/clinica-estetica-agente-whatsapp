@@ -33,9 +33,9 @@ if (aiResponse.idioma_detectado && aiResponse.idioma_detectado !== session.langu
 }
 ```
 
-**El modelo omite el campo constantemente.** Medido sobre la corrida del arnés LLM del
-06/08/2026: **9 de 38 respuestas (24 %) llegan sin `idioma_detectado`**. Ejemplos literales del
-log:
+**El modelo omite el campo constantemente.** Medido sobre una corrida COMPLETA del arnés LLM
+(06/08/2026, 21 escenarios): **18 de 67 respuestas del modelo (27 %) llegan sin
+`idioma_detectado`**. Ejemplos literales del log:
 
 ```
 {"respuesta":"Genial, cabello medio. ¿Tienes estilista de confianza o prefieres…"}
