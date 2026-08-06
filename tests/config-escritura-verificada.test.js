@@ -32,14 +32,10 @@ process.on('unhandledRejection', (r) => { rechazosSinManejar.push(r); });
 
 // ─── Stubs ──────────────────────────────────────────────────────────────────────────────
 
-const telegramPath = require.resolve('../services/telegram');
-require.cache[telegramPath] = {
-    id: telegramPath, filename: telegramPath, loaded: true,
-    exports: {
-        notifyOrgAdmin: async () => true, notifyBlacklistAlert: async () => {},
-        startTelegramBot: () => {}, notifyEscalation: async () => {},
-    },
-};
+// telegram.js va REAL (el bloque D ejercita su handler), pero sin tocar la red: se le quita
+// el token para que `startTelegramBot` no arranque polling, y su `require('./db')` cae en el
+// db real que ya trabaja contra el Supabase falso de abajo.
+delete process.env.TELEGRAM_BOT_TOKEN;
 
 const logs = [];
 const loggerPath = require.resolve('../lib/logger');
@@ -242,6 +238,79 @@ test('C4 · CONTROL · con persist=false no se escribe nada (arranque y eco del 
     assert.strictEqual(upserts.length, 0, 'server.js y webhook.js lo llaman así a propósito');
     assert.strictEqual(bot.isBotActivo(SANTE_ORG), false);
     bot.setBotActivo(SANTE_ORG, true, false);
+});
+
+test('C5 · devuelve una promesa que RESUELVE a booleano y nunca rechaza', async () => {
+    reset();
+    // Es el contrato que permite las dos cosas a la vez: que Telegram pueda esperar el
+    // resultado y que server.js pueda ignorarlo sin tumbar el proceso.
+    assert.strictEqual(await bot.setBotActivo(SANTE_ORG, true, true), true, 'guardado → true');
+    assert.strictEqual(await bot.setBotActivo(SANTE_ORG, true, false), true, 'sin persistir → true (nada divergió)');
+
+    const real = db.setConfigValue;
+    db.setConfigValue = async () => { throw new Error('config: nada guardado'); };
+    try {
+        const r = bot.setBotActivo(SANTE_ORG, false, true);
+        assert.ok(r && typeof r.then === 'function', 'tiene que ser esperable');
+        await assert.doesNotReject(() => r, 'un rechazo aquí lo hereda quien no pueda esperarlo');
+        assert.strictEqual(await r, false, 'no guardado → false, no una excepción');
+    } finally {
+        db.setConfigValue = real;
+        bot.setBotActivo(SANTE_ORG, true, false);
+    }
+});
+
+// ─── D · Telegram: no decirle "Bot pausado" al admin sobre algo que no se guardó ─────────
+
+const telegram = require('../services/telegram');
+
+// Se cablea el `setBotActivo` real, igual que hace server.js al arrancar.
+telegram.startTelegramBot({ setBotActivo: bot.setBotActivo, getBotActivo: bot.isBotActivo });
+
+test('D1 · REGRESIÓN · si no se guardó, el admin NO lee "pausado" a secas', async () => {
+    reset();
+    const real = db.setConfigValue;
+    db.setConfigValue = async () => { throw new Error('config: nada guardado'); };
+    try {
+        const respuesta = await telegram._ejecutarAccion(SANTE_ORG, 'pause_bot', {}, null, null);
+        assert.ok(!/^⏸️ Bot de WhatsApp <b>pausado<\/b>/.test(respuesta),
+            `antes contestaba esto pasara lo que pasara: ${respuesta}`);
+        assert.ok(/no he podido guardarlo/i.test(respuesta), respuesta);
+        // Y tiene que decir la consecuencia REAL, que no es obvia: está pausado ahora, pero un
+        // reinicio lo revive. Sin eso el admin no sabe que hay que volver a intentarlo.
+        assert.ok(/reinicia/i.test(respuesta), `sin la consecuencia no es accionable: ${respuesta}`);
+        assert.ok(/pausado y no contesta/i.test(respuesta), 'y que ahora mismo SÍ está pausado');
+    } finally {
+        db.setConfigValue = real;
+    }
+});
+
+test('D2 · lo mismo al reactivar: si no se guardó, se dice', async () => {
+    reset();
+    const real = db.setConfigValue;
+    db.setConfigValue = async () => { throw new Error('config: nada guardado'); };
+    try {
+        const respuesta = await telegram._ejecutarAccion(SANTE_ORG, 'resume_bot', {}, null, null);
+        assert.ok(/no he podido guardarlo/i.test(respuesta), respuesta);
+        assert.ok(/quedar[ií]a pausado|volver[ií]a a quedarse pausado/i.test(respuesta),
+            `la consecuencia al reactivar es la contraria, y también hay que decirla: ${respuesta}`);
+    } finally {
+        db.setConfigValue = real;
+    }
+});
+
+test('D3 · CONTROL · cuando SÍ se guarda, el mensaje es el de siempre', async () => {
+    reset();
+    const pausa = await telegram._ejecutarAccion(SANTE_ORG, 'pause_bot', {}, null, null);
+    assert.strictEqual(pausa, '⏸️ Bot de WhatsApp <b>pausado</b> para tu negocio.');
+    assert.strictEqual(bot.isBotActivo(SANTE_ORG), false, 'y el bot está pausado de verdad');
+
+    const reanuda = await telegram._ejecutarAccion(SANTE_ORG, 'resume_bot', {}, null, null);
+    assert.strictEqual(reanuda, '▶️ Bot de WhatsApp <b>reactivado</b> para tu negocio.');
+    assert.strictEqual(bot.isBotActivo(SANTE_ORG), true);
+
+    assert.strictEqual(upserts.filter(u => u.payload.clave === 'bot_activo').length, 2,
+        'las dos veces se escribió de verdad: sin esto D1/D2 no demuestran nada');
 });
 
 (async () => {

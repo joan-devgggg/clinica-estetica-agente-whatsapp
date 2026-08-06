@@ -24,7 +24,14 @@ const telegramSessions = new Map();
 let _userToOrg = new Map(); // telegramUserId → orgId
 
 let getBotActivoFn = () => true;
-let setBotActivoFn = () => {};
+// Default deliberadamente PESIMISTA: sin cablear (server.js pasa el real en startTelegramBot),
+// el toggle no aplica nada ni guarda nada, así que devolver `true` haría que el admin leyera
+// "Bot pausado" sobre algo que no ha ocurrido en ningún sitio. Devolver `false` le hace leer
+// que no se ha podido guardar, que es lo más cercano a la verdad que se puede decir desde aquí.
+let setBotActivoFn = async (orgId) => {
+    logger.error('telegram_set_bot_activo_no_cableado', { orgId });
+    return false;
+};
 let _botInstance = null;
 let _isPolling = false;
 
@@ -435,13 +442,36 @@ async function ejecutarAccion(orgId, accion, datos, bot, chatId) {
                 `• Umbral VIP: ${esc(info.vip?.visitasParaSugerir ?? '?')} visitas`;
         }
 
+        // Pausar y reactivar se ESPERAN, y la respuesta depende de si quedó guardado.
+        //
+        // Antes se llamaba sin `await` y se contestaba "Bot pausado" pasara lo que pasara.
+        // `setBotActivo` aplica el estado en memoria siempre —el bot se calla al momento—,
+        // pero si el `upsert` en `config` falla, `server.js` recarga `bot_activo` al arrancar
+        // y **el primer reinicio revive el bot que el admin acababa de pausar**, con sus
+        // clientas recibiendo respuestas automáticas otra vez. Decirle "pausado" a secas es
+        // exactamente la clase de mentira que el resto del sistema ya no comete.
+        //
+        // `setBotActivo` resuelve a booleano y no rechaza nunca, así que este `await` no
+        // necesita try/catch: el fallo llega como `false`, no como excepción.
         case 'pause_bot': {
-            setBotActivoFn(orgId, false); // pausa SOLO la org de este admin
+            const guardado = await setBotActivoFn(orgId, false); // pausa SOLO la org de este admin
+            if (!guardado) {
+                return '⏸️ He pausado el bot, pero <b>no he podido guardarlo</b>.\n\n'
+                     + 'Ahora mismo está pausado y no contesta a nadie. Pero si el sistema se '
+                     + 'reinicia volverá a contestar solo, así que vuelve a pausarlo dentro de '
+                     + 'un rato para comprobar que esta vez se guarda.';
+            }
             return '⏸️ Bot de WhatsApp <b>pausado</b> para tu negocio.';
         }
 
         case 'resume_bot': {
-            setBotActivoFn(orgId, true);
+            const guardado = await setBotActivoFn(orgId, true);
+            if (!guardado) {
+                return '▶️ He reactivado el bot, pero <b>no he podido guardarlo</b>.\n\n'
+                     + 'Ahora mismo ya contesta. Pero si el sistema se reinicia volvería a '
+                     + 'quedarse pausado, así que vuelve a reactivarlo dentro de un rato para '
+                     + 'comprobar que esta vez se guarda.';
+            }
             return '▶️ Bot de WhatsApp <b>reactivado</b> para tu negocio.';
         }
 
@@ -592,4 +622,11 @@ function startTelegramBot(options = {}) {
     });
 }
 
-module.exports = { startTelegramBot, notifyBizumPending, notifyEscalation, notifyVipSuggestion, notifyBlacklistAlert, notifyOrgAdmin, initSendOnlyBot };
+module.exports = {
+    startTelegramBot, notifyBizumPending, notifyEscalation, notifyVipSuggestion,
+    notifyBlacklistAlert, notifyOrgAdmin, initSendOnlyBot,
+    // Expuesto para tests: el handler de acciones del admin, sin polling ni red. Lo usa
+    // tests/config-escritura-verificada.test.js para afirmar que pause_bot/resume_bot no
+    // anuncian un guardado que no ocurrió.
+    _ejecutarAccion: ejecutarAccion,
+};

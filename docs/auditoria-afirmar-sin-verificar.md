@@ -37,10 +37,25 @@ Red: `tests/config-escritura-verificada.test.js`, con un vigilante de `unhandled
 el propio test. Comprobado por mutación (quitar el `assertRowsAffected` tumba A1/A2/B1; quitar
 el `.catch()` tumba C1/C2).
 
-**Queda apuntado y NO tocado:** `telegram.js` llama a `setBotActivoFn(orgId, false)` y responde
-«Bot pausado» al admin sin poder saber si se guardó — `setBotActivo` no devuelve la promesa. Es
-la misma familia un piso más arriba y se arregla dejando que la devuelva y que el handler la
-espere; no se ha hecho por no ampliar el encargo.
+**El piso de arriba, `telegram.js` — ✅ ARREGLADO 06/08/2026.** El handler llamaba a
+`setBotActivoFn(orgId, false)` sin esperar y contestaba «⏸️ Bot pausado» pasara lo que pasara.
+Ahora `setBotActivo` **devuelve una promesa que resuelve a un booleano y nunca rechaza**, y esa
+forma rara es la que permite las dos cosas a la vez:
+
+- quien PUEDE esperar (Telegram) sabe si se guardó y responde en consecuencia;
+- quien NO puede (`server.js` al arrancar, `webhook.js` tras escribir el panel) la ignora sin
+  heredar un rechazo sin manejar, que tumbaría el proceso.
+
+Si no se guardó, el admin lee que el bot **está pausado ahora mismo pero un reinicio lo
+revive**, y que vuelva a intentarlo. Esa segunda frase es la que lo hace accionable: la
+consecuencia no es adivinable desde «no se ha podido guardar». El default de `setBotActivoFn`
+pasa a ser pesimista (`false` + log) por lo mismo — sin cablear no se aplica nada en ningún
+sitio, así que anunciar éxito sería mentir dos veces.
+
+`ejecutarAccion` se exporta como `_ejecutarAccion` para poder ejercitar el handler sin polling
+ni red. Red: bloques C5 y D de `tests/config-escritura-verificada.test.js`; comprobado por
+mutación (volver al fire-and-forget tumba D1; hacer que el fallo devuelva `true` tumba
+C2/C5/D1/D2).
 
 La familia que más daño ha hecho estos días: código que **dice que algo pasó sin comprobarlo**.
 Se buscan tres formas concretas — escrituras que devuelven éxito sin mirar el error o las filas

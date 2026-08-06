@@ -78,30 +78,40 @@ function isBotActivo(orgId) {
 }
 // persist=false → solo actualiza el estado en memoria (p.ej. al cargar config al
 // arrancar, o cuando el panel ya escribió en config antes de avisar al proceso).
+//
+// DEVUELVE una promesa que **resuelve a un booleano y NUNCA rechaza**: `true` si el estado
+// quedó también guardado en `config`, `false` si solo está en memoria. Esa forma rara tiene
+// dos motivos, y los dos son call sites reales:
+//
+//   · Quien PUEDE esperar (el handler de Telegram) necesita saber si se guardó, para no
+//     decirle al admin "Bot pausado" sobre una escritura que no ocurrió.
+//   · Quien NO puede (server.js al arrancar, webhook.js tras escribir el panel) la ignora, y
+//     una promesa que rechazara sin manejar tumbaría el proceso — o sea el bot de las dos
+//     orgs. Por eso el error se convierte aquí en `false` y no se propaga.
+//
+// El estado en MEMORIA se aplica SIEMPRE, guarde o no: que no se pueda apuntar no puede
+// impedir que el bot se calle ya, que es lo que se le ha pedido.
 function setBotActivo(orgId, v, persist = true) {
     _botActivoByOrg.set(orgId, !!v);
     // Al REACTIVAR limpiamos el throttle del aviso: si se vuelve a pausar, el siguiente
     // mensaje descartado debe avisar ya, no esperar a que caduque la ventana anterior.
     if (v) resetPauseAlert(orgId);
-    if (persist) {
-        const { setConfigValue } = require('./services/db');
-        // `setBotActivo` es SÍNCRONA y la llaman el handler de Telegram y el arranque, así que
-        // aquí no se puede esperar. Pero desde que `setConfigValue` lanza, dejarlo suelto sería
-        // un unhandled rejection —que en Node moderno tumba el proceso—, así que el catch no es
-        // cortesía: es obligatorio.
-        //
-        // Y va a nivel ERROR porque el fallo no es cosmético. El estado en MEMORIA queda como
-        // pidió Yulia (el bot calla ahora mismo), pero el de BD no, y `server.js` recarga
-        // `bot_activo` de `config` al arrancar: el primer reinicio o despliegue **revive el bot
-        // que ella había pausado** y vuelve a contestar a clientas que había silenciado. Sin
-        // esta traza, eso pasa sin dejar rastro de por qué.
-        setConfigValue(orgId, 'bot_activo', !!v).catch(e => {
+    if (!persist) return Promise.resolve(true);   // no había nada que guardar: nada divergió
+
+    const { setConfigValue } = require('./services/db');
+    return setConfigValue(orgId, 'bot_activo', !!v)
+        .then(() => true)
+        .catch(e => {
+            // Nivel ERROR porque el fallo no es cosmético: el estado en memoria queda como se
+            // pidió (el bot calla ahora mismo), pero el de BD no, y `server.js` recarga
+            // `bot_activo` de `config` al arrancar — el primer reinicio o despliegue **revive
+            // el bot que alguien había pausado** y vuelve a contestar a clientas silenciadas.
             logger.error('bot_activo_no_persistido', {
                 orgId, valor: !!v, error: e.message,
                 nota: 'queda aplicado en memoria; un reinicio lo revierte',
             });
+            return false;
         });
-    }
 }
 
 // ── Compatibilidad con la API "global" anterior (callers sin orgId). NO usar en
