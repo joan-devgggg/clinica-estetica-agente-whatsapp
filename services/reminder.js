@@ -132,6 +132,69 @@ async function avisarVentanaInvalida(orgId, ventana) {
     await alertOnce(orgId, `recordatorio_config|${ventana.clave}|${ventana.valor}`, mensaje);
 }
 
+// ─── Enviar y APUNTAR son dos cosas, y entre las dos cabe un recordatorio repetido ───────
+//
+// Gemelo exacto del hallazgo 🟠 3 de docs/auditoria-afirmar-sin-verificar.md, que se arregló
+// en las reseñas y quedó apuntado aquí. Con una diferencia que lo hacía MÁS silencioso:
+// `marcarRecordatorioSent` no lanzaba, devolvía `true` sin mirar nada. O sea que un marcado
+// perdido no abortaba nada —parecía ir bien— y el tic siguiente (5 min) volvía a encontrar la
+// cita pendiente y le mandaba OTRO recordatorio. Y otro. Sin un solo log.
+//
+// Ahora `marcarRecordatorioSent` lanza (assertRowsAffected), y aquí se aplica la misma regla
+// que en reseñas y en el registro de campañas: **después de un envío entregado, el marcado se
+// reintenta y su fallo NUNCA puede convertirse en un segundo envío.**
+//
+// La estructura es deliberadamente la misma que la de review.js —reintentos, memoria de lo
+// entregado-sin-apuntar, aviso— y no se ha factorizado a un módulo común: son dos identidades
+// distintas (contacto vs cita), dos textos distintos para Yulia y dos ritmos distintos. Igual
+// que `resolveChatId`, que ya vive duplicado en los dos ficheros por el mismo motivo.
+const REINTENTOS_MARCADO = 3;
+
+// `${orgId}|${contactId}` → { desde }. En RAM y a propósito: un reinicio la pierde y esa
+// clienta podría recibir un segundo recordatorio. Se asume porque persistirlo es escribir la
+// fila, que es justo lo que no se ha podido hacer.
+const enviadosSinMarcar = new Map();
+const claveMarcado = (orgId, contactId) => `${orgId}|${contactId}`;
+
+const MENSAJE_SIN_MARCAR = (nombre, telefono) =>
+    '⚠️ <b>Recordatorio enviado y sin apuntar</b>\n\n'
+    + `Le he mandado el recordatorio a ${nombre || 'una clienta'} (${telefono || 'sin teléfono'}) `
+    + 'y salió bien, pero no he podido dejar constancia en su ficha.\n\n'
+    + 'No se lo voy a volver a mandar. Si el problema sigue, márcalo a mano en el panel.';
+
+/**
+ * Marca `recordatorio_enviado` de un contacto cuyo mensaje YA salió. Nunca lanza.
+ *
+ * @returns {Promise<boolean>} true si quedó apuntado.
+ */
+async function marcarRecordatorioConReintentos(orgId, record) {
+    const clave = claveMarcado(orgId, record.id);
+    let ultimoError = null;
+
+    for (let intento = 0; intento < REINTENTOS_MARCADO; intento++) {
+        if (intento > 0) await new Promise(r => setTimeout(r, 200 * intento));
+        try {
+            await marcarRecordatorioSent(orgId, record.id);
+            enviadosSinMarcar.delete(clave);
+            return true;
+        } catch (e) {
+            ultimoError = e;
+        }
+    }
+
+    if (!enviadosSinMarcar.has(clave)) enviadosSinMarcar.set(clave, { desde: Date.now() });
+    logger.error('recordatorio_enviado_sin_registrar', {
+        orgId, contactId: record.id, telefono: record.telefono || null,
+        error: ultimoError?.message || null,
+    });
+    await alertOnce(orgId, `recordatorio_sin_marcar|${record.id}`,
+        MENSAJE_SIN_MARCAR(record.nombre, record.telefono));
+    return false;
+}
+
+/** Solo para tests: olvida lo entregado-sin-apuntar. */
+function _resetPendientesDeMarcar() { enviadosSinMarcar.clear(); }
+
 /**
  * Envía el recordatorio por la vía que corresponda.
  *
@@ -241,36 +304,61 @@ async function checkAndSendReminders() {
             const pendientes = await getAppointmentsPendientesRecordatorio(orgId);
 
             for (const record of pendientes) {
-                // Sin fecha no hay ventana que calcular, así que no hay nada que decidir ni
-                // de qué avisar. El teléfono, en cambio, YA NO se descarta aquí: saltárselo en
-                // silencio es precisamente cómo el contacto sin wa_phone (cita del 19/08) se
-                // quedaba sin recordatorio sin que nadie se enterara. Cae en motivoNoEnviable,
-                // después del filtro de ventana, para no avisar de citas que aún no tocan.
-                if (!record.fecha_cita) continue;
+                // El try va por CONTACTO, no por org. Estaba solo fuera del bucle: ahora que
+                // marcarRecordatorioSent lanza, un fallo suyo se habría llevado por delante a
+                // todas las clientas siguientes de esa org en ese tic, sin dejar rastro de
+                // cuáles. Es el mismo cambio que se le hizo al bucle de reseñas.
+                try {
+                    // Sin fecha no hay ventana que calcular, así que no hay nada que decidir ni
+                    // de qué avisar. El teléfono, en cambio, YA NO se descarta aquí: saltárselo en
+                    // silencio es precisamente cómo el contacto sin wa_phone (cita del 19/08) se
+                    // quedaba sin recordatorio sin que nadie se enterara. Cae en motivoNoEnviable,
+                    // después del filtro de ventana, para no avisar de citas que aún no tocan.
+                    if (!record.fecha_cita) continue;
 
-                const minutosRestantes = minutosHastaCita(record.fecha_cita, record.hora_cita);
-                if (minutosRestantes < 0 || minutosRestantes > minutosAntes) continue;
+                    const minutosRestantes = minutosHastaCita(record.fecha_cita, record.hora_cita);
+                    if (minutosRestantes < 0 || minutosRestantes > minutosAntes) continue;
 
-                // Si el recordatorio no puede salir BIEN, no sale: se avisa a una persona y
-                // se deja PENDIENTE. Clave: no se marca `recordatorio_enviado`, así que en
-                // cuanto le completen la ficha el siguiente tic lo manda solo — la puerta se
-                // reevalúa en cada pasada, no cierra la cita para siempre.
-                const motivo = motivoNoEnviable(record);
-                if (motivo) {
-                    await avisarRecordatorioBloqueado(orgId, record, motivo);
-                    continue;
+                    // Ya se le mandó y solo faltó apuntarlo: se reintenta el MARCADO, jamás el
+                    // envío. Sin esto la ficha sigue "pendiente" en BD y la clienta recibe el
+                    // recordatorio otra vez cada cinco minutos.
+                    if (enviadosSinMarcar.has(claveMarcado(orgId, record.id))) {
+                        await marcarRecordatorioConReintentos(orgId, record);
+                        continue;
+                    }
+
+                    // Si el recordatorio no puede salir BIEN, no sale: se avisa a una persona y
+                    // se deja PENDIENTE. Clave: no se marca `recordatorio_enviado`, así que en
+                    // cuanto le completen la ficha el siguiente tic lo manda solo — la puerta se
+                    // reevalúa en cada pasada, no cierra la cita para siempre.
+                    const motivo = motivoNoEnviable(record);
+                    if (motivo) {
+                        await avisarRecordatorioBloqueado(orgId, record, motivo);
+                        continue;
+                    }
+
+                    const mensaje = buildReminderMessage(record.nombre, companyName, record.hora_cita, record.language);
+                    const resultado = await sendReminderMessage(orgId, record, {
+                        mensaje,
+                        templateParams: [record.nombre, record.hora_cita],
+                    });
+
+                    if (resultado === 'enviado') {
+                        logger.info('recordatorio_enviado', { orgId, nombre: record.nombre, telefono: record.telefono, minutos_restantes: Math.round(minutosRestantes) });
+                        await marcarRecordatorioConReintentos(orgId, record);
+                    }
+                } catch (e) {
+                    logger.error('reminder_error_contacto', { orgId, contactId: record.id, error: e.message });
                 }
+            }
 
-                const mensaje = buildReminderMessage(record.nombre, companyName, record.hora_cita, record.language);
-                const resultado = await sendReminderMessage(orgId, record, {
-                    mensaje,
-                    templateParams: [record.nombre, record.hora_cita],
-                });
-
-                if (resultado === 'enviado') {
-                    await marcarRecordatorioSent(orgId, record.id);
-                    logger.info('recordatorio_enviado', { orgId, nombre: record.nombre, telefono: record.telefono, minutos_restantes: Math.round(minutosRestantes) });
-                }
+            // Poda: lo que ya no está pendiente en BD está apuntado (a mano o por un
+            // reintento), así que su entrada sobra. Sin esto el Map crece con fichas muertas
+            // en un proceso de vida larga.
+            const idsPendientes = new Set(pendientes.map(r => r.id));
+            for (const clave of enviadosSinMarcar.keys()) {
+                const [org, contactId] = clave.split('|');
+                if (org === orgId && !idsPendientes.has(contactId)) enviadosSinMarcar.delete(clave);
             }
         } catch (e) {
             logger.error('reminder_error_org', { orgId, error: e.message });
@@ -295,4 +383,5 @@ module.exports = {
     startReminderWorker, buildReminderMessage, checkAndSendReminders, setClients,
     // Expuestos para los tests de la puerta de calidad (tests/recordatorio-sin-nombre.test.js).
     motivoNoEnviable,
+    _resetPendientesDeMarcar,
 };

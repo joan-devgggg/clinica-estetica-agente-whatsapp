@@ -521,13 +521,22 @@ async function marcarCitaCompletada(orgId, telefono) {
     return true;
 }
 
+// Devolvía `true` sin mirar el error NI cuántas filas tocó, y esa es la parte que hace daño:
+// el mensaje ya ha salido al móvil de la clienta y `recordatorio_enviado` se queda en false,
+// así que el tic siguiente (5 min) la vuelve a encontrar pendiente y le manda OTRO
+// recordatorio. Y otro. Sin un solo log, porque nada lo detectaba.
+//
+// Con assertRowsAffected el fallo por fin existe, y quien llama puede reintentarlo en vez de
+// reenviar (ver `marcarRecordatorioConReintentos` en reminder.js). Requiere `.select('id')`.
 async function marcarRecordatorioSent(orgId, id) {
     const oid = resolveOrg(orgId);
-    await supabase
+    const { data, error } = await supabase
         .from('contacts')
         .update({ recordatorio_enviado: true, updated_at: now() })
         .eq('id', id)
-        .eq('organization_id', oid);
+        .eq('organization_id', oid)
+        .select('id');
+    assertRowsAffected(error, data, 'contacts', 'marcar recordatorio_enviado=true');
     return true;
 }
 

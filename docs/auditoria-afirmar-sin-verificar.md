@@ -13,8 +13,13 @@
 | 🟡 5 | El `catch` mudo de campañas | `9778f63` (de paso con el 2) |
 | 🟡 6 | `noteSendResult` sin esperar | `2f5d298` |
 
-Lo único que queda apuntado y NO tocado es el gemelo del punto 3 en `reminder.js` (ver ahí):
-mismo agujero, otro worker, fuera del alcance de esta auditoría.
+El gemelo del punto 3 en `reminder.js`, que quedó apuntado y fuera del alcance, **también está
+arreglado** (06/08/2026, `1e94a37` — ver el párrafo al final del punto 3).
+
+Lo que sigue vivo, de la misma familia y sin tocar: **`setConfigValue` (`db.js:588`) hace el
+`upsert` sin mirar el error** y devuelve `true` igual, así que el panel puede decir «guardado»
+sobre una escritura que no ocurrió. Arreglarlo obliga a tocar el call site de `bot.js:88`, que
+llama sin `await` ni `catch` y se comería un throw como rechazo sin manejar.
 
 La familia que más daño ha hecho estos días: código que **dice que algo pasó sin comprobarlo**.
 Se buscan tres formas concretas — escrituras que devuelven éxito sin mirar el error o las filas
@@ -124,9 +129,22 @@ vive en RAM, así que un reinicio entre el envío y el marcado permite una segun
 asume porque la alternativa —persistirlo— es escribir la fila, que es justo lo que no se ha
 podido hacer.
 
-**Mismo agujero, sin tocar:** `reminder.js:239` marca con `marcarRecordatorioSent` dentro de un
-`try` de nivel org. Un recordatorio entregado y no marcado se reenvía cada 5 min igual. No
-entraba en el alcance de esta auditoría (que era reseñas/campañas/facturación); queda apuntado.
+**El gemelo de `reminder.js` — ✅ ARREGLADO 06/08/2026.** Quedaba apuntado aquí y era **más
+silencioso** que el original: `marcarRecordatorioSent` no lanzaba, hacía el UPDATE y devolvía
+`true` sin mirar el error ni cuántas filas tocó. O sea que un marcado perdido no abortaba nada
+—parecía ir bien— y el tic siguiente encontraba la ficha pendiente y le mandaba OTRO
+recordatorio. Y otro. Sin un solo log, porque nada lo detectaba.
+
+Dos piezas: `marcarRecordatorioSent` pasa a verificar con `assertRowsAffected` (ahora el fallo
+existe), y `reminder.js` recibe el mismo tratamiento que las reseñas — reintentos, memoria en
+RAM de lo entregado-sin-apuntar para reintentar el MARCADO en vez de reenviar, `alertOnce`, y
+el `try/catch` bajado al nivel del contacto. La estructura se ha duplicado a propósito en vez
+de factorizarla: son dos identidades (contacto vs cita), dos textos para Yulia y dos ritmos,
+igual que `resolveChatId`, que ya vivía duplicado en los dos ficheros.
+
+Red: `tests/recordatorio-no-se-repite.test.js`. Comprobado por mutación — con una salvedad que
+el propio fichero documenta: el `try/catch` por contacto no lo distingue ningún test hoy,
+porque el helper de reintentos no lanza nunca. Es cinturón sobre tirantes, no código medido.
 
 ---
 
