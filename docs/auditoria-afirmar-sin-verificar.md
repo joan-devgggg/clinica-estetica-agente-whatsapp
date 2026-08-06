@@ -14,7 +14,7 @@
 | 🟡 6 | `noteSendResult` sin esperar | `2f5d298` |
 
 El gemelo del punto 3 en `reminder.js`, que quedó apuntado y fuera del alcance, **también está
-arreglado** (06/08/2026, `1e94a37` — ver el párrafo al final del punto 3).
+arreglado** (06/08/2026, ver el párrafo al final del punto 3).
 
 Lo que sigue vivo, de la misma familia y sin tocar: **`setConfigValue` (`db.js:588`) hace el
 `upsert` sin mirar el error** y devuelve `true` igual, así que el panel puede decir «guardado»
