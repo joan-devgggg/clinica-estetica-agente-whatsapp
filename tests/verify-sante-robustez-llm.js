@@ -477,18 +477,66 @@ async function turno(c, texto) {
         }
     });
 
+    // Este check tampoco mira cómo redacta el modelo — misma corrección que se le hizo al
+    // escenario 3, y por el mismo motivo. Exigía una hora concreta (`\d{1,2}:\d{2}`) en la
+    // respuesta y degradaba ~1 de cada 3 corridas con el bot haciendo lo correcto: el modelo
+    // propone a veces el DÍA primero ("mañana viernes, ¿te va bien?") con los huecos ya
+    // cargados en la sesión. Eso es conducta buena y salía en rojo. Y al revés: la expresión
+    // casaba cualquier "10:00" del texto, incluida una hora que el modelo se inventara sin
+    // haber consultado la agenda — que es EXACTAMENTE el fallo de Eva, contado con otras
+    // palabras.
+    //
+    // Lo que se afirma es el ESTADO: que el motor de huecos se consultó de verdad y trajo
+    // huecos reales para el servicio que la clienta pidió. `availableSlots` sale de
+    // `loadAvailableSlots` y no puede fabricarlo la prosa del modelo.
+    //
+    // Se mira el MÁXIMO visto a lo largo de la conversación, no el estado final: reservar o
+    // reiniciar el flujo vacía `availableSlots`, y llegar a proponer huecos y luego pasar de
+    // turno no puede leerse como no haberlos tenido nunca.
     await escenario('REPRO sesión real de Eva (27/07)', async (c, rec) => {
-        await turno(c, 'Hola');
-        await turno(c, 'Quiero reservar cita');
-        await turno(c, 'No se exactamente lo que quiero');
-        await turno(c, 'Quiero hacerme mechas');
-        await turno(c, 'Clasicas');
-        await turno(c, 'Cabeza completa');
-        const r = await turno(c, 'El mas cercano');
+        const sesion = () => bot._internals.getSession(ORG, c.phone) || {};
+        let maxHuecos = 0, servicio = null, causaCero = null, dbError = false;
+        const observa = () => {
+            const s = sesion();
+            maxHuecos = Math.max(maxHuecos, (s.availableSlots || []).length);
+            if (s.selectedService) servicio = s.selectedService;
+            if (s.slotsCausaCero) causaCero = s.slotsCausaCero;
+            if (s.slotsDbError) dbError = true;
+        };
+
+        for (const t of ['Hola', 'Quiero reservar cita', 'No se exactamente lo que quiero',
+            'Quiero hacerme mechas', 'Clasicas', 'Cabeza completa']) {
+            await turno(c, t); observa();
+        }
+        let r = await turno(c, 'El mas cercano');
+        observa();
         if (r.vacio) return rec('SILENCIO');
-        if (/problema t[eé]cnico/i.test(r.txt)) rec('DEGRADADO', 'reproduce el fallo original');
-        else if ((r.txt.match(/\b\d{1,2}:\d{2}\b/g) || []).length > 0) rec('OK', 'propone huecos reales');
-        else rec('DEGRADADO', r.txt.slice(0, 90));
+
+        // Si en vez de horas contesta con el día o pide confirmación, se le sigue la
+        // conversación en vez de darlo por fallido: lo que se busca es si LLEGA a la agenda.
+        for (const t of ['Sí, me va bien', 'El primero que tengas']) {
+            if (maxHuecos > 0 || /problema t[eé]cnico/i.test(c.fullText())) break;
+            r = await turno(c, t); observa();
+            if (r.vacio) return rec('SILENCIO', 'se calló a mitad de la propuesta');
+        }
+
+        // El fallo original de Eva, y sigue midiéndose sobre el TEXTO a propósito: aquí las
+        // palabras SON el daño — la clienta lee una avería que no existe.
+        if (/problema t[eé]cnico|huecos cargados|pasar tu solicitud/i.test(c.fullText())) {
+            return rec('DEGRADADO', 'reproduce el fallo original: anuncia avería');
+        }
+        if (dbError) return rec('DEGRADADO', 'la lectura de la agenda falló (slotsDbError)');
+        if (maxHuecos > 0) {
+            return rec('OK', `${maxHuecos} huecos reales cargados${servicio ? ` · ${servicio.nombre}` : ''}`);
+        }
+        // Cero huecos: la nota tiene que decir POR QUÉ, o el rojo no se puede leer.
+        if (!servicio) {
+            return rec('DEGRADADO', `el servicio no aterrizó en la sesión: "${r.txt.slice(0, 60)}"`);
+        }
+        if (causaCero) {
+            return rec('DEGRADADO', `motor consultado y 0 huecos (${causaCero}) con la agenda sintética 10-19`);
+        }
+        rec('DEGRADADO', `nunca llegó a consultar la agenda: "${r.txt.slice(0, 70)}"`);
     });
 
     // El caso del 02/08/2026: la clienta abre preguntando por un servicio (no "quiero cita"),

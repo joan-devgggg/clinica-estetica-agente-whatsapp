@@ -418,27 +418,43 @@ test, no del sistema: 3 horarios copiados de la migración y un plural — ver a
 ### `verify:robustez:llm` — línea base y cómo leer un DEGRADADO
 
 Este llama al LLM de verdad, así que **no es determinista y su línea base es un rango**, no una
-cifra. Medida el **06/08/2026, después de arreglar balayage** (ver abajo), tres corridas
-seguidas del MISMO código:
+cifra. Medida el **06/08/2026, después de arreglar balayage y de reescribir el check del esc.
+15** (los dos, abajo), tres corridas seguidas del MISMO código:
 
 | | 1ª | 2ª | 3ª |
 |---|---|---|---|
-| OK | 20 | 20 | 20 |
-| DEGRADADO | 1 (esc. 15) | 1 (esc. 15) | 1 (esc. 15) |
+| OK | 21 | 21 | 21 |
+| DEGRADADO | 0 | 0 | 0 |
 | SILENCIO · BUCLE · ERROR · BUG | 0 | 0 | 0 |
 
-El **escenario 3 sale en verde las tres veces**, con el mismo resultado exacto
-(`Mechas Balayage · Cabello medio (190 €)`). Antes del arreglo degradaba 2 de cada 3.
+Los escenarios **3 y 15 salen en verde las tres veces**, con el mismo resultado exacto
+(`Mechas Balayage · Cabello medio (190 €)` y `20 huecos reales cargados · Mechas 3`). Antes de
+sus arreglos, el 3 degradaba 2 de cada 3 y el 15 ~1 de cada 3.
 
 Las tres corridas salieron con **cero** mensajes `"Perdona, no he podido procesar tu mensaje"`,
 que es lo que hace válida la medición: el proveedor estuvo en pie de principio a fin (ver el
 párrafo de la TANDA, más abajo — el 05/08 hubo tres corridas que hubo que tirar por un 402).
 
-**El esc. 15 NO es una regresión** y conviene no perseguirlo: aislado (`-- 15`) degrada ~1 de
-cada 3 **igual con el arreglo de balayage que sin él** — comprobado con 3+3 corridas. Su check
-exige una hora concreta (`\d{1,2}:\d{2}`) en la respuesta, y el modelo a veces propone primero
-el día ("mañana viernes, ¿te va bien?"), que es conducta correcta. Es la MISMA debilidad que
-tenía el check del esc. 3 antes de cambiarlo: mide redacción, no estado.
+**Esc. 15 («REPRO Eva») — su DEGRADADO era del check, igual que el del 3.** Exigía una hora
+concreta (`\d{1,2}:\d{2}`) en la respuesta, y eso fallaba por los dos lados: el modelo propone
+a veces el día primero ("mañana viernes, ¿te va bien?") con los huecos **ya cargados** —
+conducta correcta marcada en rojo—, y al revés, cualquier hora que el modelo se inventara sin
+haber consultado la agenda pasaba por buena, que es literalmente el fallo de Eva contado con
+otras palabras. Reescrito el 06/08/2026 para afirmar el ESTADO: que `session.availableSlots`
+llegó a tener huecos reales para el servicio pedido. Eso sale de `loadAvailableSlots` y la
+prosa del modelo no puede fabricarlo. Se mira el MÁXIMO visto en la conversación, no el estado
+final, porque reservar vacía `availableSlots`.
+
+> **Lo que estas tres corridas NO demuestran, y conviene no leerlo de más:** en las tres el
+> modelo listó horas en el texto, así que **el check viejo también habría pasado**. O sea que
+> no son la prueba de que la varianza se acabó — el camino que fallaba no se dio. Lo que sí
+> está garantizado por construcción es que la redacción ya no decide el veredicto en ninguna
+> de las dos direcciones. Si el 15 vuelve a degradar, la nota dirá cuál de los cuatro motivos
+> reales fue (servicio sin aterrizar, agenda nunca consultada, 0 huecos con causa, o avería
+> anunciada) y eso **sí** habrá que perseguirlo.
+>
+> El check de avería (`problema técnico`) sigue midiéndose sobre el TEXTO a propósito: ahí las
+> palabras SON el daño, porque la clienta lee una avería que no existe.
 
 **Lo que se compara es la fila de abajo.** `BUG`, `SILENCIO`, `BUCLE` y `ERROR` a 0 son el
 invariante duro: cualquiera de ellos por encima de 0 es un hallazgo, siempre. **Un DEGRADADO
