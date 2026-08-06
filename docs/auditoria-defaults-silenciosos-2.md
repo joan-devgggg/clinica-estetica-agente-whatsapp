@@ -16,7 +16,7 @@ Ordenado por gravedad. Cada hallazgo dice si **está disparando hoy** o es un ca
 
 ---
 
-## 🔴 1 · El idioma que el modelo NO dijo se guarda como OBSERVADO
+## 🔴 1 · El idioma que el modelo NO dijo se guarda como OBSERVADO — ✅ ARREGLADO 06/08/2026
 
 **IDIOMA** · [`openai.js:1092`](../services/providers/openai.js) → [`bot.js:4555`](../bot.js)
 
@@ -69,6 +69,39 @@ en absoluto, el objeto afirma haber detectado español. No llega a escribirse po
 corta antes (`if (!aiResponse?.respuesta || aiResponse._isFallback) { … return; }`) y sustituye
 la respuesta entera. Es un default muerto **que solo está muerto por un `return`**: si ese
 camino cambiara, se escribiría como observado un idioma que nadie miró.
+
+---
+
+**Arreglo (06/08/2026).** El campo ausente pasa a `null`, que es la respuesta honesta: el
+modelo no lo ha dicho, así que no se sabe, así que no se toca la ficha. Los dos sitios —la
+normalización de la respuesta buena y el objeto de fallback— y también un valor **fuera** de
+`IDIOMAS_SOPORTADOS`, que tampoco es una observación utilizable (se usaría como clave contra
+`config.plantilla_*` y contra los diccionarios de texto, donde caería otra vez en español pero
+ya marcado como sabido). Y la comprobación se repite en `bot.js`, que es quien pone
+`languageSource = 'observed'`: `updateContactLanguage` solo protege la FICHA, y sin esto la
+SESIÓN se quedaba con el valor raro y con la marca de fiable, divergiendo en silencio.
+
+Red: `tests/idioma-no-fabricado.test.js` — conducta real de `getChatbotResponse` con el SDK de
+OpenRouter stubeado (se controla el JSON crudo que "devuelve" el modelo), cable trampa sobre el
+sitio de `bot.js` que marca `'observed'`, y el último eslabón (`updateContactLanguage` no
+escribe nada ante null/vacío/no soportado). Comprobado por mutación.
+
+**Fichas a degradar: NINGUNA.** La fabricación solo podía producir `'es'`, así que la firma es
+`language = 'es' AND metadata->>'language_source' = 'observed'` — y hoy **no existe ninguna
+fila así**. Los cuatro `observed` que hay son tres `ru` (prefijos 380, ucranianos) y un `en`
+(prefijo 33), y ninguno de esos valores puede salir de la fabricación. Re-comprobable con:
+
+```sql
+select id, wa_phone, full_name, language, metadata->>'language_source' as fuente
+from contacts
+where language = 'es' and metadata->>'language_source' = 'observed';
+```
+
+> **Corrección a la primera versión de este documento**, que decía «1 contacto en `es`/`observed`»
+> y lo daba a entender como clienta real. Esa fila **era del arnés**: la auditoría se midió
+> mientras corría `verify:robustez:llm`, cuyas conversaciones son en español y cuyo `cleanup`
+> la borró al terminar. Con el arnés parado, el recuento real es cero. El número de la tabla de
+> `language_source` de CLAUDE.md (3 observados sobre 721) es el bueno.
 
 ---
 

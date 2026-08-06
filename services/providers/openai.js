@@ -3,7 +3,7 @@ require('dotenv').config();
 const config = require('../../config.json');
 const db = require('../db');
 const { getOrgType } = require('../org-registry');
-const { normalizeText, classifyLargoVariant, hasApellido, isReactiveOnlyCategory, offerableCatalog } = require('../helpers');
+const { normalizeText, classifyLargoVariant, hasApellido, isReactiveOnlyCategory, offerableCatalog, IDIOMAS_SOPORTADOS } = require('../helpers');
 // Observador de la salud del proveedor del modelo. No decide nada del flujo: solo cuenta.
 // summarizeHistory NO se instrumenta — no recibe orgId, y que falle un resumen no le llega
 // a ninguna clienta. El embudo que importa es este.
@@ -960,7 +960,12 @@ function getFallbackResponse(orgId, language) {
         return {
             ...base,
             cita_confirmada: false,
-            idioma_detectado: language || 'es',
+            // Mismo principio que en la normalización de la respuesta buena, y aquí es más
+            // evidente: esto se monta cuando el LLM NO ha contestado. Afirmar «he detectado
+            // español» sobre una llamada que falló es la definición del problema. Hoy no
+            // llega a escribirse porque bot.js corta antes con su `return` de fallback, pero
+            // era un default vivo colgando de que ese `return` no cambie nunca.
+            idioma_detectado: IDIOMAS_SOPORTADOS.includes(language) ? language : null,
             datos: { nombre: null, servicio: null, categoria_servicio: null, estilista_preferida: null, fecha_cita: null, hora_cita: null, upselling_aceptado: [], notas: null },
         };
     }
@@ -1089,7 +1094,33 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
         const datosBase = { nombre: null, servicio: null, categoria_servicio: null, estilista_preferida: null, fecha_cita: null, hora_cita: null, upselling_aceptado: [], notas: null };
         parsed.datos = { ...datosBase, ...(parsed.datos || {}) };
         parsed.cita_confirmada = !!parsed.cita_confirmada;
-        parsed.idioma_detectado = parsed.idioma_detectado || 'es';
+        // ── El idioma NO se fabrica ──────────────────────────────────────────────────────
+        //
+        // Aquí ponía `parsed.idioma_detectado || 'es'`, y eso convertía «el modelo no ha
+        // dicho nada del idioma» en «el modelo ha detectado español». El campo se omite
+        // MUCHO: 18 de 67 respuestas (27 %) en una corrida completa del arnés del
+        // 06/08/2026, con el modelo contestando solo `{"respuesta": "..."}`.
+        //
+        // Y no se quedaba aquí: `bot.js` escribe este valor en la ficha marcándolo
+        // **'observed'**, que es la etiqueta reservada a lo que sí se ha leído del mensaje
+        // real. Como la condición de allí es `idioma_detectado !== session.language`, el caso
+        // que disparaba era justo el peor: una clienta YA marcada en otro idioma. Un turno
+        // así y una de las 184 fichas en ruso pasaba a español —y con ella el recordatorio,
+        // la reseña y la plantilla de campaña—, marcada como dato de fiar.
+        //
+        // `null` es la respuesta honesta: el modelo no lo ha dicho, así que no se sabe, así
+        // que no se toca nada. bot.js ya ignora el campo cuando viene vacío.
+        //
+        // Un valor FUERA de los cuatro soportados tampoco es una observación utilizable: se
+        // usaría como clave contra `config.plantilla_*` y contra los diccionarios de texto,
+        // donde caería otra vez en español pero ya marcado como sabido. `updateContactLanguage`
+        // lo rechaza al llegar a la BD; aquí se corta antes para que tampoco entre en sesión.
+        if (parsed.idioma_detectado && !IDIOMAS_SOPORTADOS.includes(parsed.idioma_detectado)) {
+            logger.warn('idioma_detectado_no_soportado', { orgId, valor: String(parsed.idioma_detectado).slice(0, 20) });
+        }
+        parsed.idioma_detectado = IDIOMAS_SOPORTADOS.includes(parsed.idioma_detectado)
+            ? parsed.idioma_detectado
+            : null;
         // Normalize: salon uses cita_confirmada, map to reserva_confirmada for bot.js compatibility
         parsed.reserva_confirmada = parsed.cita_confirmada;
     } else {
