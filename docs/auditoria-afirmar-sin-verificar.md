@@ -1,6 +1,20 @@
 # Auditoría: "afirmar sin verificar" — reseñas, campañas y facturación
 
-**Fecha:** 05/08/2026 · **Alcance:** solo informe. Nada arreglado, nada tocado.
+**Fecha:** 05/08/2026 · **Alcance original:** solo informe.
+**Estado a 06/08/2026: los seis hallazgos arreglados.** Cada uno lleva su párrafo de
+«Arreglo» al final de su sección; el orden de ejecución fue el que se proponía abajo.
+
+| | Hallazgo | Commit |
+|---|---|---|
+| 🔴 1 | El botón "enviar reseña" no envía nada | `d885dfb` |
+| 🔴 2 | Una campaña entregada contada como fallida y reenviada | `9778f63` |
+| 🟠 3 | Una reseña enviada y sin marcar se repite cada 5 min | `85a9c4c` |
+| 🟠 4 | El sellado del importe falla en silencio | `e91e949` |
+| 🟡 5 | El `catch` mudo de campañas | `9778f63` (de paso con el 2) |
+| 🟡 6 | `noteSendResult` sin esperar | `2f5d298` |
+
+Lo único que queda apuntado y NO tocado es el gemelo del punto 3 en `reminder.js` (ver ahí):
+mismo agujero, otro worker, fuera del alcance de esta auditoría.
 
 La familia que más daño ha hecho estos días: código que **dice que algo pasó sin comprobarlo**.
 Se buscan tres formas concretas — escrituras que devuelven éxito sin mirar el error o las filas
@@ -160,7 +174,7 @@ mismo momento en que la cita entra en la facturación".
 
 ---
 
-## 🟡 5 · El único `catch` completamente mudo de los tres flujos
+## 🟡 5 · El único `catch` completamente mudo de los tres flujos — ✅ ARREGLADO 05/08/2026
 
 **CAMPAÑAS** · [`broadcast.js:212`](../services/broadcast.js)
 
@@ -174,6 +188,9 @@ Sin log, sin contador, sin nada. Si falla el registro del fallo, el claim se que
 `pending` y `resetStaleBroadcastClaims` lo liberará por caducidad — o sea que el
 comportamiento se recupera solo. Pero se pierde el único rastro de que la contabilidad de la
 campaña se rompió, y este es justo el sitio donde ya sabemos que algo va mal.
+
+**Arreglo:** cayó de paso con el punto 2 (`9778f63`). Ahora es un `try/catch` con
+`campana_registro_fallo_no_guardado`.
 
 ---
 
