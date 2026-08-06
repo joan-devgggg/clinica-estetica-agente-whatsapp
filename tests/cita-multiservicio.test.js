@@ -162,8 +162,10 @@ const callsTo = (table, op) => mock.calls.filter(c => c.table === table && c.op 
             return { data: null, error: null };
         });
 
-        const n = await db.stampBillingSnapshot(ORG, ['apt-1']);
-        assert.strictEqual(n, 1);
+        // Devuelve el desglose, no un número: "sellé 1 de 1" y "sellé 1 de 10" tenían que
+        // dejar de ser el mismo valor de retorno (auditoría "afirmar sin verificar", 🟠 4).
+        const r = await db.stampBillingSnapshot(ORG, ['apt-1']);
+        assert.deepStrictEqual(r, { intentadas: 1, selladas: 1, fallidas: 0 });
         const p = callsTo('appointments', 'update')[0].payload;
         assert.strictEqual(p.precio_facturado, 285);
         assert.strictEqual(p.stylist_name_facturado, 'Irina');

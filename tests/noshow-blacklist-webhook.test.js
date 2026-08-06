@@ -38,7 +38,7 @@ db.setBlacklist = async (orgId, contactId, reason) => { blacklistCalls.push({ or
 // del contacto (que es la que lee reminder.js). Sin estos dos stubs irían a Supabase real.
 db.getAppointmentById = async (orgId, id) => ({ id, contact_id: 'c1', status: 'confirmed' });
 db.updateLeadById = async (orgId, contactId, campos) => { syncCalls.push({ contactId, campos }); return { id: contactId }; };
-db.stampBillingSnapshot = async () => 1;
+db.stampBillingSnapshot = async () => ({ intentadas: 1, selladas: 1, fallidas: 0 });
 
 function put(server, id, body) {
     const { port } = server.address();

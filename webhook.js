@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const db = require('./services/db');
 const config = require('./config.json');
 const { notifyBlacklistAlert } = require('./services/telegram');
+const { alertOnce } = require('./services/admin-alerts');
 const logger = require('./lib/logger');
 
 const DEFAULT_ORG = process.env.ORGANIZATION_ID || 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
@@ -487,10 +488,21 @@ app.put('/api/citas/:id', async (req, res) => {
             // un 500 en una petición cuyo UPDATE de la cita YA tuvo éxito. Se aísla para que
             // el panel siga viendo el 200 que le corresponde; el fallo queda en los logs.
             // Congelar el importe: la cita acaba de entrar en la facturación.
+            // No propaga (el UPDATE de la cita ya tuvo éxito y el panel merece su 200), pero
+            // tampoco se queda en un log: sin snapshot, el informe recalcula con los precios
+            // de hoy y una subida de tarifa reescribiría un periodo cerrado sin dejar rastro.
+            // El aviso de "selladas 0 de N" lo manda stampBillingSnapshot; aquí se cubre el
+            // caso en que ni siquiera llegó a intentarlo.
             try {
                 await db.stampBillingSnapshot(orgId, [apt.id]);
             } catch (e) {
                 logger.error('error_snapshot_facturacion', { orgId, citaId: apt.id, error: e.message });
+                await alertOnce(orgId, `snapshot_facturacion|${new Date().toISOString().slice(0, 10)}`,
+                    '⚠️ <b>Importes sin congelar</b>\n\n'
+                    + 'Al marcar una cita como completada no he podido guardar su importe.\n\n'
+                    + 'La cita está bien y el informe sigue saliendo, pero calculado con los '
+                    + 'precios de HOY: si alguien cambia una tarifa, ese periodo cambiará con ella.\n\n'
+                    + `Detalle técnico: ${e.message}`).catch(() => {});
             }
             try {
                 const visitCount = await db.incrementVisitCount(orgId, apt.contact_id);

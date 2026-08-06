@@ -1425,9 +1425,15 @@ async function getCompletedAppointmentsForBilling(orgId, desde, hasta, stylistId
 // No pisa un snapshot existente (facturado_at != null): completar dos veces no revaloriza.
 // Si el servicio no es calculable (nombre ambiguo, sin precio, sin match) NO se inventa nada:
 // precio_facturado se queda a null y el informe la sigue contando como "sin poder calcular".
+//
+// DEVUELVE {intentadas, selladas, fallidas}, no un número suelto. Devolvía `n` y los dos
+// llamadores lo tiraban, así que "sellé 10 de 10" y "sellé 1 de 10" eran indistinguibles: la
+// diferencia solo existía en un logger.error por fila que nadie lee. Ahora la propia función
+// avisa a una persona cuando alguna fila se queda sin sellar (ver avisarSnapshotIncompleto).
 async function stampBillingSnapshot(orgId, appointmentIds, { ivaRate = 0.21 } = {}) {
+    const nada = { intentadas: 0, selladas: 0, fallidas: 0 };
     const ids = (appointmentIds || []).filter(Boolean);
-    if (!ids.length) return 0;
+    if (!ids.length) return nada;
     const oid = resolveOrg(orgId);
 
     const { data: citas, error } = await supabase
@@ -1437,12 +1443,14 @@ async function stampBillingSnapshot(orgId, appointmentIds, { ivaRate = 0.21 } = 
         .in('id', ids)
         .is('facturado_at', null);
     assertRead(error, 'appointments');
-    if (!citas?.length) return 0;
+    if (!citas?.length) return nada;
 
     const cfg = await getAgentConfig(oid);
     const catalogo = cfg?.services || [];
     const sellado = now();
     let n = 0;
+    let fallidas = 0;
+    let ultimoError = null;
 
     for (const cita of citas) {
         const { totalConIva, segments } = computeServiceBilling(cita.service, catalogo);
@@ -1463,13 +1471,51 @@ async function stampBillingSnapshot(orgId, appointmentIds, { ivaRate = 0.21 } = 
             .eq('organization_id', oid);
         if (errUpd) {
             // No se propaga: el snapshot es un extra sobre una cita que YA está completada.
-            // Sin él el informe recalcula como siempre, así que perderlo no rompe nada.
+            // Sin él el informe recalcula como siempre, así que perderlo no rompe nada HOY —
+            // pero es exactamente el escenario contra el que existe el snapshot, así que se
+            // cuenta y se cuenta hacia arriba.
             logger.error('db_write_error', { tabla: 'appointments', op: 'stampBillingSnapshot', error: errUpd.message, code: errUpd.code });
+            fallidas++;
+            ultimoError = errUpd.message;
             continue;
         }
         n++;
     }
-    return n;
+
+    if (fallidas) {
+        logger.error('snapshot_facturacion_incompleto', {
+            orgId: oid, intentadas: citas.length, selladas: n, fallidas, error: ultimoError,
+        });
+        await avisarSnapshotIncompleto(oid, { intentadas: citas.length, selladas: n, error: ultimoError });
+    }
+    return { intentadas: citas.length, selladas: n, fallidas };
+}
+
+// El único aviso al admin que sale de la capa de datos, y sale porque el fallo que describe
+// es invisible por cualquier otro camino: la cita queda `completed`, el panel enseña un 200,
+// el informe recalcula desde el catálogo y todo parece normal. Si alguien sube un precio
+// antes de que nadie mire, ese periodo cerrado se factura al precio nuevo y no queda ni
+// rastro de que el importe bueno se perdió.
+//
+// El require es PEREZOSO a propósito: admin-alerts arrastra telegram.js, que requiere este
+// mismo módulo. Cargarlo arriba cerraría el ciclo y telegram.js se quedaría con las funciones
+// de db a medio definir. Dentro de la rama de fallo el ciclo ya está resuelto.
+async function avisarSnapshotIncompleto(orgId, { intentadas, selladas, error }) {
+    try {
+        const { alertOnce } = require('./admin-alerts');
+        const dia = new Date().toISOString().slice(0, 10);
+        const mensaje =
+            '⚠️ <b>Importes sin congelar</b>\n\n'
+            + `Al cerrar unas citas no he podido guardar su importe (${selladas} de ${intentadas}).\n\n`
+            + 'Las citas están bien y el informe de facturación sigue saliendo, pero calculado '
+            + 'con los precios de HOY: si alguien cambia una tarifa, ese periodo cambiará con ella.\n\n'
+            + (error ? `Detalle técnico: ${error}` : '');
+        // Throttle por DÍA y org: esto no es urgente por cita, es "el sellado está fallando".
+        await alertOnce(orgId, `snapshot_facturacion|${dia}`, mensaje);
+    } catch (e) {
+        // Avisar de un problema no puede crear uno nuevo en el camino de escritura.
+        logger.error('snapshot_aviso_error', { orgId, error: e.message });
+    }
 }
 
 // Fija (o limpia) el importe de una cita A MANO. Junto con stampBillingSnapshot son los
@@ -2373,11 +2419,14 @@ async function autoCompleteAppointments(orgId) {
         if (apt.contact_id) await incrementVisitCount(oid, apt.contact_id);
     }
     // Congelar el importe en el mismo momento en que la cita entra en la facturación.
+    // El catch sigue sin propagar (las citas YA están completadas y eso es lo que importaba),
+    // pero ya no es mudo: un log que nadie lee no es un aviso, y aquí se pierden importes.
     if (data?.length) {
         try {
             await stampBillingSnapshot(oid, data.map(a => a.id));
         } catch (e) {
-            logger.error('error_snapshot_facturacion', { orgId: oid, error: e.message });
+            logger.error('error_snapshot_facturacion', { orgId: oid, citas: data.length, error: e.message });
+            await avisarSnapshotIncompleto(oid, { intentadas: data.length, selladas: 0, error: e.message });
         }
     }
     return data || [];

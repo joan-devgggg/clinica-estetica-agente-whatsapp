@@ -116,7 +116,7 @@ entraba en el alcance de esta auditoría (que era reseñas/campañas/facturació
 
 ---
 
-## 🟠 4 · El sellado del importe puede fallar entero sin que nadie se entere
+## 🟠 4 · El sellado del importe puede fallar entero sin que nadie se entere — ✅ ARREGLADO 06/08/2026
 
 **FACTURACIÓN** · [`db.js:2334-2340`](../services/db.js) y [`db.js:1445-1475`](../services/db.js)
 
@@ -141,6 +141,22 @@ Dos cosas, ninguna catastrófica pero las dos de la familia:
 - **`stampBillingSnapshot` devuelve `n` y nadie lo mira.** Dentro hace `continue` por fila
   fallida (correcto: no inventa importes), pero el llamador no puede distinguir "sellé 10 de
   10" de "sellé 1 de 10". El valor de retorno existe y se descarta.
+
+**Arreglo:** `stampBillingSnapshot` devuelve `{intentadas, selladas, fallidas}` y avisa ella
+misma (`avisarSnapshotIncompleto`) en cuanto `fallidas > 0`; el `catch` de
+`autoCompleteAppointments` y el de `webhook.js` avisan del caso en que ni se llegó a intentar.
+Nada de esto propaga: la cita SÍ está completada y el panel merece su 200. Throttle por DÍA y
+org, no por cita: esto es "el sellado está fallando", no una incidencia de una visita — y el
+barrido tica cada 5 min. El mensaje explica la consecuencia real ("el informe pasa a calcular
+con los precios de HOY"), que es lo único accionable. Red:
+`tests/snapshot-facturacion-avisa.test.js`.
+
+**Decisión de capa, y es discutible:** el aviso sale de `db.js`, que hasta hoy no avisaba de
+nada. Va con un `require('./admin-alerts')` PEREZOSO porque admin-alerts arrastra
+`telegram.js`, que requiere `db.js` — cargarlo arriba cierra el ciclo y telegram se queda con
+las funciones de db a medio definir. La alternativa era sacar el sellado de
+`autoCompleteAppointments` al worker, y eso rompe el acoplamiento deliberado "se congela en el
+mismo momento en que la cita entra en la facturación".
 
 ---
 
