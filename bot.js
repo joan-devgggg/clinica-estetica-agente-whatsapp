@@ -390,18 +390,19 @@ async function waSendMessage(client, jid, text, { retries = 3, baseDelayMs = 800
         try {
             if (i > 0) { try { await client.getChatById(jid); } catch { /* warm-up best-effort */ } }
             const enviado = await client.sendMessage(jid, text);
-            if (orgId) noteSendResult(orgId, { ok: true });
+            // Se espera: noteSendResult manda el aviso de canal caído/recuperado por Telegram.
+            if (orgId) await noteSendResult(orgId, { ok: true });
             return enviado;
         } catch (e) {
             lastErr = e;
             if (!isTransientWAError(e) || i === retries) {
-                if (orgId) noteSendResult(orgId, { ok: false, error: e, contexto: `envío a ${jid}` });
+                if (orgId) await noteSendResult(orgId, { ok: false, error: e, contexto: `envío a ${jid}` });
                 throw e;
             }
             await new Promise(r => setTimeout(r, baseDelayMs * (i + 1)));
         }
     }
-    if (orgId) noteSendResult(orgId, { ok: false, error: lastErr, contexto: `envío a ${jid}` });
+    if (orgId) await noteSendResult(orgId, { ok: false, error: lastErr, contexto: `envío a ${jid}` });
     throw lastErr;
 }
 

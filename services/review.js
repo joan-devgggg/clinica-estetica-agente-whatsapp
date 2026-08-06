@@ -95,11 +95,14 @@ async function sendReviewMessage(orgId, { telefono, language, waJid }, { mensaje
             await client.sendMessage(chatId, mensaje);
         }
         // Salud del canal: este envío no pasa por waSendMessage, así que se reporta aquí.
-        noteSendResult(orgId, { ok: true });
+        // Se ESPERA: noteSendResult manda el aviso de canal caído (y el de recuperado) por
+        // Telegram, y sin await el worker sigue adelante sin saber si salió. Es el mismo
+        // await que se puso en alertOnce cuando se arreglaron los avisos que no llegaban.
+        await noteSendResult(orgId, { ok: true });
         return 'enviado';
     } catch (e) {
         logger.error('review_error_envio', { orgId, telefono, chatId, error: e.message });
-        noteSendResult(orgId, { ok: false, error: e, contexto: 'petición de reseña' });
+        await noteSendResult(orgId, { ok: false, error: e, contexto: 'petición de reseña' });
         return 'fallo';
     }
 }

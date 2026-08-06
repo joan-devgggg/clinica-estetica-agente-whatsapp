@@ -177,7 +177,7 @@ campaña se rompió, y este es justo el sitio donde ya sabemos que algo va mal.
 
 ---
 
-## 🟡 6 · `noteSendResult` no se espera nunca
+## 🟡 6 · `noteSendResult` no se espera nunca — ✅ ARREGLADO 06/08/2026
 
 **RESEÑAS** ([review.js:91, 95](../services/review.js)) y **CAMPAÑAS**
 ([broadcast.js:190, 206](../services/broadcast.js))
@@ -187,6 +187,12 @@ Es `async` y se llama sin `await` en los cuatro sitios. No lanza nunca (tiene su
 puede quedarse a medias si el proceso muere entre medias, y —más práctico— el orden entre el
 aviso y el `return` del worker no está garantizado. Es el mismo patrón que el `await` que sí
 se puso en `alertOnce` al arreglar los avisos que no llegaban.
+
+**Arreglo:** `await` en los cuatro embudos, no solo en los dos que enumeraba el hallazgo. Los
+que faltaban eran `reminder.js` (mismo par exacto que review) y los tres de `waSendMessage`
+(`bot.js`), que es por donde pasa TODO el saliente de San Remo — dejarlos sin esperar habría
+sido arreglar el aviso en los sitios donde menos tráfico hay. Los de campañas ya se habían
+esperado al arreglar el punto 2.
 
 ---
 

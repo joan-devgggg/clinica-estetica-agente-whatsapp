@@ -173,11 +173,13 @@ async function sendReminderMessage(orgId, record, { mensaje, templateParams }) {
         }
         // Salud del canal: este envío no pasa por waSendMessage, así que se reporta aquí.
         // 'sin_plantilla' no se reporta porque no llegó a intentarse ningún envío.
-        noteSendResult(orgId, { ok: true });
+        // Se ESPERA: noteSendResult manda el aviso de canal caído (y el de recuperado) por
+        // Telegram, y sin await el worker sigue adelante sin saber si salió.
+        await noteSendResult(orgId, { ok: true });
         return 'enviado';
     } catch (e) {
         logger.error('reminder_error_envio', { orgId, telefono: record.telefono, chatId, error: e.message });
-        noteSendResult(orgId, { ok: false, error: e, contexto: 'recordatorio de 24 h' });
+        await noteSendResult(orgId, { ok: false, error: e, contexto: 'recordatorio de 24 h' });
         return 'fallo';
     }
 }
