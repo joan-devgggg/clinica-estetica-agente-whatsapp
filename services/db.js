@@ -2291,20 +2291,61 @@ async function getCitasParaInformeNombres(orgId) {
 
 // ─── Review worker helpers ────────────────────────────────────────────────────
 
+// Citas que TOCA pedir reseña. Quién queda fuera y por qué:
+//
+//   · lista negra          — pedirle una reseña de Google a alguien a quien acabas de
+//                            bloquear no tiene sentido.
+//   · queja abierta        — `contacts.escalation_reason` sin resolver, o una
+//                            `pending_actions` de tipo 'escalation' en 'pending'. Pedirle
+//                            una reseña pública a una clienta que se ha quejado y todavía
+//                            no ha sido atendida es la peor forma posible de rematar la
+//                            queja. Detectado el 06/08/2026: el filtro solo miraba la lista
+//                            negra, así que una clienta con `queja_cita` abierta recibía su
+//                            petición de reseña 2 h después de la cita como cualquier otra.
+//                            Lo único que lo impedía en ese momento era otro fallo (el
+//                            botón del panel, que marcaba sin enviar).
+//
+// `bot_mode = 'manual'` NO excluye, y es deliberado: con Coexistence casi toda conversación
+// atendida desde el móvil acaba en manual, así que excluirlo mataría las reseñas de casi
+// todas las clientas. "La atiende una persona" no es "se ha quejado".
+//
+// Los dos filtros van en JS y no en la query porque viven en tablas distintas de
+// `appointments`. La lectura de escaladas SÍ propaga su error (assertRead): si no se puede
+// saber quién tiene una queja abierta, no se manda ninguna reseña en este tic. Una reseña de
+// menos se recupera al tic siguiente; una reseña a quien se acaba de quejar, no.
 async function getCompletedAppointmentsForReview(orgId, horasAfter) {
     const oid = resolveOrg(orgId);
     const cutoff = new Date(Date.now() - horasAfter * 60 * 60 * 1000).toISOString();
     const { data } = await supabase
         .from('appointments')
-        .select('*, contacts!contact_id(id, full_name, wa_phone, language, metadata, is_blacklisted)')
+        .select('*, contacts!contact_id(id, full_name, wa_phone, language, metadata, is_blacklisted, escalation_reason)')
         .eq('organization_id', oid)
         .eq('status', 'completed')
         .eq('resena_enviada', false)
         .lte('ends_at', cutoff)
         .order('ends_at', { ascending: true });
-    // El filtro va en JS y no en la query porque is_blacklisted vive en la tabla unida:
-    // pedirle una reseña de Google a alguien a quien acabas de bloquear no tiene sentido.
-    return (data || []).filter(row => !row.contacts?.is_blacklisted);
+
+    const candidatas = (data || []).filter(row =>
+        !row.contacts?.is_blacklisted && !row.contacts?.escalation_reason);
+    if (!candidatas.length) return [];
+
+    // Segunda vuelta solo sobre las candidatas: la cola de reseñas es de unas pocas filas,
+    // así que sale más barato esto que arrastrar un join a pending_actions en la consulta.
+    const contactIds = [...new Set(candidatas.map(r => r.contacts?.id || r.contact_id).filter(Boolean))];
+    if (!contactIds.length) return candidatas;
+
+    const { data: escaladas, error: errEsc } = await supabase
+        .from('pending_actions')
+        .select('contact_id')
+        .eq('organization_id', oid)
+        .eq('type', 'escalation')
+        .eq('status', 'pending')
+        .in('contact_id', contactIds);
+    assertRead(errEsc, 'pending_actions');
+
+    const conQueja = new Set((escaladas || []).map(e => e.contact_id));
+    if (!conQueja.size) return candidatas;
+    return candidatas.filter(row => !conQueja.has(row.contacts?.id || row.contact_id));
 }
 
 async function autoCompleteAppointments(orgId) {
