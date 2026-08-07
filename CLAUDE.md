@@ -45,10 +45,21 @@ imposible borrar una cita: ese SET NULL emite un UPDATE que choca con el trigger
 congelación. Cuando hay que probar contra la BD real, se hace en un bloque que revierte
 (`DO $$ … RAISE $$`) y se comprueba que no queda ni una fila.*
 
-**7. Antes de mutar código para comprobar que algo falla sin el arreglo, comitear o guardar
-copia.** El experimento tiene que poder deshacerse entero. *07/08/2026: para comparar el lint
-del fichero original hubo que hacer `git stash push` de `reservas/page.tsx` y `git stash pop`
-después, verificando que los cambios volvían.*
+**7. Antes de mutar código para comprobar que algo falla sin el arreglo, `cp` a un fichero
+aparte.** `git checkout` solo restaura lo COMITEADO, y lo que acabas de escribir no lo está.
+
+Esta regla ya se ha incumplido **dos veces**, las dos igual y las dos el 07/08/2026: mutar un
+fichero con cambios sin comitear y "restaurarlo" con `git checkout --`, que devuelve la versión
+del último commit y **borra el trabajo nuevo**. Pasó con `caja-session.ts` (se perdieron
+`estilistaPorDefecto` y `saldraSinPin` recién escritos) y con `tests/caja-pendientes.test.js`
+(se perdieron los tests del no-show). Las dos veces se detectó al mirar si el arreglo seguía
+ahí, no en el momento.
+
+Lo que engaña es que git *parece* la copia de seguridad, y lo es — de lo comiteado. Si el
+experimento va sobre algo que aún no lo está, la copia hay que hacerla a mano:
+`cp fichero /tmp/…` antes de mutar, `cp` de vuelta después, y comprobar que el arreglo sigue en
+el fichero. `git stash push`/`pop` sí vale, y es lo que se usó bien la primera vez con
+`reservas/page.tsx`; lo que no vale nunca es `git checkout --`.
 
 **8. Parar y preguntar si algo cambia el diseño o se sale del alcance.** No ampliarlo por
 iniciativa propia ni recortarlo en silencio. *Antes de escribir la 035 se pararon tres

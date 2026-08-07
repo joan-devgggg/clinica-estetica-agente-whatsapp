@@ -1137,7 +1137,7 @@ function buildStartsAt(fecha, hora, defaultTime = '20:00') {
     return isNaN(d.getTime()) ? null : d;
 }
 
-async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duracionMin, estado = 'confirmed', notas, personas, ocasion, bizumStatus = 'not_required', bizumAmount, stylistId, source = 'bot' } = {}) {
+async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duracionMin, estado = 'confirmed', notas, personas, ocasion, bizumStatus = 'not_required', bizumAmount, stylistId, source = 'bot', noFacturable = false } = {}) {
     const oid = resolveOrg(orgId);
     if (!contactId) {
         console.error('[saveAppointment] contactId nulo — reserva no guardada');
@@ -1207,6 +1207,7 @@ async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duraci
             bizum_amount:    bizumAmount ?? null,
             stylist_id:      stylistId || null,
             source:          source || 'bot',
+            no_facturable:   !!noFacturable,
         })
         .select()
         .single();
@@ -1286,6 +1287,9 @@ async function updateAppointment(orgId, appointmentId, campos) {
     if (campos.bizumAmount !== undefined) updates.bizum_amount = campos.bizumAmount;
     if (campos.noShow      !== undefined) updates.no_show      = campos.noShow;
     if (campos.stylistId   !== undefined) updates.stylist_id   = campos.stylistId;
+    // Marcar/desmarcar una cita como no cobrable. Es la única forma de decir "esto no se
+    // cobra": no se puede deducir de ninguna otra señal (ver migración 037).
+    if (campos.noFacturable !== undefined) updates.no_facturable = !!campos.noFacturable;
     if (campos.resenaEnviada !== undefined) updates.resena_enviada = campos.resenaEnviada;
     if (campos.recordatorioEnviado !== undefined) updates.recordatorio_enviado = campos.recordatorioEnviado;
     if (campos.endsAt !== undefined) updates.ends_at = campos.endsAt;
@@ -1381,6 +1385,10 @@ async function getAppointmentsByDateRange(orgId, desde, hasta) {
         // `not(is true)` y no `eq(false)`: una fila con no_show NULL es "no consta que faltara",
         // y con eq(false) desaparecería de la caja sin que nadie entienda por qué.
         .not('no_show', 'is', true)
+        // Marcada a mano como no cobrable (migración 037): un bloqueo, una cortesía, un hueco
+        // reservado. Es lo único que distingue "esto no se cobra" de "esto está por cobrar",
+        // porque no se puede deducir de ninguna otra señal.
+        .eq('no_facturable', false)
         .order('starts_at', { ascending: true });
 
     return (data || []).map(row => {

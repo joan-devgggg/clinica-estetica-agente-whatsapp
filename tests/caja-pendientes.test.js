@@ -68,6 +68,12 @@ const TODAS = ([
         stylist_id: 'est-olga', contacts: { full_name: 'A medias' }, stylists: { id: 'est-olga', name: 'Olga' },
     },
     {
+        // Marcada a mano como que NO se cobra: un bloqueo, una cortesía. Fuera de Caja.
+        id: 'apt-nofact', service: 'Hueco reservado', starts_at: '2026-08-07T21:00:00Z',
+        status: 'confirmed', no_facturable: true,
+        stylist_id: 'est-olga', contacts: { full_name: 'Bloqueo' }, stylists: { id: 'est-olga', name: 'Olga' },
+    },
+    {
         // no_show NULL = "no consta que faltara". Tiene que SEGUIR saliendo.
         id: 'apt-null', service: 'Corte hombre', starts_at: '2026-08-07T20:00:00Z', status: 'confirmed',
         no_show: null,
@@ -81,7 +87,8 @@ const TODAS = ([
     },
 ]);
 db.getCitasDelDiaParaCaja = async () => TODAS.filter(
-    (a) => ['confirmed', 'completed'].includes(a.status) && a.no_show !== true,
+    (a) => ['confirmed', 'completed'].includes(a.status) && a.no_show !== true
+        && a.no_facturable !== true,
 );
 db.getCobrosVigentes = async () => ([
     { id: 'cobro-1', appointment_id: 'apt-3', importe_total: '22.00', metodo: 'tarjeta', atribucion: 'declarada' },
@@ -175,6 +182,13 @@ await test('9 · CONTROL · no_show NULL sigue saliendo: "no consta" no es "falt
     const ids = r.body.citas.map(c => c.appointment_id);
     assert.ok(ids.includes('apt-null'), 'con eq(false) esta desaparecería sin que nadie lo entienda');
     assert.ok(ids.includes('apt-1'), 'y las normales siguen ahí');
+});
+
+await test('10 · una cita marcada "no se cobra" no sale en pendientes', async () => {
+    const r = await get(server, '/api/caja/pendientes?fecha=2026-08-07');
+    const ids = r.body.citas.map(c => c.appointment_id);
+    assert.ok(!ids.includes('apt-nofact'),
+        'es lo ÚNICO que distingue "esto no se cobra": no se puede deducir de ninguna otra señal');
 });
 
 server.close();

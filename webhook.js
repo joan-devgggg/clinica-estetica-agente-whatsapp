@@ -763,14 +763,29 @@ function validarDuracion(duracionMin) {
 app.post('/api/appointments', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
-        const { contactId, servicio, fecha, hora, duracionMin, stylistId, notas, personas, ocasion } = req.body;
+        const { contactId, servicio, fecha, hora, duracionMin, stylistId, notas, personas, ocasion, noFacturable } = req.body;
         if (!contactId || !fecha) return res.status(400).json({ error: 'contactId y fecha requeridos' });
+
+        // Una cita creada a mano DICE qué servicio es, o dice que no se cobra. No hay tercera
+        // opción, y esa es toda la regla.
+        //
+        // Antes el panel rellenaba `servicio` con el literal 'Cita manual' cuando se dejaba en
+        // blanco, y esa cita quedaba sin importe de referencia y en «pendientes de cobrar» para
+        // siempre. Hoy hay tres así en la agenda de Sante —y ni siquiera son citas: son
+        // bloqueos con una clienta inventada—. Exigir servicio a secas obligaría a inventárselo
+        // el día que haya algo fuera de catálogo, así que la casilla es el escape explícito.
+        const { getOrgType: tipoOrg } = require('./services/org-registry');
+        if (tipoOrg(orgId) === 'salon' && !noFacturable && !String(servicio || '').trim()) {
+            return res.status(400).json({
+                error: 'Dime qué servicio es. Si esta cita no se va a cobrar, márcala como "no se cobra".',
+            });
+        }
         if (hora != null && hora !== '' && !/^\d{1,2}:\d{2}$/.test(String(hora).trim())) {
             return res.status(400).json({ error: `Hora inválida ("${hora}"). Usa el formato HH:MM` });
         }
         const durErr = validarDuracion(duracionMin);
         if (durErr) return res.status(400).json({ error: durErr });
-        const apt = await db.saveAppointment(orgId, contactId, { servicio, fecha, hora, duracionMin, notas, personas, ocasion, stylistId, source: 'manual' });
+        const apt = await db.saveAppointment(orgId, contactId, { servicio, fecha, hora, duracionMin, notas, personas, ocasion, stylistId, source: 'manual', noFacturable: !!noFacturable });
         if (!apt) {
             const contact = await db.findById(orgId, contactId);
             if (!contact) return res.status(400).json({ error: `Contacto con id ${contactId} no encontrado` });

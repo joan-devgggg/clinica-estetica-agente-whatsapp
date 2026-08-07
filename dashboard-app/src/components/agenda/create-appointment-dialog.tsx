@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TimePickerSelect } from "@/components/ui/time-picker-select";
 import { ServiceListField } from "@/components/agenda/service-list-field";
@@ -38,6 +39,10 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
     // libre). Con servicios de catálogo manda `duracionCatalogo`, derivada de `servicio`.
     duracion: "60",
     stylistId: defaultStylistId || "",
+    // Escape explícito: esta cita NO se va a cobrar (bloqueo, cortesía, hueco reservado).
+    // Sin él, exigir servicio del catálogo obligaría a inventarse uno el día que haya algo
+    // fuera de catálogo. Con él, lo que no se cobra se DICE en vez de disfrazarse.
+    noFacturable: false,
   });
   const { catalog } = useServiceCatalog(orgId, true);
 
@@ -95,7 +100,8 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
         headers: await apiHeaders(orgId),
         body: JSON.stringify({
           contactId: lead.id,
-          servicio: form.servicio || "Cita manual",
+          servicio: form.servicio.trim(),
+          noFacturable: form.noFacturable,
           fecha: form.fecha,
           hora: form.hora,
           duracionMin: parseInt(duracionEfectiva) || 60,
@@ -142,12 +148,40 @@ export function CreateAppointmentDialog({ stylists, orgId, defaultStylistId, onC
               <Input value={form.telefono} onChange={e => setForm(f => ({ ...f, telefono: e.target.value }))} />
             </div>
           </div>
-          <ServiceListField
-            catalog={catalog}
-            servicio={form.servicio}
-            onChange={handleServicesChange}
-            placeholder="Ej: Corte mujer"
-          />
+          {/* Con la casilla puesta el servicio deja de ser obligatorio, pero SIGUE pidiéndose
+              una descripción: un hueco cerrado tiene que decir de qué es, o dentro de un mes
+              nadie sabe por qué está ahí. Es justo lo que les falta a las tres "Cita manual". */}
+          {form.noFacturable ? (
+            <div>
+              <Label>¿Qué es? *</Label>
+              <Input
+                value={form.servicio}
+                onChange={e => setForm(f => ({ ...f, servicio: e.target.value }))}
+                placeholder="Ej: Hueco reservado, descanso, cortesía..."
+              />
+            </div>
+          ) : (
+            <ServiceListField
+              catalog={catalog}
+              servicio={form.servicio}
+              onChange={handleServicesChange}
+              placeholder="Ej: Corte mujer"
+            />
+          )}
+
+          <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-border/60 px-3 py-2.5">
+            <Switch
+              checked={form.noFacturable}
+              onCheckedChange={(v: boolean) => setForm(f => ({ ...f, noFacturable: v }))}
+            />
+            <span className="min-w-0">
+              <span className="block text-[13px] font-medium text-foreground">Esta cita no se cobra</span>
+              <span className="block text-[11.5px] text-muted-foreground">
+                Para bloqueos, cortesías o huecos reservados. No saldrá en Caja como pendiente
+                de cobrar.
+              </span>
+            </span>
+          </label>
           <div className="grid grid-cols-3 gap-3">
             <div>
               <Label>Fecha *</Label>
