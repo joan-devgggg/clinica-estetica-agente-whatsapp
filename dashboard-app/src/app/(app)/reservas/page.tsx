@@ -159,7 +159,15 @@ export default function ReservasPage() {
       const encontrada = (citas ?? []).find(
         (c: { appointment_id: string }) => c.appointment_id === reserva.appointment_id,
       );
-      if (encontrada) base.importeReferencia = encontrada.importe_referencia ?? null;
+      if (encontrada) {
+        base.importeReferencia = encontrada.importe_referencia ?? null;
+        // Desde Reservas el botón de cobrar sale siempre, así que sin esto se podía cobrar
+        // dos veces la misma cita sin enterarse. No se bloquea —una cita puede pagarse en
+        // dos veces— pero se avisa.
+        base.yaCobrado = encontrada.cobro
+          ? { importe: Number(encontrada.cobro.importe_total), metodo: encontrada.cobro.metodo }
+          : null;
+      }
     } catch {
       // El cobro NO se bloquea: se abre igual y el importe se teclea. Pero se DICE, porque un
       // importe vacío sin explicación se confunde con "esta cita no tiene precio" — y eso

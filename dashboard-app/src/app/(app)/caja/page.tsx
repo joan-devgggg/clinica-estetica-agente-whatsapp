@@ -7,7 +7,7 @@
 // diferencia, dejar el día cerrado— es otra cosa, tiene su propio diseño sin decidir, y no se
 // pre-empt aquí.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PackagePlus } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,8 @@ export default function CajaPage() {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cobrando, setCobrando] = useState<string | null>(null);
+  /** Citas con un cobro EN VUELO. Ref y no estado: tiene que ganarle al doble toque. */
+  const enVuelo = useRef<Set<string>>(new Set());
   const [hoja, setHoja] = useState<CobroContexto | null>(null);
 
   // sessionStorage solo existe en el navegador: se lee tras montar, no durante el render.
@@ -77,6 +79,12 @@ export default function CajaPage() {
   // es honesto porque ANULA —deja la fila anulada, a la vista— en vez de borrar.
   async function cobroRapido(p: CajaPendiente, metodo: MetodoCobro) {
     if (!sesion || p.importe_referencia == null) return;
+    // Guarda SÍNCRONA contra el doble toque. `setCobrando` es estado de React y no surte
+    // efecto hasta el siguiente render, así que dos toques rápidos en la misma fila pasaban
+    // los dos por aquí y creaban DOS cobros. Un `useRef` se actualiza en el acto y gana esa
+    // carrera; el estado sigue existiendo solo para pintar el botón deshabilitado.
+    if (enVuelo.current.has(p.appointment_id)) return;
+    enVuelo.current.add(p.appointment_id);
     setCobrando(p.appointment_id);
     try {
       const res = await apiMutate("/api/cobros", {
@@ -105,8 +113,15 @@ export default function CajaPage() {
         action: { label: "Deshacer", onClick: () => deshacer(cobro.id) },
       });
     } catch (e) {
-      toast.error((e as Error).message || "No se pudo registrar el cobro");
+      // Si la red se cae DESPUÉS de que el servidor haya escrito, el cobro existe y aquí solo
+      // se ve el error. Por eso se recarga: que el estado real esté delante antes de que
+      // decida volver a cobrar, o acabaría con dos cobros de la misma cita.
+      toast.error(
+        `${(e as Error).message || "No se pudo registrar el cobro"} — mira abajo si ha entrado antes de volver a cobrar.`,
+      );
+      await cargar();
     } finally {
+      enVuelo.current.delete(p.appointment_id);
       setCobrando(null);
     }
   }
@@ -189,6 +204,9 @@ export default function CajaPage() {
                         service: x.service,
                         atendio: x.atendio,
                         importeReferencia: x.importe_referencia,
+                        yaCobrado: x.cobro
+                          ? { importe: Number(x.cobro.importe_total), metodo: x.cobro.metodo }
+                          : null,
                       })}
                     />
                   ))

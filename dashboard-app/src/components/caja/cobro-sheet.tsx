@@ -46,6 +46,13 @@ export interface CobroContexto {
   /** Quién ATENDIÓ. Se enseña junto a quién cobra cuando no coinciden. */
   atendio?: string | null;
   importeReferencia?: number | null;
+  /**
+   * Si la cita YA tiene un cobro vigente. Se avisa en vez de bloquear: una cita puede
+   * cobrarse en dos veces (parte hoy, parte al recoger), así que impedirlo obligaría a
+   * mentir. Pero cobrar dos veces sin enterarse es peor, y desde Reservas el botón de
+   * cobrar no sabía nada de esto.
+   */
+  yaCobrado?: { importe: number; metodo: string } | null;
 }
 
 interface Props {
@@ -135,6 +142,15 @@ export function CobroSheet({ contexto, sesion, orgId, open, onClose, onCobrado }
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+          {contexto?.yaCobrado && (
+            <div role="alert" className="rounded-lg border border-[oklch(0.85_0.12_85/0.6)] bg-[oklch(0.85_0.12_85/0.12)] px-4 py-3 text-[12.5px] text-[oklch(0.45_0.12_55)]">
+              Esta cita ya tiene un cobro de{" "}
+              <strong>{eur(contexto.yaCobrado.importe)} en {contexto.yaCobrado.metodo}</strong>.
+              Si cobras otra vez quedarán los dos. Para cambiar el importe del anterior,
+              corrígelo desde Caja.
+            </div>
+          )}
+
           {sinCita && (
             <div>
               <Label htmlFor="cobro-concepto">Qué se ha vendido *</Label>
@@ -223,11 +239,24 @@ export function CobroSheet({ contexto, sesion, orgId, open, onClose, onCobrado }
                 onChange={(e) => setEfectivo(e.target.value)}
                 className="text-[18px] font-semibold h-12"
               />
-              <p className="mt-1 text-[11.5px] text-muted-foreground">
-                {restoTarjeta != null && restoTarjeta > 0
-                  ? `Tarjeta: ${eur(restoTarjeta)}`
-                  : "Solo se teclea el efectivo; la tarjeta sale por resta."}
-              </p>
+              {/* El botón se deshabilita si el mixto no lo es, pero un botón apagado sin
+                  explicación no dice qué hacer. La base rechaza estos dos casos con un CHECK,
+                  así que más vale decirlo aquí y en cristiano que dejarla chocar contra él. */}
+              {efectivo !== "" && enEfectivo >= total && totalValido ? (
+                <p className="mt-1 text-[11.5px] text-[oklch(0.45_0.12_55)]">
+                  Si lo pagó todo en efectivo, elige <strong>Efectivo</strong> arriba.
+                </p>
+              ) : efectivo !== "" && enEfectivo <= 0 ? (
+                <p className="mt-1 text-[11.5px] text-[oklch(0.45_0.12_55)]">
+                  Si no puso nada en efectivo, elige <strong>Tarjeta</strong> o <strong>Bizum</strong> arriba.
+                </p>
+              ) : (
+                <p className="mt-1 text-[11.5px] text-muted-foreground">
+                  {restoTarjeta != null && restoTarjeta > 0
+                    ? `Tarjeta: ${eur(restoTarjeta)}`
+                    : "Solo se teclea el efectivo; la tarjeta sale por resta."}
+                </p>
+              )}
             </div>
           )}
 
