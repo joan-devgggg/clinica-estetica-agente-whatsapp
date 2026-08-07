@@ -143,12 +143,28 @@ export function AppSidebar() {
         </div>
       </SidebarHeader>
 
+      {/* Tallas del menú (07/08/2026, con las dos organizaciones a la vez — no hay variante
+          por orgType: dos sidebars por 2px sería deuda permanente). Los tres overrides de
+          abajo se repiten en los dos grupos y van explicados una sola vez aquí:
+            · SidebarMenu gap-0.5 — las filas iban pegadas (gap-0), y como el estado activo
+              es un fondo relleno se leía como una banda soldada al hover de al lado en vez
+              de como una pastilla.
+            · SidebarMenuButton h-9 — 32px es densidad de menú de quince entradas; con diez
+              el icono y el texto dejan de ir apretados. En modo icono manda igual el
+              size-8! de la base, así que la barra plegada no cambia.
+            · SidebarGroupLabel h-7 — con la h-8 de la base la etiqueta medía lo mismo que
+              una fila y pesaba como un item más en vez de como un encabezado. El -mt-7 va
+              EMPAREJADO a esa altura: el -mt-8 de la base existe para plegarla en modo
+              icono, y sobre 28px tiraría 4px de más y subiría el grupo entero.
+          Los iconos no llevan size: el variant del botón impone [&_svg]:size-4 por CSS, que
+          gana al atributo del SVG. El size={15} que hubo aquí no hacía nada. El del pie sí
+          cuenta —está fuera del botón— y por eso se queda. */}
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground/70 font-semibold">
+          <SidebarGroupLabel className="h-7 group-data-[collapsible=icon]:-mt-7 text-[10px] uppercase tracking-[0.08em] text-muted-foreground/70 font-semibold">
             Principal
           </SidebarGroupLabel>
-          <SidebarMenu>
+          <SidebarMenu className="gap-0.5">
             {navItems.map(({ href, label, icon: Icon }) => {
               const active =
                 href === "/" ? pathname === "/" : pathname.startsWith(href);
@@ -157,11 +173,10 @@ export function AppSidebar() {
                   <SidebarMenuButton
                     isActive={active}
                     tooltip={label}
-                    className="gap-2.5"
+                    className="h-9 gap-2.5"
                     render={<Link href={href} />}
                   >
                     <Icon
-                      size={15}
                       strokeWidth={active ? 2 : 1.5}
                       className={
                         active ? "text-primary" : "text-muted-foreground"
@@ -178,10 +193,10 @@ export function AppSidebar() {
         <SidebarSeparator />
 
         <SidebarGroup>
-          <SidebarGroupLabel className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground/70 font-semibold">
+          <SidebarGroupLabel className="h-7 group-data-[collapsible=icon]:-mt-7 text-[10px] uppercase tracking-[0.08em] text-muted-foreground/70 font-semibold">
             Gestión
           </SidebarGroupLabel>
-          <SidebarMenu>
+          <SidebarMenu className="gap-0.5">
             {settingsItems.map(({ href, label, icon: Icon }) => {
               const active = pathname.startsWith(href);
               return (
@@ -189,11 +204,10 @@ export function AppSidebar() {
                   <SidebarMenuButton
                     isActive={active}
                     tooltip={label}
-                    className="gap-2.5"
+                    className="h-9 gap-2.5"
                     render={<Link href={href} />}
                   >
                     <Icon
-                      size={15}
                       strokeWidth={active ? 2 : 1.5}
                       className={
                         active ? "text-primary" : "text-muted-foreground"
