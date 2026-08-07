@@ -242,32 +242,78 @@ const ultimo = () => vistoPorElLLM[vistoPorElLLM.length - 1];
         assert.strictEqual(contactos.get('34600000102').metadata.language_source, 'observed');
     });
 
-    await test('C3 · updateContactLanguage marca "observed" y FUSIONA metadata', async () => {
+    // Desde el 07/08/2026 'observed' EXIGE DOS mensajes que coincidan. Un solo mensaje es
+    // prueba débil: el autocontestador que destapó esto era bilingüe (español y ucraniano en
+    // el mismo texto) y detectLanguage tuvo que elegir uno. Lo que NO cambia es que el idioma
+    // se escriba en el primer mensaje: eso es lo que hace que el bot le hable en el suyo.
+    await test('C3 · el PRIMER mensaje escribe el idioma pero NO lo marca observed', async () => {
         contactos.set('34600000103', {
             id: 'contact-C3', organization_id: SANTE_ORG, wa_phone: '34600000103',
             language: 'es', metadata: { wa_jid: '34600000103@c.us', language_source: 'default' },
         });
         await db.updateContactLanguage(SANTE_ORG, 'contact-C3', 'en');
         const meta = contactos.get('34600000103').metadata;
-        assert.strictEqual(contactos.get('34600000103').language, 'en');
-        assert.strictEqual(meta.language_source, 'observed');
+        assert.strictEqual(contactos.get('34600000103').language, 'en', 'el idioma sí aterriza');
+        assert.strictEqual(meta.language_source, 'default', 'la MARCA espera corroboración');
+        assert.strictEqual(meta.language_candidate, 'en', 'y queda anotado el candidato');
+        assert.ok(!meta.language_observed_at, 'todavía no se ha observado nada');
         assert.strictEqual(meta.wa_jid, '34600000103@c.us',
             'un UPDATE de jsonb sustituye el objeto entero: sin fusionar, el panel pierde el chat');
-        assert.ok(meta.language_observed_at, 'cuándo se observó');
     });
 
-    await test('C4 · observar el idioma apaga la conjetura por nombre', async () => {
+    await test('C3b · el SEGUNDO mensaje que coincide sí promueve a observed', async () => {
+        await db.updateContactLanguage(SANTE_ORG, 'contact-C3', 'en');
+        const meta = contactos.get('34600000103').metadata;
+        assert.strictEqual(meta.language_source, 'observed');
+        assert.ok(meta.language_observed_at, 'cuándo se observó');
+        assert.ok(!meta.language_candidate, 'el candidato se consume al promover');
+        assert.strictEqual(meta.wa_jid, '34600000103@c.us', 'y se sigue fusionando');
+    });
+
+    await test('C3c · dos mensajes que se CONTRADICEN no promueven a nadie', async () => {
+        contactos.set('34600000108', {
+            id: 'contact-C3c', organization_id: SANTE_ORG, wa_phone: '34600000108',
+            language: 'es', metadata: { language_source: 'default' },
+        });
+        await db.updateContactLanguage(SANTE_ORG, 'contact-C3c', 'en');
+        await db.updateContactLanguage(SANTE_ORG, 'contact-C3c', 'ru');
+        const meta = contactos.get('34600000108').metadata;
+        assert.strictEqual(meta.language_source, 'default', 'sigue sin haber nada corroborado');
+        assert.strictEqual(meta.language_candidate, 'ru', 'manda el último candidato');
+        assert.strictEqual(contactos.get('34600000108').language, 'ru');
+    });
+
+    await test('C4 · observar el idioma (corroborado) apaga la conjetura por nombre', async () => {
         contactos.set('34600000104', {
             id: 'contact-C4', organization_id: SANTE_ORG, wa_phone: '34600000104',
             language: 'ru',
             metadata: { language_source: 'inferred', language_inferred: true, language_inference_source: 'name_heuristic' },
         });
         await db.updateContactLanguage(SANTE_ORG, 'contact-C4', 'uk');
-        const ficha = await db.findById(SANTE_ORG, 'contact-C4');
-        assert.strictEqual(ficha.language, 'uk');
+        let ficha = await db.findById(SANTE_ORG, 'contact-C4');
+        assert.strictEqual(ficha.language, 'uk', 'el idioma cambia ya');
+        assert.strictEqual(ficha.language_source, 'inferred',
+            'con un solo mensaje la ficha sigue diciendo lo que sabía: una conjetura');
+
+        await db.updateContactLanguage(SANTE_ORG, 'contact-C4', 'uk');
+        ficha = await db.findById(SANTE_ORG, 'contact-C4');
         assert.strictEqual(ficha.language_source, 'observed');
         assert.strictEqual(ficha.language_inferred, false,
             'la ficha no puede seguir avisando «deducido de su nombre» de algo ya observado');
+    });
+
+    await test('C4b · una ficha YA observada no se degrada al cambiar de idioma', async () => {
+        // detectLanguage corre en cada mensaje y manda el último: una rusa que saluda en
+        // ucraniano vuelve a 'ru' al siguiente. Ahí ya se ha leído a la clienta, así que
+        // pedirle corroboración otra vez sería perder información buena.
+        contactos.set('34600000109', {
+            id: 'contact-C4b', organization_id: SANTE_ORG, wa_phone: '34600000109',
+            language: 'ru', metadata: { language_source: 'observed' },
+        });
+        await db.updateContactLanguage(SANTE_ORG, 'contact-C4b', 'uk');
+        const meta = contactos.get('34600000109').metadata;
+        assert.strictEqual(contactos.get('34600000109').language, 'uk');
+        assert.strictEqual(meta.language_source, 'observed', 'sigue observada, sin volver a empezar');
     });
 
     await test('C5 · sin nada que cambiar no escribe (se llama en CADA turno del salón)', async () => {
@@ -358,9 +404,18 @@ const ultimo = () => vistoPorElLLM[vistoPorElLLM.length - 1];
         await d.turn('Thursday');
 
         assert.strictEqual(d.session().language, 'en', 'ANTES: se quedaba en el "es" de la ficha');
-        assert.strictEqual(d.session().languageSource, 'observed');
         assert.strictEqual(contactos.get(tel).language, 'en', 'y aterriza en la ficha');
-        assert.strictEqual(contactos.get(tel).metadata.language_source, 'observed');
+        // La MARCA ya no sube con un solo mensaje (corroboración, 07/08/2026): queda el
+        // candidato. Lo que este test defiende —que «Thursday» saque a la ficha del 'es' por
+        // defecto y el bot conteste en inglés— se cumple igual, que era el fallo original.
+        assert.strictEqual(contactos.get(tel).metadata.language_candidate, 'en');
+        assert.strictEqual(contactos.get(tel).metadata.language_source, 'default',
+            'sigue sin corroborar, pero el idioma de la columna ya es el bueno');
+
+        await d.turn('Friday');
+        assert.strictEqual(contactos.get(tel).metadata.language_source, 'observed',
+            'el segundo mensaje en inglés sí lo confirma');
+        assert.strictEqual(d.session().languageSource, 'observed');
     });
 
     await test('E2 · un mensaje ambiguo NO hereda el default: al LLM se le dice que no se sabe', async () => {

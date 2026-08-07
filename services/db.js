@@ -5,7 +5,7 @@
 
 const supabase = require('./supabase');
 const logger = require('../lib/logger');
-const { NO_STYLIST_KEY, computeServiceBilling, IDIOMAS_SOPORTADOS, resolveLanguageSource, motivoNoEnviable } = require('./helpers');
+const { NO_STYLIST_KEY, computeServiceBilling, IDIOMAS_SOPORTADOS, resolveLanguageSource, LANGUAGE_SOURCES, motivoNoEnviable } = require('./helpers');
 // date-utils es PURO (solo Intl/Date) y no arrastra la capa de datos, así que se puede
 // requerir aquí sin ciclo. Aporta toLocalDateStr, que es lo único que debe decidir el día de
 // caja: BUSINESS_TZ = Europe/Madrid, nunca UTC.
@@ -2576,26 +2576,70 @@ async function updateContactLanguage(orgId, contactId, language) {
         return true;
     }
 
+    // ── 'observed' EXIGE CORROBORACIÓN: dos mensajes que coincidan ──────────────────────
+    //
+    // Hasta el 07/08/2026 bastaba UNO. Como 'observed' es la etiqueta que apaga todas las
+    // cautelas río abajo (el prompt deja de anunciar el idioma como probable, y la campaña lo
+    // usa para elegir plantilla de Meta), eso significaba que un solo mensaje podía silenciar
+    // todas las reservas del sistema.
+    //
+    // Y un mensaje es prueba débil por motivos que no tienen nada que ver con los
+    // autocontestadores que destaparon esto: el de DarYsol Events era **bilingüe** —español y
+    // ucraniano en el mismo texto—, así que `detectLanguage` tuvo que elegir uno y eligió el
+    // que no era. Un reenvío, un familiar usando el teléfono o un «spasibo» suelto producen
+    // exactamente el mismo efecto.
+    //
+    // Qué cambia y qué NO:
+    //   · `language` se sigue escribiendo SIEMPRE, en el primer mensaje. Es la dirección
+    //     recuperable y es lo que hace que el bot le hable en su idioma cuanto antes; el
+    //     comportamiento de conversación no se toca.
+    //   · lo que espera a la corroboración es la MARCA. Hasta que un segundo mensaje coincide,
+    //     la ficha conserva la fuente que tenía ('inferred' o 'default') y guarda el candidato.
+    //   · una ficha que YA era 'observed' sigue siéndolo aunque cambie de idioma: ahí ya se ha
+    //     leído a la clienta, y degradarla sería perder información buena.
+    const yaObservada = meta.language_source === 'observed' && !meta.language_inferred;
+    const candidatoCoincide = meta.language_candidate === language;
+    const promociona = yaObservada || candidatoCoincide;
+
+    const metaNueva = { ...meta };
+    if (promociona) {
+        metaNueva.language_source = 'observed';
+        metaNueva.language_observed_at = now();
+        // La conjetura por nombre queda superada: la clienta ha escrito y se ha visto
+        // en qué idioma. Dejar la marca puesta haría que la ficha siguiera avisando
+        // «deducido de su nombre» sobre un idioma ya observado — y que el prompt lo
+        // tratara como una probabilidad cuando ya es un hecho.
+        metaNueva.language_inferred = false;
+        delete metaNueva.language_candidate;
+        delete metaNueva.language_candidate_at;
+    } else {
+        // Primera observación, o una que contradice al candidato anterior: se anota y se
+        // espera. `language_source` conserva lo que valía…
+        metaNueva.language_candidate = language;
+        metaNueva.language_candidate_at = now();
+        // …pero si NO había marca explícita hay que escribirla ahora, congelando la que le
+        // correspondía ANTES de tocar el idioma. Si no, `resolveLanguageSource` (helpers.js)
+        // la deduciría de la columna ya cambiada por su última regla —«idioma distinto de 'es'
+        // ⇒ observed»— y una ficha sin corroborar se leería como observada: exactamente lo que
+        // esta corroboración existe para impedir. Caso real: ficha con metadata null y
+        // `language: 'es'`, un «Thursday» la pasa a 'en' y sin esto pasaría a leerse observada.
+        if (!LANGUAGE_SOURCES.includes(metaNueva.language_source)) {
+            metaNueva.language_source = resolveLanguageSource({ language: row?.language, metadata: meta });
+        }
+    }
+
     const { data, error } = await supabase
         .from('contacts')
-        .update({
-            language,
-            metadata: {
-                ...meta,
-                language_source: 'observed',
-                language_observed_at: now(),
-                // La conjetura por nombre queda superada: la clienta ha escrito y se ha visto
-                // en qué idioma. Dejar la marca puesta haría que la ficha siguiera avisando
-                // «deducido de su nombre» sobre un idioma ya observado — y que el prompt lo
-                // tratara como una probabilidad cuando ya es un hecho.
-                language_inferred: false,
-            },
-            updated_at: now(),
-        })
+        .update({ language, metadata: metaNueva, updated_at: now() })
         .eq('id', contactId)
         .eq('organization_id', oid)
         .select('id');
     assertRowsAffected(error, data, 'contacts', 'updateContactLanguage');
+    if (!promociona) {
+        logger.info('idioma_candidato_sin_corroborar', {
+            orgId: oid, contactId, language, fuenteActual: meta.language_source || null,
+        });
+    }
     return true;
 }
 
