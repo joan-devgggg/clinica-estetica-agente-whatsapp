@@ -1853,6 +1853,131 @@ async function getCitasDelDiaParaCaja(orgId, fecha) {
     return data || [];
 }
 
+// ─── Acuse de revisión del día (migración 039) ──────────────────────────────
+
+const CIERRE_COLUMNS = 'id, organization_id, fecha_caja, esperado_efectivo, esperado_tarjeta, '
+    + 'esperado_total, num_cobros, contado_efectivo, tpv_declarado, diferencia_efectivo, '
+    + 'diferencia_tarjeta, cerrado_at, cerrado_por, nota, estado, corrige_a, motivo_correccion, '
+    + 'anulado_at, anulado_por, created_at';
+
+/**
+ * El acuse VIGENTE de un día, o null si nadie lo ha revisado todavía.
+ *
+ * Sale de la vista `cierres_vigentes`, nunca de la tabla: el invariante "vigente y sin sucesor"
+ * está definido una sola vez, en la 039. Si esto filtrara a mano habría dos definiciones de qué
+ * cuenta y una acabaría devolviendo el acuse viejo después de volver a revisar.
+ */
+async function getCierreDelDia(orgId, fecha) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('cierres_vigentes').select(CIERRE_COLUMNS)
+        .eq('organization_id', oid).eq('fecha_caja', fecha)
+        .maybeSingle();
+    // Es dinero: un fallo de lectura NO puede leerse como "este día está sin revisar", porque
+    // entonces la pantalla invitaría a revisarlo otra vez y saldría un acuse duplicado.
+    assertRead(error, 'cierres_vigentes');
+    return data || null;
+}
+
+/** Los acuses vigentes de un rango, para pintar qué días están ya revisados. */
+async function getCierresVigentes(orgId, { desde = null, hasta = null } = {}) {
+    const oid = resolveOrg(orgId);
+    let query = supabase.from('cierres_vigentes').select(CIERRE_COLUMNS).eq('organization_id', oid);
+    if (desde) query = query.gte('fecha_caja', desde);
+    if (hasta) query = query.lte('fecha_caja', hasta);
+    const { data, error } = await query.order('fecha_caja', { ascending: false });
+    assertRead(error, 'cierres_vigentes');
+    return data || [];
+}
+
+/**
+ * Los días que TIENEN dinero y NADIE ha revisado, del más antiguo al más reciente.
+ *
+ * Es lo que de verdad sustituye al "¿me mandó el WhatsApp anoche?": si hay tres días en la cola
+ * se ve de un vistazo. Solo entran días con cobros — un domingo cerrado no es una tarea
+ * pendiente, y llenar la cola de días vacíos entrena a no mirarla.
+ *
+ * HOY se excluye a propósito: el día no ha terminado y el TPV no estará en el banco hasta
+ * mañana, así que proponer revisarlo sería proponer hacerlo mal.
+ */
+async function getDiasSinRevisar(orgId, { desde = null, hasta = null } = {}) {
+    const oid = resolveOrg(orgId);
+    const hoy = diaDeCajaHoy();
+    const hastaReal = hasta && hasta < hoy ? hasta : addDiasStr(hoy, -1);
+    const desdeReal = desde || addDiasStr(hoy, -60);
+
+    const cobros = await getCobrosVigentes(oid, { desde: desdeReal, hasta: hastaReal });
+    const porDia = new Map();
+    for (const c of cobros) {
+        const d = porDia.get(c.fecha_caja) || { fecha: c.fecha_caja, numCobros: 0, total: 0 };
+        d.numCobros += 1;
+        d.total += Number(c.importe_total) || 0;
+        porDia.set(c.fecha_caja, d);
+    }
+    if (!porDia.size) return [];
+
+    const cierres = await getCierresVigentes(oid, { desde: desdeReal, hasta: hastaReal });
+    const revisados = new Set(cierres.map(c => c.fecha_caja));
+    return [...porDia.values()]
+        .filter(d => !revisados.has(d.fecha))
+        .map(d => ({ ...d, total: Math.round(d.total * 100) / 100 }))
+        .sort((a, b) => a.fecha.localeCompare(b.fecha));
+}
+
+/** Suma/resta días a un 'YYYY-MM-DD' sin pasar por Date local (que desplazaría por TZ). */
+function addDiasStr(fecha, n) {
+    const [y, m, d] = fecha.split('-').map(Number);
+    const t = new Date(Date.UTC(y, m - 1, d));
+    t.setUTCDate(t.getUTCDate() + n);
+    return t.toISOString().slice(0, 10);
+}
+
+/**
+ * Deja un día por revisado. Congela lo que suman sus cobros AHORA y guarda lo que dice la
+ * persona; las diferencias las calcula `calcularDiferenciasCierre` y se escriben.
+ *
+ * `corrigeA` es lo que permite volver a revisar un día que se movió: sin él, el índice único
+ * `cierres_un_acuse_por_dia` rechaza el segundo acuse, y esa es la conducta que se quiere —
+ * revisar dos veces sin decir que se está corrigiendo sería duplicar el hecho.
+ */
+async function createCierre(orgId, {
+    fecha, contadoEfectivo, tpvDeclarado, nota = null,
+    corrigeA = null, motivoCorreccion = null, userId = null,
+} = {}) {
+    const oid = resolveOrg(orgId);
+    const { buildCajaResumen, calcularDiferenciasCierre } = require('./helpers');
+
+    // Lo esperado se lee AQUÍ, en el momento de revisar, y se congela. No se acepta del cliente:
+    // si viniera del panel, el acuse afirmaría lo que la pantalla creía, no lo que hay.
+    const cobros = await getCobrosVigentes(oid, { desde: fecha, hasta: fecha });
+    const { totales } = buildCajaResumen(cobros);
+    const dif = calcularDiferenciasCierre({
+        esperadoEfectivo: totales.efectivo, esperadoTarjeta: totales.tarjeta,
+        contadoEfectivo, tpvDeclarado,
+    });
+
+    const { data, error } = await supabase
+        .from('cierres_caja')
+        .insert({
+            organization_id: oid,
+            fecha_caja: fecha,
+            esperado_efectivo: totales.efectivo,
+            esperado_tarjeta: totales.tarjeta,
+            esperado_total: totales.total,
+            num_cobros: totales.numCobros,
+            contado_efectivo: Number(contadoEfectivo),
+            tpv_declarado: Number(tpvDeclarado),
+            ...dif,
+            nota: nota || null,
+            corrige_a: corrigeA || null,
+            motivo_correccion: motivoCorreccion || null,
+            cerrado_por: userId || null,
+        })
+        .select(CIERRE_COLUMNS);
+    assertRowsAffected(error, data, 'cierres_caja', 'createCierre');
+    return data[0];
+}
+
 // ─── PIN de atribución por estilista (migración 036) ────────────────────────
 //
 // Lo pone y lo cambia la DUEÑA desde el panel. No hay autoservicio ni recuperación: si una
@@ -3046,6 +3171,10 @@ module.exports = {
     anularCobro,
     diaDeCajaHoy,
     getCitasDelDiaParaCaja,
+    getCierreDelDia,
+    getCierresVigentes,
+    getDiasSinRevisar,
+    createCierre,
     getStylistPinStatus,
     setStylistPin,
     clearStylistPin,

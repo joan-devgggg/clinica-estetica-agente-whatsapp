@@ -15,6 +15,7 @@ import {
   Scissors,
   Megaphone,
   Receipt,
+  ClipboardCheck,
 } from "lucide-react";
 import {
   Sidebar,
@@ -81,6 +82,10 @@ const salonSettingsItems: NavItem[] = [
   // Caja y Facturación van juntas y en este orden: una registra lo que entra, la otra lo
   // valora. Caja estuvo en PRINCIPAL hasta el 07/08/2026.
   { href: "/caja", label: "Caja", icon: Banknote },
+  // Entrada propia y no una pestaña dentro de Caja: son dos usos distintos, con dos días por
+  // defecto distintos. Caja es el mostrador y abre en HOY; Revisión es el repaso de la dueña
+  // desde casa y abre en AYER, porque el TPV no está en el banco hasta el día siguiente.
+  { href: "/caja/revision", label: "Revisión de caja", icon: ClipboardCheck },
   { href: "/facturacion", label: "Facturación", icon: Receipt },
   { href: "/lista-vip", label: "Lista VIP", icon: Star },
   { href: "/campanas", label: "Campañas", icon: Megaphone },
@@ -120,6 +125,21 @@ const BOT_STATUS_PILL: Record<BotStatus, { label: string; dot: string; text: str
   },
 };
 
+/**
+ * ¿Es ESTE el item que corresponde a la ruta actual?
+ *
+ * Gana el href MÁS LARGO que casa. Con `startsWith` a secas, una ruta anidada encendía dos
+ * entradas a la vez: desde el 07/08/2026 `/caja/revision` cuelga de `/caja`, y las dos se
+ * pintaban activas. Y casar por prefijo crudo tiene otra trampa —`/caja` casaría con
+ * `/cajaX`—, así que el prefijo se exige con la barra.
+ */
+function esActivo(href: string, pathname: string, hrefs: string[]): boolean {
+  if (href === "/") return pathname === "/";
+  const casa = (h: string) => pathname === h || pathname.startsWith(`${h}/`);
+  if (!casa(href)) return false;
+  return !hrefs.some((otro) => otro !== href && otro.length > href.length && casa(otro));
+}
+
 export function AppSidebar() {
   const pathname = usePathname();
   const { orgName, orgType, loading } = useOrg();
@@ -128,6 +148,9 @@ export function AppSidebar() {
 
   const navItems = orgType === "salon" ? salonNavItems : restaurantNavItems;
   const settingsItems = orgType === "salon" ? salonSettingsItems : restaurantSettingsItems;
+  // Los dos grupos juntos: el desempate por href más largo tiene que mirar TODAS las entradas
+  // visibles, no solo las de su grupo.
+  const todosLosHrefs = [...navItems, ...settingsItems].map((i) => i.href);
   const displayName = loading ? "Panel de control" : orgName || "Panel de control";
 
   return (
@@ -167,7 +190,7 @@ export function AppSidebar() {
           <SidebarMenu className="gap-0.5">
             {navItems.map(({ href, label, icon: Icon }) => {
               const active =
-                href === "/" ? pathname === "/" : pathname.startsWith(href);
+                esActivo(href, pathname, todosLosHrefs);
               return (
                 <SidebarMenuItem key={href}>
                   <SidebarMenuButton
@@ -198,7 +221,7 @@ export function AppSidebar() {
           </SidebarGroupLabel>
           <SidebarMenu className="gap-0.5">
             {settingsItems.map(({ href, label, icon: Icon }) => {
-              const active = pathname.startsWith(href);
+              const active = esActivo(href, pathname, todosLosHrefs);
               return (
                 <SidebarMenuItem key={href}>
                   <SidebarMenuButton

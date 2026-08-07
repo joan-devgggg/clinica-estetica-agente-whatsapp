@@ -702,6 +702,98 @@ app.get('/api/caja/resumen', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ─── Dar el día por revisado (migración 039) ─────────────────────────────────
+//
+// Sustituye al WhatsApp que la recepcionista manda cada noche con el efectivo, el TPV y el
+// total. NO es un cierre contable: es un ACUSE de que alguien ha mirado el día. La diferencia
+// se apunta si la hay y no se pide justificarla — "nunca falta dinero", dijo la dueña, y un
+// formulario que exija explicar un descuadre es un formulario que se deja de usar.
+//
+// Asíncrono por diseño: el TPV no está en el banco hasta el día siguiente, así que lo normal es
+// revisar hoy el día de ayer.
+
+// Estado de un día: lo que suman sus cobros AHORA, su acuse si lo tiene, y si se ha MOVIDO
+// desde que se revisó. No escribe nada.
+app.get('/api/caja/cierre', async (req, res) => {
+    try {
+        const orgId = exigirSalon(req, res);
+        if (!orgId) return;
+        const fecha = req.query.fecha || db.diaDeCajaHoy();
+        if (!FECHA_YMD.test(String(fecha))) {
+            return res.status(400).json({ error: 'La fecha no es válida' });
+        }
+        const { buildCajaResumen, buildEstadoDiaRevisado } = require('./services/helpers');
+        const [cobros, cierre] = await Promise.all([
+            db.getCobrosVigentes(orgId, { desde: fecha, hasta: fecha }),
+            db.getCierreDelDia(orgId, fecha),
+        ]);
+        res.json({ fecha, ...buildEstadoDiaRevisado(buildCajaResumen(cobros), cierre) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// La cola: días CON dinero que nadie ha revisado, del más antiguo primero. Es lo que responde
+// de un vistazo a "¿me falta algún día por mirar?".
+app.get('/api/caja/cierre/pendientes', async (req, res) => {
+    try {
+        const orgId = exigirSalon(req, res);
+        if (!orgId) return;
+        res.json({ dias: await db.getDiasSinRevisar(orgId) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Registrar el acuse. Lo ESPERADO no se acepta del cliente: se lee aquí y se congela, o el
+// acuse afirmaría lo que la pantalla creía en vez de lo que hay.
+app.post('/api/caja/cierre', async (req, res) => {
+    try {
+        const orgId = exigirSalon(req, res);
+        if (!orgId) return;
+        const { fecha, contadoEfectivo, tpvDeclarado, nota, corrigeA, motivoCorreccion } = req.body || {};
+        if (!FECHA_YMD.test(String(fecha || ''))) {
+            return res.status(400).json({ error: 'La fecha no es válida' });
+        }
+        // Un día del FUTURO no se puede haber revisado. Hoy sí se permite —a veces se cuadra la
+        // caja al cerrar el salón— aunque la pantalla proponga ayer.
+        if (fecha > db.diaDeCajaHoy()) {
+            return res.status(400).json({ error: 'Ese día todavía no ha pasado' });
+        }
+        const numeros = { contadoEfectivo, tpvDeclarado };
+        for (const [campo, v] of Object.entries(numeros)) {
+            const n = Number(v);
+            if (v === null || v === undefined || v === '' || !Number.isFinite(n) || n < 0) {
+                return res.status(400).json({ error: `Escribe ${campo === 'contadoEfectivo' ? 'el efectivo contado' : 'el importe del TPV'}` });
+            }
+        }
+        if (corrigeA && !String(motivoCorreccion || '').trim()) {
+            return res.status(400).json({ error: 'Di por qué se vuelve a revisar' });
+        }
+
+        const cierre = await db.createCierre(orgId, {
+            fecha,
+            contadoEfectivo: Number(contadoEfectivo),
+            tpvDeclarado: Number(tpvDeclarado),
+            nota: nota || null,
+            corrigeA: corrigeA || null,
+            motivoCorreccion: motivoCorreccion || null,
+            // Del token verificado. Hoy identifica poco (login compartido) y así está dicho en
+            // la 039, pero inventarlo desde el body sería peor.
+            userId: req.authUserId || null,
+        });
+        logger.info('caja_dia_revisado', {
+            orgId, fecha, cierreId: cierre.id,
+            difEfectivo: cierre.diferencia_efectivo, difTarjeta: cierre.diferencia_tarjeta,
+            corrigeA: cierre.corrige_a || null, userId: req.authUserId || null,
+        });
+        res.status(201).json(cierre);
+    } catch (e) {
+        // El índice único es la conducta esperada, no un 500: alguien ha revisado ese día
+        // mientras esta pantalla estaba abierta.
+        if (/cierres_un_acuse_por_dia|duplicate key/i.test(e.message || '')) {
+            return res.status(409).json({ error: 'Ese día ya está revisado. Recarga para verlo.' });
+        }
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // Rectificar: una sola escritura, el sucesor anula al anterior. Ruta propia y no un PUT sobre
 // el cobro, porque un cobro NO se edita — el trigger de la 035 lo impide en la base.
 app.post('/api/cobros/:id/rectificar', async (req, res) => {

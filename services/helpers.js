@@ -3309,6 +3309,66 @@ function buildCajaResumen(cobros, { stylists = [] } = {}) {
     };
 }
 
+/**
+ * Redondeo a céntimos para las cifras del acuse. Sin esto, `100.1 - 100` da 0.09999999999999432
+ * y esa cifra acabaría escrita en la columna `diferencia_efectivo` de un registro que nadie
+ * puede editar después.
+ */
+function eur2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+
+/**
+ * Las dos cifras del acuse a partir de lo contado y lo esperado. Puro.
+ *
+ * Se calcula en el SERVIDOR y no en la pantalla por la misma razón que `importe_referencia`: si
+ * lo restara el panel, habría dos opiniones sobre cuánto falta. Y las diferencias se GUARDAN
+ * (no se derivan al leer) porque son la cifra del acuse.
+ *
+ * Negativo = falta. Positivo = sobra. No se corrige el signo ni se "normaliza": el sentido es
+ * justo ese.
+ */
+function calcularDiferenciasCierre({ esperadoEfectivo, esperadoTarjeta, contadoEfectivo, tpvDeclarado }) {
+    return {
+        diferencia_efectivo: eur2(Number(contadoEfectivo) - Number(esperadoEfectivo)),
+        diferencia_tarjeta: eur2(Number(tpvDeclarado) - Number(esperadoTarjeta)),
+    };
+}
+
+/**
+ * El estado de un día: ¿está revisado?, y si lo está, ¿SIGUE diciendo lo mismo?
+ *
+ * Lo segundo es la parte que importa y la que justifica congelar los `esperado_*`. Como el
+ * acuse es asíncrono —lo normal es revisar hoy el día de ayer— es CORRIENTE que entre un cobro
+ * con `fecha_caja` de un día ya revisado. Eso no se bloquea: bloquearlo obligaría a apuntar el
+ * dinero en otro día, o sea a mentir. Lo que se hace es DECIRLO, comparando lo congelado con lo
+ * que suman hoy sus cobros vigentes, y se resuelve volviendo a revisar.
+ *
+ * Es el mismo patrón que `servicio_facturado` en la 031: no se revaloriza solo, avisa de que ya
+ * no cuadra y decide una persona.
+ *
+ * `resumen` es la salida de `buildCajaResumen` (recalculada AHORA); `cierre` es la fila vigente
+ * de `cierres_vigentes`, o null.
+ */
+function buildEstadoDiaRevisado(resumen, cierre = null) {
+    const t = resumen?.totales || { efectivo: 0, tarjeta: 0, total: 0, numCobros: 0 };
+    const esperado = {
+        efectivo: eur2(t.efectivo), tarjeta: eur2(t.tarjeta),
+        total: eur2(t.total), numCobros: t.numCobros || 0,
+    };
+    if (!cierre) return { revisado: false, cierre: null, esperado, movido: false, movimiento: null };
+
+    // Se compara contra lo CONGELADO, no contra lo que la persona contó: la pregunta es "¿han
+    // cambiado los cobros del día desde que se miró?", no "¿acertó al contar?".
+    const movimiento = {
+        efectivo: eur2(esperado.efectivo - Number(cierre.esperado_efectivo)),
+        tarjeta: eur2(esperado.tarjeta - Number(cierre.esperado_tarjeta)),
+        total: eur2(esperado.total - Number(cierre.esperado_total)),
+        numCobros: esperado.numCobros - (cierre.num_cobros || 0),
+    };
+    const movido = movimiento.efectivo !== 0 || movimiento.tarjeta !== 0
+        || movimiento.total !== 0 || movimiento.numCobros !== 0;
+    return { revisado: true, cierre, esperado, movido, movimiento: movido ? movimiento : null };
+}
+
 function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {}) {
     const NO_STYLIST = NO_STYLIST_KEY;
     const buckets = new Map();
@@ -3511,6 +3571,8 @@ module.exports = {
     resolveBillingAmount,
     resolveImporteReferencia,
     resolveClienteDelCobro,
+    calcularDiferenciasCierre,
+    buildEstadoDiaRevisado,
     METODOS_COBRO,
     MOTIVOS_DIFERENCIA,
     normalizeCobroImportes,
