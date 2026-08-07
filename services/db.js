@@ -505,9 +505,20 @@ async function updateLeadById(orgId, id, campos) {
     return findById(oid, id);
 }
 
+// Borra un contacto. Y borra en CASCADA sus citas, sus conversaciones y sus mensajes
+// (contacts es padre ON DELETE CASCADE de las tres) — que es mucho más de lo que sugiere
+// "eliminar cliente", pero es el comportamiento que ya había.
+//
+// El `error` NO se miraba, así que un DELETE rechazado devolvía undefined y el endpoint
+// respondía 200 {ok:true}: el panel decía "borrado" sobre un contacto que seguía ahí. Antes
+// era improbable; desde la migración 035 es un camino REAL — si alguna de sus citas tiene un
+// cobro registrado, el RESTRICT de cobros.appointment_id aborta la cascada entera y el
+// borrado falla. Ese fallo tiene que llegar arriba para poder explicarse.
 async function deleteLead(orgId, id) {
     const oid = resolveOrg(orgId);
-    await supabase.from('contacts').delete().eq('id', id).eq('organization_id', oid);
+    const { error } = await supabase.from('contacts').delete().eq('id', id).eq('organization_id', oid);
+    assertWrite(error, 'contacts', 'deleteLead');
+    return true;
 }
 
 async function marcarCitaCompletada(orgId, telefono) {

@@ -258,12 +258,29 @@ app.put('/api/leads/:id', async (req, res) => {
     }
 });
 
+// Un borrado bloqueado por dinero registrado (RESTRICT de cobros.appointment_id, migración
+// 035) llega como un 23503 de Postgres. Sin traducir, el panel enseñaría "insert or update on
+// table ... violates foreign key constraint" y nadie sabría qué hacer con eso.
+// 409 y no 500: no es un fallo del servidor, es una precondición que no se cumple.
+function esBloqueoPorCobro(e) {
+    const msg = String(e?.message || '');
+    return e?.code === '23503' || msg.includes('23503') || msg.includes('cobros_appointment_id_fkey');
+}
+
 app.delete('/api/leads/:id', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
         await db.deleteLead(orgId, req.params.id);
         res.json({ ok: true });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) {
+        if (esBloqueoPorCobro(e)) {
+            return res.status(409).json({
+                error: 'Este cliente tiene alguna cita con un cobro registrado en caja. '
+                     + 'Anula primero esos cobros; si no, se borraría dinero ya contabilizado.',
+            });
+        }
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // ─── API: Clientes (enriched with appointment stats) ────────────────────────
