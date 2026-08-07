@@ -1756,6 +1756,101 @@ function resolveUpcomingDate(dom, month) {
     return null;
 }
 
+// ─── Hora de reloj FUERA del horario del salón ───────────────────────────────
+// Nace de la conversación de Olga Yarmak (07/08/2026): dijo TRES veces que solo podía
+// «после 23:00» y en ningún momento se le dijo que el salón cierra a las 19:00. No existía
+// ningún camino que comparase una hora pedida con el horario — extractDateSignalSante saca
+// día, fecha, semana y franja (mañana/tarde), pero la hora de reloj se cae entera y nadie
+// la vuelve a mirar.
+
+// Patrón ÚNICO de hora HH:MM. Lo comparten las dos redes de invención de bot.js y este
+// gate; escrito tres veces, el día que uno cambie los otros dos se quedan atrás en silencio.
+const HORA_HHMM_SRC = '\\b([01]?\\d|2[0-3]):[0-5]\\d\\b';
+
+// Horas HH:MM que MENCIONA un texto, normalizadas a dos dígitos ('9:30' → '09:30').
+function extractClockHours(text) {
+    const re = new RegExp(HORA_HHMM_SRC, 'g');
+    return [...String(text || '').matchAll(re)].map((m) => {
+        const [h, min] = m[0].split(':');
+        return `${String(Number(h)).padStart(2, '0')}:${min}`;
+    });
+}
+
+// 'HH:MM' → minutos del día, o null si no es una hora válida. Con regex y no con Number():
+// Number('') es 0 y una hora ausente se leería como medianoche.
+function hhmmToMin(hhmm) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim());
+    if (!m) return null;
+    const h = Number(m[1]);
+    const min = Number(m[2]);
+    if (h > 23 || min > 59) return null;
+    return h * 60 + min;
+}
+
+// business_hours (agent_configs) va indexado por nombre de día SIN tilde y un día AUSENTE
+// significa cerrado: Sante no tiene 'domingo'. Índice 0=Lunes…6=Domingo, la convención de
+// stylist_schedules y de DIA_SEMANA_MAP.
+const DOW_A_CLAVE_HORARIO = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo'];
+
+// ¿El texto pide una hora que cae FUERA del horario del salón?
+// Devuelve { hora, apertura, cierre } (las tres 'HH:MM') o null.
+//
+// El horario sale SIEMPRE de business_hours, que edita la dueña desde el panel. Un 19:00
+// escrito aquí mediría antigüedad y no corrección (regla 5), y además este es el primer
+// consumidor de esa columna: hasta ahora business_hours solo se escribía.
+// Sin business_hours utilizable devuelve null y no se dice NADA: preferimos callar a
+// inventarle un horario al salón (regla 3).
+//
+// `diaSemana` (0=Lunes…6=Domingo) elige contra qué día se compara. Sin día concreto se usa
+// el SOBRE de todos los días con horario (la apertura más temprana y el cierre más tardío),
+// no la franja común: si el sábado cerrase antes, la franja común marcaría como imposible
+// una hora que de lunes a viernes sí vale. Solo se declara fuera de horario lo que es
+// imposible TODOS los días — "любой день после 23:00" es exactamente eso. La contrapartida
+// asumida es que el sobre puede prometer una punta que algún día concreto no llega a tener;
+// de la disponibilidad real sigue respondiendo el motor de huecos, no este mensaje.
+// Un día sin entrada devuelve null — que el salón cierre ese día es otra conversación y ya
+// tiene su propia red (respondsWithFalseClosureClaim).
+function detectHoraFueraDeHorario(text, businessHours, { diaSemana = null } = {}) {
+    const horas = extractClockHours(text);
+    if (!horas.length) return null;
+    if (!businessHours || typeof businessHours !== 'object') return null;
+
+    let apertura = null;
+    let cierre = null;
+    if (diaSemana !== null && diaSemana !== undefined) {
+        const dia = businessHours[DOW_A_CLAVE_HORARIO[diaSemana]];
+        if (!dia) return null;
+        apertura = hhmmToMin(dia.apertura);
+        cierre = hhmmToMin(dia.cierre);
+    } else {
+        for (const clave of DOW_A_CLAVE_HORARIO) {
+            const dia = businessHours[clave];
+            if (!dia) continue;
+            const a = hhmmToMin(dia.apertura);
+            const c = hhmmToMin(dia.cierre);
+            if (a === null || c === null) continue;
+            apertura = apertura === null ? a : Math.min(apertura, a);
+            cierre = cierre === null ? c : Math.max(cierre, c);
+        }
+    }
+    if (apertura === null || cierre === null || apertura >= cierre) return null;
+
+    const minToHHMM = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    let fuera = null;
+    for (const hora of horas) {
+        const m = hhmmToMin(hora);
+        if (m === null) continue;
+        // El cierre EXACTO ya está fuera: una cita a las 19:00 termina con el salón cerrado.
+        // Mismo criterio que calendar-sante, que descarta el hueco que empieza al cierre.
+        if (m < apertura || m >= cierre) { if (!fuera) fuera = hora; continue; }
+        // Ha nombrado también una hora válida: no es una petición fuera de horario a secas
+        // («¿a las 11 o mejor a las 20:00?»). Ahí no corresponde este mensaje.
+        return null;
+    }
+    if (!fuera) return null;
+    return { hora: fuera, apertura: minToHHMM(apertura), cierre: minToHHMM(cierre) };
+}
+
 // ─── Confirmación de cita (salón): extras deterministas ──────────────────────
 // BUG2/BUG3: tras confirmar una cita SIEMPRE garantizamos en el mensaje (a) una
 // sugerencia de servicio complementario si aplica (upselling), (b) la dirección del
@@ -3298,6 +3393,9 @@ module.exports = {
     extractDateSignalSante,
     detectNoPreferenceSignal,
     detectNoStylistPreference,
+    extractClockHours,
+    hhmmToMin,
+    detectHoraFueraDeHorario,
     wantsAnotherBooking,
     wantsRestart,
     detectGuestBooking,

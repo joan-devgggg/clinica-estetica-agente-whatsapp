@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, detectHoraFueraDeHorario, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -1165,10 +1165,55 @@ function salonRetryMsg(language) {
 // `availableSlots` — i.e. the LLM invented them. Returns false if no times appear, if
 // every mentioned time matches a real slot, or if a mentioned time falls within the range
 // of real slots (covers the ±30 min intermediate-slot exception: 10:15 between 10:00/10:30).
-function respondsWithInventedSlots(respuesta, availableSlots) {
+//
+// `horasHorario` (opcional) son las puntas de `business_hours`: DECIR EL HORARIO DEL SALÓN
+// no es ofrecer un hueco. Sin esta exención, «cerramos a las 19:00» son dos HH:MM sin
+// respaldo y la respuesta se sustituía por el menú genérico — el bug del 07/08/2026, en el
+// que Olga Yarmak pidió tres veces las 23:00 y jamás se le dijo el horario. Es la misma
+// clase de fallo que ya estaba anotada en unbackedBookingClaim, pero allí el coste es un
+// mensaje honesto de más y aquí era perder el único mensaje correcto.
+//
+// La exención EXIGE las cuatro cosas, y ninguna sobra:
+//   1. Toda hora mencionada es una punta del horario O cae fuera de él. Lo segundo hace
+//      falta porque la respuesta correcta REPITE la hora imposible que pidió la clienta
+//      («a las 23:00 no abrimos, nuestro horario es de 10:00 a 19:00»), y una hora fuera
+//      del horario no puede ser un hueco inventado: no es reservable por definición.
+//   2. Se mencionan DOS puntas distintas. Un mensaje que nombra UNA sola hora no está
+//      diciendo un horario, está proponiendo un hueco — «te apunto a las 19:00» y «¿te va
+//      bien a las 11:00?» caen aquí, que es justo lo que no puede colarse.
+//   3. El texto DICE que es un horario ("abrimos", "мы работаем", "our hours"…). Sin esto,
+//      «tengo libre a las 11:00 y a las 15:00» sin un solo hueco pasaría por horario.
+//   4. No da la reserva por hecha (llmClaimsBooked).
+//
+// (2) y (3) ocupan el sitio de asksForBookingApproval y son MÁS estrictas que ella: bloquean
+// también las propuestas que no preguntan nada. Se cambió por eso y por un falso positivo
+// real: «Мы работаем с 11:00 до 15:00. Какое время тебе подойдёт?» es la respuesta correcta
+// en ruso y `подойдёт` está en BOOKING_APPROVAL_QUESTIONS, así que la habría bloqueado.
+const HORARIO_MARKERS = [
+    /\bhorario\b/, /\babrimos\b/, /\babierto\b/, /\babiertos\b/, /\bcerramos\b/, /\bde lunes a\b/,
+    /\bwe(?:'|’)?re open\b/, /\bwe are open\b/, /\bwe open\b/, /\bour hours\b/, /\bopening hours\b/,
+    buildCyrillicRe(['работаем', 'график', 'открыты', 'закрываемся', 'працюємо', 'розклад', 'графік', 'відчинені']),
+];
+function statesOpeningHours(text) {
+    const t = normalizeText(text);
+    return HORARIO_MARKERS.some(re => re.test(t));
+}
+function respondsWithInventedSlots(respuesta, availableSlots, horasHorario = null) {
     const horaRegex = /\b([01]?\d|2[0-3]):[0-5]\d\b/g;
     const mentioned = [...String(respuesta || '').matchAll(horaRegex)].map(m => normalizeHora(m[0]));
     if (mentioned.length === 0) return false;
+    if (Array.isArray(horasHorario) && horasHorario.length) {
+        const limites = new Set(horasHorario.map(normalizeHora).filter(Boolean));
+        const toMinutos = hhmm => { const [H, M] = hhmm.split(':').map(Number); return H * 60 + M; };
+        const limMins = [...limites].map(toMinutos);
+        const primera = Math.min(...limMins);
+        const ultima = Math.max(...limMins);
+        // Fuera del sobre [primera apertura, último cierre) no hay hueco posible.
+        const noReservable = h => toMinutos(h) < primera || toMinutos(h) >= ultima;
+        const soloHorario = mentioned.every(h => h && (limites.has(h) || noReservable(h)));
+        const puntasDistintas = new Set(mentioned.filter(h => h && limites.has(h))).size;
+        if (soloHorario && puntasDistintas >= 2 && statesOpeningHours(respuesta) && !llmClaimsBooked(respuesta)) return false;
+    }
     const realSlots = Array.isArray(availableSlots) ? availableSlots : [];
     const realHoras = new Set(realSlots.map(s => normalizeHora(s.hora)).filter(Boolean));
     const toMin = hhmm => { const [H, M] = hhmm.split(':').map(Number); return H * 60 + M; };
@@ -1541,6 +1586,45 @@ function salonHairTreatmentRangeMsg(session) {
             + `органічні догляди… Вони коштують від ${min}€ до ${max}€ — залежить від того, що `
             + `потрібно твоєму волоссю.\n\nЩоб не помилитися, краще подивитися наживо: на `
             + `консультації ми робимо діагностику і разом добираємо відповідний догляд. Записати тебе?`,
+    };
+    return msgs[session.language] || msgs.es;
+}
+
+// Puntas de business_hours (aperturas y cierres, sin repetir) para la exención de
+// respondsWithInventedSlots. Devuelve [] cuando no hay horario utilizable, y con [] la
+// exención no se aplica: sin saber cuál es el horario no se puede afirmar que una hora lo sea.
+function horasLimiteHorario(businessHours) {
+    if (!businessHours || typeof businessHours !== 'object') return [];
+    const out = new Set();
+    for (const dia of Object.values(businessHours)) {
+        if (!dia || typeof dia !== 'object') continue;
+        for (const h of [dia.apertura, dia.cierre]) {
+            const n = normalizeHora(h);
+            if (n) out.add(n);
+        }
+    }
+    return [...out];
+}
+
+// La clienta ha pedido una hora a la que el salón no está abierto. El mensaje dice el
+// horario ENTERO —apertura Y cierre—, no solo que a esa hora esté cerrado: "a las 23:00 ya
+// hemos cerrado" la obliga a preguntar otra vez hasta cuándo abren, que es justo el turno
+// que estamos intentando ahorrar.
+//
+// Las tres horas salen de `business_hours` (agent_configs), nunca de una constante: el
+// horario lo edita la dueña y un 19:00 escrito aquí mediría antigüedad (regla 5).
+// La redacción es NEUTRA respecto a la dirección ("no estamos abiertos", no "ya hemos
+// cerrado") porque el mismo mensaje cubre las 08:00 y las 23:00.
+function salonFueraDeHorarioMsg(session, { hora, apertura, cierre }) {
+    const msgs = {
+        es: `A las ${hora} no estamos abiertos 😊 Nuestro horario es de ${apertura} a ${cierre}. `
+            + '¿Qué hora dentro de ese horario te viene bien?',
+        en: `We're not open at ${hora} 😊 Our hours are ${apertura} to ${cierre}. `
+            + 'What time within those works for you?',
+        ru: `В ${hora} мы не работаем 😊 Наш график — с ${apertura} до ${cierre}. `
+            + 'Какое время в этом промежутке тебе удобно?',
+        uk: `О ${hora} ми не працюємо 😊 Наш графік — з ${apertura} до ${cierre}. `
+            + 'Який час у цьому проміжку тобі зручний?',
     };
     return msgs[session.language] || msgs.es;
 }
@@ -3813,6 +3897,38 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             }
         }
 
+        // ─── Salon: pide una hora a la que el salón no abre ──────────────
+        // El caso de Olga Yarmak (07/08/2026): dijo TRES veces «после 23:00» y las tres
+        // recibió "no te entiendo". La hora de reloj no la miraba nadie —
+        // extractDateSignalSante saca día, fecha, semana y franja, pero no la hora — y la
+        // única vía que quedaba (que lo dijera el LLM, que sí tiene el horario en el prompt)
+        // la cortaba la red anti-invención, para la que "cerramos a las 19:00" son dos horas
+        // sin respaldo.
+        //
+        // Determinista y ANTES del LLM: es un hecho del negocio, no una opinión del modelo.
+        // No toca selectedService ni sinServicioStreak — la clienta no ha dejado de saber lo
+        // que quiere por pedir una hora imposible, y contarlo como turno perdido la acercaría
+        // al menú de rescate por algo que sí hemos sabido contestar.
+        if (orgType === 'salon' && !session.reservaConfirmada) {
+            const cfgHorario = (await getAgentConfig(orgId))?.business_hours;
+            const fuera = detectHoraFueraDeHorario(sanitized, cfgHorario);
+            // Si esa hora está entre los huecos ya ofrecidos, la clienta está ELIGIENDO, no
+            // pidiendo un imposible: manda el motor, que es quien sabe la disponibilidad real.
+            const esHuecoOfrecido = fuera && (session.availableSlots || [])
+                .some(s => normalizeHora(s.hora) === fuera.hora);
+            if (fuera && !esHuecoOfrecido) {
+                const msg = salonFueraDeHorarioMsg(session, fuera);
+                logger.info('hora_fuera_de_horario_detectada', {
+                    orgId, telefono: userPhone, hora: fuera.hora,
+                    apertura: fuera.apertura, cierre: fuera.cierre,
+                });
+                session.history.push({ role: 'assistant', content: msg, ts: Date.now() });
+                await _send(msg);
+                persistSession(orgId, userPhone, session);
+                return;
+            }
+        }
+
         // ─── Salon: describe el ESTADO de su cabello → rango + consulta ──
         // Petición de Yulia (03/08/2026) tras el fallo de la noche anterior: si la clienta
         // describe su problema ("tengo el pelo seco y sin brillo") sin nombrar un servicio,
@@ -5173,8 +5289,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // en que la hora ofrecida cae fuera del rango real de huecos. NO aplica cuando
         // la cita ya está confirmada (ahí el mensaje lleva la hora legítima) ni al
         // restaurante (San Remo intacto).
+        // Las puntas del horario quedan EXENTAS: decir "abrimos de 10:00 a 19:00" no es
+        // ofrecer un hueco, y bloquearlo dejaba a la clienta sin la única respuesta útil.
+        const horasHorario = orgType === 'salon'
+            ? horasLimiteHorario((await getAgentConfig(orgId))?.business_hours)
+            : [];
         if (orgType === 'salon' && !session.reservaConfirmada && !aiResponse._rectificadoPorRedFantasma
-                && respondsWithInventedSlots(aiResponse.respuesta, session.availableSlots)) {
+                && respondsWithInventedSlots(aiResponse.respuesta, session.availableSlots, horasHorario)) {
             logger.warn('cita_sante_disponibilidad_inventada_bloqueada', {
                 orgId, telefono: userPhone,
                 huecosReales: (session.availableSlots || []).length,
@@ -5660,7 +5781,7 @@ module.exports = {
     extractSentMessageId,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
-        respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
+        respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover, offersHumanHandover,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:
