@@ -17,7 +17,7 @@ import { useOrg } from "@/lib/org-context";
 import { leerSesion, type CajaSesion } from "@/lib/caja-session";
 import { ymd as toKey, addDays, getMondayOf, madridDateKey, madridTime } from "@/lib/date";
 
-import { API, apiHeaders } from "@/lib/api";
+import { API, apiHeaders, mensajeDeFallo, mensajeDeError } from "@/lib/api";
 
 function sortByHora(reservas: Reserva[]) {
   return [...reservas].sort((a, b) =>
@@ -64,20 +64,14 @@ export default function ReservasPage() {
       const hasta = toKey(addDays(weekStart, 6));
       const res = await fetch(`${API}/api/citas?desde=${desde}&hasta=${hasta}`, { headers: await apiHeaders(orgId) });
       if (!res.ok) {
-        if (res.status === 401) throw new Error("401 — sesión no autorizada (el token no llegó o caducó). Cierra sesión y vuelve a entrar.");
-        if (res.status === 403) throw new Error("403 — sin permiso para esta organización.");
-        throw new Error(`La API respondió ${res.status}. Inténtalo de nuevo o revisa el servidor.`);
+        throw new Error(mensajeDeFallo(res.status));
       }
       setAllReservas(await res.json());
       setError(null);
     } catch (err) {
       // Antes se tragaba el error y se veía "Sin reservas este día", indistinguible
       // de un día realmente vacío. Ahora dejamos el motivo visible.
-      setError(
-        err instanceof Error && err.message !== "Failed to fetch"
-          ? err.message
-          : "No se pudo contactar con la API (fallo de red o servidor caído)."
-      );
+      setError(mensajeDeError(err));
       setAllReservas([]);
     } finally {
       setLoading(false);
@@ -98,12 +92,12 @@ export default function ReservasPage() {
       const res = await fetch(`${API}/api/schedule-blocks?desde=${desde}&hasta=${hasta}`, {
         headers: await apiHeaders(orgId),
       });
-      if (!res.ok) throw new Error(`La API respondió ${res.status}`);
+      if (!res.ok) throw new Error(mensajeDeFallo(res.status));
       setBlocks(await res.json());
       setBlocksError(null);
     } catch (err) {
       // Ver el comentario de blocksError: aquí NO se hace `setBlocks([])` y se calla.
-      setBlocksError(err instanceof Error ? err.message : "fallo de red");
+      setBlocksError(mensajeDeError(err));
     }
   }, [weekStart, orgId, orgType]);
 
@@ -154,7 +148,7 @@ export default function ReservasPage() {
       const res = await fetch(`${API}/api/caja/pendientes?fecha=${reserva.fecha_cita}`, {
         headers: await apiHeaders(orgId),
       });
-      if (!res.ok) throw new Error(`La API respondió ${res.status}`);
+      if (!res.ok) throw new Error(mensajeDeFallo(res.status));
       const { citas } = await res.json();
       const encontrada = (citas ?? []).find(
         (c: { appointment_id: string }) => c.appointment_id === reserva.appointment_id,

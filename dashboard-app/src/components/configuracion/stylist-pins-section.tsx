@@ -13,7 +13,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { API, apiHeaders, apiMutate } from "@/lib/api";
+import { API, apiHeaders, apiMutate, mensajeDeFallo, mensajeDeError } from "@/lib/api";
 import type { Stylist, StylistPinStatus } from "@/lib/types";
 
 export function StylistPinsSection({ orgId }: { orgId: string }) {
@@ -37,15 +37,13 @@ export function StylistPinsSection({ orgId }: { orgId: string }) {
       // que aquí se lee como "ninguna estilista tiene PIN", justo lo contrario de lo que pasa.
       // Con esa foto, la dueña podría creer que ya están todas sin PIN y no tocar nada.
       const fallo = [s, p].find((x) => !x.ok);
-      if (fallo) throw new Error(`La API respondió ${fallo.status}`);
+      if (fallo) throw new Error(mensajeDeFallo(fallo.status));
       setStylists(await s.json());
       const estados: StylistPinStatus[] = await p.json();
       setConPin(new Set(estados.map((e) => e.stylist_id)));
       setError(null);
     } catch (e) {
-      setError(e instanceof Error && e.message !== "Failed to fetch"
-        ? e.message
-        : "No se pudo contactar con la API.");
+      setError(mensajeDeError(e));
     } finally {
       setCargando(false);
     }

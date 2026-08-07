@@ -18,7 +18,7 @@ import { PendienteRow } from "@/components/caja/pendiente-row";
 import { ResumenDia } from "@/components/caja/resumen-dia";
 import { CobrosDelDia } from "@/components/caja/cobros-del-dia";
 import { CobroSheet, type CobroContexto } from "@/components/caja/cobro-sheet";
-import { API, apiHeaders, apiMutate } from "@/lib/api";
+import { API, apiHeaders, apiMutate, mensajeDeFallo, mensajeDeError } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
 import { leerSesion, renovarToken, type CajaSesion } from "@/lib/caja-session";
 import type { CajaPendiente, CajaResumen, Cobro, MetodoCobro, Stylist } from "@/lib/types";
@@ -55,7 +55,7 @@ export default function CajaPage() {
       // salón no tuviera estilistas, no que la lista no hubiera cargado. Sin ella no se
       // puede elegir quién cobra, así que callarlo bloquea la caja sin decir por qué.
       const fallo = [p, r, h, s].find((x) => !x.ok);
-      if (fallo) throw new Error(`La API respondió ${fallo.status}`);
+      if (fallo) throw new Error(mensajeDeFallo(fallo.status));
       setPendientes((await p.json()).citas ?? []);
       setResumen(await r.json());
       setHistorial((await h.json()).cobros ?? []);
@@ -63,9 +63,7 @@ export default function CajaPage() {
       setError(null);
     } catch (e) {
       // Es dinero: un fallo NO puede leerse como "hoy no hay nada que cobrar" ni como caja a 0.
-      setError(e instanceof Error && e.message !== "Failed to fetch"
-        ? e.message
-        : "No se pudo contactar con la API.");
+      setError(mensajeDeError(e));
     } finally {
       setCargando(false);
     }

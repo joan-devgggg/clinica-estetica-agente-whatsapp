@@ -468,7 +468,7 @@ app.put('/api/stylists/:id/pin', async (req, res) => {
             return res.status(400).json({ error: 'El PIN son 4 a 6 dígitos' });
         }
         const r = await db.setStylistPin(orgId, req.params.id, req.body.pin, { userId: req.authUserId || null });
-        if (!r) return res.status(404).json({ error: 'Esa estilista no existe en esta organización' });
+        if (!r) return res.status(404).json({ error: 'Esa estilista no existe en este salón' });
         // El PIN NO se registra en el log, obviamente. Solo que se cambió y quién lo cambió.
         logger.info('pin_estilista_actualizado', { orgId, stylistId: req.params.id, userId: req.authUserId || null });
         res.json(r);
@@ -492,7 +492,7 @@ app.post('/api/caja/sesion', async (req, res) => {
         const orgId = exigirSalon(req, res);
         if (!orgId) return;
         const { stylistId, pin } = req.body || {};
-        if (!stylistId) return res.status(400).json({ error: 'Falta la estilista' });
+        if (!stylistId) return res.status(400).json({ error: 'Elige primero quién cobra' });
 
         const ok = await db.verifyStylistPin(orgId, stylistId, pin);
         if (!ok) {
@@ -553,14 +553,14 @@ app.post('/api/cobros', async (req, res) => {
         } = req.body || {};
 
         if (fechaCaja != null && !FECHA_YMD.test(String(fechaCaja))) {
-            return res.status(400).json({ error: 'fechaCaja debe ser YYYY-MM-DD' });
+            return res.status(400).json({ error: 'La fecha del cobro no es válida' });
         }
         const { MOTIVOS_DIFERENCIA } = require('./services/helpers');
         if (motivoDiferencia != null && !MOTIVOS_DIFERENCIA.includes(motivoDiferencia)) {
-            return res.status(400).json({ error: `motivoDiferencia debe ser uno de: ${MOTIVOS_DIFERENCIA.join(', ')}` });
+            return res.status(400).json({ error: 'Ese motivo no es válido' });
         }
         if (!appointmentId && !concepto) {
-            return res.status(400).json({ error: 'Un cobro sin cita tiene que decir de qué es (concepto)' });
+            return res.status(400).json({ error: 'Escribe qué se ha vendido' });
         }
 
         const atrib = resolverAtribucion(req, orgId, cobradoPor);
@@ -599,7 +599,7 @@ app.get('/api/cobros', async (req, res) => {
         const desde = req.query.desde || hoy;
         const hasta = req.query.hasta || desde;
         if (!FECHA_YMD.test(String(desde)) || !FECHA_YMD.test(String(hasta))) {
-            return res.status(400).json({ error: 'desde/hasta deben ser YYYY-MM-DD' });
+            return res.status(400).json({ error: 'Las fechas no son válidas' });
         }
         const opciones = { desde, hasta, appointmentId: req.query.citaId || null };
         if (req.query.historial === '1') {
@@ -627,7 +627,7 @@ app.get('/api/caja/pendientes', async (req, res) => {
         if (!orgId) return;
         const fecha = req.query.fecha || db.diaDeCajaHoy();
         if (!FECHA_YMD.test(String(fecha))) {
-            return res.status(400).json({ error: 'fecha debe ser YYYY-MM-DD' });
+            return res.status(400).json({ error: 'La fecha no es válida' });
         }
 
         const { resolveImporteReferencia } = require('./services/helpers');

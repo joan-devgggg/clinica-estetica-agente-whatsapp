@@ -48,3 +48,30 @@ export async function apiMutate(
   }
   return res;
 }
+
+// ─── Errores en cristiano ───────────────────────────────────────────────────
+//
+// Quien usa este panel no sabe lo que es una API, ni un 500, ni "Failed to fetch" — que además
+// está en inglés. Un mensaje que no se entiende se acaba ignorando, y entonces da igual lo bien
+// que se detecte el fallo: el efecto es el mismo que callarlo.
+//
+// La regla: decir QUÉ ha pasado y QUÉ hacer. El número técnico va entre paréntesis al final,
+// para que sirva si alguien lo reenvía, sin ser lo primero que se lee.
+
+export function mensajeDeFallo(status: number): string {
+  if (status === 401) return "Tu sesión ha caducado. Cierra sesión y vuelve a entrar.";
+  if (status === 403) return "No tienes permiso para ver esto.";
+  if (status === 404) return "No se ha encontrado.";
+  if (status === 409) return "No se puede hacer ahora mismo.";
+  if (status >= 500) return `El servidor ha fallado. Inténtalo otra vez en un momento. (${status})`;
+  return `No se ha podido cargar. Inténtalo otra vez. (${status})`;
+}
+
+export function mensajeDeError(e: unknown): string {
+  const bruto = e instanceof Error ? e.message : "";
+  // "Failed to fetch" es lo que dice el navegador cuando no hay red. Nunca se enseña tal cual.
+  if (!bruto || bruto === "Failed to fetch" || /NetworkError|Load failed/i.test(bruto)) {
+    return "No hay conexión con el servidor. Comprueba internet e inténtalo otra vez.";
+  }
+  return bruto;
+}
