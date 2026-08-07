@@ -28,6 +28,28 @@ for (const key of required) {
     }
 }
 
+// ─── Modo SOLO API ───────────────────────────────────────────────────────────
+//
+// Este proceso habla con la base de datos de PRODUCCIÓN. Levantarlo para mirar una pantalla
+// del panel arrancaba también los clientes de WhatsApp, el bot de Telegram y los cuatro
+// workers — y los workers ESCRIBEN solos: autoCompleteAppointments marca citas como
+// completadas y sella importes, el de recordatorios manda WhatsApps, el de reseñas también.
+// No dependen de `bot_activo`.
+//
+// El 07/08/2026 se levantó así durante 15 minutos para comprobar que /caja renderizaba. No
+// escribió nada —Sante tenía el bot pausado y San Remo se quedó en el QR— pero fue suerte, no
+// diseño.
+//
+// Qué apaga: lo AUTÓNOMO, o sea todo lo que escribe sin que nadie lo pida. La API REST sigue
+// en pie, que es justo para lo que se levanta; si alguien la usa, escribe — pero eso ya es
+// una acción deliberada, no un worker actuando por su cuenta.
+//
+// Por qué el flag APAGA en vez de encender: producción arranca con `pm2 start server.js` (ver
+// CLAUDE.md) y un flag que hubiera que ACORDARSE de poner allí dejaría el salón sin
+// recordatorios en silencio el día que se olvide. Lo que se hace en su lugar es que la ruta
+// que uno teclea de memoria —`npm run dev`— ya venga con el flag puesto.
+const SOLO_API = /^(1|true|yes|on)$/i.test(String(process.env.API_ONLY || ''));
+
 // ─── Clientes WhatsApp (uno por organización) ────────────────────────────────
 
 const waClients = new Map(); // orgId → { client, orgId, sessionId }
@@ -113,29 +135,68 @@ async function refreshBotActivoFromConfig({ logOnPause = false } = {}) {
 refreshBotActivoFromConfig({ logOnPause: true });
 setInterval(refreshBotActivoFromConfig, 15 * 1000);
 
+// ─── Qué clase de proceso es este, dicho en voz alta ─────────────────────────
+//
+// El banner existe para que nadie se confíe: los dos modos hablan con la MISMA base de datos,
+// y desde fuera se parecen. Sale por consola (que es lo que se mira al arrancar) y por el log
+// (que es lo que se mira después, cuando hay que reconstruir qué pasó).
+{
+    const host = (process.env.SUPABASE_URL || '(sin SUPABASE_URL)').replace(/^https?:\/\//, '');
+    if (SOLO_API) {
+        console.log('\n┌──────────────────────────────────────────────────────────┐');
+        console.log('│  MODO SOLO API — sin workers, sin WhatsApp, sin Telegram  │');
+        console.log('│  Nada escribe por su cuenta. La API sí escribe si la usas.│');
+        console.log(`└──  base de datos: ${host}`);
+        console.log('');
+    } else {
+        console.log('\n┌──────────────────────────────────────────────────────────┐');
+        console.log('│  ⚠️  WORKERS ACTIVOS — este proceso ESCRIBE por su cuenta  │');
+        console.log('│  Recordatorios y reseñas mandan WhatsApps reales.         │');
+        console.log('│  Para mirar el panel sin riesgo:  npm run dev             │');
+        console.log(`└──  base de datos: ${host}`);
+        console.log('');
+    }
+    logger.info('modo_proceso', {
+        modo: SOLO_API ? 'solo_api' : 'workers_activos',
+        workers: !SOLO_API, whatsapp: !SOLO_API, telegram: !SOLO_API,
+        supabase: host,
+    });
+}
+
 // ─── Webhook / API REST ──────────────────────────────────────────────────────
 setWAClient(waClients, setConversationBotMode, setBotActivo);
 setBotWAClient(waClients);
 startWebhookServer(process.env.PORT || 3000);
 
 // ─── Bot de Telegram (panel de administración multi-org) ─────────────────────
-startTelegramBot({
-    getBotActivo: isBotActivo,
-    setBotActivo: setBotActivo,
-    waClients,
-});
+// También fuera en modo solo API: sus comandos escriben (pausar el bot, confirmar un bizum).
+if (!SOLO_API) {
+    startTelegramBot({
+        getBotActivo: isBotActivo,
+        setBotActivo: setBotActivo,
+        waClients,
+    });
+}
 
 // ─── Arrancar todos los clientes WA ──────────────────────────────────────────
-for (const { client, slug, channel } of waClients.values()) {
-    if (channel !== CHANNEL_WWEBJS) continue; // el cliente 360 no tiene sesión que iniciar
-    console.log(`🔄 Iniciando WhatsApp para ${slug}...`);
-    client.initialize();
+// `new Client(...)` ya está hecho arriba y por sí solo no conecta nada: es `initialize()` el
+// que abre el navegador y engancha el número. Por eso el Map se construye igual —webhook.js
+// lo necesita para resolver el cliente saliente— y lo único que se salta es el arranque.
+if (!SOLO_API) {
+    for (const { client, slug, channel } of waClients.values()) {
+        if (channel !== CHANNEL_WWEBJS) continue; // el cliente 360 no tiene sesión que iniciar
+        console.log(`🔄 Iniciando WhatsApp para ${slug}...`);
+        client.initialize();
+    }
 }
 
 // ─── Workers (arrancan cuando el primer client esté ready) ───────────────────
 let workersStarted = false;
 function tryStartWorkers() {
     if (workersStarted) return;
+    // La guarda va DENTRO y no en cada uno de los tres call sites de abajo: si mañana alguien
+    // añade un cuarto disparador, hereda la protección sin acordarse de nada.
+    if (SOLO_API) return;
     workersStarted = true;
     startReminderWorker(waClients);
     startReviewWorker(waClients);

@@ -440,8 +440,12 @@ PORT                          # Puerto Express (default: 3000)
 npm install
 cd dashboard-app && npm install && cd ..
 
-# Bot + API (puerto 3000) — mostrará QR para cada org
+# Bot + API (puerto 3000) — mostrará QR para cada org. ESCRIBE por su cuenta.
 node server.js
+
+# Solo la API, para mirar el panel sin tocar producción: sin workers, sin WhatsApp,
+# sin Telegram. Es lo que hay que usar para ver una pantalla.
+npm run dev
 
 # Dashboard (puerto 3001)
 cd dashboard-app && npm run dev
