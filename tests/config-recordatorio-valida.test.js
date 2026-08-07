@@ -223,11 +223,25 @@ test('B3 · una clave no numérica sigue pasando como siempre', async () => {
 
 // ─── C · Leer · el worker no manda nada con una ventana que no entiende ─────────────────
 
+// La fecha se arma con los componentes LOCALES, igual que la hora.
+//
+// Antes era `d.toISOString().slice(0, 10)` —fecha UTC— junto a `d.getHours()` —hora local—, y
+// esa mezcla rompía el test DOS HORAS cada madrugada: con Madrid en UTC+2, `now + 20 h` cruza
+// medianoche local mientras en UTC aún es el día anterior siempre que ahora sean las 04:00–06:00
+// locales. En esa franja la cita se montaba con la fecha de HOY y la hora 00:00 — unos 270
+// minutos en el PASADO en vez de 1170 en el futuro—, y los checks C4/C5 (los CONTROL, que
+// exigen que el recordatorio SÍ salga) se ponían en rojo sin que nada del worker hubiera
+// cambiado. Medido a las 04:10 del 07/08/2026, que es cuando apareció.
 function citaManana(over = {}) {
     const d = new Date(Date.now() + 20 * 60 * 60 * 1000); // dentro de 20 h → cae en la ventana de 24
+    const fechaLocal = [
+        d.getFullYear(),
+        String(d.getMonth() + 1).padStart(2, '0'),
+        String(d.getDate()).padStart(2, '0'),
+    ].join('-');
     return {
         id: 'c1', nombre: 'Ana', telefono: '34600000001', language: 'es', wa_jid: null,
-        fecha_cita: d.toISOString().slice(0, 10),
+        fecha_cita: fechaLocal,
         hora_cita: String(d.getHours()).padStart(2, '0') + ':00',
         ...over,
     };

@@ -94,11 +94,19 @@ const reminder = require('../services/reminder');
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
 
+// Fecha y hora, las DOS locales. Ver el comentario largo en config-recordatorio-valida.test.js:
+// mezclar la fecha UTC con la hora local ponía la cita ~270 min en el pasado durante la franja
+// 04:00–06:00 de Madrid, y los tests se caían solos sin que nada del worker hubiera cambiado.
 function cita(id, nombre) {
     const d = new Date(Date.now() + 20 * 60 * 60 * 1000);   // dentro de la ventana de 24 h
+    const fechaLocal = [
+        d.getFullYear(),
+        String(d.getMonth() + 1).padStart(2, '0'),
+        String(d.getDate()).padStart(2, '0'),
+    ].join('-');
     return {
         id, nombre, telefono: `3460000000${id.slice(-1)}`, language: 'es', wa_jid: null,
-        fecha_cita: d.toISOString().slice(0, 10),
+        fecha_cita: fechaLocal,
         hora_cita: String(d.getHours()).padStart(2, '0') + ':00',
     };
 }
