@@ -3,12 +3,21 @@
 // La pantalla del mostrador. La estilista acaba con una clienta y apunta lo que cobró sin
 // buscarlo: pendientes de hoy arriba, un toque, y el día debajo.
 //
-// LEE Y REGISTRA, no cierra nada. El acto de cerrar el día —contar el cajón, fijar la
-// diferencia, dejar el día cerrado— es otra cosa, tiene su propio diseño sin decidir, y no se
-// pre-empt aquí.
+// LEE Y REGISTRA, no cierra nada. El acto de dar el día por revisado —contar el cajón, apuntar
+// lo que dice el banco— es otra cosa y tiene su propia pantalla (Fase C).
+//
+// ── El día que se mira se ELIGE ──────────────────────────────────────────────
+// Abre en HOY, que es como se usa el mostrador. El selector existe porque la dueña mira la caja
+// desde casa y lo que le interesa suele ser el día ANTERIOR: el TPV no aparece en su banco hasta
+// el día siguiente. Hasta ahora las tres consultas iban sin fecha y caían en el default del
+// servidor, así que la pantalla solo sabía enseñar hoy.
+//
+// Ojo con la asimetría, que está dicha en voz alta más abajo: se puede MIRAR cualquier día, pero
+// un cobro que se registre entra siempre en la caja de HOY (`fecha_caja` la pone el servidor con
+// `diaDeCajaHoy`). Es lo correcto —el dinero entra hoy— y sería una sorpresa si no se dijera.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { PackagePlus } from "lucide-react";
+import { ChevronLeft, ChevronRight, PackagePlus } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -18,13 +27,20 @@ import { PendienteRow } from "@/components/caja/pendiente-row";
 import { ResumenDia } from "@/components/caja/resumen-dia";
 import { CobrosDelDia } from "@/components/caja/cobros-del-dia";
 import { CobroSheet, type CobroContexto } from "@/components/caja/cobro-sheet";
+import { Input } from "@/components/ui/input";
 import { API, apiHeaders, apiMutate, mensajeDeFallo, mensajeDeError } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
 import { leerSesion, renovarToken, type CajaSesion } from "@/lib/caja-session";
+import { addDays, diaDeCajaHoy, etiquetaDia, parseYmd, ymd } from "@/lib/date";
 import type { CajaPendiente, CajaResumen, Cobro, MetodoCobro, Stylist } from "@/lib/types";
 
 export default function CajaPage() {
   const { orgId, orgType } = useOrg();
+  // El día de caja de Madrid, no el del navegador: el servidor agrupa por `fecha_caja`, que es
+  // un DATE de Madrid. Con la zona del navegador, alguien fuera de España pediría otro día.
+  const [hoy] = useState(diaDeCajaHoy);
+  const [fecha, setFecha] = useState(hoy);
+  const esHoy = fecha === hoy;
   const [sesion, setSesion] = useState<CajaSesion | null>(null);
   const [stylists, setStylists] = useState<Stylist[]>([]);
   const [pendientes, setPendientes] = useState<CajaPendiente[]>([]);
@@ -48,9 +64,9 @@ export default function CajaPage() {
     try {
       const cab = await apiHeaders(orgId);
       const [p, r, h, s, pin] = await Promise.all([
-        fetch(`${API}/api/caja/pendientes`, { headers: cab }),
-        fetch(`${API}/api/caja/resumen`, { headers: cab }),
-        fetch(`${API}/api/cobros?historial=1`, { headers: cab }),
+        fetch(`${API}/api/caja/pendientes?fecha=${fecha}`, { headers: cab }),
+        fetch(`${API}/api/caja/resumen?fecha=${fecha}`, { headers: cab }),
+        fetch(`${API}/api/cobros?historial=1&desde=${fecha}&hasta=${fecha}`, { headers: cab }),
         fetch(`${API}/api/stylists`, { headers: cab }),
         fetch(`${API}/api/stylists/pin-status`, { headers: cab }),
       ]);
@@ -72,7 +88,7 @@ export default function CajaPage() {
     } finally {
       setCargando(false);
     }
-  }, [orgId, orgType]);
+  }, [orgId, orgType, fecha]);
 
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -167,9 +183,21 @@ export default function CajaPage() {
       return a.starts_at.localeCompare(b.starts_at);
     });
 
+  // Cambiar de día vacía lo que hay en pantalla. Sin esto se quedarían las cifras del día
+  // anterior bajo el rótulo del nuevo durante el fetch, y son cifras de dinero: un instante
+  // enseñando el total de ayer como si fuera el de hoy ya es haberlo dicho mal.
+  function irA(nueva: string) {
+    if (nueva === fecha || nueva > hoy) return;
+    setFecha(nueva);
+    setResumen(null);
+    setPendientes([]);
+    setHistorial([]);
+    setCargando(true);
+  }
+
   return (
     <>
-      <PageHeader title="Caja" subtitle="Lo que entra hoy">
+      <PageHeader title="Caja" subtitle={esHoy ? "Lo que entra hoy" : `Lo que entró ${etiquetaDia(fecha, hoy)}`}>
         {/* Ya no depende de la sesión: quién cobra se elige en la hoja. */}
         <Button size="sm" variant="outline" onClick={() => setHoja({})}>
           <PackagePlus size={14} className="mr-1.5" />
@@ -179,6 +207,42 @@ export default function CajaPage() {
 
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-3xl space-y-5 px-6 py-6">
+          {/* Selector de día. `max={hoy}` porque una caja del futuro no existe: no hay nada que
+              mirar y el resumen saldría a 0, que en dinero se lee como "no entró nada". */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="icon" aria-label="Día anterior"
+              onClick={() => irA(ymd(addDays(parseYmd(fecha), -1)))}>
+              <ChevronLeft size={16} />
+            </Button>
+            <Button variant="outline" size="icon" aria-label="Día siguiente"
+              disabled={esHoy}
+              onClick={() => irA(ymd(addDays(parseYmd(fecha), 1)))}>
+              <ChevronRight size={16} />
+            </Button>
+            <Input
+              type="date"
+              value={fecha}
+              max={hoy}
+              onChange={(e) => e.target.value && irA(e.target.value)}
+              className="h-9 w-[10.5rem]"
+              aria-label="Día de caja"
+            />
+            {!esHoy && (
+              <Button variant="ghost" size="sm" onClick={() => irA(hoy)}>Volver a hoy</Button>
+            )}
+          </div>
+
+          {/* Un cobro registrado ahora entra en la caja de HOY, la ponga el servidor con
+              `diaDeCajaHoy()`. Es lo correcto —el dinero entra hoy— pero desde un día pasado
+              sería una sorpresa: se cobraría una cita del día que se mira y el importe no
+              aparecería en el resumen de abajo. Se dice antes, no después. */}
+          {!esHoy && (
+            <p className="rounded-md border border-border bg-muted/40 px-4 py-2.5 text-[13px] text-muted-foreground">
+              Estás viendo <span className="font-medium text-foreground">{etiquetaDia(fecha, hoy)}</span>.
+              Si registras un cobro ahora, entrará en la caja de hoy — no en la de este día.
+            </p>
+          )}
+
           <EstilistaActivaBar
             sesion={sesion}
             stylists={stylists}
@@ -208,7 +272,9 @@ export default function CajaPage() {
                 </p>
                 {porCobrar.length === 0 ? (
                   <p className="py-8 text-center text-[13px] text-muted-foreground">
-                    No queda ninguna cita de hoy por cobrar
+                    {esHoy
+                      ? "No queda ninguna cita de hoy por cobrar"
+                      : `No quedó ninguna cita de ${etiquetaDia(fecha, hoy)} sin cobrar`}
                   </p>
                 ) : (
                   porCobrar.map((p) => (
@@ -239,6 +305,7 @@ export default function CajaPage() {
 
               <CobrosDelDia
                 historial={historial}
+                fecha={fecha}
                 sesion={sesion}
                 orgId={orgId}
                 onCambio={cargar}

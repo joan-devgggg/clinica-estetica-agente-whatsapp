@@ -25,7 +25,7 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { apiMutate } from "@/lib/api";
 import type { Cobro } from "@/lib/types";
-import { madridTime } from "@/lib/date";
+import { etiquetaDia, madridTime } from "@/lib/date";
 import { type CajaSesion, renovarToken } from "@/lib/caja-session";
 
 const eur = (n: number) =>
@@ -34,12 +34,19 @@ const eur = (n: number) =>
 interface Props {
   /** El histórico del día (GET /api/cobros?historial=1): incluye anulados y rectificados. */
   historial: Cobro[];
+  /**
+   * El día que se está mirando, `YYYY-MM-DD`. Obligatorio a propósito: esta lista no lleva la
+   * fecha en sus datos (los `Cobro` traen `cobrado_at`, que es un instante), así que sin este
+   * dato el título tendría que suponer que es hoy — y desde que hay selector de día, suponerlo
+   * es equivocarse.
+   */
+  fecha: string;
   sesion: CajaSesion | null;
   orgId: string;
   onCambio: () => void;
 }
 
-export function CobrosDelDia({ historial, sesion, orgId, onCambio }: Props) {
+export function CobrosDelDia({ historial, fecha, sesion, orgId, onCambio }: Props) {
   const [accion, setAccion] = useState<{ cobro: Cobro; tipo: "corregir" | "anular" } | null>(null);
 
   const sucesorDe = new Map<string, Cobro>();
@@ -55,7 +62,7 @@ export function CobrosDelDia({ historial, sesion, orgId, onCambio }: Props) {
     <>
       <div className="overflow-hidden rounded-lg border border-border/60 bg-card shadow-sm">
         <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
-          <p className="text-[13px] font-semibold text-foreground">Cobros de hoy</p>
+          <p className="text-[13px] font-semibold text-foreground">Cobros de {etiquetaDia(fecha)}</p>
           <p className="text-[11.5px] text-muted-foreground">
             {raices.length} cobro{raices.length === 1 ? "" : "s"}
             {correcciones > 0 && ` · ${correcciones} corrección${correcciones === 1 ? "" : "es"}`}

@@ -11,6 +11,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { AlertTriangle } from "lucide-react";
+import { diaDeCajaHoy, etiquetaDia } from "@/lib/date";
 import type { CajaResumen } from "@/lib/types";
 
 const eur = (n: number) =>
@@ -18,6 +19,9 @@ const eur = (n: number) =>
 
 export function ResumenDia({ resumen }: { resumen: CajaResumen }) {
   const t = resumen.totales;
+  // El día sale del propio resumen (`fecha` ya venía en la respuesta y no se usaba), no de un
+  // prop nuevo: así el componente no puede pintar un rótulo que contradiga a sus cifras.
+  const esHoy = resumen.fecha === diaDeCajaHoy();
   // La cifra que da sentido al PIN: la tarjeta la verifica el banco, así que el efectivo que
   // nadie confirmó es el dinero del que menos se puede afirmar.
   const efectivoSinPin = t.declarada.efectivo;
@@ -29,7 +33,9 @@ export function ResumenDia({ resumen }: { resumen: CajaResumen }) {
   if (resumen.totales.numCobros === 0) {
     return (
       <p className="rounded-lg border border-dashed border-border/60 px-4 py-6 text-center text-[13px] text-muted-foreground">
-        Aún no se ha cobrado nada hoy
+        {/* El día ya no es siempre hoy: en pasado la frase tiene que ser "no se cobró nada",
+            no "aún no se ha cobrado nada", que insinúa que puede llegar. */}
+        {esHoy ? "Aún no se ha cobrado nada hoy" : `No se cobró nada ${etiquetaDia(resumen.fecha)}`}
       </p>
     );
   }

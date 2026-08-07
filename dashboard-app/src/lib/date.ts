@@ -41,6 +41,29 @@ export function madridTime(iso: string): string {
   });
 }
 
+/**
+ * El día de caja de HOY, en Europe/Madrid y no en la zona del navegador.
+ *
+ * Es el espejo de `db.diaDeCajaHoy()` del servidor, y tiene que serlo: si el navegador
+ * estuviera en otra zona, la pantalla pediría un día y el servidor entendería otro. Por eso
+ * NO usa `ymd(new Date())`, que deriva de los componentes locales.
+ */
+export function diaDeCajaHoy(): string {
+  return madridDateKey(new Date().toISOString());
+}
+
+/**
+ * Cómo se llama un día cuando hay que meterlo en una frase: «hoy», «ayer» o la fecha escrita.
+ *
+ * Existe porque la pantalla de caja dejó de ser siempre la de hoy: los textos que decían «hoy»
+ * a secas mentían en cuanto se miraba otro día, y son textos sobre dinero.
+ */
+export function etiquetaDia(fecha: string, hoy: string = diaDeCajaHoy()): string {
+  if (fecha === hoy) return "hoy";
+  if (fecha === ymd(addDays(parseYmd(hoy), -1))) return "ayer";
+  return parseYmd(fecha).toLocaleDateString("es-ES", { day: "numeric", month: "long" });
+}
+
 /** Devuelve un nuevo Date desplazado `n` días. */
 export function addDays(d: Date, n: number): Date {
   const r = new Date(d);
