@@ -612,6 +612,62 @@ app.get('/api/cobros', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Lo que puede cobrarse hoy: las citas del día con su importe de referencia YA RESUELTO y con
+// los cobros que ya tengan encima.
+//
+// La referencia se calcula aquí y no en el panel: `resolveImporteReferencia` es la misma
+// precedencia que pinta Facturación, y duplicarla en el cliente daría dos opiniones sobre lo
+// que vale una cita. El panel enseña cifras, no las decide.
+//
+// `stylist_id`/`atendio` (quién hizo el trabajo) viaja aparte de quién cobra: en un mostrador
+// compartido difieren a menudo y la pantalla tiene que poder decir las dos cosas.
+app.get('/api/caja/pendientes', async (req, res) => {
+    try {
+        const orgId = exigirSalon(req, res);
+        if (!orgId) return;
+        const fecha = req.query.fecha || db.diaDeCajaHoy();
+        if (!FECHA_YMD.test(String(fecha))) {
+            return res.status(400).json({ error: 'fecha debe ser YYYY-MM-DD' });
+        }
+
+        const { resolveImporteReferencia } = require('./services/helpers');
+        const [citas, cfg, cobros] = await Promise.all([
+            db.getCitasDelDiaParaCaja(orgId, fecha),
+            db.getAgentConfig(orgId),
+            // Solo los VIGENTES: un cobro rectificado o anulado deja la cita otra vez por cobrar.
+            db.getCobrosVigentes(orgId, { desde: fecha, hasta: fecha }),
+        ]);
+        const catalogo = cfg?.services || [];
+        const cobradaPorCita = new Map();
+        for (const c of cobros) {
+            if (c.appointment_id) cobradaPorCita.set(c.appointment_id, c);
+        }
+
+        res.json({
+            fecha,
+            citas: citas.map(a => {
+                const cobro = cobradaPorCita.get(a.id) || null;
+                return {
+                    appointment_id: a.id,
+                    cliente: a.contacts?.full_name || null,
+                    service: a.service,
+                    starts_at: a.starts_at,
+                    estado: a.status,
+                    // Quién ATENDIÓ. Distinto de quién cobra, y a propósito.
+                    atendio_id: a.stylist_id || null,
+                    atendio: a.stylists?.name || null,
+                    // null = de esta cita no hay contra qué comparar (servicio sin resolver).
+                    // Se manda tal cual: inventar un 0 la metería en el descuadre.
+                    importe_referencia: resolveImporteReferencia(a, catalogo),
+                    cobro: cobro
+                        ? { id: cobro.id, importe_total: cobro.importe_total, metodo: cobro.metodo, atribucion: cobro.atribucion }
+                        : null,
+                };
+            }),
+        });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Resumen de caja de un día, por estilista, con el reparto CONFIRMADA / DECLARADA.
 //
 // Existe porque una columna `atribucion` que no se ve en ningún sitio no sirve de nada — y

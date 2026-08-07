@@ -1761,6 +1761,33 @@ async function anularCobro(orgId, cobroId, { motivo = null, userId = null } = {}
     return data?.[0] || null;
 }
 
+// Citas de UN día para la pantalla de caja: lo que puede cobrarse hoy.
+//
+// Devuelve las columnas de facturación en crudo porque quien llama resuelve el importe de
+// referencia con `resolveImporteReferencia` — la MISMA precedencia que pinta Facturación. El
+// panel no valora servicios: si lo hiciera, habría dos opiniones sobre lo que vale una cita.
+//
+// Incluye las ya completadas y las aún confirmadas: al cobrar, la clienta acaba de levantarse
+// del sillón y el barrido de auto-completar puede no haber pasado todavía. Excluye las
+// canceladas, que no se cobran.
+async function getCitasDelDiaParaCaja(orgId, fecha) {
+    const oid = resolveOrg(orgId);
+    const desdeTs = new Date(`${fecha}T00:00:00`).toISOString();
+    const hastaTs = new Date(`${fecha}T23:59:59`).toISOString();
+    const { data, error } = await supabase
+        .from('appointments')
+        .select('id, service, starts_at, status, stylist_id, precio_facturado, facturado_at, '
+              + 'servicio_facturado, precio_manual, contacts!contact_id(full_name), stylists!stylist_id(id, name)')
+        .eq('organization_id', oid)
+        .gte('starts_at', desdeTs)
+        .lte('starts_at', hastaTs)
+        .neq('status', 'cancelled')
+        .order('starts_at', { ascending: true });
+    // Es la lista de lo que hay que cobrar: un fallo NO puede leerse como "hoy no hay nada".
+    assertRead(error, 'appointments');
+    return data || [];
+}
+
 // ─── PIN de atribución por estilista (migración 036) ────────────────────────
 //
 // Lo pone y lo cambia la DUEÑA desde el panel. No hay autoservicio ni recuperación: si una
@@ -2816,6 +2843,7 @@ module.exports = {
     rectifyCobro,
     anularCobro,
     diaDeCajaHoy,
+    getCitasDelDiaParaCaja,
     getStylistPinStatus,
     setStylistPin,
     clearStylistPin,
