@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { API, apiHeaders } from "@/lib/api";
+import { apiMutate } from "@/lib/api";
 import type { Stylist } from "@/lib/types";
 import { type CajaSesion, escribirSesion } from "@/lib/caja-session";
 
@@ -105,16 +105,16 @@ function CambiarEstilistaDialog({
     if (!elegida) return;
     setEnviando(true);
     try {
-      const res = await fetch(`${API}/api/caja/sesion`, {
-        method: "POST",
-        headers: await apiHeaders(orgId),
-        body: JSON.stringify({ stylistId: elegida.id, pin }),
+      // apiMutate y no `fetch` a pelo: lanza con el mensaje REAL del servidor. Antes se
+      // traducía el 401 a "PIN incorrecto" y todo lo demás a un genérico, así que un
+      // DASHBOARD_API_SECRET sin configurar —que hace imposible confirmar NINGUNA
+      // atribución— se leía como "no se pudo abrir la sesión" y nadie sabía por qué.
+      // El 401 del servidor ya dice "PIN incorrecto" y no distingue "PIN mal" de "sin PIN",
+      // que es deliberado: distinguirlos enseñaría a quién se puede atribuir sin más.
+      const res = await apiMutate("/api/caja/sesion", {
+        method: "POST", orgId,
+        body: { stylistId: elegida.id, pin },
       });
-      if (!res.ok) {
-        // El 401 no distingue "PIN mal" de "no tiene PIN" a propósito; aquí tampoco.
-        toast.error(res.status === 401 ? "PIN incorrecto" : "No se pudo abrir la sesión de caja");
-        return;
-      }
       const { token, minutos } = await res.json();
       const s: CajaSesion = {
         stylistId: elegida.id,
@@ -125,8 +125,8 @@ function CambiarEstilistaDialog({
       escribirSesion(s);
       onHecho(s);
       toast.success(`Cobra ${elegida.name}`);
-    } catch {
-      toast.error("No se pudo contactar con la API");
+    } catch (err) {
+      toast.error((err as Error).message || "No se pudo abrir la sesión de caja");
     } finally {
       setEnviando(false);
     }

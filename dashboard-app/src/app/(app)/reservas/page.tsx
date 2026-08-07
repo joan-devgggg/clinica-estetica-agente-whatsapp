@@ -154,15 +154,17 @@ export default function ReservasPage() {
       const res = await fetch(`${API}/api/caja/pendientes?fecha=${reserva.fecha_cita}`, {
         headers: await apiHeaders(orgId),
       });
-      if (res.ok) {
-        const { citas } = await res.json();
-        const encontrada = (citas ?? []).find(
-          (c: { appointment_id: string }) => c.appointment_id === reserva.appointment_id,
-        );
-        if (encontrada) base.importeReferencia = encontrada.importe_referencia ?? null;
-      }
+      if (!res.ok) throw new Error(`La API respondió ${res.status}`);
+      const { citas } = await res.json();
+      const encontrada = (citas ?? []).find(
+        (c: { appointment_id: string }) => c.appointment_id === reserva.appointment_id,
+      );
+      if (encontrada) base.importeReferencia = encontrada.importe_referencia ?? null;
     } catch {
-      // Sin referencia se cobra igual: se teclea el importe. Nunca se bloquea el cobro.
+      // El cobro NO se bloquea: se abre igual y el importe se teclea. Pero se DICE, porque un
+      // importe vacío sin explicación se confunde con "esta cita no tiene precio" — y eso
+      // llevaría a teclear una cifra creyendo que el catálogo no la sabía.
+      toast.warning("No se pudo cargar el importe del catálogo. Escríbelo a mano.");
     }
     setCobro(base);
   }

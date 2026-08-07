@@ -20,6 +20,7 @@ export function StylistPinsSection({ orgId }: { orgId: string }) {
   const [stylists, setStylists] = useState<Stylist[]>([]);
   const [conPin, setConPin] = useState<Set<string>>(new Set());
   const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [editando, setEditando] = useState<string | null>(null);
   const [pin, setPin] = useState("");
 
@@ -31,9 +32,20 @@ export function StylistPinsSection({ orgId }: { orgId: string }) {
         fetch(`${API}/api/stylists`, { headers: cab }),
         fetch(`${API}/api/stylists/pin-status`, { headers: cab }),
       ]);
-      setStylists(s.ok ? await s.json() : []);
-      const estados: StylistPinStatus[] = p.ok ? await p.json() : [];
+      // Antes era `s.ok ? await s.json() : []` dentro de un try SIN catch. Dos fallos en uno:
+      // un error de red se perdía como promesa no capturada, y un 500 pintaba la lista vacía —
+      // que aquí se lee como "ninguna estilista tiene PIN", justo lo contrario de lo que pasa.
+      // Con esa foto, la dueña podría creer que ya están todas sin PIN y no tocar nada.
+      const fallo = [s, p].find((x) => !x.ok);
+      if (fallo) throw new Error(`La API respondió ${fallo.status}`);
+      setStylists(await s.json());
+      const estados: StylistPinStatus[] = await p.json();
       setConPin(new Set(estados.map((e) => e.stylist_id)));
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error && e.message !== "Failed to fetch"
+        ? e.message
+        : "No se pudo contactar con la API.");
     } finally {
       setCargando(false);
     }
@@ -78,6 +90,10 @@ export function StylistPinsSection({ orgId }: { orgId: string }) {
       <CardContent className="space-y-2">
         {cargando ? (
           <Skeleton className="h-[160px] w-full rounded-lg" />
+        ) : error ? (
+          <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-[13px] text-destructive">
+            No se pudo cargar quién tiene PIN. {error}
+          </div>
         ) : (
           stylists.map((s) => (
             <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 px-3 py-2.5">

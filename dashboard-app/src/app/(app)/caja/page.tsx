@@ -48,11 +48,16 @@ export default function CajaPage() {
         fetch(`${API}/api/cobros?historial=1`, { headers: cab }),
         fetch(`${API}/api/stylists`, { headers: cab }),
       ]);
-      if (!p.ok || !r.ok || !h.ok) throw new Error(`La API respondió ${[p, r, h].find(x => !x.ok)!.status}`);
+      // `s` (estilistas) entra en la comprobación como las demás. Antes era
+      // `s.ok ? await s.json() : []`, y un fallo dejaba el selector VACÍO: parecía que el
+      // salón no tuviera estilistas, no que la lista no hubiera cargado. Sin ella no se
+      // puede elegir quién cobra, así que callarlo bloquea la caja sin decir por qué.
+      const fallo = [p, r, h, s].find((x) => !x.ok);
+      if (fallo) throw new Error(`La API respondió ${fallo.status}`);
       setPendientes((await p.json()).citas ?? []);
       setResumen(await r.json());
       setHistorial((await h.json()).cobros ?? []);
-      setStylists(s.ok ? await s.json() : []);
+      setStylists(await s.json());
       setError(null);
     } catch (e) {
       // Es dinero: un fallo NO puede leerse como "hoy no hay nada que cobrar" ni como caja a 0.
@@ -89,9 +94,14 @@ export default function CajaPage() {
       setSesion(leerSesion());
       await cargar();
 
-      toast.success(`Cobrado ${p.importe_referencia} € · ${metodo}`, {
+      // El aviso dice lo que el servidor GUARDÓ, no lo que se envió. Cantar el importe local
+      // sería afirmar sin verificar: si por lo que fuera se guardara otra cosa, ella leería la
+      // cifra que quería ver. Igual con la atribución — así se entera en el momento de que un
+      // cobro quedó declarada, no días después mirando el resumen.
+      toast.success(`Cobrado ${Number(cobro.importe_total)} € · ${cobro.metodo}`, {
         duration: 8000,
-        description: `${p.cliente ?? ""} · cobra ${sesion.stylistName}`,
+        description: `${p.cliente ?? ""} · cobra ${sesion.stylistName}`
+          + (cobro.atribucion === "declarada" ? " · sin PIN" : ""),
         action: { label: "Deshacer", onClick: () => deshacer(cobro.id) },
       });
     } catch (e) {
@@ -148,11 +158,14 @@ export default function CajaPage() {
             </div>
           )}
 
+          {/* Con error NO se pinta nada más. Si no, saldría el aviso rojo Y "no queda ninguna
+              cita por cobrar" a la vez: un cero que no se sabe si es un día tranquilo o una
+              caja que no ha cargado. En dinero eso no se puede dejar a interpretación. */}
           {cargando ? (
             <div className="space-y-3">
               {[0, 1, 2].map((i) => <Skeleton key={i} className="h-[120px] w-full rounded-lg" />)}
             </div>
-          ) : (
+          ) : error ? null : (
             <>
               <section className="space-y-3">
                 <p className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
