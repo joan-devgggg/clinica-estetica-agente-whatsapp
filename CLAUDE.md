@@ -259,6 +259,41 @@ de lo anterior es `034_language_source.sql`, y sus reglas son las mismas que apl
 `resolveLanguageSource` (`helpers.js`) a una fila sin marca — si se separan, el backfill
 queda como una foto que la lógica desmiente en la primera fila nueva.
 
+**`'observed'` exige DOS mensajes que coincidan, y no lo escribe una centralita.** Las dos
+reglas nacen del mismo incidente (07/08/2026, tanda 1 de la campaña de verano): tres
+autocontestadores de otros negocios —números de empresa dados de alta como fichas de clienta—
+contestaron a la campaña en 7-10 s, y el bot les leyó el idioma y lo marcó `'observed'`. Dos
+fichas acabaron en el idioma equivocado a partir del texto de una centralita ajena.
+
+- **Capa 1 — `persistirIdiomaObservado` (bot.js).** Paso ÚNICO por el que escriben los dos
+  detectores (el determinista y el `idioma_detectado` del LLM); dejar la guarda en uno solo no
+  protegería nada, porque el modelo lee igual de bien a una centralita. Si el mensaje llega a
+  menos de **30 s** de un `broadcast_sends.sent_at` de ese teléfono, no se escribe **nada** en
+  la ficha: el turno usa el idioma, la ficha no se entera. La fuente es `broadcast_sends` y
+  **no `messages`** — la plantilla de campaña no se escribe en `messages`, así que «tiempo
+  desde nuestro último saliente» daría null y la guarda no saltaría nunca.
+  Umbral medido, no supuesto: centralitas **7,1 · 8,1 · 10,0 s**, personas **126 · 132 · 459 s**.
+  Es una hipótesis sobre n=3 y falla hacia el lado bueno (una clienta rápida conserva su idioma
+  un mensaje más). **Recalibrar con la tanda 2.**
+- **Capa 2 — corroboración (`updateContactLanguage`).** `language` se sigue escribiendo al
+  primer mensaje; lo que espera es la MARCA. Hasta que un segundo mensaje coincide, la ficha
+  conserva su fuente y guarda `language_candidate`. Una ficha que ya era `'observed'` no se
+  degrada al cambiar de idioma. Un mensaje es prueba débil aunque no haya bots de por medio:
+  el autocontestador de DarYsol Events era **bilingüe** (es+uk en el mismo texto) y
+  `detectLanguage` tuvo que elegir uno.
+  Trampa cubierta: en la rama sin promoción hay que **congelar la fuente explícitamente** si la
+  ficha no la tenía. Si no, `resolveLanguageSource` la deduce de la columna ya cambiada por su
+  última regla («idioma distinto de `'es'` ⇒ observed») y una ficha sin corroborar se lee como
+  observada — justo lo contrario.
+
+**DEUDA — la única señal DIRECTA la estamos tirando en el webhook.** El envelope de Cloud API
+trae `value.contacts[].profile.name`, que para una cuenta de empresa es el nombre comercial
+(«DarYsol Events» frente a la ficha «Dasha Kotenko»). `process360Webhook`
+(`services/providers/threesixty-dialog.js`) solo lee `value.messages` y `value.metadata`: nunca
+mira `value.contacts`, así que ese nombre llega y se descarta. Todo lo de arriba son
+inferencias por tiempo; esto sería el dato. Pendiente a 07/08/2026 — aplazado por no caber con
+garantías antes de la tanda 2, no por falta de valor.
+
 **Un default NO se le pasa al LLM como idioma.** `bot.js` siembra `session.language` con el de
 la ficha solo si su fuente no es `'default'`; si lo es, deja null y el prompt entra por su rama
 de «aún no se conoce el idioma» (traza `idioma_ficha_por_defecto_ignorado`). Un `'inferred'` sí

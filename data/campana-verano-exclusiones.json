@@ -1,0 +1,62 @@
+{
+  "campaignKey": "verano_tratamientos",
+  "org": "sante-healthy-hair-salon",
+  "organization_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+  "creado": "2026-08-06",
+  "estado": "PENDIENTE_REVISION_DUENA",
+
+  "que_es": "Teléfonos que NO deben recibir la campaña de verano. Se resta de la audiencia del momento antes de CADA tanda; nunca se guarda la lista de destinatarios resultante (ver docs/campana-verano-tandas.md).",
+
+  "criterio": "Primer nombre en una lista de nombres masculinos (es/ru/uk/ar/en). Es una CONJETURA: nadie ha confirmado que sean hombres. 19 de las 20 vienen del import del Excel con 0 citas y 0 visitas, así que sobre ellas no existe ningún dato salvo el nombre. OJO: desde el 07/08/2026 la lista tiene DOS orígenes distintos — ver `criterio_bloque_2`. Las entradas llevan `origen` para no confundirlos.",
+
+  "criterio_bloque_2": "Añadidas el 07/08/2026 tras la TANDA 1, y a diferencia del bloque de arriba NO son conjeturas por el nombre: son observaciones de lo que esas fichas contestaron a la campaña. Decisión de la dueña el mismo día.",
+
+  "revisado_por_duena": false,
+
+  "excluidos": [
+    { "telefono": "34643209389", "nombre": "Dasha Kotenko", "idioma": "es", "citas": 0,
+      "origen": "observado_tanda_1",
+      "senales": ["autocontestador_de_empresa", "respondio_en_8.1_s"],
+      "nota": "El número contesta con el autocontestador de DarYsol Events («gracias por contactar con DarYsol Events… no estoy disponible»), bilingüe español+ucraniano. No es el teléfono personal de una clienta: es la centralita de otro negocio. Su respuesta llegó a los 8,1 s de nuestro envío y llegó a reescribirle el idioma de la ficha (es→uk) marcándolo 'observed'; revertido el 07/08/2026." },
+    { "telefono": "34613109685", "nombre": "ALLA Sinchuk", "idioma": "ru", "citas": 0,
+      "origen": "observado_tanda_1",
+      "senales": ["autocontestador_de_empresa", "respondio_en_7.1_s"],
+      "nota": "Contesta el autocontestador de Save Yourself («Дякуємо, що звернулися до Save Yourself!»). Mismo caso: centralita de empresa, no clienta. Le reescribió el idioma (ru→uk) marcándolo 'observed'; revertido el 07/08/2026." },
+    { "telefono": "34667967943", "nombre": "Oksana Kachalova", "idioma": "ru", "citas": 0,
+      "origen": "observado_tanda_1",
+      "senales": ["autocontestador_de_empresa", "respondio_en_10.0_s"],
+      "nota": "Contesta el bot de una videógrafa («На связи Оксана Телегуз… мой бот присмотрит за вами»), con enlaces a teleguz.com. Centralita de empresa. El valor del idioma no cambió (ru), pero sí le subió la etiqueta a 'observed'; revertido el 07/08/2026." },
+    { "telefono": "34674987146", "nombre": "Olga Yarmak", "idioma": "ru", "citas": 0,
+      "origen": "observado_tanda_1",
+      "senales": ["dice_ser_hombre", "pide_servicio_de_taller", "conversacion_real_de_12_mensajes"],
+      "nota": "No es un autocontestador: es una persona real, y por eso su 'observed' NO se revirtió. Se excluye por otra cosa — dice literalmente «Я мужчина» (soy un hombre) y pide «cambio de aceite y filtros, montaje y arranque del motor». O el número cambió de manos o la ficha está mal, pero en ninguno de los dos casos es una clienta del salón. Es el reverso exacto del caso Svetlana Yurchenko de más abajo: el nombre no identifica a nadie." },
+    { "telefono": "34647674294", "nombre": "Adrian Juncos",       "idioma": "es", "citas": 0, "senales": ["nombre"] },
+    { "telefono": "34675641580", "nombre": "Antón Basha",         "idioma": "es", "citas": 0, "senales": ["nombre"] },
+    { "telefono": "34606464948", "nombre": "Carlos González",     "idioma": "es", "citas": 0, "senales": ["nombre"] },
+    { "telefono": "34626298737", "nombre": "Cristian Rodriguez",  "idioma": "es", "citas": 0, "senales": ["nombre"] },
+    { "telefono": "34605363289", "nombre": "David Fernandez",     "idioma": "es", "citas": 0, "senales": ["nombre"] },
+    { "telefono": "34638878747", "nombre": "David Ruiz bernabe",  "idioma": "es", "citas": 0, "senales": ["nombre"] },
+    { "telefono": "34722382083", "nombre": "Denis",               "idioma": "es", "citas": 0, "senales": ["nombre", "un_solo_token"] },
+    { "telefono": "34634605720", "nombre": "Denis Nazarov",       "idioma": "ru", "citas": 0, "senales": ["nombre", "idioma_ru_inferido_del_mismo_nombre"] },
+    { "telefono": "34643507427", "nombre": "Dmitriy Doroshenko",  "idioma": "ru", "citas": 0, "senales": ["nombre", "idioma_ru_inferido_del_mismo_nombre"] },
+    { "telefono": "34637936022", "nombre": "Ivan Grachov",        "idioma": "ru", "citas": 0, "senales": ["nombre", "idioma_ru_inferido_del_mismo_nombre"] },
+    { "telefono": "34677451087", "nombre": "Jose LUIS",           "idioma": "es", "citas": 0, "senales": ["nombre"] },
+    { "telefono": "34614439454", "nombre": "Leonardo Gonzalez",   "idioma": "es", "citas": 1, "senales": ["nombre", "servicio_de_nino_en_historico", "hablo_por_whatsapp"], "nota": "Su única cita es 'Corte niño + Exfoliación' (cancelled). Encaja igual de bien con un padre que trae a su hijo." },
+    { "telefono": "34627471823", "nombre": "Luis Casado",         "idioma": "es", "citas": 0, "senales": ["nombre"] },
+    { "telefono": "34617543434", "nombre": "Manuel Gutierez",     "idioma": "es", "citas": 0, "senales": ["nombre"] },
+    { "telefono": "34633694948", "nombre": "Miguel  Angel",       "idioma": "es", "citas": 0, "senales": ["nombre"] },
+    { "telefono": "34666023940", "nombre": "Roman Isaev",         "idioma": "ru", "citas": 0, "senales": ["nombre", "idioma_ru_inferido_del_mismo_nombre"] },
+    { "telefono": "34663490165", "nombre": "Sergey Kabak",        "idioma": "ru", "citas": 0, "senales": ["nombre", "idioma_ru_inferido_del_mismo_nombre"] },
+    { "telefono": "34602466176", "nombre": "Vladimir",            "idioma": "es", "citas": 0, "senales": ["nombre", "un_solo_token"] },
+    { "telefono": "34674437078", "nombre": "Vladimir Vyshinskyi", "idioma": "es", "citas": 0, "senales": ["nombre"] },
+    { "telefono": "34661054485", "nombre": "Vladimir Zakharov",   "idioma": "ru", "citas": 0, "senales": ["nombre", "idioma_ru_inferido_del_mismo_nombre"] }
+  ],
+
+  "quitados_a_mano": [
+    { "telefono": "34644610120", "nombre": "Joan Gascon", "motivo": "Sale de la lista el 06/08/2026 por decisión suya: quiere recibir la campaña." }
+  ],
+
+  "no_esta_aqui_y_conviene_saberlo": [
+    { "telefono": "34651869885", "nombre": "Svetlana Yurchenko", "motivo": "Es la única ficha con un 'Corte hombre' COMPLETADO y una nota pidiendo mover una «мужскую стрижку». No se excluye porque su nombre es de mujer: reservó para un hombre, ella no lo es. Es el ejemplo de por qué el criterio de servicio no identifica a una persona." }
+  ]
+}
