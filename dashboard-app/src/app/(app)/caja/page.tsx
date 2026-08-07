@@ -152,7 +152,7 @@ export default function CajaPage() {
       <PageHeader title="Caja" subtitle="Lo que entra hoy">
         <Button size="sm" variant="outline" onClick={() => setHoja({})} disabled={!sesion}>
           <PackagePlus size={14} className="mr-1.5" />
-          Cobro suelto
+          Venta sin cita
         </Button>
       </PageHeader>
 

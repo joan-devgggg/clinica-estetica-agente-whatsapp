@@ -76,7 +76,7 @@ export function CobrosDelDia({ historial, sesion, orgId, onCambio }: Props) {
                     <p className="text-[11.5px] text-muted-foreground truncate">
                       {c.cobrado_por_nombre ?? "sin estilista"}
                       {c.concepto ? ` · ${c.concepto}` : ""}
-                      {c.atribucion === "declarada" && " · declarada"}
+                      {c.atribucion === "declarada" && " · sin PIN"}
                     </p>
                     {sucesor && (
                       <p className="mt-1 flex items-start gap-1.5 text-[12px] text-foreground">

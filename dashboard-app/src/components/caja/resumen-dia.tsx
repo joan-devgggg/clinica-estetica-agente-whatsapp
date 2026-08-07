@@ -20,7 +20,7 @@ export function ResumenDia({ resumen }: { resumen: CajaResumen }) {
   const t = resumen.totales;
   // La cifra que da sentido al PIN: la tarjeta la verifica el banco, así que el efectivo que
   // nadie confirmó es el dinero del que menos se puede afirmar.
-  const sinConfirmar = t.declarada.efectivo;
+  const efectivoSinPin = t.declarada.efectivo;
 
   return (
     <div className="space-y-4">
@@ -29,10 +29,10 @@ export function ResumenDia({ resumen }: { resumen: CajaResumen }) {
         <Kpi label="Tarjeta y Bizum" value={eur(t.tarjeta)} />
         <Kpi label="Total del día" value={eur(t.total)} />
         <Kpi
-          label="Efectivo sin confirmar"
-          value={eur(sinConfirmar)}
-          alerta={sinConfirmar > 0}
-          pie={sinConfirmar > 0 ? `${t.declarada.num} cobro${t.declarada.num === 1 ? "" : "s"} sin PIN` : undefined}
+          label="Efectivo sin PIN"
+          value={eur(efectivoSinPin)}
+          alerta={efectivoSinPin > 0}
+          pie={efectivoSinPin > 0 ? `${t.declarada.num} cobro${t.declarada.num === 1 ? "" : "s"} sin PIN` : undefined}
         />
       </div>
 
@@ -50,7 +50,7 @@ export function ResumenDia({ resumen }: { resumen: CajaResumen }) {
             <Table>
               <TableHeader>
                 <TableRow className="bg-muted/60 hover:bg-muted/60">
-                  {["Estilista", "Cobros", "Efectivo", "Tarjeta", "Total", "Atribución"].map((h) => (
+                  {["Estilista", "Cobros", "Efectivo", "Tarjeta", "Total", "¿Con PIN?"].map((h) => (
                     <TableHead key={h} className="text-[10.5px] uppercase tracking-[0.07em] font-semibold text-muted-foreground">
                       {h}
                     </TableHead>
@@ -71,7 +71,7 @@ export function ResumenDia({ resumen }: { resumen: CajaResumen }) {
                       )}
                       {e.confirmada.num > 0 && e.declarada.num > 0 && <span className="text-muted-foreground"> · </span>}
                       {e.declarada.num > 0 && (
-                        <span className="text-[oklch(0.45_0.12_55)]">{eur(e.declarada.total)} declarado</span>
+                        <span className="text-[oklch(0.45_0.12_55)]">{eur(e.declarada.total)} sin PIN</span>
                       )}
                     </TableCell>
                   </TableRow>

@@ -53,7 +53,7 @@ export function EstilistaActivaBar({ sesion, stylists, orgId, onCambio }: Props)
             ) : (
               // Sin PIN NO se bloquea nada: se avisa de qué va a quedar registrado.
               <span className="flex items-center gap-1.5 rounded-full bg-[oklch(0.85_0.12_85/0.28)] px-2.5 py-1 text-[11.5px] font-medium text-[oklch(0.45_0.12_55)]">
-                <ShieldAlert size={13} /> sin PIN — quedará como declarada
+                <ShieldAlert size={13} /> sin PIN
               </span>
             )
           )}
@@ -138,7 +138,7 @@ function CambiarEstilistaDialog({
         <DialogHeader>
           <DialogTitle>¿Quién cobra?</DialogTitle>
           <DialogDescription>
-            Con PIN, el cobro queda confirmado. Sin PIN se registra igual, como declarado.
+            Con el PIN queda constancia de que cobró ella. Sin PIN también se cobra, pero queda como «sin PIN».
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={entrarConPin} className="space-y-4">

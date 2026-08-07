@@ -81,7 +81,7 @@ export function StylistPinsSection({ orgId }: { orgId: string }) {
         </div>
         <p className="text-[12px] text-muted-foreground">
           Sirve para saber quién cobró, no para dar permisos: quien no tenga PIN puede cobrar
-          igual, y su cobro queda registrado como <strong>declarado</strong>. Si alguien lo
+          igual, y su cobro queda marcado como <strong>«sin PIN»</strong>. Si alguien lo
           olvida, pon otro aquí.
         </p>
       </CardHeader>

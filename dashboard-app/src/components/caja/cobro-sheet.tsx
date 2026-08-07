@@ -122,7 +122,7 @@ export function CobroSheet({ contexto, sesion, orgId, open, onClose, onCobrado }
       <SheetContent className="w-full sm:max-w-md flex flex-col gap-0 p-0">
         <SheetHeader className="px-6 py-5 border-b border-border">
           <SheetTitle className="font-heading text-[18px] font-semibold">
-            {contexto?.cliente || "Cobro suelto"}
+            {contexto?.cliente || "Venta sin cita"}
           </SheetTitle>
           {contexto?.service && (
             <p className="text-[12.5px] text-muted-foreground">{contexto.service}</p>
@@ -137,7 +137,7 @@ export function CobroSheet({ contexto, sesion, orgId, open, onClose, onCobrado }
             <span className="font-semibold text-foreground">
               cobra {sesion?.stylistName ?? "sin asignar"}
             </span>
-            {sesion && !sesion.token && <span> · quedará como declarada</span>}
+            {sesion && !sesion.token && <span> · sin PIN</span>}
           </p>
         </SheetHeader>
 

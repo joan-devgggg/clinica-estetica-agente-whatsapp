@@ -70,7 +70,7 @@ export function PendienteRow({ pendiente, sesion, cobrando, onCobroRapido, onAbr
               {ref != null ? eur(ref) : "—"}
             </p>
             {ref == null && (
-              <p className="text-[10.5px] text-muted-foreground">sin referencia</p>
+              <p className="text-[10.5px] text-muted-foreground">sin precio en el catálogo</p>
             )}
           </button>
         </div>
@@ -80,7 +80,7 @@ export function PendienteRow({ pendiente, sesion, cobrando, onCobroRapido, onAbr
             <Check size={14} />
             Cobrado {eur(Number(ya.importe_total))} · {ya.metodo}
             {ya.atribucion === "declarada" && (
-              <span className="font-normal text-muted-foreground">· declarada</span>
+              <span className="font-normal text-muted-foreground">· sin PIN</span>
             )}
           </p>
         ) : (
