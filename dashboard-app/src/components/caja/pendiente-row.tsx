@@ -136,20 +136,38 @@ export function PendienteRow({ pendiente, sesion, stylists, cobrando, onCobroRap
                 </span>
               )}
             </div>
-            <div className="mt-2 grid grid-cols-3 gap-2">
-              {RAPIDOS.map((m) => (
-                <Button
-                  key={m.valor}
-                  size="sm"
-                  variant="outline"
-                  className="h-10"
-                  disabled={!puedeUnToque}
-                  onClick={() => onCobroRapido(pendiente, m.valor, cobradoPor)}
-                >
-                  {m.etiqueta}
-                </Button>
-              ))}
-            </div>
+            {/* Sin importe de referencia NO se enseñan tres botones apagados: una fila que no
+                se puede cobrar tiene que decir qué HACER, no dejar tres controles muertos con
+                la explicación en la otra punta de la tarjeta. Un solo botón que lleva a la
+                hoja, donde se teclea el importe. */}
+            {ref == null ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-2 h-10 w-full"
+                onClick={() => onAbrirHoja(pendiente)}
+              >
+                Poner importe y cobrar
+              </Button>
+            ) : (
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                {RAPIDOS.map((m) => (
+                  <Button
+                    key={m.valor}
+                    size="sm"
+                    // `secondary` y no `outline`: un borde fino en gris sobre una tarjeta clara
+                    // se lee como deshabilitado aunque no lo esté, y estos son los botones que
+                    // más se pulsan de la pantalla.
+                    variant="secondary"
+                    className="h-11 font-medium"
+                    disabled={!puedeUnToque}
+                    onClick={() => onCobroRapido(pendiente, m.valor, cobradoPor)}
+                  >
+                    {m.etiqueta}
+                  </Button>
+                ))}
+              </div>
+            )}
           </>
         )}
       </CardContent>

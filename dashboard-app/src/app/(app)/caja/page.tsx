@@ -112,7 +112,9 @@ export default function CajaPage() {
       // cifra que quería ver. Igual con la atribución — así se entera en el momento de que un
       // cobro quedó declarada, no días después mirando el resumen.
       toast.success(`Cobrado ${Number(cobro.importe_total)} € · ${cobro.metodo}`, {
-        duration: 8000,
+        // 15 s y no 8: el deshacer se usa con una clienta delante, y 8 segundos se van en
+        // mirar la pantalla y entender lo que pone. Si se pierde, queda ⋯ → Anular.
+        duration: 15000,
         description: `${p.cliente ?? ""} · cobra ${cobro.cobrado_por_nombre ?? "—"}`
           + (cobro.atribucion === "declarada" ? " · sin PIN" : ""),
         action: { label: "Deshacer", onClick: () => deshacer(cobro.id) },
@@ -152,7 +154,18 @@ export default function CajaPage() {
     );
   }
 
-  const porCobrar = pendientes.filter((p) => !p.cobro);
+  // Las que YA han pasado, arriba. A media tarde las que se van a cobrar son las de hace un
+  // rato, y en orden ascendente quedaban al final de la lista, debajo de las de la noche.
+  // Dentro de cada grupo se mantiene la hora ascendente, que es como se piensa una jornada.
+  const ahora = Date.now();
+  const porCobrar = pendientes
+    .filter((p) => !p.cobro)
+    .sort((a, b) => {
+      const pasadaA = new Date(a.starts_at).getTime() <= ahora;
+      const pasadaB = new Date(b.starts_at).getTime() <= ahora;
+      if (pasadaA !== pasadaB) return pasadaA ? -1 : 1;
+      return a.starts_at.localeCompare(b.starts_at);
+    });
 
   return (
     <>
@@ -248,7 +261,9 @@ export default function CajaPage() {
           setSesion(leerSesion());
           await cargar();
           toast.success("Cobro registrado", {
-            duration: 8000,
+            // 15 s y no 8: el deshacer se usa con una clienta delante, y 8 segundos se van en
+        // mirar la pantalla y entender lo que pone. Si se pierde, queda ⋯ → Anular.
+        duration: 15000,
             action: { label: "Deshacer", onClick: () => deshacer(c.id) },
           });
         }}

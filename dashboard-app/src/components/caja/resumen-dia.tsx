@@ -22,23 +22,35 @@ export function ResumenDia({ resumen }: { resumen: CajaResumen }) {
   // nadie confirmó es el dinero del que menos se puede afirmar.
   const efectivoSinPin = t.declarada.efectivo;
 
+  // Un día tranquilo decía CUATRO veces que no había pasado nada: "Pendientes (0)", "no queda
+  // ninguna cita por cobrar", cuatro tarjetas a 0,00 € y "todavía no se ha cobrado nada".
+  // Cuatro tarjetas vacías ocupan media pantalla sin informar de nada, y repetir el mismo cero
+  // en varios sitios entrena a no leer ninguno. Con cero cobros basta una línea.
+  if (resumen.totales.numCobros === 0) {
+    return (
+      <p className="rounded-lg border border-dashed border-border/60 px-4 py-6 text-center text-[13px] text-muted-foreground">
+        Aún no se ha cobrado nada hoy
+      </p>
+    );
+  }
+
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+      <div className={`grid grid-cols-2 gap-4 ${efectivoSinPin > 0 ? "xl:grid-cols-4" : "xl:grid-cols-3"}`}>
         <Kpi label="Efectivo" value={eur(t.efectivo)} />
         <Kpi label="Tarjeta y Bizum" value={eur(t.tarjeta)} />
         <Kpi label="Total del día" value={eur(t.total)} />
-        <Kpi
-          label="Efectivo sin PIN"
-          value={eur(efectivoSinPin)}
-          alerta={efectivoSinPin > 0}
-          pie={efectivoSinPin > 0 ? `${t.declarada.num} cobro${t.declarada.num === 1 ? "" : "s"} sin PIN` : undefined}
-        />
+        {efectivoSinPin > 0 && (
+          <Kpi
+            label="Efectivo sin PIN"
+            value={eur(efectivoSinPin)}
+            alerta
+            pie={`${t.declarada.num} cobro${t.declarada.num === 1 ? "" : "s"} sin PIN`}
+          />
+        )}
       </div>
 
-      {resumen.estilistas.length === 0 ? (
-        <p className="py-10 text-center text-muted-foreground">Todavía no se ha cobrado nada hoy</p>
-      ) : (
+      {resumen.estilistas.length > 0 && (
         <div className="overflow-hidden rounded-lg border border-border/60 bg-card shadow-sm">
           <div className="border-b border-border/60 px-4 py-3">
             <p className="text-[13px] font-semibold text-foreground">Por quien cobró</p>

@@ -98,6 +98,13 @@ export function CobroSheet({ contexto, sesion, stylists, orgId, open, onClose, o
   const puedeGuardar = totalValido && mixtoValido && !!cobradoPor
     && (!sinCita || concepto.trim().length > 0) && !guardando;
 
+  // Lo que falta para poder cobrar, en el orden en que se rellena. null = se puede.
+  const queFalta = !cobradoPor ? "Elige quién cobra"
+    : (sinCita && !concepto.trim()) ? "Escribe qué se ha vendido"
+    : !totalValido ? "Escribe el importe"
+    : !mixtoValido ? "Revisa el reparto en efectivo"
+    : null;
+
   async function guardar() {
     if (!puedeGuardar) return;
     setGuardando(true);
@@ -300,9 +307,16 @@ export function CobroSheet({ contexto, sesion, stylists, orgId, open, onClose, o
 
         <div className="border-t border-border px-6 py-4 flex justify-end gap-2">
           <Button variant="outline" onClick={onClose}>Cancelar</Button>
-          <Button onClick={guardar} disabled={!puedeGuardar}>
-            {guardando ? "Registrando..." : totalValido ? `Cobrar ${eur(total)}` : "Cobrar"}
-          </Button>
+          <div className="flex flex-col items-end gap-1">
+            {/* Un botón apagado sin explicación es un callejón: se mira, no se entiende y se
+                cierra la hoja. Aquí se dice QUÉ falta, en el orden en que hay que rellenarlo. */}
+            {!guardando && queFalta && (
+              <span className="text-[11.5px] text-muted-foreground">{queFalta}</span>
+            )}
+            <Button onClick={guardar} disabled={!puedeGuardar}>
+              {guardando ? "Registrando..." : totalValido ? `Cobrar ${eur(total)}` : "Cobrar"}
+            </Button>
+          </div>
         </div>
       </SheetContent>
     </Sheet>
