@@ -3074,6 +3074,90 @@ function normalizeCobroImportes({ metodo, importeTotal, importeEfectivo } = {}) 
     return { importe_total: totalR, importe_efectivo: efectivoR };
 }
 
+// Resumen de caja de un día, por estilista. PURO: recibe los cobros YA filtrados a vigentes
+// (vista `cobros_vigentes`) y no vuelve a decidir cuáles cuentan — esa definición vive en la
+// vista y en un solo sitio.
+//
+// Reparte por ATRIBUCIÓN, y esa es la razón de que exista: una columna `atribucion` que no se
+// vea en ningún sitio no sirve de nada, y entonces el PIN tampoco. Aquí el reparto es
+// explícito, sobre todo en EFECTIVO — la tarjeta la verifica el banco, así que el efectivo
+// declarado y sin confirmar es exactamente el dinero del que menos se puede afirmar.
+//
+// No cierra el día ni escribe nada: es una lectura. El acto de cerrar (contar el cajón, fijar
+// la diferencia) es otra cosa y está sin diseñar.
+function buildCajaResumen(cobros, { stylists = [] } = {}) {
+    const NO_STYLIST = NO_STYLIST_KEY;
+    const nombrePorId = new Map((stylists || []).filter(s => s?.id).map(s => [s.id, s.name || null]));
+    const buckets = new Map();
+
+    const vacio = () => ({ num: 0, total: 0, efectivo: 0 });
+    const getBucket = (key, nombre) => {
+        if (!buckets.has(key)) {
+            buckets.set(key, {
+                stylist_id: key === NO_STYLIST ? null : key,
+                stylist_name: nombre || (key === NO_STYLIST ? 'Sin estilista' : null),
+                numCobros: 0, total: 0, efectivo: 0, tarjeta: 0,
+                confirmada: vacio(), declarada: vacio(),
+            });
+        }
+        return buckets.get(key);
+    };
+
+    for (const c of (cobros || [])) {
+        const key = c.cobrado_por || NO_STYLIST;
+        // El nombre CONGELADO en el cobro manda sobre el del catálogo actual: renombrar a una
+        // estilista no puede reescribir un cierre de hace tres meses.
+        const b = getBucket(key, c.cobrado_por_nombre || nombrePorId.get(c.cobrado_por));
+        const total = Number(c.importe_total) || 0;
+        const efectivo = Number(c.importe_efectivo) || 0;
+
+        b.numCobros += 1;
+        b.total += total;
+        b.efectivo += efectivo;
+        b.tarjeta += total - efectivo;
+
+        // Cualquier valor que no sea exactamente 'confirmada' cuenta como declarada: ante la
+        // duda, la afirmación más humilde.
+        const rama = c.atribucion === 'confirmada' ? b.confirmada : b.declarada;
+        rama.num += 1;
+        rama.total += total;
+        rama.efectivo += efectivo;
+    }
+
+    const redondear = (r) => ({ num: r.num, total: _round2(r.total), efectivo: _round2(r.efectivo) });
+    const estilistas = [...buckets.values()].map(b => ({
+        ...b,
+        total: _round2(b.total),
+        efectivo: _round2(b.efectivo),
+        tarjeta: _round2(b.tarjeta),
+        confirmada: redondear(b.confirmada),
+        declarada: redondear(b.declarada),
+    })).sort((a, b) => b.total - a.total);
+
+    // Los totales son la SUMA de las filas ya redondeadas, para que el resumen global cuadre al
+    // céntimo con lo que se ve por estilista (mismo criterio que el informe de facturación).
+    const suma = (f) => _round2(estilistas.reduce((s, e) => s + f(e), 0));
+    return {
+        estilistas,
+        totales: {
+            numCobros: estilistas.reduce((s, e) => s + e.numCobros, 0),
+            total: suma(e => e.total),
+            efectivo: suma(e => e.efectivo),
+            tarjeta: suma(e => e.tarjeta),
+            confirmada: {
+                num: estilistas.reduce((s, e) => s + e.confirmada.num, 0),
+                total: suma(e => e.confirmada.total),
+                efectivo: suma(e => e.confirmada.efectivo),
+            },
+            declarada: {
+                num: estilistas.reduce((s, e) => s + e.declarada.num, 0),
+                total: suma(e => e.declarada.total),
+                efectivo: suma(e => e.declarada.efectivo),
+            },
+        },
+    };
+}
+
 function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {}) {
     const NO_STYLIST = NO_STYLIST_KEY;
     const buckets = new Map();
@@ -3274,6 +3358,7 @@ module.exports = {
     METODOS_COBRO,
     MOTIVOS_DIFERENCIA,
     normalizeCobroImportes,
+    buildCajaResumen,
     isBillingServiceDiverged,
     buildStylistBillingReport,
     filterAppointmentsByStylist,

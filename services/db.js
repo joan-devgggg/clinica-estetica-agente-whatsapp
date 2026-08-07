@@ -1603,7 +1603,7 @@ async function setManualPrice(orgId, appointmentId, { precio, motivo = null, use
 const COBRO_COLUMNS = 'id, organization_id, appointment_id, cobrado_por, cobrado_por_nombre, '
     + 'fecha_caja, cobrado_at, metodo, importe_total, importe_efectivo, iva_rate, concepto, '
     + 'importe_referencia, motivo_diferencia, nota, estado, corrige_a, motivo_correccion, '
-    + 'anulado_at, anulado_por, registrado_por, created_at';
+    + 'anulado_at, anulado_por, registrado_por, created_at, atribucion';
 
 // El día de caja de HOY, en Europe/Madrid. Es la única forma de calcularlo en el código.
 //
@@ -1623,6 +1623,10 @@ async function createCobro(orgId, {
     metodo, importeTotal, importeEfectivo = null,
     concepto = null, importeReferencia = null, motivoDiferencia = null, nota = null,
     corrigeA = null, motivoCorreccion = null, userId = null,
+    // 'declarada' por defecto, y esa dirección es deliberada: un camino que se olvide de
+    // declararla cae en la afirmación MÁS HUMILDE. Al revés, un olvido convertiría en "consta"
+    // algo que nadie confirmó.
+    atribucion = 'declarada',
 } = {}) {
     const oid = resolveOrg(orgId);
     const { normalizeCobroImportes } = require('./helpers');
@@ -1656,6 +1660,7 @@ async function createCobro(orgId, {
             corrige_a: corrigeA || null,
             motivo_correccion: motivoCorreccion || null,
             registrado_por: userId || null,
+            atribucion: atribucion === 'confirmada' ? 'confirmada' : 'declarada',
         })
         .select(COBRO_COLUMNS);
     // Es dinero: un INSERT fallido no puede devolver null y leerse como "ya está".
@@ -1734,6 +1739,10 @@ async function rectifyCobro(orgId, cobroId, cambios = {}) {
         corrigeA:       original.id,
         motivoCorreccion: cambios.motivoCorreccion,
         userId:         cambios.userId || null,
+        // La atribución NO se hereda: es una afirmación nueva sobre quién dice qué, y la hace
+        // quien rectifica. Heredarla arrastraría el "confirmada" del original a una corrección
+        // tecleada por otra persona sin meter ningún PIN.
+        atribucion:     cambios.atribucion === 'confirmada' ? 'confirmada' : 'declarada',
     });
 }
 
@@ -1750,6 +1759,71 @@ async function anularCobro(orgId, cobroId, { motivo = null, userId = null } = {}
         .select(COBRO_COLUMNS);
     assertWrite(error, 'cobros', 'anularCobro');
     return data?.[0] || null;
+}
+
+// ─── PIN de atribución por estilista (migración 036) ────────────────────────
+//
+// Lo pone y lo cambia la DUEÑA desde el panel. No hay autoservicio ni recuperación: si una
+// estilista lo olvida, se le pone otro. Un flujo de recuperación sería aparato de seguridad y
+// esto no es seguridad.
+
+// Quién tiene PIN, SIN devolver hash ni salt. Es lo único que el panel necesita saber para
+// pintar la configuración, y devolver los hashes "porque están ahí" es como acaban saliendo.
+async function getStylistPinStatus(orgId) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('stylist_pins').select('stylist_id, actualizado_at').eq('organization_id', oid);
+    assertRead(error, 'stylist_pins');
+    return (data || []).map(r => ({ stylist_id: r.stylist_id, actualizado_at: r.actualizado_at }));
+}
+
+async function setStylistPin(orgId, stylistId, pin, { userId = null } = {}) {
+    const oid = resolveOrg(orgId);
+    const { hashPin } = require('./pin');
+    const { hash, salt } = hashPin(pin);   // lanza si el formato no vale
+
+    // La estilista tiene que existir EN ESTA ORG: sin esto, un id de otra organización crearía
+    // una fila que su panel no ve pero que sí valida PINs.
+    const { data: est, error: errEst } = await supabase
+        .from('stylists').select('id').eq('id', stylistId).eq('organization_id', oid).maybeSingle();
+    assertRead(errEst, 'stylists');
+    if (!est) return null;
+
+    const { data, error } = await supabase
+        .from('stylist_pins')
+        .upsert({
+            organization_id: oid, stylist_id: stylistId,
+            pin_hash: hash, pin_salt: salt,
+            actualizado_at: now(), actualizado_por: userId || null,
+        }, { onConflict: 'stylist_id' })
+        .select('stylist_id, actualizado_at');
+    assertRowsAffected(error, data, 'stylist_pins', 'setStylistPin');
+    return data[0];
+}
+
+async function clearStylistPin(orgId, stylistId) {
+    const oid = resolveOrg(orgId);
+    const { error } = await supabase
+        .from('stylist_pins').delete().eq('stylist_id', stylistId).eq('organization_id', oid);
+    assertWrite(error, 'stylist_pins', 'clearStylistPin');
+    return true;
+}
+
+// ¿Es el PIN de esa estilista? Devuelve solo true/false.
+//
+// Una estilista SIN PIN devuelve false, no "adelante": lo contrario convertiría a las que la
+// dueña no ha dado de alta en confirmables por cualquiera. Sin PIN se cobra igual, pero la
+// atribución queda declarada, que es lo honesto.
+async function verifyStylistPin(orgId, stylistId, pin) {
+    const oid = resolveOrg(orgId);
+    if (!stylistId) return false;
+    const { data, error } = await supabase
+        .from('stylist_pins').select('pin_hash, pin_salt')
+        .eq('stylist_id', stylistId).eq('organization_id', oid).maybeSingle();
+    assertRead(error, 'stylist_pins');
+    if (!data) return false;
+    const { verifyPin } = require('./pin');
+    return verifyPin(pin, data.pin_hash, data.pin_salt);
 }
 
 // Una cita concreta. Necesaria para no derivar su horario de la sesión del bot: al aceptar
@@ -2742,6 +2816,10 @@ module.exports = {
     rectifyCobro,
     anularCobro,
     diaDeCajaHoy,
+    getStylistPinStatus,
+    setStylistPin,
+    clearStylistPin,
+    verifyStylistPin,
     getAppointmentsPendientesRecordatorio,
     getReservasBizumPendiente,
     getAgentConfig,

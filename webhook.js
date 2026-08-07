@@ -445,6 +445,102 @@ async function calcularImporteReferencia(orgId, appointmentId) {
     return resolveImporteReferencia(cita, cfg?.services || []);
 }
 
+// ─── PIN de atribución ──────────────────────────────────────────────────────
+//
+// Lo pone y lo cambia la DUEÑA. No hay recuperación: si una estilista lo olvida, se le pone
+// otro. Un flujo de recuperación sería aparato de seguridad, y esto no es seguridad.
+
+// Quién tiene PIN. Devuelve booleanos y fechas, JAMÁS hash ni salt.
+app.get('/api/stylists/pin-status', async (req, res) => {
+    try {
+        const orgId = exigirSalon(req, res);
+        if (!orgId) return;
+        res.json(await db.getStylistPinStatus(orgId));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/stylists/:id/pin', async (req, res) => {
+    try {
+        const orgId = exigirSalon(req, res);
+        if (!orgId) return;
+        const { isValidPinFormat } = require('./services/pin');
+        if (!isValidPinFormat(req.body?.pin)) {
+            return res.status(400).json({ error: 'El PIN son 4 a 6 dígitos' });
+        }
+        const r = await db.setStylistPin(orgId, req.params.id, req.body.pin, { userId: req.authUserId || null });
+        if (!r) return res.status(404).json({ error: 'Esa estilista no existe en esta organización' });
+        // El PIN NO se registra en el log, obviamente. Solo que se cambió y quién lo cambió.
+        logger.info('pin_estilista_actualizado', { orgId, stylistId: req.params.id, userId: req.authUserId || null });
+        res.json(r);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/stylists/:id/pin', async (req, res) => {
+    try {
+        const orgId = exigirSalon(req, res);
+        if (!orgId) return;
+        await db.clearStylistPin(orgId, req.params.id);
+        logger.info('pin_estilista_retirado', { orgId, stylistId: req.params.id, userId: req.authUserId || null });
+        res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Abre sesión de caja: se teclea el PIN UNA vez y se cambia por un token corto y firmado.
+// El PIN nunca se guarda en el navegador; lo que viaja luego en cada cobro es el token.
+app.post('/api/caja/sesion', async (req, res) => {
+    try {
+        const orgId = exigirSalon(req, res);
+        if (!orgId) return;
+        const { stylistId, pin } = req.body || {};
+        if (!stylistId) return res.status(400).json({ error: 'Falta la estilista' });
+
+        const ok = await db.verifyStylistPin(orgId, stylistId, pin);
+        if (!ok) {
+            // Mismo 401 para "PIN equivocado" y "esa estilista no tiene PIN": distinguirlos
+            // enseñaría a quién se le puede atribuir sin más. Y el cobro NO depende de esto —
+            // se puede registrar igual, como declarada.
+            logger.warn('caja_pin_rechazado', { orgId, stylistId });
+            return res.status(401).json({ error: 'PIN incorrecto' });
+        }
+        const { issueAttributionToken } = require('./services/pin');
+        const minutos = Number(await db.getConfigValue(orgId, 'caja_pin_minutos')) || 30;
+        const token = issueAttributionToken({ orgId, stylistId, minutos });
+        logger.info('caja_sesion_abierta', { orgId, stylistId, minutos });
+        res.json({ token, stylistId, minutos });
+    } catch (e) {
+        if (/DASHBOARD_API_SECRET/.test(e.message || '')) return res.status(500).json({ error: e.message });
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Decide la atribución de un cobro a partir del token que trae la petición.
+//
+// Devuelve SIEMPRE una atribución utilizable: el cobro nunca se bloquea por esto. Lo que
+// cambia es de qué te puedes fiar, y el caso del token de OTRA estilista se registra aparte
+// porque significa que alguien cambió el nombre en pantalla sin meter el PIN — que es
+// exactamente lo que la columna existe para poder distinguir.
+function resolverAtribucion(req, orgId, cobradoPor) {
+    const token = req.get('X-Caja-Token') || req.body?.cajaToken || null;
+    if (!token || !cobradoPor) return { atribucion: 'declarada', token: null };
+
+    const { verifyAttributionToken, issueAttributionToken } = require('./services/pin');
+    const sesion = verifyAttributionToken(token, { orgId });
+    if (!sesion) return { atribucion: 'declarada', token: null };
+
+    if (sesion.stylistId !== String(cobradoPor)) {
+        logger.warn('caja_atribucion_desajustada', {
+            orgId, tokenStylistId: sesion.stylistId, cobradoPor: String(cobradoPor),
+            detalle: 'se cambió la estilista en pantalla sin meter su PIN; el cobro se registra como declarada',
+        });
+        return { atribucion: 'declarada', token: null };
+    }
+    // Renovado en cada cobro: así la caducidad es por INACTIVIDAD de verdad y la controla el
+    // servidor, no el reloj del navegador.
+    let renovado = null;
+    try { renovado = issueAttributionToken({ orgId, stylistId: sesion.stylistId }); } catch { /* sin secreto */ }
+    return { atribucion: 'confirmada', token: renovado };
+}
+
 // Registra un cobro. `fechaCaja` solo se manda para imputar a propósito un cobro de madrugada
 // a la jornada anterior; sin ella la decide el servidor en Europe/Madrid (db.diaDeCajaHoy).
 app.post('/api/cobros', async (req, res) => {
@@ -467,18 +563,23 @@ app.post('/api/cobros', async (req, res) => {
             return res.status(400).json({ error: 'Un cobro sin cita tiene que decir de qué es (concepto)' });
         }
 
+        const atrib = resolverAtribucion(req, orgId, cobradoPor);
         const cobro = await db.createCobro(orgId, {
             appointmentId, cobradoPor, fechaCaja, metodo, importeTotal, importeEfectivo,
             concepto, motivoDiferencia, nota,
             importeReferencia: await calcularImporteReferencia(orgId, appointmentId),
             // Del token verificado, NUNCA del body: es dinero.
             userId: req.authUserId || null,
+            atribucion: atrib.atribucion,
         });
         logger.info('cobro_registrado', {
             orgId, cobroId: cobro.id, metodo: cobro.metodo, total: cobro.importe_total,
-            efectivo: cobro.importe_efectivo, fechaCaja: cobro.fecha_caja, userId: req.authUserId || null,
+            efectivo: cobro.importe_efectivo, fechaCaja: cobro.fecha_caja,
+            atribucion: cobro.atribucion, userId: req.authUserId || null,
         });
-        res.status(201).json(cobro);
+        // El token renovado viaja de vuelta para que el cliente lo sustituya: la caducidad se
+        // cuenta desde el ÚLTIMO cobro, no desde que se tecleó el PIN.
+        res.status(201).json(atrib.token ? { ...cobro, cajaToken: atrib.token } : cobro);
     } catch (e) {
         // Los mensajes de normalizeCobroImportes están escritos para leerse; no son un 500.
         if (/inválid|mixto|efectivo|estilista|decir por qué/i.test(e.message || '')) {
@@ -511,6 +612,29 @@ app.get('/api/cobros', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Resumen de caja de un día, por estilista, con el reparto CONFIRMADA / DECLARADA.
+//
+// Existe porque una columna `atribucion` que no se ve en ningún sitio no sirve de nada — y
+// entonces el PIN tampoco. Es solo lectura: NO cierra el día ni escribe nada. Contar el cajón
+// y fijar la diferencia es otra cosa, y está sin diseñar.
+app.get('/api/caja/resumen', async (req, res) => {
+    try {
+        const orgId = exigirSalon(req, res);
+        if (!orgId) return;
+        const fecha = req.query.fecha || db.diaDeCajaHoy();
+        if (!FECHA_YMD.test(String(fecha))) {
+            return res.status(400).json({ error: 'fecha debe ser YYYY-MM-DD' });
+        }
+        const { buildCajaResumen } = require('./services/helpers');
+        const [cobros, stylists] = await Promise.all([
+            // De la VISTA: qué cobro cuenta lo decide la 035 y nadie más.
+            db.getCobrosVigentes(orgId, { desde: fecha, hasta: fecha }),
+            db.getStylistsByOrg(orgId),
+        ]);
+        res.json({ fecha, ...buildCajaResumen(cobros, { stylists }) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Rectificar: una sola escritura, el sucesor anula al anterior. Ruta propia y no un PUT sobre
 // el cobro, porque un cobro NO se edita — el trigger de la 035 lo impide en la base.
 app.post('/api/cobros/:id/rectificar', async (req, res) => {
@@ -527,6 +651,10 @@ app.post('/api/cobros/:id/rectificar', async (req, res) => {
         const cobro = await db.rectifyCobro(orgId, req.params.id, {
             ...req.body,
             motivoCorreccion: String(motivoCorreccion).trim(),
+            // Afirmación NUEVA, no heredada: la hace quien rectifica, ahora.
+            atribucion: resolverAtribucion(
+                req, orgId, req.body?.cobradoPor !== undefined ? req.body.cobradoPor : original.cobrado_por,
+            ).atribucion,
             // Si cambia la cita, la referencia se recalcula; si no, se hereda.
             importeReferencia: req.body?.appointmentId !== undefined
                 ? await calcularImporteReferencia(orgId, req.body.appointmentId)
