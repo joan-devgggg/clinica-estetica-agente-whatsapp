@@ -1629,6 +1629,33 @@ function salonFueraDeHorarioMsg(session, { hora, apertura, cierre }) {
     return msgs[session.language] || msgs.es;
 }
 
+// Nivel 3 y ÚLTIMO del "no sé qué servicio quieres": ofrecer una persona.
+// El menú de rescate no tenía techo — `streak >= 2` es un suelo, no un tope — así que a
+// partir del segundo turno sin servicio devolvía el MISMO párrafo indefinidamente. Olga
+// Yarmak lo recibió tres veces palabra por palabra (07/08/2026), una de ellas contestando a
+// "¿me puedes mandar una foto?". La lección estaba escrita cuatro líneas más arriba desde el
+// 02/08 y solo se había aplicado una vez.
+//
+// OFRECE y espera el "sí": los casos 1-6 del prompt no escalan sin confirmación explícita.
+// `pendingEscalation` se arma aquí a mano y no se deja en manos de `offersHumanHandover`,
+// que solo reconoce el castellano — para una clienta rusa la oferta se habría quedado
+// colgando, que es exactamente el bug que esa red existe para tapar.
+function salonOfferHumanMsg(session) {
+    session.pendingEscalation = true;
+    session.pendingEscalationService = 'traspaso';
+    const msgs = {
+        es: 'Perdona, no consigo entenderte bien y no quiero hacerte perder más tiempo 🙏 '
+            + '¿Quieres que te ponga en contacto con una de nuestras especialistas?',
+        en: "Sorry, I'm not managing to understand you and I don't want to waste your time 🙏 "
+            + 'Would you like me to put you in touch with one of our specialists?',
+        ru: 'Извини, я никак не могу тебя понять и не хочу отнимать у тебя время 🙏 '
+            + 'Хочешь, я свяжу тебя с одной из наших специалисток?',
+        uk: 'Вибач, я ніяк не можу тебе зрозуміти і не хочу забирати твій час 🙏 '
+            + 'Хочеш, я з\'єднаю тебе з однією з наших спеціалісток?',
+    };
+    return msgs[session.language] || msgs.es;
+}
+
 function salonNoSlotsMsg(session) {
     const language = session.language;
     if (!session.selectedService) {
@@ -1637,6 +1664,8 @@ function salonNoSlotsMsg(session) {
         // misma frase las dos; acabó pidiendo un servicio que no quería. Repetir una
         // pregunta que la clienta ya ha respondido no es una respuesta.
         session.sinServicioStreak = (session.sinServicioStreak || 0) + 1;
+        // Y el menú tampoco se repite indefinidamente: dos veces y se ofrece una persona.
+        if (session.sinServicioStreak >= 4) return salonOfferHumanMsg(session);
         if (session.sinServicioStreak >= 2) return salonPickServiceMenuMsg(session);
         const askService = {
             en: 'To check availability I first need to know which service you\'d like 😊 What are you after?',
@@ -5781,7 +5810,7 @@ module.exports = {
     extractSentMessageId,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
-        respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
+        respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover, offersHumanHandover,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:
