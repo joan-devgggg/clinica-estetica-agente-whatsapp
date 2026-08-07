@@ -2190,6 +2190,55 @@ async function countBroadcastSendsLast24h(orgId, now_ = Date.now()) {
     return count || 0;
 }
 
+// Ventana en la que una respuesta se considera AUTOMÁTICA: la centralita de un negocio
+// contesta en segundos, una persona no. Medido en la tanda 1 de `verano_tratamientos`
+// (07/08/2026, 250 envíos, 6 respuestas): los tres autocontestadores tardaron 7,1 · 8,1 · 10,0 s
+// y las tres personas 126 · 132 · 459 s. 30 s cae en mitad de ese hueco con margen por los dos
+// lados. Es una HIPÓTESIS medida sobre n=3, no una ley: hay que recalibrarla con la tanda 2.
+const RESPUESTA_AUTOMATICA_MS = 30 * 1000;
+
+/**
+ * ¿Este teléfono acaba de recibir un envío de campaña nuestro, hace menos de `dentroDeMs`?
+ *
+ * Existe para no dejar que un AUTOCONTESTADOR fije el idioma de una ficha. El 07/08/2026 tres
+ * centralitas de otros negocios (DarYsol Events, Save Yourself y la de una videógrafa)
+ * contestaron a la campaña en 7-10 s; el bot les leyó el idioma y escribió
+ * `language_source: 'observed'` — la etiqueta que significa "se lo hemos leído a ELLA" y que
+ * apaga todas las cautelas río abajo. Dos fichas acabaron en el idioma equivocado.
+ *
+ * La fuente es `broadcast_sends.sent_at` y NO `messages`, y esa parte importa: **la plantilla
+ * de campaña no se escribe en `messages`**. Los cuatro contactos afectados tenían
+ * `outbound_previos = 0` pese a haberla recibido, así que "tiempo desde nuestro último
+ * saliente" calculado sobre `messages` habría dado null y la guarda no habría saltado nunca.
+ *
+ * Mira TODAS las campañas, no una: el riesgo es del envío, no de la clave.
+ *
+ * Devuelve el `sent_at` (ISO) si lo hay dentro de la ventana, o null. Un fallo de lectura NO
+ * lanza: esto decide si se ESCRIBE una marca de confianza, y quedarse sin escribirla es la
+ * dirección recuperable — al revés que en `getLastInboundAt`, donde un null manda plantilla de
+ * más y cuesta dinero.
+ */
+async function getRecentBroadcastSendAt(orgId, telefono, dentroDeMs = RESPUESTA_AUTOMATICA_MS) {
+    const oid = resolveOrg(orgId);
+    const phone = sanitizePhone(telefono);
+    if (!phone) return null;
+    const desde = new Date(Date.now() - dentroDeMs).toISOString();
+    const { data, error } = await supabase
+        .from('broadcast_sends')
+        .select('sent_at')
+        .eq('organization_id', oid)
+        .eq('wa_phone', phone)
+        .eq('status', 'sent')
+        .gte('sent_at', desde)
+        .order('sent_at', { ascending: false })
+        .limit(1);
+    if (error) {
+        logger.warn('broadcast_reciente_no_leido', { orgId: oid, telefono: phone, error: error.message });
+        return null;
+    }
+    return data?.[0]?.sent_at || null;
+}
+
 // ─── Pending actions ─────────────────────────────────────────────────────────
 
 async function createPendingAction(orgId, { type, contactId, appointmentId, payload }) {
@@ -2903,6 +2952,8 @@ module.exports = {
     claimBroadcastRecipient,
     finishBroadcastSend,
     countBroadcastSendsLast24h,
+    getRecentBroadcastSendAt,
+    RESPUESTA_AUTOMATICA_MS,
     createPendingAction,
     getPendingActions,
     resolvePendingAction,

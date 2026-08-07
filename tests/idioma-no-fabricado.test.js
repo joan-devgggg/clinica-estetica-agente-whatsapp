@@ -187,9 +187,17 @@ test('B3 · el OTRO "observed" no necesita guarda: lo alimenta detectLanguage', 
     const i = lineas.findIndex((l, n) => l.includes("session.languageSource = 'observed'")
         && !lineas.slice(Math.max(0, n - 14), n).join('\n').includes('aiResponse.idioma_detectado'));
     assert.notStrictEqual(i, -1, 'desapareció el marcado por detectLanguage');
-    const contexto = lineas.slice(Math.max(0, i - 6), i).join('\n');
+    // Ventana de 20 líneas y no de 6: desde el 07/08/2026 entre el `detectLanguage` y la
+    // marca hay una guarda —persistirIdiomaObservado— que impide que un AUTOCONTESTADOR fije
+    // el idioma de una ficha. Lo que este test afirma no cambia (de qué se alimenta este
+    // 'observed'); lo que cambia es cuánto código hay en medio.
+    const contexto = lineas.slice(Math.max(0, i - 20), i).join('\n');
     assert.ok(/detectLanguage\(sanitized\)/.test(contexto),
         'si este "observed" pasara a alimentarse de otra cosa, necesitaría su propia guarda:\n' + contexto);
+    // Y la marca ya no cuelga del detector a secas: cuelga de que la escritura se haya hecho.
+    // Sin esto, alguien podría quitar la guarda dejando el `session.languageSource` suelto.
+    assert.ok(/if \(persistido\) session\.languageSource = 'observed'/.test(lineas[i]),
+        'la marca de la vía determinista debe depender de que el idioma se haya persistido');
 
     const HELPERS = fs.readFileSync(path.join(__dirname, '..', 'services', 'helpers.js'), 'utf8');
     const cuerpo = HELPERS.slice(HELPERS.indexOf('function detectLanguage'));

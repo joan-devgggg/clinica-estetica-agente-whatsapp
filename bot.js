@@ -6,7 +6,7 @@ const {
     getAgentConfig, updateContactLanguage, updateContactPreferredStylist, updateContactLastStylist,
     getStylistsByOrg, getAllStylistSchedules, getLastCompletedAppointment, hasActiveAppointmentForSlot,
     getScheduleBlocks, getBlockedDays, getAppointmentsByLead, getAppointmentById, getUpcomingAppointments,
-    findContactIdsByPhone, getAppointmentsByStylistAndRange,
+    findContactIdsByPhone, getAppointmentsByStylistAndRange, getRecentBroadcastSendAt,
 } = require('./services/db');
 const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
@@ -1291,6 +1291,55 @@ async function ensureLeadId(orgId, session) {
         logger.warn('session_leadid_resolucion_fallida', { orgId, telefono, error: e.message });
         return null;
     }
+}
+
+/**
+ * Persiste en la FICHA un idioma leído en un mensaje — salvo que ese mensaje sea, casi con
+ * seguridad, la centralita automática de un negocio.
+ *
+ * Es el ÚNICO sitio por el que se escribe el idioma observado. Hay dos detectores que lo
+ * producen (el determinista de `detectLanguage` y el `idioma_detectado` del LLM) y los dos
+ * pasan por aquí: si uno se saltara la guarda, la guarda no serviría de nada.
+ *
+ * ── Por qué existe ──────────────────────────────────────────────────────────
+ * La tanda 1 de la campaña de verano (07/08/2026, 250 envíos) despertó a tres
+ * autocontestadores de otros negocios. Contestaron en 7-10 s, el bot les leyó el idioma y
+ * escribió `language_source: 'observed'` sobre la ficha de la supuesta clienta. `'observed'`
+ * es la etiqueta que significa "se lo hemos leído a ELLA" y la única que apaga todas las
+ * cautelas río abajo — el prompt deja de anunciarlo como probable y la campaña la usa para
+ * elegir plantilla de Meta. Dos fichas acabaron en el idioma equivocado a partir del texto de
+ * una centralita ajena; una tercera se quedó con el valor bueno por casualidad y la etiqueta
+ * inventada igual.
+ *
+ * ── Qué hace cuando salta ───────────────────────────────────────────────────
+ * NO escribe nada en la ficha: ni el idioma ni la marca. El turno sí puede usar el idioma
+ * (contestarle en el suyo es gratis y reversible); lo que no se hace es dejarlo por escrito
+ * sobre alguien a quien no hemos leído. Devuelve false para que quien llama sepa que la
+ * sesión tampoco puede ascender a 'observed'.
+ *
+ * Devuelve true si el idioma quedó persistido (o en camino de estarlo).
+ */
+async function persistirIdiomaObservado(orgId, session, lang, { dbPhone, userPhone, origen = 'detector' }) {
+    const envioReciente = await getRecentBroadcastSendAt(orgId, dbPhone);
+    if (envioReciente) {
+        logger.warn('idioma_no_persistido_respuesta_automatica', {
+            orgId, telefono: userPhone, lang, origen, envioReciente,
+            segundos: Math.round((Date.now() - new Date(envioReciente).getTime()) / 1000),
+        });
+        return false;
+    }
+    // ensureLeadId cierra el único hueco que quedaba, el PRIMER turno de una desconocida (la
+    // fila la acaba de crear saveMessage y el relleno de la reconciliación aún no ha pasado).
+    // Cuando ya hay leadId esto no consulta nada.
+    const leadId = await ensureLeadId(orgId, session);
+    if (!leadId) return false;
+    // Fire-and-forget (el turno no espera), pero con traza: sin ella, una ficha que se queda
+    // en el idioma que no es no deja rastro que distinga "no se intentó" de "falló".
+    updateContactLanguage(orgId, leadId, lang)
+        .catch(e => logger.warn('idioma_no_persistido', {
+            orgId, telefono: userPhone, leadId, lang, origen, error: e.message,
+        }));
+    return true;
 }
 
 async function reconciliarCitaViva(orgId, session, userPhone) {
@@ -3512,24 +3561,15 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             const lang = detectLanguage(sanitized);
             if (lang) {
                 session.language = lang;
-                // A partir de aquí es un idioma OBSERVADO, no el que traía la ficha: deja de
-                // ser una conjetura para el prompt y para cualquiera que segmente la columna.
-                session.languageSource = 'observed';
-                // El .catch() sigue siendo fire-and-forget (el turno no espera a esto), pero
-                // ya no es mudo: sin la traza, una ficha que se queda en el idioma que no es
-                // no deja ni un rastro que permita saber si es que no se intentó o es que
-                // falló. Ahora updateContactLanguage lanza si el UPDATE no toca ninguna fila.
-                // También por ensureLeadId: es lo que cierra el único hueco que quedaba, el
-                // PRIMER turno de una desconocida (la fila la acaba de crear saveMessage y
-                // el relleno de la reconciliación aún no ha pasado). Cuando ya hay leadId
-                // esto no consulta nada.
-                const leadIdIdioma = await ensureLeadId(orgId, session);
-                if (leadIdIdioma) {
-                    updateContactLanguage(orgId, leadIdIdioma, lang)
-                        .catch(e => logger.warn('idioma_no_persistido', {
-                            orgId, telefono: userPhone, leadId: leadIdIdioma, lang, error: e.message,
-                        }));
-                }
+
+                // La marca de OBSERVADO solo sube si el idioma ha quedado persistido. Si la
+                // respuesta venía de una centralita (ver persistirIdiomaObservado), la sesión
+                // se queda con el idioma para contestar pero SIN ascender la fuente: no se ha
+                // leído a nadie.
+                const persistido = await persistirIdiomaObservado(orgId, session, lang, {
+                    dbPhone: _dbPhone, userPhone, origen: 'detector',
+                });
+                if (persistido) session.languageSource = 'observed';
             }
         } else {
             // Restaurant: extract name, personas, preference
@@ -4592,15 +4632,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             if (IDIOMAS_SOPORTADOS.includes(aiResponse.idioma_detectado)
                 && aiResponse.idioma_detectado !== session.language) {
                 session.language = aiResponse.idioma_detectado;
-                session.languageSource = 'observed';   // el modelo lo ha leído del mensaje
-                const leadIdIdiomaLlm = await ensureLeadId(orgId, session);
-                if (leadIdIdiomaLlm) {
-                    updateContactLanguage(orgId, leadIdIdiomaLlm, session.language)
-                        .catch(e => logger.warn('idioma_no_persistido', {
-                            orgId, telefono: userPhone, leadId: leadIdIdiomaLlm,
-                            lang: session.language, origen: 'llm', error: e.message,
-                        }));
-                }
+                // Misma guarda que la vía determinista, y por el mismo motivo: el modelo lee
+                // igual de bien el texto de una centralita que el de una clienta, así que
+                // dejarla solo en el otro detector no protegería nada.
+                const persistidoLlm = await persistirIdiomaObservado(orgId, session, session.language, {
+                    dbPhone: _dbPhone, userPhone, origen: 'llm',
+                });
+                if (persistidoLlm) session.languageSource = 'observed';   // el modelo lo ha leído del mensaje
             }
 
             // Service selection from LLM — don't load slots here; let the next
@@ -5635,6 +5673,9 @@ module.exports = {
         reconciliarCitaViva, marcarAbandonadaSiNoTieneCita,
         // Resolución del contact_id: ningún call site debe leer session.leadId a pelo.
         ensureLeadId,
+        // Escritura del idioma OBSERVADO: paso único de los dos detectores, con la guarda
+        // que impide que la centralita de un negocio fije el idioma de una ficha.
+        persistirIdiomaObservado,
         // Nombre antes de reservar:
         evaluarNombreAntesDeReservar, handleNombreParaCita, handleApellidoParaCita,
         leerNombreDeRespuesta, preguntaNombreMsg, preguntaApellidoMsg, PENDIENTE_NOMBRE,
