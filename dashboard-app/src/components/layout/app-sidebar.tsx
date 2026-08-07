@@ -13,8 +13,6 @@ import {
   Ban,
   Star,
   Scissors,
-  MessageSquareText,
-  CreditCard,
   Megaphone,
   Receipt,
 } from "lucide-react";
@@ -38,7 +36,6 @@ interface NavItem {
   href: string;
   label: string;
   icon: LucideIcon;
-  disabled?: boolean;
 }
 
 const restaurantNavItems: NavItem[] = [
@@ -59,20 +56,34 @@ const salonNavItems: NavItem[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/agenda-estilistas", label: "Agenda estilistas", icon: Scissors },
   { href: "/reservas", label: "Citas", icon: CalendarDays },
-  // Caja va en el trabajo diario, no en ajustes junto a Facturación: Facturación se consulta,
-  // la caja se USA, y desde el mostrador.
-  { href: "/caja", label: "Caja", icon: Banknote },
   { href: "/clientes", label: "Clientes", icon: Users },
   { href: "/whatsapp", label: "WhatsApp", icon: MessageCircle },
 ];
 
+// PANTALLAS DE SANTE QUE NO ESTÁN EN EL MENÚ Y NO SE PUEDEN BORRAR (07/08/2026)
+//
+// `/lista-negra` y `/resenas` se quitaron de aquí porque la dueña no las abre a diario, pero
+// las páginas siguen vivas y se llega a ellas escribiendo la URL. No son código muerto:
+//
+//   · /lista-negra — el filtro de lista negra SIGUE CORRIENDO por debajo (el bot no contesta
+//     a quien esté marcada). Sin pantalla no habría ninguna forma de desbloquear a nadie:
+//     el bloqueo sería definitivo y silencioso.
+//   · /resenas — el 06/08/2026 aparecieron cinco reseñas marcadas como enviadas que nunca
+//     salieron. Esta pantalla es el único sitio donde se ve la cola: el día que el worker
+//     (`services/review.js`) vuelva a fallar, sin ella no se entera nadie.
+//
+// Si algún día se borran de verdad, hay que sustituir antes esas dos capacidades —
+// desbloquear una clienta y ver la cola de reseñas—, no solo la ruta.
+//
+// «Pagos» (`/stripe`) sí se borró entero el 07/08/2026: era un placeholder con badge SOON
+// que no hacía nada, y su hueco lo ocupa ahora Caja.
 const salonSettingsItems: NavItem[] = [
+  // Caja y Facturación van juntas y en este orden: una registra lo que entra, la otra lo
+  // valora. Caja estuvo en PRINCIPAL hasta el 07/08/2026.
+  { href: "/caja", label: "Caja", icon: Banknote },
   { href: "/facturacion", label: "Facturación", icon: Receipt },
   { href: "/lista-vip", label: "Lista VIP", icon: Star },
   { href: "/campanas", label: "Campañas", icon: Megaphone },
-  { href: "/lista-negra", label: "Lista negra", icon: Ban },
-  { href: "/resenas", label: "Reseñas", icon: MessageSquareText },
-  { href: "/stripe", label: "Pagos", icon: CreditCard, disabled: true },
   { href: "/configuracion", label: "Configuración", icon: Settings },
 ];
 
@@ -171,15 +182,15 @@ export function AppSidebar() {
             Gestión
           </SidebarGroupLabel>
           <SidebarMenu>
-            {settingsItems.map(({ href, label, icon: Icon, disabled }) => {
+            {settingsItems.map(({ href, label, icon: Icon }) => {
               const active = pathname.startsWith(href);
               return (
                 <SidebarMenuItem key={href}>
                   <SidebarMenuButton
                     isActive={active}
-                    tooltip={disabled ? `${label} (próximamente)` : label}
-                    className={`gap-2.5 ${disabled ? "opacity-50" : ""}`}
-                    render={<Link href={disabled ? "#" : href} />}
+                    tooltip={label}
+                    className="gap-2.5"
+                    render={<Link href={href} />}
                   >
                     <Icon
                       size={15}
@@ -189,11 +200,6 @@ export function AppSidebar() {
                       }
                     />
                     <span>{label}</span>
-                    {disabled && (
-                      <span className="ml-auto text-[9px] uppercase tracking-wider text-muted-foreground/60 font-semibold">
-                        soon
-                      </span>
-                    )}
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               );

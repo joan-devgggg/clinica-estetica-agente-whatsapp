@@ -1,5 +1,11 @@
 "use client";
 
+// NO BORRAR: fuera del menú de SANTE desde el 07/08/2026 (sigue en el de San Remo), pero viva
+// y accesible por URL. El filtro de lista negra SIGUE CORRIENDO por debajo — el bot no
+// contesta a quien esté marcada—, así que esta es la única forma de DESBLOQUEAR a alguien.
+// Sin ella, un bloqueo sería definitivo y silencioso.
+// Contexto completo en `dashboard-app/src/components/layout/app-sidebar.tsx`.
+
 import { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { toast } from "sonner";

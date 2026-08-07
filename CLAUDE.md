@@ -825,6 +825,28 @@ las citas ya reservadas en ese hueco no se mueven ni avisan. Comprueba día labo
 código 1 solo con hallazgos de severidad `error`; `sin-skill` es aviso porque puede ser una
 decisión deliberada. La lógica pura vive en `tests/lib/agenda-audit.js` y sí corre en `npm test`.
 
+## El menú de Sante: dos pantallas fuera del menú que NO son código muerto
+
+Limpieza del 07/08/2026. **Caja** bajó de PRINCIPAL a GESTIÓN, primera y justo encima de
+Facturación: una registra lo que entra y la otra lo valora. **«Pagos» (`/stripe`) se borró
+entero** —era un placeholder con badge SOON que no hacía nada— y su hueco lo ocupa Caja.
+
+**`/lista-negra` y `/resenas` salieron del menú de Sante pero las páginas siguen vivas**, y se
+llega a ellas escribiendo la URL. Un `grep` del menú las dará por muertas; no lo están, y
+borrarlas quita una capacidad que no tiene otro sitio:
+
+- **`/lista-negra`** — el filtro sigue corriendo por debajo (`bot.js:3511`, y `db.js` lo
+  aplica a recordatorios y reseñas). Es la única forma de **desbloquear** a alguien; sin
+  pantalla, un bloqueo es definitivo y silencioso. Sigue en el menú de San Remo.
+- **`/resenas`** — único sitio donde se ve la cola, y su botón «Enviar reseña» es la única
+  salida manual. El 06/08/2026 aparecieron cinco marcadas como enviadas que nunca salieron;
+  `services/review.js` no avisa cuando falla, así que sin esta pantalla ese fallo no lo ve
+  nadie.
+
+Si algún día se borran de verdad, hay que sustituir antes esas dos capacidades —desbloquear
+una clienta y ver la cola de reseñas—, no solo la ruta. El motivo está repetido en cabecera de
+cada `page.tsx` y en `app-sidebar.tsx`, que es donde estará mirando quien vaya a borrarlas.
+
 ## Regla de oro
 
 **San Remo NO se toca.** Cualquier cambio en el código compartido debe mantener el comportamiento exacto de San Remo. El flujo Bizum, party_size, mock calendar — todo sigue igual para `orgType === 'restaurant'`.

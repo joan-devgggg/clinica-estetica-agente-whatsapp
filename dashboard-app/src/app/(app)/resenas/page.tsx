@@ -1,5 +1,12 @@
 "use client";
 
+// NO BORRAR: fuera del menú de Sante desde el 07/08/2026, pero viva y accesible por URL.
+// Es el ÚNICO sitio donde se ve la cola de reseñas. El 06/08/2026 aparecieron cinco marcadas
+// como enviadas que nunca salieron; el worker (`services/review.js`) no avisa cuando falla,
+// así que sin esta pantalla ese fallo no lo ve nadie — ni hay forma de mandarla a mano
+// (el botón "Enviar reseña" de abajo es la única salida manual).
+// Contexto completo en `dashboard-app/src/components/layout/app-sidebar.tsx`.
+
 import { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { PageHeader } from "@/components/layout/page-header";
