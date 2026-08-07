@@ -1780,6 +1780,36 @@ function offersHumanHandover(respuesta) {
         .some(frase => /[?¿]/.test(frase) && HANDOVER_TRASPASO.test(frase) && HANDOVER_DESTINO.test(frase));
 }
 
+// Si se ESCALA, se dice. Es la mitad que le faltaba a announcesHumanHandover, que solo
+// miraba el sentido contrario ("lo promete y no lo hace").
+//
+// Olga Yarmak, 07/08/2026: a las 15:42:10 el LLM puso accion:escalar_humano con motivo
+// 'pedir_persona' —fila en pending_actions, bot_mode a manual, aviso por Telegram— y el
+// texto que le llegó a ella fue «Прости, я реально запуталась 😅 Объясни мне ещё раз…»,
+// pidiéndole que se explicara otra vez justo cuando el bot acababa de dejar de hablarle.
+// 44 s después escribió «me niego a hablar con un robot, solo con personas» y recibió
+// SILENCIO: correcto con bot_mode en manual, e indistinguible de que la ignorasen.
+//
+// Se AÑADE, no se sustituye: el texto del modelo suele llevar algo aprovechable (una
+// disculpa, una respuesta a medias) y lo que le falta es el acuse, no todo lo demás.
+//
+// Límite conocido: HANDOVER_TRASPASO/DESTINO son castellano, así que un traspaso ya
+// anunciado en ruso no se reconoce y el acuse se añade igual — sale una frase redundante,
+// las dos ciertas. Se prefiere a la alternativa (ampliar esos patrones a cuatro idiomas),
+// que cambiaría también a quién auto-escala la red del 28/07 y es otro alcance.
+const HANDOVER_ACUSE = {
+    es: 'Le paso tu mensaje a nuestro equipo para que te atiendan personalmente 🙏',
+    en: "I'm passing your message to our team so they can help you personally 🙏",
+    ru: 'Передаю твоё сообщение нашей команде, чтобы с тобой связались лично 🙏',
+    uk: 'Передаю твоє повідомлення нашій команді, щоб з тобою зв\'язалися особисто 🙏',
+};
+function ensureHandoverAcknowledged(respuesta, language) {
+    if (announcesHumanHandover(respuesta)) return respuesta;
+    const acuse = HANDOVER_ACUSE[language] || HANDOVER_ACUSE.es;
+    const previo = String(respuesta || '').trim();
+    return previo ? `${previo}\n\n${acuse}` : acuse;
+}
+
 // Mensaje DETERMINISTA que ofrece los primeros huecos REALES ya cargados. Lo usa la red
 // anti-escalada-falsa: cuando el LLM iba a decir "problema técnico" y resulta que sí hay
 // calendario, sustituimos su texto por una propuesta verídica en vez de por una disculpa.
@@ -4727,6 +4757,29 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             aiResponse.motivo_escalado = aiResponse.motivo_escalado || 'escalado_bot';
         }
 
+        // La MITAD QUE FALTABA de la red de arriba. Aquella cubre "lo promete y no lo hace";
+        // esta cubre "lo hace y no lo dice", que hasta el 07/08/2026 no la miraba nadie.
+        //
+        // Olga Yarmak: a las 15:42:10 el LLM puso accion:escalar_humano con motivo
+        // 'pedir_persona' —fila en pending_actions, bot_mode a manual, Telegram al salón— y
+        // el texto que le llegó a ella fue «Прости, я реально запуталась 😅 Объясни мне ещё
+        // раз…»: le pedía que se explicara otra vez, justo cuando el bot acababa de dejar de
+        // hablar. 44 s después escribió «me niego a hablar con un robot, solo con personas» y
+        // recibió SILENCIO — correcto con bot_mode en manual, e indistinguible de que la
+        // estuvieran ignorando.
+        //
+        // Se AÑADE, no se sustituye: el texto del modelo puede llevar información útil
+        // (una disculpa, una respuesta a medias) y lo que le falta es el acuse, no el resto.
+        if (orgType === 'salon' && aiResponse.accion === 'escalar_humano') {
+            const conAcuse = ensureHandoverAcknowledged(aiResponse.respuesta, session.language);
+            if (conAcuse !== aiResponse.respuesta) {
+                logger.warn('sante_escalada_sin_anuncio_corregida', {
+                    orgId, telefono: userPhone, motivo: aiResponse.motivo_escalado || null,
+                });
+                aiResponse.respuesta = conAcuse;
+            }
+        }
+
         // Primera pasada anti-cita-fantasma: el despacho de acciones de abajo tiene rutas
         // que envían el texto del LLM y hacen `return` (escalar_humano), saltándose todas
         // las redes finales. Un "te he reservado… y te paso con una persona" saldría entero.
@@ -5812,7 +5865,7 @@ module.exports = {
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
         respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
-        announcesHumanHandover, offersHumanHandover,
+        announcesHumanHandover, offersHumanHandover, ensureHandoverAcknowledged, HANDOVER_ACUSE,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:
         escalateToHuman,
         // Estado de servicio centralizado (fuente de verdad + limpieza):
