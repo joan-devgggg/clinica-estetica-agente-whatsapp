@@ -148,6 +148,30 @@ Plantillas aprobadas (Sante): `sante_recordatorio_cita` ({{1}}=nombre, {{2}}=hor
 
 **La resolución de proveedor saliente es única**: `services/outbound.js` → `resolveOutboundClient(orgId, fallback)`, que enruta por `getOrgChannel` (registry), no por `SANTE_360_API_KEY`. La usan el panel (`webhook.js` → `getOutboundClient`) y los dos workers.
 
+## Campaña por tandas: el allowlist se recalcula, la exclusión se guarda
+
+Una campaña que va por tandas (`campaignKey` fija, `limit` por tanda) y que deja fuera a un
+grupo concreto **guarda la lista de EXCLUIDOS, nunca la de destinatarios**. El allowlist se
+recalcula antes de cada tanda restando las exclusiones de la audiencia del momento:
+`getBroadcastAudience({audience:'todos'})` menos el set de exclusiones → `phones`.
+
+Congelar los ~700 destinatarios parece equivalente y no lo es: es una **foto**. La audiencia
+enviable de Sante pasó de 718 a 723 en dos días, así que una lista congelada deja fuera para
+siempre a toda clienta creada después, y en silencio — para el motor no existían.
+
+Y el allowlist hay que pasarlo en **todas** las tandas: el dedupe de `campaignKey` impide
+repetir destinatarios, pero **no recuerda a quién excluiste** (no hay fila en
+`broadcast_sends` para quien nunca entró en la lista). Una tanda 2 sin allowlist se lo manda
+a los excluidos.
+
+Campaña de verano en curso: [`docs/campana-verano-tandas.md`](docs/campana-verano-tandas.md) ·
+lista en `data/campana-verano-exclusiones.json` (**`revisado_por_duena: false`** — son
+conjeturas por nombre de pila, 19 de 20 sin ninguna cita).
+
+Para excluir NO se usa `is_blacklisted` (significa "clienta bloqueada" y se ve así en el
+panel) ni se siembran filas `'sent'` en `broadcast_sends` (escribiría "enviado" sobre
+mensajes que nunca salieron, en la tabla de la que sale luego el reparto por estado).
+
 ## Avisos al admin: solo cuentan si llegan
 
 `alertOnce` (`services/admin-alerts.js`) marca la clave **después** de que Telegram confirme,
@@ -255,6 +279,43 @@ denʹ`…). Esa segunda regla existe porque la primera es asimétrica: sin esas 
 `'ru'`, y el saludo y el gracias no las llevan — «Доброго дня» quedó marcado ruso. Los
 patrones cirílicos van SIEMPRE por `buildCyrillicRe` y se prueban contra `normalizeText`:
 sin eso no casan nunca (NFD descompone й/ё/ї, y `\b` es ASCII).
+
+## Bloquear agenda: `schedule_blocks`, nunca una cita con clienta inventada
+
+Un hueco que se cierra **es un `schedule_blocks`**. Hacerlo como cita a nombre de un contacto
+falso resta disponibilidad igual —el motor concatena citas y bloqueos en un único array
+`occupied` y los trata idénticos (`calendar-sante.js:232-236`)— pero además mete a un fantasma
+en «Pendientes de cobrar», en el recuento de clientas y en cualquier consulta que cuente
+contactos. Lo hace el botón «Bloquear hueco», pegado a «Nueva cita».
+
+Los cuatro «Close TIME» de Sante (contacto `fb2d64f0…`, `wa_phone '000000000'`) se pasaron a
+bloqueos el **07/08/2026** y el contacto se borró. Era el arreglo que
+`037_cita_no_facturable.sql:12-13` dejó anotado. Detalle de lo que había, con el `service`
+original de cada uno, en [`data/close-time-backup-2026-08-07.json`](data/close-time-backup-2026-08-07.json)
+— **es el único sitio donde queda**: `schedule_blocks` solo tiene `reason`, texto libre.
+
+Tres cosas que costaron y conviene no volver a descubrir:
+
+- **Eran CUATRO, no tres.** La migración contaba tres porque buscaba `service='Cita manual'`;
+  la cuarta era «Manicura + gel», un servicio que resuelve contra el catálogo y por eso no
+  parecía un bloqueo. El nombre del servicio no distingue un bloqueo de una cita — lo dice la
+  propia 037 («"Cita manual" es una convención del panel, no un dato»). Lo único que lo
+  distingue es preguntar.
+- **`cobros.appointment_id` es `ON DELETE RESTRICT`** (`035_cobros.sql:46`), así que un solo
+  cobro —aunque esté anulado— hace fallar el borrado del contacto ENTERO por CASCADE. Y no se
+  arregla poniéndolo a NULL: el trigger `cobros_congelar_importes` congela `appointment_id`
+  explícitamente. Solo cabe borrar la fila de `cobros`, y eso lo decide la dueña.
+- **El orden importa y no es negociable**: crear los bloqueos → verificar que los cuatro casan
+  por (org, estilista, `starts_at`, `ends_at`) → y solo entonces borrar. Con el CASCADE de por
+  medio, un borrado antes de tiempo se lleva las citas sin nada que las sustituya.
+
+Cómo se verificó que la disponibilidad no se movió, que es la parte que hay que repetir si se
+vuelve a hacer: instantánea con el motor REAL (`getAvailableSlots`) **día a día**, anclando
+`preferencia.fecha` (`calendar-sante.js:178`), antes y después. Sin anclar la fecha el motor
+deja de recorrer en cuanto tiene un puñado que proponer —salieron 5 huecos, todos del mismo
+día— y un cambio en otra fecha no se habría visto. Con anclaje: 3 duraciones × 14 días,
+**idéntico byte a byte**, y los mismos 9 intervalos ocupados de Olga con 4 pasando de `cita` a
+`bloqueo`.
 
 ## Dar de baja un servicio: `activo: false`, nunca borrar la fila
 
