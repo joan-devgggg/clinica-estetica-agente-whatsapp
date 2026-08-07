@@ -2,7 +2,7 @@ require('dotenv').config();
 const { getChatbotResponse } = require('./services/ai');
 const {
     saveLead, updateLead, findByPhone, saveMessage, saveAppointment, setContactJid,
-    updateAppointment, setLeadBotMode, setEscalationReason, setBlacklist, createPendingAction,
+    updateAppointment, setLeadBotMode, setEscalationReason, setBlacklist, createPendingAction, setContactTratamiento,
     getAgentConfig, updateContactLanguage, updateContactPreferredStylist, updateContactLastStylist,
     getStylistsByOrg, getAllStylistSchedules, getLastCompletedAppointment, hasActiveAppointmentForSlot,
     getScheduleBlocks, getBlockedDays, getAppointmentsByLead, getAppointmentById, getUpcomingAppointments,
@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, detectHoraFueraDeHorario, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, detectHoraFueraDeHorario, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -262,6 +262,9 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         // Escalation confirmation (extensiones / permanente / eliminación del pigmento)
         pendingEscalation: false,
         pendingEscalationService: null,
+        // Trato que ha pedido la clienta ('formal' | 'informal'). null = no consta, y el bot
+        // sigue con su registro por defecto: null NO significa "de tú".
+        tratamiento: null,
         // Segunda reserva en la misma conversación (para un acompañante)
         guestBooking: false,
         guestName: null,
@@ -664,6 +667,9 @@ function buildSessionExtra(session) {
         // Viaja junto al idioma, no puede quedarse atrás: un idioma rehidratado sin su fuente
         // se lee como 'default' y el bot deja de fiarse de algo que sí se había observado.
         languageSource:    session.languageSource || null,
+        // Igual que el idioma: si no viaja a SQLite, una sesión rehidratada vuelve a tutear
+        // a quien pidió que la trataran de usted. Es la lección de session.leadId.
+        tratamiento:       session.tratamiento || null,
         upsellingAccepted: session.upsellingAccepted || [],
         upsellingSuggested: !!session.upsellingSuggested,
         preferredStylistId: session.preferredStylistId || null,
@@ -1523,6 +1529,23 @@ function respondsWithFalseClosureClaim(respuesta) {
 // el abanico a las categorías grandes y poner la consulta de valoración sobre la mesa —que
 // es justo lo que la clienta estaba pidiendo cuando el bot no la entendía—. Deja
 // consultaOfrecida armado para que un "sí" en el turno siguiente la seleccione.
+// Elige la variante de un texto fijo según el trato pedido. `formal` puede no tener entrada
+// para un idioma (el inglés no distingue tú/usted): entonces cae en la informal, que es
+// correcta, en vez de dejar el mensaje vacío.
+//
+// COBERTURA PARCIAL Y DELIBERADA: solo tienen variante formal los textos del camino que
+// recorrió Olga Yarmak (pregunta de servicio, menú de rescate, fuera de horario, oferta de
+// persona y acuse de escalada). El resto de literales del salón siguen tuteando. Está
+// anotado como deuda en CLAUDE.md: convertirlos todos son cuatro idiomas por dos registros
+// y no cabía aquí sin tocar medio fichero.
+function porTrato(session, msgs, msgsFormal) {
+    const lang = session.language || 'es';
+    if (session.tratamiento === 'formal' && msgsFormal) {
+        return msgsFormal[lang] || msgs[lang] || msgsFormal.es || msgs.es;
+    }
+    return msgs[lang] || msgs.es;
+}
+
 function salonPickServiceMenuMsg(session) {
     session.consultaOfrecida = true;
     const msgs = {
@@ -1547,7 +1570,24 @@ function salonPickServiceMenuMsg(session) {
             + 'А якщо хочеш, щоб ми подивилися наживо і порадили, запишу тебе на '
             + 'консультацію на 20 хвилин. Записати?',
     };
-    return msgs[session.language] || msgs.es;
+    const msgsFormal = {
+        es: 'Perdone, no le he entendido bien 😊 Se lo pongo fácil, ¿qué busca?\n'
+            + '• Color o mechas\n• Corte o peinado\n• Tratamiento para el cabello\n'
+            + '• Manicura o pedicura\n• Masaje o spa\n\n'
+            + 'Y si lo que prefiere es que se lo veamos en persona y le recomendemos, le reservo '
+            + 'una consulta de valoración de 20 minutos. ¿Se la reservo?',
+        ru: 'Извините, я Вас не совсем поняла 😊 Давайте проще — что Вас интересует?\n'
+            + '• Окрашивание или мелирование\n• Стрижка или укладка\n• Уход за волосами\n'
+            + '• Маникюр или педикюр\n• Массаж или спа\n\n'
+            + 'А если хотите, чтобы мы посмотрели вживую и посоветовали, запишу Вас на '
+            + 'консультацию на 20 минут. Записать?',
+        uk: 'Вибачте, я Вас не зовсім зрозуміла 😊 Давайте простіше — що Вас цікавить?\n'
+            + '• Фарбування або мелірування\n• Стрижка або укладка\n• Догляд за волоссям\n'
+            + '• Манікюр або педикюр\n• Масаж або спа\n\n'
+            + 'А якщо хочете, щоб ми подивилися наживо і порадили, запишу Вас на '
+            + 'консультацію на 20 хвилин. Записати?',
+    };
+    return porTrato(session, msgs, msgsFormal);
 }
 
 // ─── Descripción del estado del cabello → rango + consulta (Yulia, 03/08/2026) ────
@@ -1626,7 +1666,15 @@ function salonFueraDeHorarioMsg(session, { hora, apertura, cierre }) {
         uk: `О ${hora} ми не працюємо 😊 Наш графік — з ${apertura} до ${cierre}. `
             + 'Який час у цьому проміжку тобі зручний?',
     };
-    return msgs[session.language] || msgs.es;
+    const msgsFormal = {
+        es: `A las ${hora} no estamos abiertos 😊 Nuestro horario es de ${apertura} a ${cierre}. `
+            + '¿Qué hora dentro de ese horario le viene bien?',
+        ru: `В ${hora} мы не работаем 😊 Наш график — с ${apertura} до ${cierre}. `
+            + 'Какое время в этом промежутке Вам удобно?',
+        uk: `О ${hora} ми не працюємо 😊 Наш графік — з ${apertura} до ${cierre}. `
+            + 'Який час у цьому проміжку Вам зручний?',
+    };
+    return porTrato(session, msgs, msgsFormal);
 }
 
 // Nivel 3 y ÚLTIMO del "no sé qué servicio quieres": ofrecer una persona.
@@ -1653,7 +1701,15 @@ function salonOfferHumanMsg(session) {
         uk: 'Вибач, я ніяк не можу тебе зрозуміти і не хочу забирати твій час 🙏 '
             + 'Хочеш, я з\'єднаю тебе з однією з наших спеціалісток?',
     };
-    return msgs[session.language] || msgs.es;
+    const msgsFormal = {
+        es: 'Perdone, no consigo entenderle bien y no quiero hacerle perder más tiempo 🙏 '
+            + '¿Quiere que le ponga en contacto con una de nuestras especialistas?',
+        ru: 'Извините, я никак не могу Вас понять и не хочу отнимать у Вас время 🙏 '
+            + 'Хотите, я свяжу Вас с одной из наших специалисток?',
+        uk: 'Вибачте, я ніяк не можу Вас зрозуміти і не хочу забирати Ваш час 🙏 '
+            + 'Хочете, я з\'єднаю Вас з однією з наших спеціалісток?',
+    };
+    return porTrato(session, msgs, msgsFormal);
 }
 
 function salonNoSlotsMsg(session) {
@@ -1668,11 +1724,17 @@ function salonNoSlotsMsg(session) {
         if (session.sinServicioStreak >= 4) return salonOfferHumanMsg(session);
         if (session.sinServicioStreak >= 2) return salonPickServiceMenuMsg(session);
         const askService = {
+            es: 'Para mirarte los huecos primero necesito saber qué servicio quieres 😊 ¿Qué te apetece hacerte?',
             en: 'To check availability I first need to know which service you\'d like 😊 What are you after?',
             ru: 'Чтобы посмотреть свободное время, мне нужно знать, какая услуга тебя интересует 😊 Что бы ты хотела?',
             uk: 'Щоб подивитися вільний час, мені треба знати, яка послуга тебе цікавить 😊 Що б ти хотіла?',
         };
-        return (language && askService[language]) || 'Para mirarte los huecos primero necesito saber qué servicio quieres 😊 ¿Qué te apetece hacerte?';
+        const askServiceFormal = {
+            es: 'Para mirarle los huecos primero necesito saber qué servicio quiere 😊 ¿Qué le apetece hacerse?',
+            ru: 'Чтобы посмотреть свободное время, мне нужно знать, какая услуга Вас интересует 😊 Что бы Вы хотели?',
+            uk: 'Щоб подивитися вільний час, мені треба знати, яка послуга Вас цікавить 😊 Що б Ви хотіли?',
+        };
+        return porTrato(session, askService, askServiceFormal);
     }
     session.sinServicioStreak = 0;
 
@@ -1803,9 +1865,14 @@ const HANDOVER_ACUSE = {
     ru: 'Передаю твоё сообщение нашей команде, чтобы с тобой связались лично 🙏',
     uk: 'Передаю твоє повідомлення нашій команді, щоб з тобою зв\'язалися особисто 🙏',
 };
-function ensureHandoverAcknowledged(respuesta, language) {
+const HANDOVER_ACUSE_FORMAL = {
+    es: 'Le paso su mensaje a nuestro equipo para que le atiendan personalmente 🙏',
+    ru: 'Передаю Ваше сообщение нашей команде, чтобы с Вами связались лично 🙏',
+    uk: 'Передаю Ваше повідомлення нашій команді, щоб з Вами зв\'язалися особисто 🙏',
+};
+function ensureHandoverAcknowledged(respuesta, language, tratamiento = null) {
     if (announcesHumanHandover(respuesta)) return respuesta;
-    const acuse = HANDOVER_ACUSE[language] || HANDOVER_ACUSE.es;
+    const acuse = porTrato({ language, tratamiento }, HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL);
     const previo = String(respuesta || '').trim();
     return previo ? `${previo}\n\n${acuse}` : acuse;
 }
@@ -3311,6 +3378,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession._lastUpsellSuggestion = ex.lastUpsellSuggestion || null;
                     newSession.pendingEscalation     = !!ex.pendingEscalation;
                     newSession.pendingEscalationService = ex.pendingEscalationService || null;
+                    newSession.tratamiento           = ex.tratamiento || null;
                     newSession.proposedSlots         = Array.isArray(ex.proposedSlots) ? ex.proposedSlots : [];
                     newSession.spaPromoOffered       = !!ex.spaPromoOffered;
                     newSession.spaPromoNote          = ex.spaPromoNote || null;
@@ -3460,6 +3528,9 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                             orgId, telefono: userPhone, language: contact.language,
                         });
                     }
+                    // La ficha manda sobre la sesión solo cuando la sesión no sabe nada: lo
+                    // que la clienta pida en ESTE turno se escribe después y gana.
+                    if (!session.tratamiento) session.tratamiento = contact.tratamiento || null;
                     session.preferredStylistId = contact.preferred_stylist_id || null;
                     session.lastStylist = contact.last_stylist || null;
                     if (!loadedFromSQLite) {
@@ -3713,6 +3784,31 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     dbPhone: _dbPhone, userPhone, origen: 'detector',
                 });
                 if (persistido) session.languageSource = 'observed';
+            }
+
+            // ─── Trato de usted / de tú ─────────────────────────────────
+            // Olga Yarmak pidió «Тогда давай на вы 🧐» (07/08/2026): el bot dijo que sí y
+            // volvió a tutearla al turno siguiente. El trato no existía como dato, así que
+            // el "sí" duraba lo que el LLM lo arrastrase del historial — y en cuanto
+            // contestaba un texto FIJO (están escritos en `ты`) se perdía sin más.
+            // Se guarda en la ficha porque no es de esta conversación: quien pide que la
+            // traten de usted lo pide para siempre, no para los cinco minutos siguientes.
+            const tratoPedido = detectTratamiento(sanitized);
+            if (tratoPedido && tratoPedido !== session.tratamiento) {
+                session.tratamiento = tratoPedido;
+                const leadId = await ensureLeadId(orgId, session);
+                if (leadId) {
+                    // Falla hacia el lado recuperable: si la escritura no va, la sesión ya
+                    // lleva el trato y este turno sale bien; lo que se pierde es el recuerdo.
+                    try {
+                        await setContactTratamiento(orgId, leadId, tratoPedido);
+                    } catch (e) {
+                        logger.error('tratamiento_no_guardado', { orgId, telefono: userPhone, error: e.message });
+                    }
+                } else {
+                    logger.warn('tratamiento_sin_leadid', { orgId, telefono: userPhone, tratamiento: tratoPedido });
+                }
+                logger.info('tratamiento_detectado', { orgId, telefono: userPhone, tratamiento: tratoPedido });
             }
         } else {
             // Restaurant: extract name, personas, preference
@@ -4547,6 +4643,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // pesar lo mismo que uno que la clienta ha demostrado escribiendo: la heurística
             // por nombre no separa ruso de ucraniano y falla con los nombres neutros.
             partialDataWithCtx.__clientLanguageSource = session.languageSource || null;
+            partialDataWithCtx.__tratamiento = session.tratamiento || null;
             if (session.preferredStylistId) {
                 const stylists = await getStylistsByOrg(orgId);
                 const pref = stylists.find(s => s.id === session.preferredStylistId);
@@ -4771,7 +4868,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // Se AÑADE, no se sustituye: el texto del modelo puede llevar información útil
         // (una disculpa, una respuesta a medias) y lo que le falta es el acuse, no el resto.
         if (orgType === 'salon' && aiResponse.accion === 'escalar_humano') {
-            const conAcuse = ensureHandoverAcknowledged(aiResponse.respuesta, session.language);
+            const conAcuse = ensureHandoverAcknowledged(aiResponse.respuesta, session.language, session.tratamiento);
             if (conAcuse !== aiResponse.respuesta) {
                 logger.warn('sante_escalada_sin_anuncio_corregida', {
                     orgId, telefono: userPhone, motivo: aiResponse.motivo_escalado || null,
@@ -5865,10 +5962,11 @@ module.exports = {
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
         respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
-        announcesHumanHandover, offersHumanHandover, ensureHandoverAcknowledged, HANDOVER_ACUSE,
+        announcesHumanHandover, offersHumanHandover, ensureHandoverAcknowledged, HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, porTrato,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:
         escalateToHuman,
         // Estado de servicio centralizado (fuente de verdad + limpieza):
+        buildSessionExtra,
         clearServiceState, assignStylistIfAppropriate, applyStylistMention, computeStylistGating, shouldFixStylistFromLlm, SERVICE_STATE_DEFAULTS, SERVICE_PARTIAL_FIELDS, createEmptySession,
         // Flujos de reserva (aceptación de upsell, 2ª reserva, skill de estilista):
         isUpsellingAcceptance, matchesServiceName, resetForSecondBooking, stylistCanDoService,

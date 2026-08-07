@@ -1851,6 +1851,41 @@ function detectHoraFueraDeHorario(text, businessHours, { diaSemana = null } = {}
     return { hora: fuera, apertura: minToHHMM(apertura), cierre: minToHHMM(cierre) };
 }
 
+// ─── Trato de usted / de tú ──────────────────────────────────────────────────
+// Olga Yarmak pidió «Тогда давай на вы 🧐» (07/08/2026). El bot dijo que sí y volvió a
+// tutearla al turno siguiente: el trato no existía como dato en ninguna parte del código, y
+// el "sí" solo duraba lo que el LLM lo arrastrase del historial. En cuanto contestaba un
+// texto FIJO —que están escritos en `ты`— el trato se perdía sin que nadie se enterase.
+//
+// TRAMPA que ya mordió al escribir esto: «на вы» es subcadena de «на выходных» ("el fin de
+// semana"), y «на ви» lo es de «на вихідних». Sin el lookahead, «давай на выходных» —una
+// frase normalísima al proponer día— se leía como "trátame de usted". Por eso los patrones
+// exigen que detrás no venga otra letra cirílica; \b no sirve, es ASCII.
+const CIRILICO_LETRA = '[а-яёіїєґ]';
+const TRATO_FORMAL_RE = new RegExp([
+    `на вы(?!${CIRILICO_LETRA})`,          // ru
+    `на ви(?!${CIRILICO_LETRA})`,          // uk
+].join('|'));
+const TRATO_FORMAL_ES_RE = /\bde usted\b|\btrateme\b|\btrateme de usted\b|\bhableme de usted\b|\bhablarme de usted\b/;
+const TRATO_INFORMAL_RE = new RegExp([
+    `на ты(?!${CIRILICO_LETRA})`,          // ru
+    `на ти(?!${CIRILICO_LETRA})`,          // uk
+].join('|'));
+const TRATO_INFORMAL_ES_RE = /\btutea(?:me)?\b|\bde tu\b|\btrateme de tu\b|\bpuedes tutearme\b/;
+
+// Devuelve 'formal' | 'informal' | null. Solo lo que la clienta PIDE explícitamente: no se
+// infiere del registro con que escriba, que en ruso cambia por cortesía sin querer decir
+// nada (regla 3 — si no se resuelve, no se inventa).
+function detectTratamiento(text) {
+    const t = normalizeText(text);
+    if (!t) return null;
+    // El informal se mira ANTES: "давай лучше на ты" y "на вы" no pueden convivir, y quien
+    // pide volver al tuteo lo está pidiendo ahora.
+    if (TRATO_INFORMAL_RE.test(t) || TRATO_INFORMAL_ES_RE.test(t)) return 'informal';
+    if (TRATO_FORMAL_RE.test(t) || TRATO_FORMAL_ES_RE.test(t)) return 'formal';
+    return null;
+}
+
 // ─── Confirmación de cita (salón): extras deterministas ──────────────────────
 // BUG2/BUG3: tras confirmar una cita SIEMPRE garantizamos en el mensaje (a) una
 // sugerencia de servicio complementario si aplica (upselling), (b) la dirección del
@@ -3396,6 +3431,7 @@ module.exports = {
     extractClockHours,
     hhmmToMin,
     detectHoraFueraDeHorario,
+    detectTratamiento,
     wantsAnotherBooking,
     wantsRestart,
     detectGuestBooking,

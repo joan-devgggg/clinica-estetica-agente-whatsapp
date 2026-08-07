@@ -374,6 +374,20 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
         langConstraint = `Último idioma detectado: "${clientLanguage}". Úsalo SOLO si el mensaje actual no deja claro el idioma. Si el mensaje actual está en otro idioma, responde en ESE idioma y actualiza "idioma_detectado".`;
     }
 
+    // TRATO. Solo se dice algo cuando la clienta lo ha PEDIDO explícitamente; sin petición
+    // no se toca el registro por defecto del bot. Es donde está el 90 % del efecto —casi
+    // todo lo que sale es texto del modelo—, igual que pasa con el catálogo.
+    // Nace de Olga Yarmak (07/08/2026): pidió «на вы», el bot aceptó y volvió a tutearla al
+    // turno siguiente porque nada guardaba esa petición.
+    const tratamiento = partialData.__tratamiento || null;
+    const tratoConstraint = tratamiento === 'formal'
+        ? '\nTRATO: la clienta ha pedido EXPRESAMENTE que la trates de USTED. Háblale de usted '
+          + 'en TODOS los mensajes, hasta el final de la conversación y en cualquier idioma '
+          + '(en ruso «вы», en ucraniano «ви»). No vuelvas a tutearla aunque ella te tutee a ti.'
+        : tratamiento === 'informal'
+            ? '\nTRATO: la clienta ha pedido que la tutees. Háblale de tú.'
+            : '';
+
     // Modes
     // Segunda reserva en la misma conversación (para un acompañante).
     const guestBooking = !!partialData.__guestBooking;
@@ -641,7 +655,7 @@ La lista de HUECOS DISPONIBLES de más abajo ya está calculada para los próxim
 REGLA CRÍTICA: El campo "respuesta" DEBE estar en el idioma de la clienta, NO en español (a menos que hable español).
 Aunque estas instrucciones están en español, tu respuesta SIEMPRE va en el idioma detectado.
 
-${langConstraint}
+${langConstraint}${tratoConstraint}
 
 Idiomas soportados: español ("es"), inglés ("en"), ruso ("ru"), ucraniano ("uk").
 Incluye "idioma_detectado" con el código correspondiente.

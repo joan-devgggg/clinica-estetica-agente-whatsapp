@@ -182,6 +182,9 @@ function rowToPublic(row) {
         // decidir si el bot puede fiarse de la columna. Ver resolveLanguageSource (helpers).
         language_source:       resolveLanguageSource(row),
         wa_jid:                (row.metadata && typeof row.metadata === 'object') ? (row.metadata.wa_jid || null) : null,
+        // Trato que la clienta PIDIÓ ('formal' | 'informal'), o null si nunca lo dijo. Null
+        // no es "de tú": es que no consta, y el bot sigue con su registro por defecto.
+        tratamiento:           (row.metadata && typeof row.metadata === 'object') ? (row.metadata.tratamiento || null) : null,
         // Traza del retorno automático a 'auto' (opción C). Sin esto, en el panel un
         // contacto devuelto por el barrido y uno devuelto a mano son la misma fila: nadie
         // podría saber si el bot volvió a hablar porque alguien lo decidió o porque pasaron
@@ -2643,6 +2646,50 @@ async function updateContactLanguage(orgId, contactId, language) {
     return true;
 }
 
+// Guarda el TRATO que ha pedido la clienta ('formal' | 'informal'), en metadata.tratamiento.
+// Va en jsonb y no en columna nueva a propósito: no hay migración de por medio y el dato es
+// exactamente igual de consultable.
+//
+// Lo pide una persona explícitamente ("давай на вы"), así que se escribe sin corroborar —al
+// revés que el idioma observado, que exige dos mensajes porque ahí lo estamos DEDUCIENDO.
+// Aquí no se deduce nada: se ha pedido.
+async function setContactTratamiento(orgId, contactId, tratamiento) {
+    const oid = resolveOrg(orgId);
+    if (!['formal', 'informal'].includes(tratamiento)) {
+        logger.warn('tratamiento_no_soportado_descartado', { orgId: oid, contactId, tratamiento });
+        return false;
+    }
+    // Lectura previa para FUSIONAR: un UPDATE de jsonb sustituye el objeto entero y escribir
+    // { tratamiento } a pelo se llevaría wa_jid (con el que el panel manda al chat correcto),
+    // language_source y auto_return. Mismo patrón que setContactJid y updateContactLanguage.
+    const { data: row, error: readError } = await supabase
+        .from('contacts')
+        .select('metadata')
+        .eq('id', contactId)
+        .eq('organization_id', oid)
+        .maybeSingle();
+    if (readError) {
+        logger.warn('tratamiento_no_leido', { orgId: oid, contactId, error: readError.message });
+        return false;
+    }
+    const meta = (row?.metadata && typeof row.metadata === 'object') ? row.metadata : {};
+    if (meta.tratamiento === tratamiento) return true; // sin cambios → no escribimos
+    const { data, error } = await supabase
+        .from('contacts')
+        .update({
+            metadata: { ...meta, tratamiento, tratamiento_at: new Date().toISOString() },
+            updated_at: now(),
+        })
+        .eq('id', contactId)
+        .eq('organization_id', oid)
+        .select('id');
+    // Un UPDATE cuyos .eq() no casan nada devuelve error=null: sin esto, "guardado" sería
+    // una afirmación sin comprobar (regla 4).
+    assertRowsAffected(error, data, 'contacts', 'setContactTratamiento');
+    logger.info('tratamiento_guardado', { orgId: oid, contactId, tratamiento });
+    return true;
+}
+
 // Fija un idioma INFERIDO por heurística de nombre (scripts/classify-sante-language-by-name.js),
 // no confirmado por conversación real. Se marca en metadata (language_source:'inferred' y el
 // booleano histórico language_inferred) para que quede distinguible de un idioma verificado.
@@ -3020,6 +3067,7 @@ module.exports = {
     getAppointmentsByStylistAndRange,
     // Contact extensions
     updateContactLanguage,
+    setContactTratamiento,
     setInferredContactLanguage,
     updateContactPreferredStylist,
     updateContactLastStylist,
