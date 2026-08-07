@@ -2,6 +2,73 @@
 
 Bot de WhatsApp multi-organización que gestiona citas, reservas y seguimiento post-visita. Cada organización tiene su propio número de WhatsApp, flujo conversacional y panel CRM. Un solo proceso Node.js sirve a todas las orgs simultáneamente.
 
+## Reglas de trabajo
+
+Se aplican siempre; no hace falta repetirlas en cada petición. Cada una nació de algo que pasó
+en este repo, y el ejemplo está para que se entienda el coste de saltársela.
+
+**1. Diagnóstico antes de tocar código, y verificado contra la BD o el motor real.**
+Lo que parece un problema casi nunca es el problema. *07/08/2026: tres citas con
+`service='Cita manual'` parecían servicios que faltaban del catálogo; abriendo las filas
+resultaron ser bloqueos de agenda con un contacto falso ("Close TIME") y una cuarta cita real
+colgando del mismo contacto. Ese mismo día, la afirmación "el botón de bloquear está en otra
+pantalla" resultó falsa al abrir el fichero: está pegado a "Nueva cita".*
+
+**2. Un test que pasa con y sin el arreglo no protege nada.** Antes de darlo por bueno, hay que
+verlo fallar sin el arreglo. *El escenario 3 de `verify:robustez:llm` comprobaba `/balayage/i`
+sobre la respuesta del bot: dos corridas con el MISMO texto («Genial. ¿Qué día te viene
+mejor?») tenían el estado OPUESTO. Medía la redacción, no la conducta. Ahora afirma el
+ESTADO (`session.selectedService`), que la prosa del modelo no puede fabricar.*
+
+**3. Nada de defaults silenciosos: si un dato no se resuelve, no se inventa.** Se dice, y se
+cuenta aparte. *`precio_facturado` a null NO es un snapshot: sin el `!= null`, `Number(null)`
+daba 0 y la cita se presentaba como calculada a 0,00 €, un importe inventado comunicado como
+cifra buena. Igual `resolveImporteReferencia`, que devuelve **null** y no 0 cuando el servicio
+no resuelve — un 0 metería esa cita en el descuadre como si se hubiera cobrado de menos.*
+
+**4. Nada de afirmar sin verificar: ninguna escritura devuelve éxito sin mirar el `error` y las
+filas afectadas.** De ahí `assertRead` / `assertWrite` / `assertRowsAffected` (auditoría del
+29-30/07/2026). *Un UPDATE cuyos `.eq()` no casan nada devuelve `error=null`, y por eso hace
+falta `assertRowsAffected`. El 07/08/2026 apareció otro caso: `deleteLead` no miraba el
+`error`, así que un borrado rechazado devolvía `{ok:true}` y el panel decía "borrado" sobre un
+contacto que seguía ahí.*
+
+**5. Lo que edita la dueña no se verifica contra constantes en git.** Horarios, nombres, skills
+y catálogo cambian desde el panel; un check contra una lista escrita en el fichero mide
+antigüedad, no corrección. Detalle y ejemplos en
+[Los datos que edita la dueña no se verifican contra constantes](#los-datos-que-edita-la-dueña-no-se-verifican-contra-constantes).
+
+**6. Toda migración se enseña ANTES de aplicarla, y a Supabase no se escribe sin permiso
+explícito.** Leerla entera es la última oportunidad de ver lo que los tests no ven. *Revisar la
+035 antes de aplicarla cazó que `ON DELETE SET NULL` en `cobros.appointment_id` habría hecho
+imposible borrar una cita: ese SET NULL emite un UPDATE que choca con el trigger de
+congelación. Cuando hay que probar contra la BD real, se hace en un bloque que revierte
+(`DO $$ … RAISE $$`) y se comprueba que no queda ni una fila.*
+
+**7. Antes de mutar código para comprobar que algo falla sin el arreglo, comitear o guardar
+copia.** El experimento tiene que poder deshacerse entero. *07/08/2026: para comparar el lint
+del fichero original hubo que hacer `git stash push` de `reservas/page.tsx` y `git stash pop`
+después, verificando que los cambios volvían.*
+
+**8. Parar y preguntar si algo cambia el diseño o se sale del alcance.** No ampliarlo por
+iniciativa propia ni recortarlo en silencio. *Antes de escribir la 035 se pararon tres
+decisiones (rectificación por fila nueva, identidad por PIN, y qué hacer con "Cita manual").
+Y en la otra dirección: la deuda del upselling se decidió NO arreglar el 05/08/2026 por falta
+de señal, en vez de acometerla de paso.*
+
+**9. Nada está vivo hasta que se pushea.** Un arreglo comiteado en local se comporta
+EXACTAMENTE como si no existiera: producción sigue con el código viejo, los síntomas siguen
+ahí, y se investigan como si el arreglo no se hubiera hecho. Commits sí —uno por hallazgo, con
+los tests en verde antes de cada uno—; `git push` lo lanza el dueño, así que al terminar hay
+que decir en voz alta qué queda sin desplegar. *05/08/2026: el arreglo del idioma (`a88c669`,
+17:48, `language_source` + migración 034) pasó horas comiteado en local mientras producción
+servía el código anterior. Se detectó de rebote, por una ficha creada desde el panel con
+`metadata` vacío y sin `language_source` — señal de que el proceso que servía el panel no
+tenía ese código. Mientras tanto se seguía investigando por qué una clienta anglófona recibía
+castellano, y el worker de reseñas mandó cuatro con la versión antigua.* Y un piso más abajo,
+lo mismo sin comitear: *`7f53ecf` (04/08) arregla un `npm test` que fallaba en un clon limpio
+porque la heurística de idioma solo existía en la working copy de quien la escribió.*
+
 ## Organizaciones activas
 
 | Org | Tipo | WhatsApp | Canal | UUID |
