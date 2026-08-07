@@ -409,6 +409,24 @@ async function turno(c, texto) {
         rec(/s[aá]bado|domingo|finde|fin de semana/i.test(r.txt) ? 'OK' : 'DEGRADADO', r.txt.slice(0, 90));
     });
 
+    // Olga Yarmak, 07/08/2026: dijo TRES veces que solo podía «después de las 23:00» y las
+    // tres recibió "no te entiendo". Se afirma el HECHO —que se le dice el horario real—, no
+    // la redacción: las horas se leen de business_hours (que edita la dueña), así que un
+    // cambio de horario en el panel no deja este escenario en rojo permanente.
+    await escenario('Hora fuera del horario ("solo puedo después de las 23:00")', async (c, rec) => {
+        const cfgH = (await db.getAgentConfig(ORG))?.business_hours || {};
+        const dia = cfgH.lunes || Object.values(cfgH)[0];
+        if (!dia?.apertura || !dia?.cierre) return rec('OK', 'sin business_hours: escenario no aplicable');
+        await turno(c, 'hola');
+        await turno(c, 'un corte de mujer');
+        const r = await turno(c, 'solo puedo después de las 23:00');
+        if (r.vacio) return rec('SILENCIO');
+        // Las DOS puntas: decir que está cerrado sin decir hasta cuándo abren obliga a
+        // preguntar otra vez, que es el turno que este arreglo existe para ahorrar.
+        const dice = r.txt.includes(dia.apertura) && r.txt.includes(dia.cierre);
+        rec(dice ? 'OK' : 'DEGRADADO', `${dia.apertura}-${dia.cierre} · ${r.txt.slice(0, 70)}`);
+    });
+
     await escenario('Fecha imposible ("el 31 de febrero")', async (c, rec) => {
         await turno(c, 'hola');
         await turno(c, 'un corte de mujer');

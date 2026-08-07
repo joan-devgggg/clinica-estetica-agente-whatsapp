@@ -315,6 +315,105 @@ denʹ`…). Esa segunda regla existe porque la primera es asimétrica: sin esas 
 patrones cirílicos van SIEMPRE por `buildCyrillicRe` y se prueban contra `normalizeText`:
 sin eso no casan nunca (NFD descompone й/ё/ї, y `\b` es ASCII).
 
+## La conversación de Olga Yarmak (07/08/2026): cinco síntomas, cuatro causas
+
+Respuesta a la tanda 1 de la campaña de verano, teléfono `34674987146` (**no**
+`34667967943`, que es el autocontestador de la videógrafa). Cinco fallos en 17 minutos, y
+tres de ellos eran **el mismo bug**.
+
+### La raíz común: la red anti-invención se comía el horario del propio salón
+
+`respondsWithInventedSlots` marcaba como hueco inventado **cualquier `HH:MM`** cuando
+`availableSlots` estaba vacío. El horario del salón *son* dos `HH:MM`, así que
+«cerramos a las 19:00» se bloqueaba y se sustituía por el menú genérico: **la única
+respuesta correcta a "solo puedo después de las 23:00" era exactamente la que la red
+mataba**. El LLM sí sabía el horario (`business_info.horario` va en el prompt); no es que
+no lo supiera, es que no lo podía decir.
+
+La clase de fallo ya estaba anotada para la función hermana (`unbackedBookingClaim`), donde
+el coste se acepta —«un mensaje honesto de más»—. Aquí el coste era otro y no se vio: no
+sobra un mensaje, se **pierde** el bueno.
+
+La exención exige **cuatro** cosas, y las tres últimas están probadas por mutación (sin
+ellas los tests seguían en verde, o sea que no protegían nada):
+
+1. toda hora es punta del horario **o cae fuera de él** — la respuesta correcta REPITE la
+   hora imposible que pidió la clienta, y una hora fuera del horario no es reservable;
+2. **dos** puntas distintas: un horario tiene principio y fin; una hora suelta es una oferta;
+3. el texto se declara horario (`statesOpeningHours`);
+4. no da la reserva por hecha (`llmClaimsBooked`) — sin esto «te apunto a las 19:00» pasaría.
+
+`asksForBookingApproval` **no** entra: (2) y (3) son más estrictas, y ella tenía un falso
+positivo real — «Мы работаем с 11:00 до 15:00. Какое время тебе подойдёт?» es la respuesta
+correcta en ruso y `подойдёт` está en `BOOKING_APPROVAL_QUESTIONS`.
+
+### Hora fuera de horario: el gate
+
+`detectHoraFueraDeHorario` (helpers, puro) + gate determinista **antes del LLM**. Es el
+primer consumidor de `agent_configs.business_hours` — hasta ahora esa columna solo se
+escribía. Nada de constantes: un 19:00 en el código mediría antigüedad (regla 5), y sin
+`business_hours` utilizable **no se dice nada** en vez de inventar horario (regla 3).
+
+**El mensaje lleva apertura Y cierre.** «A las 23:00 ya hemos cerrado» sin decir hasta
+cuándo abren obliga a preguntar otra vez, que es el turno que el arreglo existe para ahorrar.
+
+Sin día concreto se usa el **SOBRE** de todos los días (apertura más temprana, cierre más
+tardío), no la franja común: con la común, un sábado que cerrase antes marcaría como
+imposible una hora que de lunes a viernes sí vale. Solo se declara fuera de horario lo que
+lo es **todos** los días.
+
+### El menú de rescate tenía suelo, no techo
+
+`streak >= 2` devolvía el MISMO párrafo indefinidamente. Olga lo recibió tres veces palabra
+por palabra, una de ellas contestando a «¿me puedes mandar una foto?». Ahora al cuarto turno
+sin servicio se **ofrece** una persona y se espera el «sí» (`pendingEscalation`, la
+maquinaria que ya existía), porque los casos 1-6 del prompt no escalan sin confirmación.
+`pendingEscalation` se arma a mano y no vía `offersHumanHandover`, que solo reconoce el
+castellano: para una clienta rusa la oferta se habría quedado colgando.
+
+### Si se escala, se dice
+
+La red de escalada solo existía en un sentido (`announcesHumanHandover`: lo promete y no lo
+hace). A las 15:42:10 el LLM escaló de verdad —`pending_actions`, `bot_mode` manual,
+Telegram— y el texto que le llegó a ella fue «Прости, я реально запуталась 😅 Объясни мне ещё
+раз…», pidiéndole que se explicara otra vez justo cuando el bot acababa de dejar de hablarle.
+44 s después escribió «me niego a hablar con un robot» y recibió **silencio**: correcto con
+`bot_mode` en manual, e indistinguible de que la ignorasen.
+
+`ensureHandoverAcknowledged` **añade** el acuse, no sustituye. La mala clasificación del LLM
+(el disparador fue «o no me entienden o se están riendo», que no es pedir una persona) **no
+se persigue**: con el acuse, una escalada de más deja a una clienta bien avisada.
+
+**Límite conocido**: `HANDOVER_TRASPASO`/`DESTINO` son castellano, así que un traspaso ya
+anunciado en ruso no se reconoce y el acuse se añade igual — una frase redundante, las dos
+ciertas. Ampliarlos a cuatro idiomas cambiaría también a quién auto-escala la red del 28/07.
+
+### El trato de usted
+
+Pidió «Тогда давай на вы 🧐», el bot aceptó y volvió a tutearla al turno siguiente: el trato
+no existía como dato en ninguna parte. Ahora `detectTratamiento` → `session.tratamiento` →
+`contacts.metadata.tratamiento` (jsonb, sin migración) + una línea de prompt. Viaja en
+`buildSessionExtra`: sin eso se pierde en cada rehidratación, la lección de `session.leadId`.
+
+**TRAMPA, ya cubierta**: «на вы» es subcadena literal de «на выходных» ("el fin de semana") y
+«на ви» de «на вихідних». Sin el lookahead cirílico —`\b` es ASCII y no sirve—, proponer día
+(«давай на выходных») cambiaba el registro de toda la conversación.
+
+**DEUDA — la cobertura de los textos fijos es PARCIAL y deliberada.** Solo tienen variante
+formal los del camino que recorrió Olga: pregunta de servicio, menú de rescate, fuera de
+horario, oferta de persona y acuse de escalada. **El resto de literales del salón siguen
+tuteando**, así que una clienta que pida el usted lo recibirá del LLM (el 90 % de lo que sale)
+y no de un mensaje determinista que le toque. Convertirlos todos son cuatro idiomas por dos
+registros; se hace cuando haya señal de que molesta.
+
+### Fotos
+
+No hay **salida** de media: en `threesixty-dialog.js` los tipos `image`/`video` son solo de
+ENTRADA. `business_info.instagram` / `.web` son datos editables; si están, el prompt manda
+pasarlos, y si no, manda decir que no se pueden enviar y ofrecer la consulta — con
+prohibición explícita de «te las mando en un momento». Enviar imágenes de verdad sigue sin
+implementarse.
+
 ## Bloquear agenda: `schedule_blocks`, nunca una cita con clienta inventada
 
 Un hueco que se cierra **es un `schedule_blocks`**. Hacerlo como cita a nombre de un contacto
@@ -604,6 +703,11 @@ cifra. Medida el **06/08/2026, después de arreglar balayage y de reescribir el 
 | OK | 21 | 21 | 21 |
 | DEGRADADO | 0 | 0 | 0 |
 | SILENCIO · BUCLE · ERROR · BUG | 0 | 0 | 0 |
+
+**Desde el 07/08/2026 son 22 escenarios**, no 21: se añadió el 12 («solo puedo después de las
+23:00»), que afirma que la respuesta lleva las DOS puntas del horario **leídas de
+`business_hours`** — con el horario que tenga el panel en ese momento, no con un 10:00–19:00
+escrito en el test. Medido una vez tras los arreglos: **OK 22 · todo lo demás 0**.
 
 Los escenarios **3 y 15 salen en verde las tres veces**, con el mismo resultado exacto
 (`Mechas Balayage · Cabello medio (190 €)` y `20 huecos reales cargados · Mechas 3`). Antes de
