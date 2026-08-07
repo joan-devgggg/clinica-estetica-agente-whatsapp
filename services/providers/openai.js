@@ -242,6 +242,14 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
     const direccion = info.direccion || '';
     const horario = info.horario || '';
     const cancelacion = info.cancelacion || 'Avisar con 48 horas de antelación';
+    // Enlaces donde SÍ hay fotos del trabajo del salón. Son un DATO editable desde el panel
+    // (business_info), no una constante: si el salón cambia de Instagram, el texto cambia
+    // con él. Ausentes = no se promete nada, que es mejor que dar un enlace muerto.
+    // Nacen del turno de Olga Yarmak «А можно фото их» (07/08/2026), que recibió el menú de
+    // rescate: el bot no tiene salida de media —threesixty-dialog solo reconoce imágenes de
+    // ENTRADA— y tampoco tenía adónde mandarla.
+    const instagram = info.instagram || '';
+    const web = info.web || '';
 
     // Services catalog. Las categorías REACTIVAS se excluyen a propósito: si el modelo las ve
     // en el menú, las ofrece. El 02/08/2026 ofreció la "Consulta de valoración" y además la
@@ -677,7 +685,10 @@ Cliente: "Hola, quiero pedir cita"
 # ── EL SALÓN ───────────────────────────────────────────────────────────────
 
 ${direccion}${horario ? `\nHorario del salón: ${horario}` : ''}
-Política de cancelación: ${cancelacion}
+Política de cancelación: ${cancelacion}${instagram ? `\nInstagram (fotos de trabajos): ${instagram}` : ''}${web ? `\nWeb: ${web}` : ''}
+
+FOTOS: no puedes enviar imágenes por WhatsApp. Si te piden fotos (de trabajos, del salón,
+de un color o de una estilista)${instagram || web ? `, dilo y pásale el enlace de arriba donde sí las hay.` : `, dilo con naturalidad y ofrécele la consulta de valoración, donde lo ven en persona. NO prometas mandarlas "en un momento": no van a llegar.`}
 
 # ── EQUIPO ─────────────────────────────────────────────────────────────────
 
