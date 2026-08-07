@@ -552,7 +552,7 @@ app.post('/api/cobros', async (req, res) => {
         const orgId = exigirSalon(req, res);
         if (!orgId) return;
         const {
-            appointmentId, cobradoPor, fechaCaja, metodo, importeTotal, importeEfectivo,
+            appointmentId, contactId, cobradoPor, fechaCaja, metodo, importeTotal, importeEfectivo,
             concepto, motivoDiferencia, nota,
         } = req.body || {};
 
@@ -566,10 +566,17 @@ app.post('/api/cobros', async (req, res) => {
         if (!appointmentId && !concepto) {
             return res.status(400).json({ error: 'Escribe qué se ha vendido' });
         }
+        // Saber DE QUIÉN es la venta no sustituye a saber QUÉ se vendió: `concepto` sigue
+        // siendo obligatorio arriba. Y la clienta es opcional a propósito — entra gente de
+        // paso, y exigir una ficha para vender un champú convertiría un cobro de 20 € en un
+        // alta de cliente.
+        if (contactId != null && typeof contactId !== 'string') {
+            return res.status(400).json({ error: 'La clienta indicada no es válida' });
+        }
 
         const atrib = resolverAtribucion(req, orgId, cobradoPor);
         const cobro = await db.createCobro(orgId, {
-            appointmentId, cobradoPor, fechaCaja, metodo, importeTotal, importeEfectivo,
+            appointmentId, contactId, cobradoPor, fechaCaja, metodo, importeTotal, importeEfectivo,
             concepto, motivoDiferencia, nota,
             importeReferencia: await calcularImporteReferencia(orgId, appointmentId),
             // Del token verificado, NUNCA del body: es dinero.

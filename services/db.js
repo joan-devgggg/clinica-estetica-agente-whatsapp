@@ -1621,7 +1621,7 @@ async function setManualPrice(orgId, appointmentId, { precio, motivo = null, use
 // escribir otro con `corrige_a`, nunca un UPDATE. Lo único que un UPDATE puede tocar es la
 // anulación sin sustituto y la nota.
 
-const COBRO_COLUMNS = 'id, organization_id, appointment_id, cobrado_por, cobrado_por_nombre, '
+const COBRO_COLUMNS = 'id, organization_id, appointment_id, contact_id, cobrado_por, cobrado_por_nombre, '
     + 'fecha_caja, cobrado_at, metodo, importe_total, importe_efectivo, iva_rate, concepto, '
     + 'importe_referencia, motivo_diferencia, nota, estado, corrige_a, motivo_correccion, '
     + 'anulado_at, anulado_por, registrado_por, created_at, atribucion';
@@ -1641,6 +1641,10 @@ function diaDeCajaHoy() { return toLocalDateStr(new Date()); }
 // una estilista no puede reescribir cierres de hace tres meses.
 async function createCobro(orgId, {
     appointmentId = null, cobradoPor = null, fechaCaja = null,
+    // De quién es la venta cuando NO hay cita (migración 038). Con cita se queda a null: la
+    // clienta sale de la cita, y quien decide la precedencia es `resolveClienteDelCobro`, no
+    // esta función. Guardar las dos sería tener dos respuestas a la misma pregunta.
+    contactId = null,
     metodo, importeTotal, importeEfectivo = null,
     concepto = null, importeReferencia = null, motivoDiferencia = null, nota = null,
     corrigeA = null, motivoCorreccion = null, userId = null,
@@ -1663,11 +1667,26 @@ async function createCobro(orgId, {
         cobradoPorNombre = est.name || null;
     }
 
+    // La clienta se comprueba contra la ORG, igual que la estilista de arriba. La FK sola no
+    // basta: garantiza que el contacto existe, no que sea de este salón, así que un contactId
+    // de otra organización entraría sin protestar y ataría dinero de aquí a una ficha de allí.
+    const contactoDeLaVenta = (!appointmentId && contactId) ? contactId : null;
+    if (contactoDeLaVenta) {
+        const { data: cli, error: errCli } = await supabase
+            .from('contacts').select('id').eq('id', contactoDeLaVenta).eq('organization_id', oid).maybeSingle();
+        assertRead(errCli, 'contacts');
+        if (!cli) throw new Error('La clienta indicada no existe en esta organización');
+    }
+
     const { data, error } = await supabase
         .from('cobros')
         .insert({
             organization_id: oid,
             appointment_id: appointmentId || null,
+            // Solo si NO hay cita (`contactoDeLaVenta` ya aplica esa regla y es lo que se ha
+            // validado contra la org). Con cita, la clienta ya está en la cita y duplicarla
+            // aquí abriría la puerta a que las dos dijeran cosas distintas.
+            contact_id: contactoDeLaVenta,
             cobrado_por: cobradoPor || null,
             cobrado_por_nombre: cobradoPorNombre,
             fecha_caja: fechaCaja || diaDeCajaHoy(),
@@ -1747,6 +1766,11 @@ async function rectifyCobro(orgId, cobroId, cambios = {}) {
     const tomar = (nuevo, viejo) => (nuevo === undefined ? viejo : nuevo);
     return createCobro(oid, {
         appointmentId:  tomar(cambios.appointmentId,  original.appointment_id),
+        // De quién era la venta se HEREDA, como el concepto: rectificar un importe mal tecleado
+        // no cambia a quién se le vendió. Si de verdad era otra clienta, eso no es una
+        // rectificación —se anula y se registra de nuevo—, que es la misma regla que ya impone
+        // el trigger al prohibir reasignar contact_id sobre una fila viva.
+        contactId:      tomar(cambios.contactId,      original.contact_id),
         cobradoPor:     tomar(cambios.cobradoPor,     original.cobrado_por),
         fechaCaja:      tomar(cambios.fechaCaja,      original.fecha_caja),
         metodo:         tomar(cambios.metodo,         original.metodo),

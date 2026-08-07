@@ -8,14 +8,15 @@
 // La monta tanto /caja como la cita en Reservas: un solo componente, para que cobrar sea lo
 // mismo se entre por donde se entre.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { X } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import { apiMutate } from "@/lib/api";
+import { API, apiHeaders, apiMutate } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { Cobro, MetodoCobro, MotivoDiferencia, Stylist } from "@/lib/types";
 import { type CajaSesion, renovarToken, estilistaPorDefecto, saldraSinPin } from "@/lib/caja-session";
@@ -82,6 +83,11 @@ export function CobroSheet({ contexto, sesion, stylists, orgId, open, onClose, o
   const [concepto, setConcepto] = useState("");
   const [nota, setNota] = useState("");
   const [guardando, setGuardando] = useState(false);
+  // De quién es la venta. Solo en ventas SIN cita: cuando hay cita la clienta ya viene de ahí y
+  // el servidor ignora este campo a propósito, para no tener dos columnas contestando lo mismo.
+  const [clienta, setClienta] = useState<{ id: string; nombre: string | null } | null>(null);
+  const [busca, setBusca] = useState("");
+  const [hallazgos, setHallazgos] = useState<{ id: string; nombre: string | null; telefono: string | null }[]>([]);
 
   const total = Number(importe.replace(",", "."));
   const totalValido = importe !== "" && Number.isFinite(total) && total >= 0;
@@ -91,6 +97,24 @@ export function CobroSheet({ contexto, sesion, stylists, orgId, open, onClose, o
   const sinCita = !contexto?.appointmentId;
   const elegida = stylists.find((s) => s.id === cobradoPor);
   const sinPin = saldraSinPin(sesion, cobradoPor);
+
+  // Búsqueda de clienta, con 300 ms de espera para no lanzar una consulta por tecla. El
+  // `cancelado` corta la carrera: escribiendo rápido salen varias peticiones y la última en
+  // volver no tiene por qué ser la del texto que hay en pantalla.
+  useEffect(() => {
+    if (!sinCita || clienta || busca.trim().length < 2) { setHallazgos([]); return; }
+    let cancelado = false;
+    const t = setTimeout(async () => {
+      try {
+        const cab = await apiHeaders(orgId);
+        const r = await fetch(`${API}/api/leads?search=${encodeURIComponent(busca.trim())}&limit=6`, { headers: cab });
+        if (!r.ok || cancelado) return;
+        const filas = await r.json();
+        if (!cancelado) setHallazgos(Array.isArray(filas) ? filas.slice(0, 6) : []);
+      } catch { /* Buscar es opcional: si falla, se cobra igual sin clienta. */ }
+    }, 300);
+    return () => { cancelado = true; clearTimeout(t); };
+  }, [busca, sinCita, clienta, orgId]);
 
   // Mixto: solo se teclea el EFECTIVO y la tarjeta sale por resta. La tarjeta la verifica el
   // banco; el efectivo es lo único que alguien tiene que contar.
@@ -119,6 +143,9 @@ export function CobroSheet({ contexto, sesion, stylists, orgId, open, onClose, o
           importeTotal: total,
           ...(metodo === "mixto" ? { importeEfectivo: enEfectivo } : {}),
           ...(sinCita ? { concepto: concepto.trim() } : {}),
+          // Solo con venta suelta: con cita el servidor lo ignora, y mandarlo igual haría creer
+          // que se guarda.
+          ...(sinCita && clienta ? { contactId: clienta.id } : {}),
           ...(difiere && motivo ? { motivoDiferencia: motivo } : {}),
           ...(nota.trim() ? { nota: nota.trim() } : {}),
           ...(sesion?.token ? { cajaToken: sesion.token } : {}),
@@ -194,6 +221,50 @@ export function CobroSheet({ contexto, sesion, stylists, orgId, open, onClose, o
                 onChange={(e) => setConcepto(e.target.value)}
                 placeholder="Ej: Champú K18, ampollas..."
               />
+            </div>
+          )}
+
+          {/* De quién es la venta. OPCIONAL a propósito: entra gente de paso, y exigir una
+              ficha para vender un champú convertiría un cobro de 20 € en un alta de cliente.
+              Sin esto, una venta sin cita no podía decir de quién era: no hay más camino a la
+              clienta que la cita, y aquí no la hay. */}
+          {sinCita && (
+            <div>
+              <Label htmlFor="cobro-clienta">Clienta <span className="font-normal text-muted-foreground">(opcional)</span></Label>
+              {clienta ? (
+                <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                  <span className="text-[13px]">{clienta.nombre || "Sin nombre"}</span>
+                  <Button variant="ghost" size="icon" className="h-6 w-6"
+                    aria-label="Quitar clienta"
+                    onClick={() => { setClienta(null); setBusca(""); }}>
+                    <X size={14} />
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <Input
+                    id="cobro-clienta"
+                    value={busca}
+                    onChange={(e) => setBusca(e.target.value)}
+                    placeholder="Buscar por nombre o teléfono..."
+                    autoComplete="off"
+                  />
+                  {hallazgos.length > 0 && (
+                    <ul className="mt-1 max-h-40 overflow-y-auto rounded-md border border-border">
+                      {hallazgos.map((h) => (
+                        <li key={h.id}>
+                          <button type="button"
+                            className="flex w-full items-baseline justify-between gap-2 px-3 py-2 text-left text-[13px] hover:bg-muted"
+                            onClick={() => { setClienta({ id: h.id, nombre: h.nombre }); setHallazgos([]); }}>
+                            <span>{h.nombre || "Sin nombre"}</span>
+                            <span className="text-[11.5px] text-muted-foreground">{h.telefono}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              )}
             </div>
           )}
 

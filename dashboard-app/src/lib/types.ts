@@ -119,6 +119,12 @@ export type Atribucion = "confirmada" | "declarada";
 export interface Cobro {
   id: string;
   appointment_id: string | null;
+  /**
+   * De quién es la venta cuando NO hay cita (migración 038). Con cita se queda a null y la
+   * clienta sale de la cita: la precedencia la decide `resolveClienteDelCobro` en el servidor,
+   * no quien lee este objeto.
+   */
+  contact_id: string | null;
   cobrado_por: string | null;
   cobrado_por_nombre: string | null;
   fecha_caja: string;

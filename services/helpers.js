@@ -3155,6 +3155,27 @@ function resolveBillingAmount(appt, catalog) {
     return { origen, totalConIva, calculable, recalculado, recalculable, segments, tieneSnapshot };
 }
 
+/**
+ * De QUIÉN es un cobro. Devuelve el `contact_id`, o null si no consta.
+ *
+ * Existe para que la respuesta sea UNA. Desde la migración 038 hay dos sitios donde puede estar
+ * la clienta —`cobros.contact_id` (venta sin cita) y la cita (`appointments.contact_id`)— y dos
+ * columnas que contestan a la misma pregunta acaban contestando distinto. La precedencia se
+ * declara aquí y en ningún otro sitio, igual que `resolveBillingAmount` hace con el importe.
+ *
+ * El orden no es arbitrario: `contact_id` va primero porque es lo que alguien ESCRIBIÓ a
+ * propósito sobre esa venta; la cita es de dónde se deduce cuando no se escribió nada. Hoy
+ * `createCobro` no deja que convivan (con cita, `contact_id` se guarda a null), así que la
+ * precedencia solo actúa sobre filas antiguas o escritas por otra vía — que es exactamente
+ * cuando hace falta que esté escrita.
+ *
+ * Null es una respuesta válida y no un fallo: una venta suelta sin clienta apuntada es lo
+ * normal cuando entra alguien de paso. No se inventa.
+ */
+function resolveClienteDelCobro(cobro, cita = null) {
+    return cobro?.contact_id ?? cita?.contact_id ?? null;
+}
+
 // El importe que el registro de caja congela como REFERENCIA de una cita: lo que Facturación
 // diría hoy por ella, o null si no lo sabe. Un null aquí no es un fallo — es "de esta cita no
 // hay contra qué comparar", y es lo que mantiene fuera del descuadre a las citas sin servicio
@@ -3489,6 +3510,7 @@ module.exports = {
     computeServiceBilling,
     resolveBillingAmount,
     resolveImporteReferencia,
+    resolveClienteDelCobro,
     METODOS_COBRO,
     MOTIVOS_DIFERENCIA,
     normalizeCobroImportes,
