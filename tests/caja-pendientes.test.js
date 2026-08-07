@@ -33,8 +33,19 @@ db.authenticateToken = async (t) => {
 };
 db.getAgentConfig = async () => ({ services: [{ nombre: 'Corte hombre', precio: 25 }] });
 
-// El doble aplica el MISMO filtro que la consulta real. Un doble que devolviera todo haría
-// pasar el test con el filtro roto — la trampa de los dobles que no respetan el contrato.
+// El doble reproduce el filtro de la consulta real para que un doble que devolviera TODO no
+// hiciera pasar este test con el filtro roto.
+//
+// Pero ojo con lo que este fichero puede y no puede afirmar, que costó un fallo en producción:
+// como el doble REIMPLEMENTA el filtro en JavaScript en vez de ejercitarlo, aquí se afirma que
+// el ENDPOINT respeta lo que le da la capa de datos — nunca que la consulta pida el filtro. El
+// 07/08/2026 los tres filtros se añadieron a `getAppointmentsByDateRange` (Reservas) creyendo
+// que eran los de Caja; `getCitasDelDiaParaCaja` se quedó sin ellos y este fichero siguió
+// verde, con los no-show y las citas «no se cobra» saliendo en pendientes.
+//
+// Quien afirma la CONSULTA es `tests/db-contracts.test.js` ("caja · getCitasDelDiaParaCaja
+// filtra estado, no_show y no_facturable EN LA CONSULTA"), con un cliente Supabase falso que
+// registra los filtros tal cual. Los dos hacen falta; ninguno sustituye al otro.
 const TODAS = ([
     {
         id: 'apt-1', service: 'Corte hombre', starts_at: '2026-08-07T10:00:00Z', status: 'completed',

@@ -1788,6 +1788,13 @@ async function anularCobro(orgId, cobroId, { motivo = null, userId = null } = {}
 // Incluye las ya completadas y las aún confirmadas: al cobrar, la clienta acaba de levantarse
 // del sillón y el barrido de auto-completar puede no haber pasado todavía. Excluye las
 // canceladas, que no se cobran.
+//
+// Los tres filtros de abajo son LOS MISMOS que los de `getAppointmentsByDateRange`, y por las
+// mismas razones. Estuvieron solo allí desde el 07/08/2026 hasta que se vio el efecto: allí
+// alimentan la lista de Reservas, y aquí es donde de verdad importaban. Mientras faltaron, un
+// no-show y una cita marcada «no se cobra» seguían en «pendientes de cobrar» — la casilla del
+// panel promete justo lo contrario ("No saldrá en Caja como pendiente de cobrar") y no lo
+// cumplía. Si se tocan, hay que tocar las dos: son la misma pregunta hecha en dos pantallas.
 async function getCitasDelDiaParaCaja(orgId, fecha) {
     const oid = resolveOrg(orgId);
     const desdeTs = new Date(`${fecha}T00:00:00`).toISOString();
@@ -1799,7 +1806,20 @@ async function getCitasDelDiaParaCaja(orgId, fecha) {
         .eq('organization_id', oid)
         .gte('starts_at', desdeTs)
         .lte('starts_at', hastaTs)
-        .neq('status', 'cancelled')
+        // Lista BLANCA, no negra: `neq('cancelled')` dejaba pasar todo lo que no se hubiera
+        // pensado, y un estado nuevo entraría solo. `pending` (Bizum de San Remo) queda fuera
+        // aquí a propósito; el endpoint ya es solo de salón (`exigirSalon`), así que no llega.
+        .in('status', ['confirmed', 'completed'])
+        // El no-show se expresa de DOS formas —el estado y el booleano— y updateAppointment
+        // escribe las dos. Mirar solo una dejaba a quien no vino en la lista PARA SIEMPRE:
+        // nadie pagó, así que nadie la iba a quitar de ahí.
+        // `not(is true)` y no `eq(false)`: la columna es NULLABLE, y un NULL es "no consta que
+        // faltara" — con eq(false) esas citas desaparecerían de Caja sin motivo visible.
+        .not('no_show', 'is', true)
+        // Marcada a mano como no cobrable (migración 037): un bloqueo, una cortesía, un hueco
+        // reservado. Es lo único que distingue "esto no se cobra" de "esto está por cobrar".
+        // NOT NULL DEFAULT false, así que aquí sí vale el eq: no hay tercer estado.
+        .eq('no_facturable', false)
         .order('starts_at', { ascending: true });
     // Es la lista de lo que hay que cobrar: un fallo NO puede leerse como "hoy no hay nada".
     assertRead(error, 'appointments');

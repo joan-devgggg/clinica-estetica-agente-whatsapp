@@ -8,8 +8,13 @@ const assert = require('assert');
 
 // ─── Cliente Supabase falso: builder encadenable + thenable ───────────────────────────
 // Reproduce la API fluida usada por db.js: from().update()/insert()/delete().eq().neq()
-// .order().select().single()/.maybeSingle(). Es thenable para que `await ...eq()` resuelva.
+// .in().not().gte().lte().order().select().single()/.maybeSingle(). Es thenable para que
+// `await ...eq()` resuelva.
 // Registra cada llamada resuelta en `calls` con {table, op, payload, filters}.
+//
+// Los filtros se registran TAL CUAL los pide db.js, sin interpretarlos. Esa es la diferencia
+// que importa: un doble que reimplementa el filtro en JavaScript afirma lo que el doble hace,
+// no lo que la consulta pide, y por eso no puede ver que a la consulta le falte un filtro.
 function makeSupabaseMock() {
     const calls = [];
     let responder = () => ({ data: null, error: null });
@@ -24,6 +29,12 @@ function makeSupabaseMock() {
             select() { return b; },
             eq(k, v) { state.filters.push(['eq', k, v]); return b; },
             neq(k, v) { state.filters.push(['neq', k, v]); return b; },
+            in(k, v) { state.filters.push(['in', k, v]); return b; },
+            // `.not(col, op, val)` lleva un operador extra; se guarda plano ("is true") para
+            // que la aserción se lea igual que la llamada.
+            not(k, op, v) { state.filters.push(['not', k, `${op} ${v}`]); return b; },
+            gte(k, v) { state.filters.push(['gte', k, v]); return b; },
+            lte(k, v) { state.filters.push(['lte', k, v]); return b; },
             order() { return b; },
             single() { return resolve(); },
             maybeSingle() { return resolve(); },
@@ -188,6 +199,59 @@ const lastCall = () => mock.calls[mock.calls.length - 1];
         const c = mock.calls.find((x) => x.op === 'update' && x.payload && 'estado' in x.payload);
         assert.ok(c, 'debe haber un UPDATE con estado');
         assert.strictEqual(c.payload.recordatorio_enviado, false);
+    });
+
+    // ── Caja: los filtros de «pendientes de cobrar» los pide la CONSULTA ──────────────
+    //
+    // Este bloque existe porque el 07/08/2026 los tres filtros —lista blanca de estado,
+    // no-show y `no_facturable`— se añadieron a `getAppointmentsByDateRange` (la lista de
+    // Reservas) creyendo que era la consulta de Caja. Caja llama a `getCitasDelDiaParaCaja`,
+    // que se quedó con `neq('cancelled')` a secas. Efecto en producción: un no-show y una
+    // cita marcada «esta cita no se cobra» seguían saliendo en «pendientes de cobrar», que
+    // es exactamente lo que la casilla del panel promete evitar.
+    //
+    // `tests/caja-pendientes.test.js` no podía cazarlo y no es culpa suya: sustituye la
+    // función por un doble para poder probar el ENDPOINT, así que afirma que el endpoint
+    // respeta lo que le dan, nunca que la consulta lo pida. Aquí se afirma lo otro: los
+    // filtros exactos que db.js le manda a Supabase. Quita uno de db.js y esto se pone rojo.
+    await test('caja · getCitasDelDiaParaCaja filtra estado, no_show y no_facturable EN LA CONSULTA', async () => {
+        mock.setResponder(() => ({ data: [], error: null }));
+        await db.getCitasDelDiaParaCaja('org', '2026-08-07');
+        const c = lastCall();
+        assert.strictEqual(c.table, 'appointments');
+
+        const estado = c.filters.find(f => f[0] === 'in' && f[1] === 'status');
+        assert.ok(estado, 'lista BLANCA de estados: un `neq(cancelled)` deja entrar solo a '
+            + 'cualquier estado nuevo, y `no_show` ya se colaba así');
+        assert.deepStrictEqual(estado[2], ['confirmed', 'completed']);
+
+        // `not(is true)` y NO `eq(false)`: no_show es NULLABLE y un NULL es "no consta que
+        // faltara" — con eq(false) esas citas desaparecerían de Caja sin motivo visible.
+        assert.ok(c.filters.some(f => f[0] === 'not' && f[1] === 'no_show' && f[2] === 'is true'),
+            'el no-show por BOOLEANO, que es la otra forma en que updateAppointment lo escribe');
+
+        assert.ok(c.filters.some(f => f[0] === 'eq' && f[1] === 'no_facturable' && f[2] === false),
+            'sin esto, la casilla «esta cita no se cobra» no hace nada en Caja');
+
+        // Y que el arreglo no se haya llevado por delante el día ni la org.
+        assert.ok(c.filters.some(f => f[0] === 'eq' && f[1] === 'organization_id'), 'multi-tenant');
+        assert.ok(c.filters.some(f => f[0] === 'gte' && f[1] === 'starts_at'), 'desde');
+        assert.ok(c.filters.some(f => f[0] === 'lte' && f[1] === 'starts_at'), 'hasta');
+    });
+
+    // La hermana de la que salieron los filtros. Se afirma también, para que quede dicho que
+    // las dos consultas responden a la misma pregunta y tienen que moverse juntas.
+    await test('reservas · getAppointmentsByDateRange mantiene los mismos tres filtros', async () => {
+        mock.setResponder(() => ({ data: [], error: null }));
+        await db.getAppointmentsByDateRange('org', '2026-08-07', '2026-08-07');
+        const c = lastCall();
+        assert.strictEqual(c.table, 'appointments');
+        assert.deepStrictEqual(
+            c.filters.find(f => f[0] === 'in' && f[1] === 'status')?.[2],
+            ['confirmed', 'completed'],
+        );
+        assert.ok(c.filters.some(f => f[0] === 'not' && f[1] === 'no_show' && f[2] === 'is true'));
+        assert.ok(c.filters.some(f => f[0] === 'eq' && f[1] === 'no_facturable' && f[2] === false));
     });
 
     if (!process.exitCode) console.log('\nTodos los tests de contratos db OK');
