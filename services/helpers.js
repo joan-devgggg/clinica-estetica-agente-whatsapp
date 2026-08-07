@@ -2985,6 +2985,95 @@ function isBillingServiceDiverged(appt) {
 // 'divergente' y 'sin_calcular' se cuentan en contadores SEPARADOS (numDivergentes /
 // sinCalcular) y nunca se fusionan: son hechos distintos ("el servicio cambió después de
 // facturarse" vs "no supe calcularlo") y unirlos haría mentir a los dos avisos del panel.
+// La precedencia del importe de UNA cita, extraída de buildStylistBillingReport para que el
+// registro de caja pueda congelar "lo que decía Facturación" SIN volver a escribirla.
+//
+// Estaba embebida en el bucle del informe, y el cobro necesita exactamente la misma respuesta:
+// una segunda copia habría empezado idéntica y divergido a la primera regla que alguien tocara,
+// dejando dos cifras distintas para la misma cita con nadie capaz de decir cuál manda. Mismo
+// criterio que `cobros_vigentes` en la 035 y que el filtro del catálogo: una definición.
+//
+// Devuelve `totalConIva` SIN redondear (redondea el llamador) y todo lo que el informe pinta.
+function resolveBillingAmount(appt, catalog) {
+    const { totalConIva: recalculado, segments } = computeServiceBilling(appt?.service, catalog);
+    const recalculable = segments.length > 0 && segments.every(s => s.status === 'ok');
+
+    // precio_facturado null NO es un snapshot: stampBillingSnapshot sella facturado_at
+    // igualmente cuando el servicio no se pudo valorar. Sin el `!= null`, Number(null) → 0
+    // pasaba el isFinite y esa cita se presentaba como calculada a 0,00 €.
+    const congelado = Number(appt?.precio_facturado);
+    const tieneSnapshot = !!appt?.facturado_at
+        && appt?.precio_facturado != null
+        && Number.isFinite(congelado);
+
+    // Misma trampa: precio_manual = 0 es un importe legítimo (cortesía). Con truthiness se
+    // leería como "sin corrección manual" y se volvería a cobrar lo que alguien no cobró.
+    const manual = Number(appt?.precio_manual);
+    const tieneManual = appt?.precio_manual != null && Number.isFinite(manual);
+
+    // Solo puede divergir lo que está congelado; y un importe manual ya es la resolución
+    // humana de la divergencia, así que la apaga.
+    const divergente = !tieneManual && tieneSnapshot && isBillingServiceDiverged(appt);
+
+    let origen, totalConIva, calculable;
+    if (tieneManual)        { origen = 'manual';       totalConIva = manual;      calculable = true;  }
+    else if (divergente)    { origen = 'divergente';   totalConIva = 0;           calculable = false; }
+    else if (tieneSnapshot) { origen = 'congelado';    totalConIva = congelado;   calculable = true;  }
+    else if (recalculable)  { origen = 'calculado';    totalConIva = recalculado; calculable = true;  }
+    else                    { origen = 'sin_calcular'; totalConIva = 0;           calculable = false; }
+
+    return { origen, totalConIva, calculable, recalculado, recalculable, segments, tieneSnapshot };
+}
+
+// El importe que el registro de caja congela como REFERENCIA de una cita: lo que Facturación
+// diría hoy por ella, o null si no lo sabe. Un null aquí no es un fallo — es "de esta cita no
+// hay contra qué comparar", y es lo que mantiene fuera del descuadre a las citas sin servicio
+// resoluble (hoy, las 3 "Cita manual" de Sante).
+function resolveImporteReferencia(appt, catalog) {
+    const { calculable, totalConIva } = resolveBillingAmount(appt, catalog);
+    return calculable ? _round2(totalConIva) : null;
+}
+
+const METODOS_COBRO = ['efectivo', 'tarjeta', 'bizum', 'mixto'];
+const MOTIVOS_DIFERENCIA = ['propina', 'producto', 'descuento', 'servicio_extra', 'otro'];
+
+// Deriva el reparto efectivo/tarjeta a partir del método, o lanza si no es coherente.
+//
+// La estilista NO teclea el importe de tarjeta: la tarjeta la verifica el banco, así que en un
+// cobro simple el reparto es una consecuencia del método y en uno mixto solo se pide el
+// EFECTIVO. Derivarlo aquí es lo que hace que ese flujo sea de un toque.
+//
+// El CHECK cobros_metodo_coherente de la migración 035 dice lo mismo en la BD y es la garantía
+// de verdad; esto existe para que el fallo llegue como un mensaje entendible y no como una
+// violación de restricción. Los dos tienen que decir lo mismo — si se tocan, se tocan juntos.
+function normalizeCobroImportes({ metodo, importeTotal, importeEfectivo } = {}) {
+    if (!METODOS_COBRO.includes(metodo)) {
+        throw new Error(`Método de cobro inválido: ${JSON.stringify(metodo ?? null)}. Usa ${METODOS_COBRO.join(' | ')}.`);
+    }
+    const total = Number(importeTotal);
+    // `== null` y no truthiness: 0 € es un importe válido (cortesía, 100 % de descuento), la
+    // misma trampa que ya costó una cita facturada a 0,00 € presentada como cifra buena.
+    if (importeTotal == null || !Number.isFinite(total) || total < 0) {
+        throw new Error(`Importe inválido: ${JSON.stringify(importeTotal ?? null)}. Debe ser un número >= 0.`);
+    }
+    const totalR = _round2(total);
+
+    if (metodo === 'efectivo') return { importe_total: totalR, importe_efectivo: totalR };
+    if (metodo === 'tarjeta' || metodo === 'bizum') return { importe_total: totalR, importe_efectivo: 0 };
+
+    const efectivo = Number(importeEfectivo);
+    if (importeEfectivo == null || !Number.isFinite(efectivo)) {
+        throw new Error('En un cobro mixto hay que indicar cuánto se pagó en efectivo.');
+    }
+    const efectivoR = _round2(efectivo);
+    // Un mixto que en realidad no lo es se rechaza en vez de guardarse: si se admitiera, el
+    // método diría una cosa y el reparto otra, y el cierre se apoya entero en el efectivo.
+    if (efectivoR <= 0 || efectivoR >= totalR) {
+        throw new Error(`Un cobro mixto lleva parte en efectivo y parte en tarjeta: el efectivo (${efectivoR}) tiene que estar entre 0 y el total (${totalR}). Si fue todo de una forma, elige ese método.`);
+    }
+    return { importe_total: totalR, importe_efectivo: efectivoR };
+}
+
 function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {}) {
     const NO_STYLIST = NO_STYLIST_KEY;
     const buckets = new Map();
@@ -3008,50 +3097,14 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
     for (const appt of (appointments || [])) {
         const key = appt.stylist_id || NO_STYLIST;
         const bucket = getBucket(key, appt.stylist_name);
-        const { totalConIva: recalculado, segments } = computeServiceBilling(appt.service, catalog);
-        const recalculable = segments.length > 0 && segments.every(s => s.status === 'ok');
-
-        // El importe CONGELADO al completar la cita manda sobre el recálculo. Sin él, subir un
-        // precio en el catálogo reescribía la facturación de un periodo ya cerrado. Solo se
-        // recalcula cuando no hay snapshot: citas anteriores a la auditoría, o servicios que
-        // no se pudieron valorar.
-        // precio_facturado null NO es un snapshot: stampBillingSnapshot sella facturado_at
-        // igualmente cuando el servicio no se pudo valorar, para no reintentar. Sin el
-        // `!= null`, Number(null) → 0 pasaba el isFinite y esa cita se presentaba como
-        // calculada a 0,00 € en vez de caer al contador de "sin poder calcular" — un
-        // importe inventado comunicado como cifra buena.
-        const congelado = Number(appt.precio_facturado);
-        const tieneSnapshot = !!appt.facturado_at
-            && appt.precio_facturado != null
-            && Number.isFinite(congelado);
-
-        // Misma trampa que arriba, y por eso la misma comprobación: precio_manual = 0 es un
-        // importe legítimo (cortesía, 100 % de descuento). Con truthiness se leería como
-        // "sin corrección manual" y la cita volvería a facturarse al precio de catálogo,
-        // cobrando lo que alguien decidió no cobrar.
-        const manual = Number(appt.precio_manual);
-        const tieneManual = appt.precio_manual != null && Number.isFinite(manual);
-
-        // Solo puede divergir lo que está congelado; y un importe manual ya es la resolución
-        // humana de la divergencia, así que la apaga.
-        const divergente = !tieneManual && tieneSnapshot && isBillingServiceDiverged(appt);
-
-        let origen, totalConIva, calculable;
-        if (tieneManual) {
-            // Cuenta aunque los segmentos sean unmatched/ambiguous: rescatar una cita que el
-            // catálogo no sabe valorar es el uso más valioso del importe manual. No rompe el
-            // "una cifra dudosa se comunica como dudosa" — la cifra ya no es dudosa, la
-            // afirmó una persona identificada con fecha y motivo, y el panel la etiqueta.
-            origen = 'manual'; totalConIva = manual; calculable = true;
-        } else if (divergente) {
-            origen = 'divergente'; totalConIva = 0; calculable = false;
-        } else if (tieneSnapshot) {
-            origen = 'congelado'; totalConIva = congelado; calculable = true;
-        } else if (recalculable) {
-            origen = 'calculado'; totalConIva = recalculado; calculable = true;
-        } else {
-            origen = 'sin_calcular'; totalConIva = 0; calculable = false;
-        }
+        // El importe CONGELADO al completar la cita manda sobre el recálculo, y un importe
+        // manual sobre los dos. Toda esa precedencia vive en resolveBillingAmount, que es
+        // también de donde sale el `importe_referencia` que congela un cobro: si estuviera
+        // duplicada, Facturación y Caja podrían discrepar sobre la misma cita.
+        const {
+            origen, totalConIva, calculable, recalculado, recalculable, segments,
+            tieneSnapshot,
+        } = resolveBillingAmount(appt, catalog);
 
         bucket.numCitas += 1;
         if (calculable) bucket.totalConIva += totalConIva;
@@ -3216,6 +3269,11 @@ module.exports = {
     // Exportado para el test de paridad con la copia del panel (dashboard-app/src/lib/service-names.ts).
     splitServiceNames,
     computeServiceBilling,
+    resolveBillingAmount,
+    resolveImporteReferencia,
+    METODOS_COBRO,
+    MOTIVOS_DIFERENCIA,
+    normalizeCobroImportes,
     isBillingServiceDiverged,
     buildStylistBillingReport,
     filterAppointmentsByStylist,

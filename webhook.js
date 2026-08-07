@@ -415,6 +415,153 @@ app.patch('/api/citas/:id/precio', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ─── API: Caja (registro de cobros) ─────────────────────────────────────────
+//
+// Solo salón, igual que el importe manual: San Remo cobra con el flujo Bizum y no se toca.
+function exigirSalon(req, res) {
+    const orgId = extractOrgId(req);
+    const { getOrgType } = require('./services/org-registry');
+    if (getOrgType(orgId) !== 'salon') {
+        res.status(403).json({ error: 'El registro de caja es solo para salón' });
+        return null;
+    }
+    return orgId;
+}
+
+const FECHA_YMD = /^\d{4}-\d{2}-\d{2}$/;
+
+// Lo que Facturación diría por esa cita, congelado en el cobro. Sale de resolveImporteReferencia
+// (helpers), que es la MISMA precedencia que pinta el informe — no una segunda copia.
+// null = de esa cita no hay contra qué comparar, y así se guarda: es lo que mantendrá fuera del
+// descuadre a las citas sin servicio resoluble en vez de inventarles una referencia.
+async function calcularImporteReferencia(orgId, appointmentId) {
+    if (!appointmentId) return null;
+    const { resolveImporteReferencia } = require('./services/helpers');
+    const [cita, cfg] = await Promise.all([
+        db.getAppointmentById(orgId, appointmentId),
+        db.getAgentConfig(orgId),
+    ]);
+    if (!cita) return null;
+    return resolveImporteReferencia(cita, cfg?.services || []);
+}
+
+// Registra un cobro. `fechaCaja` solo se manda para imputar a propósito un cobro de madrugada
+// a la jornada anterior; sin ella la decide el servidor en Europe/Madrid (db.diaDeCajaHoy).
+app.post('/api/cobros', async (req, res) => {
+    try {
+        const orgId = exigirSalon(req, res);
+        if (!orgId) return;
+        const {
+            appointmentId, cobradoPor, fechaCaja, metodo, importeTotal, importeEfectivo,
+            concepto, motivoDiferencia, nota,
+        } = req.body || {};
+
+        if (fechaCaja != null && !FECHA_YMD.test(String(fechaCaja))) {
+            return res.status(400).json({ error: 'fechaCaja debe ser YYYY-MM-DD' });
+        }
+        const { MOTIVOS_DIFERENCIA } = require('./services/helpers');
+        if (motivoDiferencia != null && !MOTIVOS_DIFERENCIA.includes(motivoDiferencia)) {
+            return res.status(400).json({ error: `motivoDiferencia debe ser uno de: ${MOTIVOS_DIFERENCIA.join(', ')}` });
+        }
+        if (!appointmentId && !concepto) {
+            return res.status(400).json({ error: 'Un cobro sin cita tiene que decir de qué es (concepto)' });
+        }
+
+        const cobro = await db.createCobro(orgId, {
+            appointmentId, cobradoPor, fechaCaja, metodo, importeTotal, importeEfectivo,
+            concepto, motivoDiferencia, nota,
+            importeReferencia: await calcularImporteReferencia(orgId, appointmentId),
+            // Del token verificado, NUNCA del body: es dinero.
+            userId: req.authUserId || null,
+        });
+        logger.info('cobro_registrado', {
+            orgId, cobroId: cobro.id, metodo: cobro.metodo, total: cobro.importe_total,
+            efectivo: cobro.importe_efectivo, fechaCaja: cobro.fecha_caja, userId: req.authUserId || null,
+        });
+        res.status(201).json(cobro);
+    } catch (e) {
+        // Los mensajes de normalizeCobroImportes están escritos para leerse; no son un 500.
+        if (/inválid|mixto|efectivo|estilista|decir por qué/i.test(e.message || '')) {
+            return res.status(400).json({ error: e.message });
+        }
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Por defecto, los cobros que CUENTAN (vista cobros_vigentes). ?historial=1 devuelve también
+// lo anulado y lo rectificado — que es para auditar, nunca para sumar.
+app.get('/api/cobros', async (req, res) => {
+    try {
+        const orgId = exigirSalon(req, res);
+        if (!orgId) return;
+        const hoy = db.diaDeCajaHoy();
+        const desde = req.query.desde || hoy;
+        const hasta = req.query.hasta || desde;
+        if (!FECHA_YMD.test(String(desde)) || !FECHA_YMD.test(String(hasta))) {
+            return res.status(400).json({ error: 'desde/hasta deben ser YYYY-MM-DD' });
+        }
+        const opciones = { desde, hasta, appointmentId: req.query.citaId || null };
+        if (req.query.historial === '1') {
+            return res.json({ historial: true, cobros: await db.getCobrosHistorial(orgId, opciones) });
+        }
+        res.json({
+            historial: false,
+            cobros: await db.getCobrosVigentes(orgId, { ...opciones, stylistId: req.query.stylist || null }),
+        });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Rectificar: una sola escritura, el sucesor anula al anterior. Ruta propia y no un PUT sobre
+// el cobro, porque un cobro NO se edita — el trigger de la 035 lo impide en la base.
+app.post('/api/cobros/:id/rectificar', async (req, res) => {
+    try {
+        const orgId = exigirSalon(req, res);
+        if (!orgId) return;
+        const { motivoCorreccion } = req.body || {};
+        if (!motivoCorreccion || !String(motivoCorreccion).trim()) {
+            return res.status(400).json({ error: 'Di por qué se corrige: sin motivo, la rectificación no explica nada' });
+        }
+        const original = await db.getCobroById(orgId, req.params.id);
+        if (!original) return res.status(404).json({ error: 'No encontrado' });
+
+        const cobro = await db.rectifyCobro(orgId, req.params.id, {
+            ...req.body,
+            motivoCorreccion: String(motivoCorreccion).trim(),
+            // Si cambia la cita, la referencia se recalcula; si no, se hereda.
+            importeReferencia: req.body?.appointmentId !== undefined
+                ? await calcularImporteReferencia(orgId, req.body.appointmentId)
+                : undefined,
+            userId: req.authUserId || null,
+        });
+        logger.info('cobro_rectificado', {
+            orgId, corrigeA: req.params.id, cobroId: cobro.id, userId: req.authUserId || null,
+        });
+        res.status(201).json(cobro);
+    } catch (e) {
+        if (/inválid|mixto|efectivo|anulado|decir por qué/i.test(e.message || '')) {
+            return res.status(400).json({ error: e.message });
+        }
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Anular SIN sustituto: "esto no se llegó a cobrar". Distinto de rectificar, que sí lo tiene.
+app.post('/api/cobros/:id/anular', async (req, res) => {
+    try {
+        const orgId = exigirSalon(req, res);
+        if (!orgId) return;
+        const cobro = await db.anularCobro(orgId, req.params.id, {
+            motivo: req.body?.motivo ? String(req.body.motivo).trim() : null,
+            userId: req.authUserId || null,
+        });
+        // null = no existe en esta org, o ya estaba anulado. Las dos son un 404 honesto: no hay
+        // nada que anular. Nunca un 200 sobre una escritura que no ocurrió.
+        if (!cobro) return res.status(404).json({ error: 'No encontrado, o ya estaba anulado' });
+        logger.info('cobro_anulado', { orgId, cobroId: cobro.id, userId: req.authUserId || null });
+        res.json(cobro);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // La duración es la que ocupa la agenda: db.js ya no la rellena con un 120 por
 // defecto, así que ausente significa cita no guardada. Validarla aquí es lo que
 // convierte ese rechazo en un mensaje que se entiende, en vez de un 500 genérico

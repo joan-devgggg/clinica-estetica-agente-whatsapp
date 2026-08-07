@@ -6,6 +6,10 @@
 const supabase = require('./supabase');
 const logger = require('../lib/logger');
 const { NO_STYLIST_KEY, computeServiceBilling, IDIOMAS_SOPORTADOS, resolveLanguageSource, motivoNoEnviable } = require('./helpers');
+// date-utils es PURO (solo Intl/Date) y no arrastra la capa de datos, así que se puede
+// requerir aquí sin ciclo. Aporta toLocalDateStr, que es lo único que debe decidir el día de
+// caja: BUSINESS_TZ = Europe/Madrid, nunca UTC.
+const { toLocalDateStr } = require('./date-utils');
 
 const DEFAULT_ORG = process.env.ORGANIZATION_ID || 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
@@ -1590,6 +1594,164 @@ async function setManualPrice(orgId, appointmentId, { precio, motivo = null, use
     return data[0];
 }
 
+// ─── Caja: registro de cobros (migración 035) ───────────────────────────────
+//
+// Un cobro se escribe UNA vez y se congela (trigger cobros_congelar_importes). Corregirlo es
+// escribir otro con `corrige_a`, nunca un UPDATE. Lo único que un UPDATE puede tocar es la
+// anulación sin sustituto y la nota.
+
+const COBRO_COLUMNS = 'id, organization_id, appointment_id, cobrado_por, cobrado_por_nombre, '
+    + 'fecha_caja, cobrado_at, metodo, importe_total, importe_efectivo, iva_rate, concepto, '
+    + 'importe_referencia, motivo_diferencia, nota, estado, corrige_a, motivo_correccion, '
+    + 'anulado_at, anulado_por, registrado_por, created_at';
+
+// El día de caja de HOY, en Europe/Madrid. Es la única forma de calcularlo en el código.
+//
+// `new Date().toISOString().slice(0,10)` da el día UTC, y la sesión de esta base corre en UTC:
+// entre las 00:00 y las 02:00 de Madrid ese atajo devuelve el día ANTERIOR. Un cobro de las
+// 00:30 mal fechado descuadra DOS cierres a la vez —le sobra a uno y le falta al otro— y es
+// justo la hora de cerrar la caja.
+function diaDeCajaHoy() { return toLocalDateStr(new Date()); }
+
+// Registra un cobro. `fechaCaja` explícita solo para el caso deliberado de imputar un cobro de
+// madrugada a la jornada anterior; si no viene, la decide diaDeCajaHoy().
+//
+// `cobradoPorNombre` se congela igual que `stylist_name_facturado` (migración 021): renombrar a
+// una estilista no puede reescribir cierres de hace tres meses.
+async function createCobro(orgId, {
+    appointmentId = null, cobradoPor = null, fechaCaja = null,
+    metodo, importeTotal, importeEfectivo = null,
+    concepto = null, importeReferencia = null, motivoDiferencia = null, nota = null,
+    corrigeA = null, motivoCorreccion = null, userId = null,
+} = {}) {
+    const oid = resolveOrg(orgId);
+    const { normalizeCobroImportes } = require('./helpers');
+    const importes = normalizeCobroImportes({ metodo, importeTotal, importeEfectivo });
+
+    // El nombre se resuelve AQUÍ y se guarda, no se deja para el JOIN del informe.
+    let cobradoPorNombre = null;
+    if (cobradoPor) {
+        const { data: est, error: errEst } = await supabase
+            .from('stylists').select('name').eq('id', cobradoPor).eq('organization_id', oid).maybeSingle();
+        assertRead(errEst, 'stylists');
+        if (!est) throw new Error('La estilista indicada no existe en esta organización');
+        cobradoPorNombre = est.name || null;
+    }
+
+    const { data, error } = await supabase
+        .from('cobros')
+        .insert({
+            organization_id: oid,
+            appointment_id: appointmentId || null,
+            cobrado_por: cobradoPor || null,
+            cobrado_por_nombre: cobradoPorNombre,
+            fecha_caja: fechaCaja || diaDeCajaHoy(),
+            metodo,
+            importe_total: importes.importe_total,
+            importe_efectivo: importes.importe_efectivo,
+            concepto: concepto || null,
+            importe_referencia: importeReferencia,
+            motivo_diferencia: motivoDiferencia || null,
+            nota: nota || null,
+            corrige_a: corrigeA || null,
+            motivo_correccion: motivoCorreccion || null,
+            registrado_por: userId || null,
+        })
+        .select(COBRO_COLUMNS);
+    // Es dinero: un INSERT fallido no puede devolver null y leerse como "ya está".
+    assertRowsAffected(error, data, 'cobros', 'createCobro');
+    return data[0];
+}
+
+// Los cobros que CUENTAN. Sale de la VISTA `cobros_vigentes`, nunca de la tabla: el invariante
+// "vigente y sin sucesor" está definido una sola vez, en la 035. Si esto leyera `cobros` y
+// filtrara a mano, habría dos definiciones de qué cuenta y una acabaría sumando mal.
+async function getCobrosVigentes(orgId, { desde = null, hasta = null, stylistId = null, appointmentId = null } = {}) {
+    const oid = resolveOrg(orgId);
+    let query = supabase.from('cobros_vigentes').select(COBRO_COLUMNS).eq('organization_id', oid);
+    if (desde) query = query.gte('fecha_caja', desde);
+    if (hasta) query = query.lte('fecha_caja', hasta);
+    if (stylistId === NO_STYLIST_KEY) query = query.is('cobrado_por', null);
+    else if (stylistId) query = query.eq('cobrado_por', stylistId);
+    if (appointmentId) query = query.eq('appointment_id', appointmentId);
+
+    const { data, error } = await query.order('cobrado_at', { ascending: true });
+    // Es dinero: si la consulta falla NO devolvemos [] (se leería como "0 € en caja").
+    assertRead(error, 'cobros_vigentes');
+    return data || [];
+}
+
+// El HISTÓRICO, incluido lo anulado y lo rectificado. Lee la tabla a propósito: es justo lo
+// que la vista esconde. No se usa para sumar caja, solo para auditar.
+async function getCobrosHistorial(orgId, { desde = null, hasta = null, appointmentId = null } = {}) {
+    const oid = resolveOrg(orgId);
+    let query = supabase.from('cobros').select(COBRO_COLUMNS).eq('organization_id', oid);
+    if (desde) query = query.gte('fecha_caja', desde);
+    if (hasta) query = query.lte('fecha_caja', hasta);
+    if (appointmentId) query = query.eq('appointment_id', appointmentId);
+    const { data, error } = await query.order('cobrado_at', { ascending: true });
+    assertRead(error, 'cobros');
+    return data || [];
+}
+
+async function getCobroById(orgId, cobroId) {
+    if (!cobroId) return null;
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('cobros').select(COBRO_COLUMNS).eq('id', cobroId).eq('organization_id', oid).maybeSingle();
+    assertRead(error, 'cobros');
+    return data || null;
+}
+
+// Rectifica un cobro: UNA sola escritura, el sucesor es la anulación del anterior.
+//
+// Los campos que no se pasan se HEREDAN del original, y eso importa sobre todo para
+// `fecha_caja`: corregir hoy un cobro de ayer pertenece a la caja de AYER. Si se recalculara a
+// hoy, la corrección movería dinero de un día cerrado a otro — descuadrando los dos, que es
+// exactamente lo que este registro existe para evitar.
+async function rectifyCobro(orgId, cobroId, cambios = {}) {
+    const oid = resolveOrg(orgId);
+    const original = await getCobroById(oid, cobroId);
+    if (!original) return null;
+    if (!cambios.motivoCorreccion) throw new Error('Una rectificación tiene que decir por qué');
+    if (original.estado === 'anulado') {
+        throw new Error('Ese cobro está anulado: no se rectifica, se registra uno nuevo');
+    }
+
+    const tomar = (nuevo, viejo) => (nuevo === undefined ? viejo : nuevo);
+    return createCobro(oid, {
+        appointmentId:  tomar(cambios.appointmentId,  original.appointment_id),
+        cobradoPor:     tomar(cambios.cobradoPor,     original.cobrado_por),
+        fechaCaja:      tomar(cambios.fechaCaja,      original.fecha_caja),
+        metodo:         tomar(cambios.metodo,         original.metodo),
+        importeTotal:   tomar(cambios.importeTotal,   Number(original.importe_total)),
+        importeEfectivo: tomar(cambios.importeEfectivo, Number(original.importe_efectivo)),
+        concepto:       tomar(cambios.concepto,       original.concepto),
+        // La referencia es la de la cita, no la del cobro viejo: se hereda igual.
+        importeReferencia: tomar(cambios.importeReferencia, original.importe_referencia),
+        motivoDiferencia:  tomar(cambios.motivoDiferencia,  original.motivo_diferencia),
+        nota:           tomar(cambios.nota, null),
+        corrigeA:       original.id,
+        motivoCorreccion: cambios.motivoCorreccion,
+        userId:         cambios.userId || null,
+    });
+}
+
+// Anula SIN sustituto ("esto no se llegó a cobrar", "lo registré por error"). Es el único
+// UPDATE que la tabla permite, y por eso no toca ninguna columna de importe.
+async function anularCobro(orgId, cobroId, { motivo = null, userId = null } = {}) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('cobros')
+        .update({ estado: 'anulado', anulado_at: now(), anulado_por: userId || null, nota: motivo || null })
+        .eq('id', cobroId)
+        .eq('organization_id', oid)
+        .eq('estado', 'vigente')   // anular dos veces no reescribe la fecha de la primera
+        .select(COBRO_COLUMNS);
+    assertWrite(error, 'cobros', 'anularCobro');
+    return data?.[0] || null;
+}
+
 // Una cita concreta. Necesaria para no derivar su horario de la sesión del bot: al aceptar
 // un upsell se recalculaba ends_at a partir de session.partialData.fecha_cita/hora_cita, que
 // puede haberse quedado atrás si la cita se movió desde el panel — y ends_at acababa en otro
@@ -2573,6 +2735,13 @@ module.exports = {
     getCompletedAppointmentsForBilling,
     stampBillingSnapshot,
     setManualPrice,
+    createCobro,
+    getCobrosVigentes,
+    getCobrosHistorial,
+    getCobroById,
+    rectifyCobro,
+    anularCobro,
+    diaDeCajaHoy,
     getAppointmentsPendientesRecordatorio,
     getReservasBizumPendiente,
     getAgentConfig,
