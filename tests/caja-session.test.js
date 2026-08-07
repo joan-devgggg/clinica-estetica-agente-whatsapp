@@ -124,5 +124,36 @@ function test(name, fn) {
         assert.strictEqual(cs.leerSesion(AHORA), null);
     });
 
+
+    // ── Quién cobra: el defecto sale de la CITA, no de la sesión ────────────
+    // Que una atienda y cobre otra es lo normal en un mostrador compartido, así que el valor
+    // de partida tiene que ser el del TRABAJO. Antes se atribuía siempre a la de la sesión,
+    // que obligaba a meter otro PIN para decir algo que no tiene que ver con quién ha entrado.
+
+    test('10 · el defecto es la estilista de la CITA, aunque haya otra con el PIN puesto', () => {
+        const conIrina = sesionCon();                       // PIN de Irina
+        assert.strictEqual(cs.estilistaPorDefecto('est-olga', conIrina), 'est-olga');
+    });
+
+    test('11 · una venta SIN cita arranca con la de la sesión: no hay cita de donde sacarla', () => {
+        assert.strictEqual(cs.estilistaPorDefecto(null, sesionCon()), 'est-irina');
+        assert.strictEqual(cs.estilistaPorDefecto(undefined, sesionCon()), 'est-irina');
+    });
+
+    test('12 · sin cita y sin sesión no se propone a nadie: hay que elegir', () => {
+        assert.strictEqual(cs.estilistaPorDefecto(null, null), '');
+    });
+
+    test('13 · elegir a la del PIN puesto NO sale sin PIN; elegir a otra SÍ', () => {
+        const conIrina = sesionCon();
+        assert.strictEqual(cs.saldraSinPin(conIrina, 'est-irina'), false, 'coincide → con PIN');
+        assert.strictEqual(cs.saldraSinPin(conIrina, 'est-olga'), true, 'otra → sin PIN, y se avisa antes');
+    });
+
+    test('14 · sin sesión, o con el token caducado, siempre sin PIN', () => {
+        assert.strictEqual(cs.saldraSinPin(null, 'est-irina'), true);
+        assert.strictEqual(cs.saldraSinPin(sesionCon({ token: null }), 'est-irina'), true);
+    });
+
     console.log(fallos === 0 ? '\n✅ Sesión de caja OK' : `\n❌ ${fallos} fallo(s)`);
 })();

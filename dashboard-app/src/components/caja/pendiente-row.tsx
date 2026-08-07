@@ -11,12 +11,14 @@
 // deshacer que borrara, el registro dejaría de ser contable. Si algún día hay que tocar esto,
 // se tocan las tres o ninguna.
 
+import { useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Check } from "lucide-react";
-import type { CajaPendiente, MetodoCobro } from "@/lib/types";
+import type { CajaPendiente, MetodoCobro, Stylist } from "@/lib/types";
 import { madridTime } from "@/lib/date";
-import type { CajaSesion } from "@/lib/caja-session";
+import { type CajaSesion, estilistaPorDefecto, saldraSinPin } from "@/lib/caja-session";
 
 const eur = (n: number) =>
   new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(n);
@@ -30,17 +32,37 @@ const RAPIDOS: { valor: MetodoCobro; etiqueta: string }[] = [
 interface Props {
   pendiente: CajaPendiente;
   sesion: CajaSesion | null;
+  stylists: Stylist[];
   cobrando: boolean;
-  onCobroRapido: (p: CajaPendiente, metodo: MetodoCobro) => void;
+  onCobroRapido: (p: CajaPendiente, metodo: MetodoCobro, cobradoPor: string) => void;
   onAbrirHoja: (p: CajaPendiente) => void;
 }
 
-export function PendienteRow({ pendiente, sesion, cobrando, onCobroRapido, onAbrirHoja }: Props) {
+export function PendienteRow({ pendiente, sesion, stylists, cobrando, onCobroRapido, onAbrirHoja }: Props) {
   const ya = pendiente.cobro;
   const ref = pendiente.importe_referencia;
+
+  // Quién cobra ESTE cobro. Por defecto, la estilista de la CITA — no la de la sesión de PIN.
+  //
+  // Que una haga el servicio y cobre otra es lo normal en un mostrador compartido, así que el
+  // valor de partida tiene que ser el del trabajo (appointments.stylist_id) y cambiarlo tiene
+  // que costar un toque. Antes se atribuía siempre a la de la sesión, que obligaba a cambiar de
+  // sesión —y a meter otro PIN— para decir algo que no tiene nada que ver con quién ha entrado.
+  const [cobradoPor, setCobradoPor] = useState<string>(
+    estilistaPorDefecto(pendiente.atendio_id, sesion),
+  );
+  const elegida = stylists.find((s) => s.id === cobradoPor);
+
   // Sin importe de referencia no hay cobro de un toque: no hay nada que poner. Va por la hoja.
-  const puedeUnToque = ref != null && !!sesion && !cobrando;
-  const atendioDistinta = !!pendiente.atendio && pendiente.atendio !== sesion?.stylistName;
+  // NO se exige sesión: el cobro nunca se bloquea, y desde que la estilista se elige en la fila
+  // la sesión solo aporta el PIN. Sin ella se cobra igual, marcado «sin PIN».
+  const puedeUnToque = ref != null && !!cobradoPor && !cobrando;
+
+  // Lo que va a quedar registrado, ANTES de tocar nada. Si al elegir a otra el cobro va a salir
+  // sin PIN, se dice aquí y no después en el resumen: enterarse tarde es lo que hace que la
+  // marca no sirva para nada.
+  const sinPin = saldraSinPin(sesion, cobradoPor);
+  const atendioDistinta = !!pendiente.atendio && pendiente.atendio_id !== cobradoPor;
 
   return (
     <Card className={`border-border/60 shadow-sm ${ya ? "opacity-60" : ""}`}>
@@ -85,15 +107,35 @@ export function PendienteRow({ pendiente, sesion, cobrando, onCobroRapido, onAbr
           </p>
         ) : (
           <>
-            {/* La atribución va AQUÍ, donde está el pulgar. Un cobro de un toque con el nombre
-                fuera de la vista es lo contrario del modelo. Y cuando quien atendió no es quien
-                cobra, se dicen las dos: es correcto que difieran y callarlo parece un error. */}
-            <p className="mt-2.5 text-[11.5px] text-muted-foreground">
-              {atendioDistinta && <span>atendió {pendiente.atendio} · </span>}
-              <span className="font-medium text-foreground">
-                cobra {sesion?.stylistName ?? "— elige quién cobra"}
-              </span>
-            </p>
+            {/* Quién cobra va AQUÍ, donde está el pulgar, y se puede CAMBIAR aquí mismo. Un
+                cobro de un toque con la atribución fuera de la vista es lo contrario del
+                modelo; y obligar a cambiar de sesión de PIN para decir que cobró otra sería
+                pedir un trámite que no tiene nada que ver. */}
+            <div className="mt-2.5 flex flex-wrap items-center gap-2">
+              <span className="text-[11.5px] text-muted-foreground">Cobra</span>
+              <Select value={cobradoPor} onValueChange={(v) => setCobradoPor(v ?? "")}>
+                <SelectTrigger className="h-8 w-auto min-w-[130px] text-[12.5px]">
+                  <SelectValue placeholder="¿quién?">{elegida?.name ?? null}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {stylists.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {/* Es correcto que quien atendió y quien cobra difieran; callarlo parecería un
+                  error y alguien lo "arreglaría" cambiando el selector sin motivo. */}
+              {atendioDistinta && (
+                <span className="text-[11.5px] text-muted-foreground">
+                  atendió {pendiente.atendio}
+                </span>
+              )}
+              {sinPin && (
+                <span className="text-[11.5px] font-medium text-[oklch(0.45_0.12_55)]">
+                  · quedará sin PIN
+                </span>
+              )}
+            </div>
             <div className="mt-2 grid grid-cols-3 gap-2">
               {RAPIDOS.map((m) => (
                 <Button
@@ -102,7 +144,7 @@ export function PendienteRow({ pendiente, sesion, cobrando, onCobroRapido, onAbr
                   variant="outline"
                   className="h-10"
                   disabled={!puedeUnToque}
-                  onClick={() => onCobroRapido(pendiente, m.valor)}
+                  onClick={() => onCobroRapido(pendiente, m.valor, cobradoPor)}
                 >
                   {m.etiqueta}
                 </Button>

@@ -1,6 +1,11 @@
 "use client";
 
-// Quién está cobrando, siempre a la vista y siempre arriba.
+// Qué PIN está puesto en ESTE dispositivo, siempre a la vista y siempre arriba.
+//
+// OJO: esto NO es quién cobra. Quién cobra se elige por cobro, en la fila o en la hoja, y su
+// valor por defecto es la estilista de la CITA. Esta barra solo dice de quién es el PIN que
+// hay metido: un cobro sale "con PIN" cuando la elegida coincide con esta, y "sin PIN" en
+// cualquier otro caso — sin bloquear nada.
 //
 // En un modelo de atribución la protección es que sea VISIBLE, no que esté cerrado. Esta barra
 // dice dos cosas sin que haya que buscarlas: a quién se van a atribuir los cobros, y si esa
@@ -39,10 +44,10 @@ export function EstilistaActivaBar({ sesion, stylists, orgId, onCambio }: Props)
           <UserRound size={18} className="shrink-0 text-muted-foreground" />
           <div className="min-w-0">
             <p className="text-[10.5px] uppercase tracking-[0.07em] font-semibold text-muted-foreground">
-              Cobra
+              PIN puesto
             </p>
             <p className="font-heading text-[19px] font-semibold leading-tight text-foreground truncate">
-              {sesion?.stylistName ?? "Nadie todavía"}
+              {sesion?.stylistName ?? "Nadie"}
             </p>
           </div>
           {sesion && (
@@ -59,7 +64,7 @@ export function EstilistaActivaBar({ sesion, stylists, orgId, onCambio }: Props)
           )}
         </div>
         <Button variant={sesion ? "outline" : "default"} size="sm" onClick={() => setAbierto(true)}>
-          {sesion ? "Cambiar" : "Elegir estilista"}
+          {sesion ? "Cambiar" : "Entrar con PIN"}
         </Button>
       </div>
 

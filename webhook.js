@@ -528,9 +528,13 @@ function resolverAtribucion(req, orgId, cobradoPor) {
     if (!sesion) return { atribucion: 'declarada', token: null };
 
     if (sesion.stylistId !== String(cobradoPor)) {
-        logger.warn('caja_atribucion_desajustada', {
+        // INFO y no WARN: desde que quién cobra se elige por cobro, que no coincida con el PIN
+        // puesto es lo NORMAL —una atiende y cobra otra— y no una anomalía. Un aviso que salta
+        // en el caso corriente deja de leerse, y entonces no avisa de nada. Se sigue registrando
+        // porque es lo que explica por qué ese cobro quedó sin PIN.
+        logger.info('caja_atribucion_desajustada', {
             orgId, tokenStylistId: sesion.stylistId, cobradoPor: String(cobradoPor),
-            detalle: 'se cambió la estilista en pantalla sin meter su PIN; el cobro se registra como declarada',
+            detalle: 'quien cobra no es la del PIN puesto; el cobro se registra sin PIN',
         });
         return { atribucion: 'declarada', token: null };
     }

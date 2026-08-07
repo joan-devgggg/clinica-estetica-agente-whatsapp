@@ -81,3 +81,33 @@ export function renovarToken(token: string | null | undefined, minutos = 30, aho
 export function atribucionDe(sesion: CajaSesion | null): Atribucion {
   return sesion?.token ? "confirmada" : "declarada";
 }
+
+// ─── Quién cobra ────────────────────────────────────────────────────────────
+
+/**
+ * La estilista que sale propuesta para un cobro.
+ *
+ * El defecto es la de la CITA, NO la de la sesión de PIN: que una haga el servicio y cobre
+ * otra es lo normal en un mostrador compartido, y el valor de partida tiene que ser el del
+ * trabajo. Solo cuando no hay cita de la que sacarlo —una venta suelta— se cae en la de la
+ * sesión, que es quien está delante del mostrador.
+ *
+ * Vive aquí y no en los componentes porque la usan la fila Y la hoja: repartida en dos, una
+ * de las dos acabaría proponiendo a otra persona y nadie sabría cuál manda.
+ */
+export function estilistaPorDefecto(
+  atendioId: string | null | undefined,
+  sesion: CajaSesion | null,
+): string {
+  return atendioId ?? sesion?.stylistId ?? "";
+}
+
+/**
+ * Si un cobro atribuido a `cobradoPor` va a quedar registrado SIN PIN.
+ *
+ * Se enseña ANTES de cobrar. Enterarse después, en el resumen, es lo que hace que la marca no
+ * sirva para nada. No bloquea: elegir a otra registra el cobro igual.
+ */
+export function saldraSinPin(sesion: CajaSesion | null, cobradoPor: string): boolean {
+  return !sesion?.token || sesion.stylistId !== cobradoPor;
+}

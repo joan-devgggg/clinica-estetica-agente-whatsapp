@@ -142,6 +142,7 @@ export default function ReservasPage() {
       cliente: reserva.nombre,
       service: reserva.service,
       atendio: reserva.stylist_name ?? null,
+      atendioId: reserva.stylist_id ?? null,
       importeReferencia: null,
     };
     try {
@@ -352,6 +353,7 @@ export default function ReservasPage() {
         key={cobro?.appointmentId ?? "ninguno"}
         contexto={cobro}
         sesion={sesionCaja}
+        stylists={stylists}
         orgId={orgId}
         open={!!cobro}
         onClose={() => setCobro(null)}

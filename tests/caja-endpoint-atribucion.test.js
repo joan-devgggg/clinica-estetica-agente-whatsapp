@@ -145,6 +145,38 @@ await test('6 · la atribución llega SIEMPRE al log del cobro', async () => {
     assert.strictEqual(l.atribucion, 'declarada');
 });
 
+// ── Quién cobra se ELIGE por cobro (07/08/2026) ─────────────────────────────
+//
+// El defecto sale de la CITA (appointments.stylist_id), no de la sesión de PIN: que una
+// atienda y cobre otra es lo normal en un mostrador compartido. El servidor no cambia — ya
+// comparaba el token contra `cobradoPor`— pero eso ahora es el camino corriente, no el raro.
+
+await test('7 · elegir a la MISMA del PIN puesto → confirmada', async () => {
+    const token = issueAttributionToken({ orgId: SANTE, stylistId: IRINA, minutos: 30 });
+    const r = await post(server, { path: '/api/cobros', body: { ...COBRO, cobradoPor: IRINA }, cajaToken: token });
+    assert.strictEqual(r.status, 201);
+    assert.strictEqual(ultimoCobro.atribucion, 'confirmada');
+    assert.strictEqual(ultimoCobro.cobradoPor, IRINA);
+});
+
+await test('8 · elegir a OTRA (atendió ella, cobra la del PIN) → entra igual, sin PIN', async () => {
+    // Irina tiene el PIN puesto y cobra una cita de Olga: se atribuye a OLGA, que es de quien
+    // es el servicio, y el cobro queda sin PIN porque nadie confirmó que sea ella.
+    const token = issueAttributionToken({ orgId: SANTE, stylistId: IRINA, minutos: 30 });
+    const r = await post(server, { path: '/api/cobros', body: { ...COBRO, cobradoPor: OLGA }, cajaToken: token });
+    assert.strictEqual(r.status, 201, 'elegir a otra NO bloquea el cobro');
+    assert.strictEqual(ultimoCobro.atribucion, 'declarada');
+    assert.strictEqual(ultimoCobro.cobradoPor, OLGA, 'se guarda a quien se eligió, no la del PIN');
+    assert.ok(tieneLog('caja_atribucion_desajustada'), 'queda registrado por qué salió sin PIN');
+});
+
+await test('9 · sin ninguna sesión de PIN se cobra igual, con la estilista elegida', async () => {
+    const r = await post(server, { path: '/api/cobros', body: { ...COBRO, cobradoPor: OLGA } });
+    assert.strictEqual(r.status, 201);
+    assert.strictEqual(ultimoCobro.cobradoPor, OLGA);
+    assert.strictEqual(ultimoCobro.atribucion, 'declarada');
+});
+
 server.close();
 console.log(fallos === 0 ? '\n✅ Atribución en el endpoint OK' : `\n❌ ${fallos} fallo(s)`);
 })();

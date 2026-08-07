@@ -16,8 +16,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { apiMutate } from "@/lib/api";
-import type { Cobro, MetodoCobro, MotivoDiferencia } from "@/lib/types";
-import { type CajaSesion, renovarToken } from "@/lib/caja-session";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import type { Cobro, MetodoCobro, MotivoDiferencia, Stylist } from "@/lib/types";
+import { type CajaSesion, renovarToken, estilistaPorDefecto, saldraSinPin } from "@/lib/caja-session";
 
 const METODOS: { valor: MetodoCobro; etiqueta: string }[] = [
   { valor: "efectivo", etiqueta: "Efectivo" },
@@ -45,6 +46,8 @@ export interface CobroContexto {
   service?: string | null;
   /** Quién ATENDIÓ. Se enseña junto a quién cobra cuando no coinciden. */
   atendio?: string | null;
+  /** La estilista de la CITA: es el valor por defecto de quién cobra, no la de la sesión. */
+  atendioId?: string | null;
   importeReferencia?: number | null;
   /**
    * Si la cita YA tiene un cobro vigente. Se avisa en vez de bloquear: una cita puede
@@ -58,14 +61,20 @@ export interface CobroContexto {
 interface Props {
   contexto: CobroContexto | null;
   sesion: CajaSesion | null;
+  stylists: Stylist[];
   orgId: string;
   open: boolean;
   onClose: () => void;
   onCobrado: (c: Cobro) => void;
 }
 
-export function CobroSheet({ contexto, sesion, orgId, open, onClose, onCobrado }: Props) {
+export function CobroSheet({ contexto, sesion, stylists, orgId, open, onClose, onCobrado }: Props) {
   const referencia = contexto?.importeReferencia ?? null;
+  // Defecto: la estilista de la CITA. En una venta sin cita no hay de dónde sacarla, así que
+  // ahí se parte de la que tiene la sesión de PIN — y se puede cambiar igual.
+  const [cobradoPor, setCobradoPor] = useState<string>(
+    estilistaPorDefecto(contexto?.atendioId, sesion),
+  );
   const [importe, setImporte] = useState<string>(referencia != null ? String(referencia) : "");
   const [efectivo, setEfectivo] = useState<string>("");
   const [metodo, setMetodo] = useState<MetodoCobro>("efectivo");
@@ -80,11 +89,14 @@ export function CobroSheet({ contexto, sesion, orgId, open, onClose, onCobrado }
   const restoTarjeta = totalValido && Number.isFinite(enEfectivo) ? total - enEfectivo : null;
   const difiere = referencia != null && totalValido && total !== referencia;
   const sinCita = !contexto?.appointmentId;
+  const elegida = stylists.find((s) => s.id === cobradoPor);
+  const sinPin = saldraSinPin(sesion, cobradoPor);
 
   // Mixto: solo se teclea el EFECTIVO y la tarjeta sale por resta. La tarjeta la verifica el
   // banco; el efectivo es lo único que alguien tiene que contar.
   const mixtoValido = metodo !== "mixto" || (restoTarjeta != null && enEfectivo > 0 && restoTarjeta > 0);
-  const puedeGuardar = totalValido && mixtoValido && (!sinCita || concepto.trim().length > 0) && !guardando;
+  const puedeGuardar = totalValido && mixtoValido && !!cobradoPor
+    && (!sinCita || concepto.trim().length > 0) && !guardando;
 
   async function guardar() {
     if (!puedeGuardar) return;
@@ -95,7 +107,7 @@ export function CobroSheet({ contexto, sesion, orgId, open, onClose, onCobrado }
         orgId,
         body: {
           appointmentId: contexto?.appointmentId ?? null,
-          cobradoPor: sesion?.stylistId ?? null,
+          cobradoPor: cobradoPor || null,
           metodo,
           importeTotal: total,
           ...(metodo === "mixto" ? { importeEfectivo: enEfectivo } : {}),
@@ -127,21 +139,36 @@ export function CobroSheet({ contexto, sesion, orgId, open, onClose, onCobrado }
           {contexto?.service && (
             <p className="text-[12.5px] text-muted-foreground">{contexto.service}</p>
           )}
-          {/* Quién cobra, siempre. Y quién atendió cuando no es la misma: en un mostrador
-              compartido difieren a menudo y callarlo parece un error que alguien "arreglará"
-              cambiando de estilista — justo la fricción que hace esquivar el PIN. */}
-          <p className="text-[12px] text-muted-foreground">
-            {contexto?.atendio && contexto.atendio !== sesion?.stylistName && (
-              <span>atendió {contexto.atendio} · </span>
-            )}
-            <span className="font-semibold text-foreground">
-              cobra {sesion?.stylistName ?? "sin asignar"}
-            </span>
-            {sesion && !sesion.token && <span> · sin PIN</span>}
-          </p>
+          {/* Quién atendió, cuando no es quien va a cobrar. Es correcto que difieran. */}
+          {contexto?.atendio && contexto.atendioId !== cobradoPor && (
+            <p className="text-[12px] text-muted-foreground">atendió {contexto.atendio}</p>
+          )}
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+          <div>
+            <Label>¿Quién cobra?</Label>
+            <Select value={cobradoPor} onValueChange={(v) => setCobradoPor(v ?? "")}>
+              <SelectTrigger className="h-11">
+                <SelectValue placeholder="Elige quién cobra">{elegida?.name ?? null}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {stylists.map((s) => (
+                  <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {/* Lo que va a quedar registrado, antes de darle a cobrar. Elegir a otra NO bloquea
+                nada: el cobro entra igual y se marca sin PIN, que es lo que ya hacía el
+                desajuste de atribución. */}
+            {sinPin && cobradoPor && (
+              <p className="mt-1 text-[11.5px] text-[oklch(0.45_0.12_55)]">
+                Este cobro quedará <strong>sin PIN</strong>
+                {sesion?.token ? ` (el PIN activo es el de ${sesion.stylistName})` : ""}.
+              </p>
+            )}
+          </div>
+
           {contexto?.yaCobrado && (
             <div role="alert" className="rounded-lg border border-[oklch(0.85_0.12_85/0.6)] bg-[oklch(0.85_0.12_85/0.12)] px-4 py-3 text-[12.5px] text-[oklch(0.45_0.12_55)]">
               Esta cita ya tiene un cobro de{" "}

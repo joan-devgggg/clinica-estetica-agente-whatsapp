@@ -75,8 +75,10 @@ export default function CajaPage() {
   // Va con DESHACER, y las dos cosas se sostienen la una a la otra: el un-toque asume el riesgo
   // de tocar la fila equivocada, y eso solo es asumible porque se puede deshacer. Y el deshacer
   // es honesto porque ANULA —deja la fila anulada, a la vista— en vez de borrar.
-  async function cobroRapido(p: CajaPendiente, metodo: MetodoCobro) {
-    if (!sesion || p.importe_referencia == null) return;
+  // `cobradoPor` viene de la FILA, no de la sesión: la sesión solo aporta el PIN. Sin sesión
+  // se cobra igual (queda sin PIN) — el cobro no se bloquea nunca.
+  async function cobroRapido(p: CajaPendiente, metodo: MetodoCobro, cobradoPor: string) {
+    if (!cobradoPor || p.importe_referencia == null) return;
     // Guarda SÍNCRONA contra el doble toque. `setCobrando` es estado de React y no surte
     // efecto hasta el siguiente render, así que dos toques rápidos en la misma fila pasaban
     // los dos por aquí y creaban DOS cobros. Un `useRef` se actualiza en el acto y gana esa
@@ -89,10 +91,10 @@ export default function CajaPage() {
         method: "POST", orgId,
         body: {
           appointmentId: p.appointment_id,
-          cobradoPor: sesion.stylistId,
+          cobradoPor,
           metodo,
           importeTotal: p.importe_referencia,
-          ...(sesion.token ? { cajaToken: sesion.token } : {}),
+          ...(sesion?.token ? { cajaToken: sesion.token } : {}),
         },
       });
       const cobro: Cobro = await res.json();
@@ -106,7 +108,7 @@ export default function CajaPage() {
       // cobro quedó declarada, no días después mirando el resumen.
       toast.success(`Cobrado ${Number(cobro.importe_total)} € · ${cobro.metodo}`, {
         duration: 8000,
-        description: `${p.cliente ?? ""} · cobra ${sesion.stylistName}`
+        description: `${p.cliente ?? ""} · cobra ${cobro.cobrado_por_nombre ?? "—"}`
           + (cobro.atribucion === "declarada" ? " · sin PIN" : ""),
         action: { label: "Deshacer", onClick: () => deshacer(cobro.id) },
       });
@@ -150,7 +152,8 @@ export default function CajaPage() {
   return (
     <>
       <PageHeader title="Caja" subtitle="Lo que entra hoy">
-        <Button size="sm" variant="outline" onClick={() => setHoja({})} disabled={!sesion}>
+        {/* Ya no depende de la sesión: quién cobra se elige en la hoja. */}
+        <Button size="sm" variant="outline" onClick={() => setHoja({})}>
           <PackagePlus size={14} className="mr-1.5" />
           Venta sin cita
         </Button>
@@ -194,6 +197,7 @@ export default function CajaPage() {
                       key={p.appointment_id}
                       pendiente={p}
                       sesion={sesion}
+                      stylists={stylists}
                       cobrando={cobrando === p.appointment_id}
                       onCobroRapido={cobroRapido}
                       onAbrirHoja={(x) => setHoja({
@@ -201,6 +205,7 @@ export default function CajaPage() {
                         cliente: x.cliente,
                         service: x.service,
                         atendio: x.atendio,
+                        atendioId: x.atendio_id,
                         importeReferencia: x.importe_referencia,
                         yaCobrado: x.cobro
                           ? { importe: Number(x.cobro.importe_total), metodo: x.cobro.metodo }
@@ -229,6 +234,7 @@ export default function CajaPage() {
         key={hoja?.appointmentId ?? "suelto"}
         contexto={hoja}
         sesion={sesion}
+        stylists={stylists}
         orgId={orgId}
         open={!!hoja}
         onClose={() => setHoja(null)}
