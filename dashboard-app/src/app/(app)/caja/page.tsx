@@ -30,6 +30,9 @@ export default function CajaPage() {
   const [pendientes, setPendientes] = useState<CajaPendiente[]>([]);
   const [resumen, setResumen] = useState<CajaResumen | null>(null);
   const [historial, setHistorial] = useState<Cobro[]>([]);
+  // Quién tiene PIN dado de alta. Sin esto la barra ofrece "Entrar con PIN" aunque no exista
+  // ninguno, y ese botón solo puede acabar en "PIN incorrecto".
+  const [conPin, setConPin] = useState<Set<string>>(new Set());
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cobrando, setCobrando] = useState<string | null>(null);
@@ -44,22 +47,24 @@ export default function CajaPage() {
     if (!orgId || orgType !== "salon") return;
     try {
       const cab = await apiHeaders(orgId);
-      const [p, r, h, s] = await Promise.all([
+      const [p, r, h, s, pin] = await Promise.all([
         fetch(`${API}/api/caja/pendientes`, { headers: cab }),
         fetch(`${API}/api/caja/resumen`, { headers: cab }),
         fetch(`${API}/api/cobros?historial=1`, { headers: cab }),
         fetch(`${API}/api/stylists`, { headers: cab }),
+        fetch(`${API}/api/stylists/pin-status`, { headers: cab }),
       ]);
       // `s` (estilistas) entra en la comprobación como las demás. Antes era
       // `s.ok ? await s.json() : []`, y un fallo dejaba el selector VACÍO: parecía que el
       // salón no tuviera estilistas, no que la lista no hubiera cargado. Sin ella no se
       // puede elegir quién cobra, así que callarlo bloquea la caja sin decir por qué.
-      const fallo = [p, r, h, s].find((x) => !x.ok);
+      const fallo = [p, r, h, s, pin].find((x) => !x.ok);
       if (fallo) throw new Error(mensajeDeFallo(fallo.status));
       setPendientes((await p.json()).citas ?? []);
       setResumen(await r.json());
       setHistorial((await h.json()).cobros ?? []);
       setStylists(await s.json());
+      setConPin(new Set(((await pin.json()) as { stylist_id: string }[]).map((e) => e.stylist_id)));
       setError(null);
     } catch (e) {
       // Es dinero: un fallo NO puede leerse como "hoy no hay nada que cobrar" ni como caja a 0.
@@ -164,6 +169,7 @@ export default function CajaPage() {
           <EstilistaActivaBar
             sesion={sesion}
             stylists={stylists}
+            conPin={conPin}
             orgId={orgId}
             onCambio={setSesion}
           />

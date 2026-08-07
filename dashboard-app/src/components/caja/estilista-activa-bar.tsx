@@ -15,7 +15,8 @@
 // declarado al mirar el resumen es exactamente lo que hace que la marca no sirva de nada.
 
 import { useState } from "react";
-import { UserRound, ShieldCheck, ShieldAlert } from "lucide-react";
+import Link from "next/link";
+import { UserRound, ShieldCheck, ShieldAlert, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -29,13 +30,19 @@ import { type CajaSesion, escribirSesion } from "@/lib/caja-session";
 interface Props {
   sesion: CajaSesion | null;
   stylists: Stylist[];
+  /** Ids de las estilistas que tienen PIN dado de alta. */
+  conPin: Set<string>;
   orgId: string;
   onCambio: (s: CajaSesion) => void;
 }
 
-export function EstilistaActivaBar({ sesion, stylists, orgId, onCambio }: Props) {
+export function EstilistaActivaBar({ sesion, stylists, conPin, orgId, onCambio }: Props) {
   const [abierto, setAbierto] = useState(false);
   const confirmada = !!sesion?.token;
+  // Sin NINGÚN PIN dado de alta, "Entrar con PIN" solo puede terminar en "PIN incorrecto":
+  // no hay contra qué comprobarlo. Se dice y se lleva a donde se ponen, en vez de ofrecer un
+  // botón que no puede funcionar.
+  const sinNingunPin = conPin.size === 0;
 
   return (
     <>
@@ -63,9 +70,21 @@ export function EstilistaActivaBar({ sesion, stylists, orgId, onCambio }: Props)
             )
           )}
         </div>
-        <Button variant={sesion ? "outline" : "default"} size="sm" onClick={() => setAbierto(true)}>
-          {sesion ? "Cambiar" : "Entrar con PIN"}
-        </Button>
+        {sinNingunPin ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11.5px] text-muted-foreground">
+              Todavía no hay ningún PIN puesto
+            </span>
+            <Button variant="outline" size="sm" render={<Link href="/configuracion" />}>
+              <Settings size={14} className="mr-1.5" />
+              Ponerlos en Configuración
+            </Button>
+          </div>
+        ) : (
+          <Button variant={sesion ? "outline" : "default"} size="sm" onClick={() => setAbierto(true)}>
+            {sesion ? "Cambiar" : "Entrar con PIN"}
+          </Button>
+        )}
       </div>
 
       {abierto && (
@@ -73,6 +92,7 @@ export function EstilistaActivaBar({ sesion, stylists, orgId, onCambio }: Props)
           stylists={stylists}
           orgId={orgId}
           actual={sesion?.stylistId ?? ""}
+          conPin={conPin}
           onClose={() => setAbierto(false)}
           onHecho={(s) => { onCambio(s); setAbierto(false); }}
         />
@@ -82,11 +102,12 @@ export function EstilistaActivaBar({ sesion, stylists, orgId, onCambio }: Props)
 }
 
 function CambiarEstilistaDialog({
-  stylists, orgId, actual, onClose, onHecho,
+  stylists, orgId, actual, conPin, onClose, onHecho,
 }: {
   stylists: Stylist[];
   orgId: string;
   actual: string;
+  conPin: Set<string>;
   onClose: () => void;
   onHecho: (s: CajaSesion) => void;
 }) {
@@ -155,11 +176,19 @@ function CambiarEstilistaDialog({
               </SelectTrigger>
               <SelectContent>
                 {stylists.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                  <SelectItem key={s.id} value={s.id}>
+                    {s.name}{conPin.has(s.id) ? "" : " · sin PIN"}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
+          {elegida && !conPin.has(elegida.id) && (
+            <p className="rounded-md bg-muted px-3 py-2 text-[12px] text-muted-foreground">
+              {elegida.name} todavía no tiene PIN. Puedes entrar sin él —el cobro quedará «sin
+              PIN»— o ponérselo en Configuración.
+            </p>
+          )}
           <div>
             <Label htmlFor="caja-pin">PIN</Label>
             <Input
