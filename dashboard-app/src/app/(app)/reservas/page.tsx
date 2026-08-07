@@ -1,16 +1,18 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
-import { CalendarX } from "lucide-react";
+import { CalendarX, Ban } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { WeekStrip } from "@/components/reservas/week-strip";
 import { ReservaCard } from "@/components/reservas/reserva-card";
 import { AppointmentEditSheet } from "@/components/reservas/appointment-edit-sheet";
+import { CreateBlockDialog } from "@/components/agenda/create-block-dialog";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Reserva, Stylist } from "@/lib/types";
+import type { Reserva, Stylist, ScheduleBlock } from "@/lib/types";
 import { useOrg } from "@/lib/org-context";
-import { ymd as toKey, addDays, getMondayOf } from "@/lib/date";
+import { ymd as toKey, addDays, getMondayOf, madridDateKey, madridTime } from "@/lib/date";
 
 import { API, apiHeaders } from "@/lib/api";
 
@@ -32,6 +34,15 @@ export default function ReservasPage() {
   const [error, setError] = useState<string | null>(null);
   const [editReserva, setEditReserva] = useState<Reserva | null>(null);
   const [stylists, setStylists] = useState<Stylist[]>([]);
+  // Los bloqueos se pintan AQUÍ, no solo en Agenda por estilistas. Sin esto, un hueco cerrado
+  // de verdad (schedule_blocks) es invisible en la vista donde se repasa el día, y la única
+  // forma de "verlo" es crear una cita falsa — que es justo lo que hay hoy en la agenda de
+  // Sante: tres citas "Cita manual" con la clienta inventada "Close TIME".
+  const [blocks, setBlocks] = useState<ScheduleBlock[]>([]);
+  // Un fallo al cargar los bloqueos NO puede leerse como "no hay bloqueos": pintaría como
+  // libre un hueco cerrado, que es el error más caro de esta pantalla.
+  const [blocksError, setBlocksError] = useState<string | null>(null);
+  const [showNewBlock, setShowNewBlock] = useState(false);
   // Memoizado: createClient() en cada render creaba un socket realtime nuevo cada vez y los
   // canales quedaban huérfanos → el panel no refrescaba en tiempo real al borrar/cambiar citas.
   const [supabase] = useState(() => createClient());
@@ -65,9 +76,36 @@ export default function ReservasPage() {
     }
   }, [weekStart, orgId]);
 
+  // Solo salón: los bloqueos cuelgan de `stylists`, y San Remo no tiene. Regla de oro.
+  const fetchBlocks = useCallback(async () => {
+    if (!orgId || orgType !== "salon") return;
+    try {
+      // La ventana se pide con UN DÍA DE MARGEN a cada lado, y el reparto por día lo hace
+      // después `madridDateKey`. El endpoint compara contra `timestamptz`, así que un
+      // 'YYYY-MM-DD' pelado se interpreta en la zona de la BD (UTC) y no en Madrid: en verano
+      // eso son 2 h de desfase y un bloqueo a primera hora del lunes se quedaría fuera. Con
+      // margen, el filtro del servidor solo acota y el que decide el día es el cliente.
+      const desde = toKey(addDays(weekStart, -1));
+      const hasta = toKey(addDays(weekStart, 7));
+      const res = await fetch(`${API}/api/schedule-blocks?desde=${desde}&hasta=${hasta}`, {
+        headers: await apiHeaders(orgId),
+      });
+      if (!res.ok) throw new Error(`La API respondió ${res.status}`);
+      setBlocks(await res.json());
+      setBlocksError(null);
+    } catch (err) {
+      // Ver el comentario de blocksError: aquí NO se hace `setBlocks([])` y se calla.
+      setBlocksError(err instanceof Error ? err.message : "fallo de red");
+    }
+  }, [weekStart, orgId, orgType]);
+
   useEffect(() => {
     fetchReservas();
   }, [fetchReservas]);
+
+  useEffect(() => {
+    fetchBlocks();
+  }, [fetchBlocks]);
 
   useEffect(() => {
     if (!orgId || orgType !== "salon") return;
@@ -81,6 +119,18 @@ export default function ReservasPage() {
     })();
   }, [orgId, orgType]);
 
+  // El canal de realtime se monta UNA vez (deps []) para no dejar canales huérfanos, así que
+  // sus handlers capturarían las funciones del primer render — las de la semana inicial. Con
+  // el canal vivo y la vista en otra semana, un evento recargaba y pintaba los datos de la
+  // semana equivocada. Las refs mantienen apuntando siempre a la última versión sin volver a
+  // suscribirse. (Ya pasaba con las reservas; se arregla igual para las dos.)
+  const fetchReservasRef = useRef(fetchReservas);
+  const fetchBlocksRef = useRef(fetchBlocks);
+  useEffect(() => {
+    fetchReservasRef.current = fetchReservas;
+    fetchBlocksRef.current = fetchBlocks;
+  }, [fetchReservas, fetchBlocks]);
+
   // Realtime: actualizar agenda cuando el bot confirma o cambia una reserva
   useEffect(() => {
     const channel = supabase
@@ -88,12 +138,17 @@ export default function ReservasPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "appointments" },
-        () => { fetchReservas(); }
+        () => { fetchReservasRef.current(); }
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "contacts" },
-        () => { fetchReservas(); }
+        () => { fetchReservasRef.current(); }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "schedule_blocks" },
+        () => { fetchBlocksRef.current(); }
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
@@ -110,6 +165,13 @@ export default function ReservasPage() {
   const reservasDelDia = sortByHora(
     allReservas.filter((r) => r.fecha_cita === selectedKey)
   );
+
+  // El día de un bloqueo se decide en Europe/Madrid a partir del instante, igual que en el
+  // resto del panel: `starts_at` es un timestamptz y partirlo por UTC desplazaría el día.
+  const nombrePorEstilista = new Map(stylists.map((s) => [s.id, s.name]));
+  const bloqueosDelDia = blocks
+    .filter((b) => madridDateKey(b.starts_at) === selectedKey)
+    .sort((a, b) => a.starts_at.localeCompare(b.starts_at));
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -129,7 +191,16 @@ export default function ReservasPage() {
       <PageHeader
         title={orgType === "salon" ? "Citas" : "Reservas"}
         subtitle={orgType === "salon" ? "Agenda del salón" : "Agenda de mesas"}
-      />
+      >
+        {/* Cerrar un hueco tiene que poder hacerse desde donde se repasa el día. Reutiliza el
+            diálogo que ya existe en Agenda por estilistas: mismo endpoint, misma validación. */}
+        {orgType === "salon" && (
+          <Button size="sm" variant="outline" onClick={() => setShowNewBlock(true)}>
+            <Ban size={14} className="mr-1.5" />
+            Bloquear hueco
+          </Button>
+        )}
+      </PageHeader>
       <div className="flex-1 flex flex-col overflow-hidden">
         <WeekStrip
           weekStart={weekStart}
@@ -159,7 +230,7 @@ export default function ReservasPage() {
               >
                 No se pudieron cargar las citas. {error}
               </div>
-            ) : reservasDelDia.length === 0 ? (
+            ) : reservasDelDia.length === 0 && bloqueosDelDia.length === 0 ? (
               <div className="flex flex-col items-center gap-3 py-16 text-center">
                 <CalendarX
                   size={36}
@@ -180,6 +251,37 @@ export default function ReservasPage() {
                 {reservasDelDia.map((reserva) => (
                   <ReservaCard key={reserva.appointment_id ?? reserva.id} reserva={reserva} orgType={orgType} onClick={() => setEditReserva(reserva)} />
                 ))}
+                {/* Un bloqueo NO es una cita y no se abre como tal: no tiene clienta, ni
+                    servicio, ni importe. Se pinta aparte y sin onClick a propósito. */}
+                {bloqueosDelDia.map((b) => (
+                  <div
+                    key={b.id}
+                    className="flex items-center gap-3 rounded-lg border border-dashed border-border bg-muted/40 px-4 py-3"
+                  >
+                    <Ban size={16} strokeWidth={1.5} className="shrink-0 text-muted-foreground" />
+                    <div className="min-w-0">
+                      <p className="text-[13px] font-medium text-foreground/70">
+                        Hueco bloqueado · {madridTime(b.starts_at)}–{madridTime(b.ends_at)}
+                      </p>
+                      <p className="truncate text-[11.5px] text-muted-foreground">
+                        {nombrePorEstilista.get(b.stylist_id) ?? "Estilista dada de baja"}
+                        {b.reason ? ` · ${b.reason}` : ""}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Si los bloqueos no se pudieron cargar hay que DECIRLO: callarlo pintaría como
+                libre un hueco que está cerrado, y esa es la confusión que se está arreglando. */}
+            {blocksError && (
+              <div
+                role="alert"
+                className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-[12px] text-amber-700 dark:text-amber-400"
+              >
+                No se pudieron cargar los huecos bloqueados ({blocksError}). Puede que este día
+                tenga horas cerradas que no se están viendo.
               </div>
             )}
           </div>
@@ -195,6 +297,15 @@ export default function ReservasPage() {
         orgType={orgType}
         stylists={stylists}
       />
+
+      {showNewBlock && (
+        <CreateBlockDialog
+          stylists={stylists}
+          orgId={orgId}
+          onClose={() => setShowNewBlock(false)}
+          onCreated={() => { setShowNewBlock(false); fetchBlocks(); }}
+        />
+      )}
     </>
   );
 }
