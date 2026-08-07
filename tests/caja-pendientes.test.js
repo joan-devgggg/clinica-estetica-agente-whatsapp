@@ -33,7 +33,9 @@ db.authenticateToken = async (t) => {
 };
 db.getAgentConfig = async () => ({ services: [{ nombre: 'Corte hombre', precio: 25 }] });
 
-db.getCitasDelDiaParaCaja = async () => ([
+// El doble aplica el MISMO filtro que la consulta real. Un doble que devolviera todo haría
+// pasar el test con el filtro roto — la trampa de los dobles que no respetan el contrato.
+const TODAS = ([
     {
         id: 'apt-1', service: 'Corte hombre', starts_at: '2026-08-07T10:00:00Z', status: 'completed',
         stylist_id: 'est-olga', contacts: { full_name: 'Ana G.' }, stylists: { id: 'est-olga', name: 'Olga' },
@@ -44,12 +46,43 @@ db.getCitasDelDiaParaCaja = async () => ([
         stylist_id: 'est-olga', contacts: { full_name: 'Close TIME' }, stylists: { id: 'est-olga', name: 'Olga' },
     },
     {
+        // NO-SHOW por estado. Nadie pagó: no puede quedarse en «pendientes de cobrar».
+        id: 'apt-noshow', service: 'Corte hombre', starts_at: '2026-08-07T16:00:00Z', status: 'no_show',
+        stylist_id: 'est-olga', contacts: { full_name: 'Faltó' }, stylists: { id: 'est-olga', name: 'Olga' },
+    },
+    {
+        // NO-SHOW por el BOOLEANO, con el estado aún en confirmed. updateAppointment escribe
+        // las dos formas, y mirar solo una dejaba a esta clienta en la lista para siempre.
+        id: 'apt-noshow-bool', service: 'Corte hombre', starts_at: '2026-08-07T17:00:00Z',
+        status: 'confirmed', no_show: true,
+        stylist_id: 'est-olga', contacts: { full_name: 'Faltó también' }, stylists: { id: 'est-olga', name: 'Olga' },
+    },
+    {
+        // Cancelada: tampoco.
+        id: 'apt-cancelada', service: 'Corte hombre', starts_at: '2026-08-07T18:00:00Z', status: 'cancelled',
+        stylist_id: 'est-olga', contacts: { full_name: 'Anuló' }, stylists: { id: 'est-olga', name: 'Olga' },
+    },
+    {
+        // `pending` (flujo Bizum de San Remo). La lista blanca lo deja fuera solo.
+        id: 'apt-pending', service: 'Corte hombre', starts_at: '2026-08-07T19:00:00Z', status: 'pending',
+        stylist_id: 'est-olga', contacts: { full_name: 'A medias' }, stylists: { id: 'est-olga', name: 'Olga' },
+    },
+    {
+        // no_show NULL = "no consta que faltara". Tiene que SEGUIR saliendo.
+        id: 'apt-null', service: 'Corte hombre', starts_at: '2026-08-07T20:00:00Z', status: 'confirmed',
+        no_show: null,
+        stylist_id: 'est-olga', contacts: { full_name: 'Normal' }, stylists: { id: 'est-olga', name: 'Olga' },
+    },
+    {
         // Ya cobrada: el snapshot manda sobre el recálculo del catálogo.
         id: 'apt-3', service: 'Corte hombre', starts_at: '2026-08-07T14:00:00Z', status: 'completed',
         stylist_id: null, precio_facturado: 22, facturado_at: 'x', servicio_facturado: 'Corte hombre',
         contacts: { full_name: 'Marta L.' }, stylists: null,
     },
 ]);
+db.getCitasDelDiaParaCaja = async () => TODAS.filter(
+    (a) => ['confirmed', 'completed'].includes(a.status) && a.no_show !== true,
+);
 db.getCobrosVigentes = async () => ([
     { id: 'cobro-1', appointment_id: 'apt-3', importe_total: '22.00', metodo: 'tarjeta', atribucion: 'declarada' },
 ]);
@@ -120,6 +153,28 @@ await test('5 · fecha inválida se rechaza en voz alta', async () => {
 await test('6 · San Remo no tiene caja', async () => {
     const r = await get(server, '/api/caja/pendientes?fecha=2026-08-07', 'sanremo');
     assert.strictEqual(r.status, 403, 'regla de oro: San Remo no se toca');
+});
+
+await test('7 · una clienta que NO VINO no se queda en pendientes de cobrar', async () => {
+    const r = await get(server, '/api/caja/pendientes?fecha=2026-08-07');
+    const ids = r.body.citas.map(c => c.appointment_id);
+    assert.ok(!ids.includes('apt-noshow'), 'no-show por estado: nadie pagó, no hay nada que cobrar');
+    assert.ok(!ids.includes('apt-noshow-bool'),
+        'no-show por el BOOLEANO con el estado en confirmed: mirar solo el estado la dejaba ahí para siempre');
+});
+
+await test('8 · canceladas y `pending` tampoco: la lista es BLANCA, no negra', async () => {
+    const r = await get(server, '/api/caja/pendientes?fecha=2026-08-07');
+    const ids = r.body.citas.map(c => c.appointment_id);
+    assert.ok(!ids.includes('apt-cancelada'));
+    assert.ok(!ids.includes('apt-pending'), 'un estado no previsto no entra solo');
+});
+
+await test('9 · CONTROL · no_show NULL sigue saliendo: "no consta" no es "faltó"', async () => {
+    const r = await get(server, '/api/caja/pendientes?fecha=2026-08-07');
+    const ids = r.body.citas.map(c => c.appointment_id);
+    assert.ok(ids.includes('apt-null'), 'con eq(false) esta desaparecería sin que nadie lo entienda');
+    assert.ok(ids.includes('apt-1'), 'y las normales siguen ahí');
 });
 
 server.close();

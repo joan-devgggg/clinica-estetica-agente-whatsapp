@@ -1370,7 +1370,17 @@ async function getAppointmentsByDateRange(orgId, desde, hasta) {
         .eq('organization_id', oid)
         .gte('starts_at', desdeTs)
         .lte('starts_at', hastaTs)
-        .neq('status', 'cancelled')
+        // Lista BLANCA, no negra. Antes era `neq('cancelled')`, que deja pasar todo lo que no
+        // se haya pensado: hoy `no_show` (sí está en el CHECK de la columna, comprobado en la
+        // BD) y `pending` (el flujo Bizum de San Remo). Un estado nuevo entraría solo.
+        .in('status', ['confirmed', 'completed'])
+        // El no-show tiene DOS formas de expresarse —el estado y el booleano— y updateAppointment
+        // escribe las dos (db.js: `estado === 'no_show'` pone también `no_show = true`). Mirar
+        // solo una dejaba a una clienta que no vino en «pendientes de cobrar» PARA SIEMPRE:
+        // nadie pagó, así que nadie la va a quitar de ahí.
+        // `not(is true)` y no `eq(false)`: una fila con no_show NULL es "no consta que faltara",
+        // y con eq(false) desaparecería de la caja sin que nadie entienda por qué.
+        .not('no_show', 'is', true)
         .order('starts_at', { ascending: true });
 
     return (data || []).map(row => {
