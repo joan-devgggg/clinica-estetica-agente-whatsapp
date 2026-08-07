@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { BotToggle } from "@/components/configuracion/bot-toggle";
 import { StylistsConfig } from "@/components/configuracion/stylists-config";
 import { BlockedDaysSection } from "@/components/configuracion/blocked-days-section";
+import { StylistPinsSection } from "@/components/configuracion/stylist-pins-section";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -277,6 +278,9 @@ export default function ConfiguracionPage() {
 
           {/* Estilistas — solo salón */}
           {orgType === "salon" && <StylistsConfig orgId={orgId} />}
+
+          {/* Sin esto la API de PINs no tiene interfaz y ningún cobro puede quedar confirmado. */}
+          {orgType === "salon" && <StylistPinsSection orgId={orgId} />}
 
           {/* Días bloqueados — solo salón */}
           {orgType === "salon" && <BlockedDaysSection orgId={orgId} />}

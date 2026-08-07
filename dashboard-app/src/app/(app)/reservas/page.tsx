@@ -2,16 +2,19 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
-import { CalendarX, Ban } from "lucide-react";
+import { CalendarX, Ban, Banknote } from "lucide-react";
+import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
 import { WeekStrip } from "@/components/reservas/week-strip";
 import { ReservaCard } from "@/components/reservas/reserva-card";
 import { AppointmentEditSheet } from "@/components/reservas/appointment-edit-sheet";
 import { CreateBlockDialog } from "@/components/agenda/create-block-dialog";
+import { CobroSheet, type CobroContexto } from "@/components/caja/cobro-sheet";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Reserva, Stylist, ScheduleBlock } from "@/lib/types";
 import { useOrg } from "@/lib/org-context";
+import { leerSesion, type CajaSesion } from "@/lib/caja-session";
 import { ymd as toKey, addDays, getMondayOf, madridDateKey, madridTime } from "@/lib/date";
 
 import { API, apiHeaders } from "@/lib/api";
@@ -43,6 +46,11 @@ export default function ReservasPage() {
   // libre un hueco cerrado, que es el error más caro de esta pantalla.
   const [blocksError, setBlocksError] = useState<string | null>(null);
   const [showNewBlock, setShowNewBlock] = useState(false);
+  // Cobrar desde la cita que ya tienes delante. Es la MISMA hoja que /caja: obligar a cambiar
+  // de pantalla para cobrar a quien está en el mostrador es justo el "buscarlo" que sobra.
+  const [cobro, setCobro] = useState<CobroContexto | null>(null);
+  const [sesionCaja, setSesionCaja] = useState<CajaSesion | null>(null);
+  useEffect(() => { setSesionCaja(leerSesion()); }, []);
   // Memoizado: createClient() en cada render creaba un socket realtime nuevo cada vez y los
   // canales quedaban huérfanos → el panel no refrescaba en tiempo real al borrar/cambiar citas.
   const [supabase] = useState(() => createClient());
@@ -130,6 +138,34 @@ export default function ReservasPage() {
     fetchReservasRef.current = fetchReservas;
     fetchBlocksRef.current = fetchBlocks;
   }, [fetchReservas, fetchBlocks]);
+
+  // El importe de referencia lo resuelve el SERVIDOR (misma precedencia que Facturación), así
+  // que se pide al abrir en vez de calcularlo aquí: el panel enseña cifras, no las decide.
+  // Se pide solo al pulsar Cobrar — no en cada cambio de semana.
+  async function abrirCobro(reserva: Reserva) {
+    const base: CobroContexto = {
+      appointmentId: reserva.appointment_id,
+      cliente: reserva.nombre,
+      service: reserva.service,
+      atendio: reserva.stylist_name ?? null,
+      importeReferencia: null,
+    };
+    try {
+      const res = await fetch(`${API}/api/caja/pendientes?fecha=${reserva.fecha_cita}`, {
+        headers: await apiHeaders(orgId),
+      });
+      if (res.ok) {
+        const { citas } = await res.json();
+        const encontrada = (citas ?? []).find(
+          (c: { appointment_id: string }) => c.appointment_id === reserva.appointment_id,
+        );
+        if (encontrada) base.importeReferencia = encontrada.importe_referencia ?? null;
+      }
+    } catch {
+      // Sin referencia se cobra igual: se teclea el importe. Nunca se bloquea el cobro.
+    }
+    setCobro(base);
+  }
 
   // Realtime: actualizar agenda cuando el bot confirma o cambia una reserva
   useEffect(() => {
@@ -249,7 +285,17 @@ export default function ReservasPage() {
             ) : (
               <div className="space-y-3">
                 {reservasDelDia.map((reserva) => (
-                  <ReservaCard key={reserva.appointment_id ?? reserva.id} reserva={reserva} orgType={orgType} onClick={() => setEditReserva(reserva)} />
+                  <div key={reserva.appointment_id ?? reserva.id} className="space-y-1.5">
+                    <ReservaCard reserva={reserva} orgType={orgType} onClick={() => setEditReserva(reserva)} />
+                    {orgType === "salon" && reserva.appointment_id && reserva.estado_cita !== "cancelled" && (
+                      <div className="flex justify-end">
+                        <Button size="sm" variant="ghost" onClick={() => abrirCobro(reserva)}>
+                          <Banknote size={14} className="mr-1.5" />
+                          Cobrar
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                 ))}
                 {/* Un bloqueo NO es una cita y no se abre como tal: no tiene clienta, ni
                     servicio, ni importe. Se pinta aparte y sin onClick a propósito. */}
@@ -296,6 +342,16 @@ export default function ReservasPage() {
         orgId={orgId}
         orgType={orgType}
         stylists={stylists}
+      />
+
+      <CobroSheet
+        key={cobro?.appointmentId ?? "ninguno"}
+        contexto={cobro}
+        sesion={sesionCaja}
+        orgId={orgId}
+        open={!!cobro}
+        onClose={() => setCobro(null)}
+        onCobrado={() => { setSesionCaja(leerSesion()); toast.success("Cobro registrado"); }}
       />
 
       {showNewBlock && (

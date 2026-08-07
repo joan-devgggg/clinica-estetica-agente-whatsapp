@@ -108,3 +108,77 @@ export interface BlockedDay {
   motivo: string;
   created_at: string;
 }
+
+// ─── Caja ───────────────────────────────────────────────────────────────────
+
+export type MetodoCobro = "efectivo" | "tarjeta" | "bizum" | "mixto";
+export type MotivoDiferencia = "propina" | "producto" | "descuento" | "servicio_extra" | "otro";
+/** confirmada = la estilista metió su PIN · declarada = solo se eligió su nombre. */
+export type Atribucion = "confirmada" | "declarada";
+
+export interface Cobro {
+  id: string;
+  appointment_id: string | null;
+  cobrado_por: string | null;
+  cobrado_por_nombre: string | null;
+  fecha_caja: string;
+  cobrado_at: string;
+  metodo: MetodoCobro;
+  importe_total: string | number;
+  importe_efectivo: string | number;
+  concepto: string | null;
+  importe_referencia: string | number | null;
+  motivo_diferencia: MotivoDiferencia | null;
+  nota: string | null;
+  estado: "vigente" | "anulado";
+  corrige_a: string | null;
+  motivo_correccion: string | null;
+  atribucion: Atribucion;
+  /** Solo lo devuelve POST /api/cobros cuando la atribución se confirmó: token renovado. */
+  cajaToken?: string;
+}
+
+/** Una cita del día en la pantalla de caja. `atendio` NO es quien cobra. */
+export interface CajaPendiente {
+  appointment_id: string;
+  cliente: string | null;
+  service: string | null;
+  starts_at: string;
+  estado: string;
+  atendio_id: string | null;
+  atendio: string | null;
+  /** null = de esta cita no hay importe de referencia (servicio sin resolver). */
+  importe_referencia: number | null;
+  cobro: { id: string; importe_total: string | number; metodo: MetodoCobro; atribucion: Atribucion } | null;
+}
+
+interface CajaTramo { num: number; total: number; efectivo: number }
+
+export interface CajaResumenEstilista {
+  stylist_id: string | null;
+  stylist_name: string | null;
+  numCobros: number;
+  total: number;
+  efectivo: number;
+  tarjeta: number;
+  confirmada: CajaTramo;
+  declarada: CajaTramo;
+}
+
+export interface CajaResumen {
+  fecha: string;
+  estilistas: CajaResumenEstilista[];
+  totales: {
+    numCobros: number;
+    total: number;
+    efectivo: number;
+    tarjeta: number;
+    confirmada: CajaTramo;
+    declarada: CajaTramo;
+  };
+}
+
+export interface StylistPinStatus {
+  stylist_id: string;
+  actualizado_at: string;
+}

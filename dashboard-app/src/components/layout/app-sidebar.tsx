@@ -59,6 +59,9 @@ const salonNavItems: NavItem[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/agenda-estilistas", label: "Agenda estilistas", icon: Scissors },
   { href: "/reservas", label: "Citas", icon: CalendarDays },
+  // Caja va en el trabajo diario, no en ajustes junto a Facturación: Facturación se consulta,
+  // la caja se USA, y desde el mostrador.
+  { href: "/caja", label: "Caja", icon: Banknote },
   { href: "/clientes", label: "Clientes", icon: Users },
   { href: "/whatsapp", label: "WhatsApp", icon: MessageCircle },
 ];
