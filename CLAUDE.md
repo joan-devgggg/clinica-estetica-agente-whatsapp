@@ -801,7 +801,22 @@ cifra. Medida el **06/08/2026, después de arreglar balayage y de reescribir el 
 | DEGRADADO | 0 | 0 | 0 |
 | SILENCIO · BUCLE · ERROR · BUG | 0 | 0 | 0 |
 
-**Desde el 09/08/2026 son 23**: se añadió el de Esther Cediloo («¿cómo se llama la otra chica?»), que afirma que la escalada por dato no disponible OCURRIÓ —ficha en manual o con escalation_reason—, no que el texto suene bien.
+**Desde el 09/08/2026 son 23**: se añadió el de Esther Cediloo («¿cómo se llama la otra chica?»),
+que afirma que la escalada por dato no disponible OCURRIÓ —ficha en manual o con
+`escalation_reason`—, no que el texto suene bien. Medido tras los arreglos: **OK 23 · todo lo
+demás 0**.
+
+Ese escenario se ganó el sueldo en su primera corrida: destapó **dos fallos que ningún test
+determinista habría visto**. El LLM preguntaba y escalaba en el MISMO turno —`bot_mode` a
+manual en el turno de la oferta y silencio en el siguiente, el fallo de Olga por otra puerta—,
+y `isAffirmative` devolvía **false para «yes»**, que es la puerta de confirmación de las seis
+escaladas y de la elección de hueco. Los dos están arreglados; el segundo destapó a su vez que
+«yesterday» ya contaba como un sí desde siempre, porque `este` vive dentro de «y-este-rday».
+
+Y una lección de lectura: en una de las tres corridas el escenario 7 (CONTROL de estilista)
+salió DEGRADADO. Repetido aislado y en una corrida completa, verde las dos veces, y en sus
+logs no aparecía la red nueva. Era varianza del modelo, exactamente lo que el párrafo de
+abajo dice que hay que comprobar antes de tocar nada.
 
 **Desde el 07/08/2026 son 22 escenarios**, no 21: se añadió el 12 («solo puedo después de las
 23:00»), que afirma que la respuesta lleva las DOS puntas del horario **leídas de
