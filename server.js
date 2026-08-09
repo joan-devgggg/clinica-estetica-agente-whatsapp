@@ -15,6 +15,7 @@ const { startReminderWorker } = require('./services/reminder');
 const { startReviewWorker } = require('./services/review');
 const { startAutoReturnWorker } = require('./services/auto-return');
 const { startPauseWatchdog } = require('./services/bot-pause-alert');
+const { startEsperaWatchdog } = require('./services/espera-alert');
 const { startTelegramBot } = require('./services/telegram');
 const { getAllOrgs, CHANNEL_WWEBJS } = require('./services/org-registry');
 const { build360Client } = require('./services/providers/threesixty-dialog');
@@ -206,6 +207,10 @@ function tryStartWorkers() {
     // Vigila que nadie deje el bot pausado media jornada. Mira el ESTADO, no el tráfico:
     // notePausedDrop solo salta cuando ya se ha tirado un mensaje de una clienta.
     startPauseWatchdog([...waClients.keys()]);
+    // Y vigila lo contrario: el bot funcionando pero una clienta esperando igual, porque se
+    // escaló y nadie la atendió o porque el turno se cayó. Es lo que faltaba para que un
+    // fallo se descubra el mismo día y no leyendo conversaciones tres semanas después.
+    startEsperaWatchdog([...waClients.keys()]);
 }
 
 for (const { client, channel } of waClients.values()) {

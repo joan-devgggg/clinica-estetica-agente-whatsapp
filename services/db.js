@@ -1001,6 +1001,97 @@ async function getContactosEnManual(orgId) {
     });
 }
 
+// ─── Lecturas del vigilante de esperas (services/espera-alert.js) ────────────
+//
+// Las dos preguntan lo mismo por dos puertas: ¿hay alguien esperando a que le conteste una
+// persona? Van aquí y no se reutiliza `getPendingActions` a propósito: aquella se traga el
+// `error` de Supabase (`const { data } = await …`), así que una lectura fallida se leería
+// como "no hay ninguna escalada pendiente" y el vigilante daría el parte de todo en orden
+// justo cuando no puede ver nada. Es la regla 4 aplicada al sitio donde más duele: un
+// vigilante ciego es peor que no tener vigilante, porque además tranquiliza.
+
+/**
+ * Escaladas todavía sin resolver, con lo necesario para escribir el aviso sin abrir el panel:
+ * quién es, qué pidió y desde cuándo.
+ */
+async function getEscaladasPendientes(orgId) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('pending_actions')
+        .select('id, type, payload, created_at, contacts!contact_id(id, wa_phone, full_name, is_blacklisted)')
+        .eq('organization_id', oid)
+        .eq('type', 'escalation')
+        .eq('status', 'pending')
+        .order('created_at', { ascending: true });
+    assertRead(error, 'pending_actions');
+    return (data || []).map(row => ({
+        id:          row.id,
+        creadaAt:    row.created_at,
+        motivo:      row.payload?.motivo || null,
+        ultimoTexto: row.payload?.mensaje || null,
+        contactId:   row.contacts?.id || null,
+        telefono:    row.contacts?.wa_phone || null,
+        nombre:      row.contacts?.full_name || null,
+        blacklisted: !!row.contacts?.is_blacklisted,
+    }));
+}
+
+/**
+ * Conversaciones cuyo ÚLTIMO mensaje es entrante — es decir, nadie ha contestado desde
+ * entonces, ni el bot ni una persona.
+ *
+ * `desde` acota por los dos lados y los dos importan:
+ *  - por abajo (horizonte), porque una conversación muerta hace semanas no es alguien
+ *    esperando, es arqueología;
+ *  - por arriba (`quietoAntesDe`), porque solo interesan las ya calladas. Filtrar por
+ *    reloj es seguro aunque el umbral se mida en horario de apertura: los minutos de
+ *    apertura nunca superan los de reloj, así que este prefiltro deja pasar un superconjunto
+ *    y nunca esconde una espera que debería avisar.
+ */
+async function getConversacionesSinResponder(orgId, { desde, quietoAntesDe }) {
+    const oid = resolveOrg(orgId);
+    const desdeISO = new Date(desde).toISOString();
+
+    const { data: convs, error: eConv } = await supabase
+        .from('conversations')
+        .select('id, last_message_at, contacts!contact_id(id, wa_phone, full_name, is_blacklisted, bot_mode)')
+        .eq('organization_id', oid)
+        .gte('last_message_at', desdeISO)
+        .lte('last_message_at', new Date(quietoAntesDe).toISOString());
+    assertRead(eConv, 'conversations');
+    if (!convs?.length) return [];
+
+    // El último mensaje de cada candidata cae por fuerza dentro del horizonte (su
+    // last_message_at ya lo está), así que el mismo `desde` acota esta lectura.
+    const { data: msgs, error: eMsg } = await supabase
+        .from('messages')
+        .select('conversation_id, direction, content, created_at')
+        .eq('organization_id', oid)
+        .in('conversation_id', convs.map(c => c.id))
+        .gte('created_at', desdeISO)
+        .order('created_at', { ascending: false });
+    assertRead(eMsg, 'messages');
+
+    const ultimo = new Map();
+    for (const m of msgs || []) if (!ultimo.has(m.conversation_id)) ultimo.set(m.conversation_id, m);
+
+    return convs.reduce((acc, c) => {
+        const m = ultimo.get(c.id);
+        if (!m || m.direction !== 'inbound') return acc;   // contestada: no hay nadie esperando
+        acc.push({
+            conversationId: c.id,
+            esperandoDesde: m.created_at,
+            ultimoTexto:    m.content || null,
+            contactId:      c.contacts?.id || null,
+            telefono:       c.contacts?.wa_phone || null,
+            nombre:         c.contacts?.full_name || null,
+            blacklisted:    !!c.contacts?.is_blacklisted,
+            botMode:        c.contacts?.bot_mode || 'auto',
+        });
+        return acc;
+    }, []);
+}
+
 /** Ids de contacto con alguna acción todavía sin resolver en la cola de Telegram. */
 async function getContactIdsConAccionPendiente(orgId) {
     const oid = resolveOrg(orgId);
@@ -3230,4 +3321,7 @@ module.exports = {
     autoCompleteAppointments,
     // Agent memory
     getLastCompletedAppointment,
+    // Vigilante de esperas
+    getEscaladasPendientes,
+    getConversacionesSinResponder,
 };

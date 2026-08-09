@@ -108,4 +108,10 @@ function pausaVieneDeAntesDeAbrir(pausadoDesde, ahora, horario) {
     return toMinutes(pausadoDesde) < franja.apertura;   // hoy, pero antes de abrir
 }
 
-module.exports = { minutosDeAperturaEntre, franjaDelDia, estaAbierto, pausaVieneDeAntesDeAbrir, DIAS, MAX_DIAS };
+module.exports = {
+    minutosDeAperturaEntre, franjaDelDia, estaAbierto, pausaVieneDeAntesDeAbrir,
+    // Mismo predicado, nombre sin sujeto: la pregunta «¿esto venía de antes de abrir?» vale
+    // igual para una pausa del bot que para una clienta esperando desde anoche.
+    vieneDeAntesDeAbrir: pausaVieneDeAntesDeAbrir,
+    DIAS, MAX_DIAS,
+};
