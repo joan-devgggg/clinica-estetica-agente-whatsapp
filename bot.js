@@ -2017,6 +2017,12 @@ const SERVICE_STATE_DEFAULTS = {
     consultaValoracionDetectada: false,
     // Veces seguidas que hemos tenido que responder "no sé qué servicio quieres". A la
     // segunda dejamos de repetir la misma frase (ver salonNoSlotsMsg).
+    //
+    // HALLAZGO ANOTADO, NO ARREGLADO (09/08/2026) — NO viaja en buildSessionExtra, así que se
+    // resetea a 0 en cada rehidratación de sesión (timeout de 1 h, GC de 2 h, reinicio del
+    // proceso). El nivel 3 del menú de rescate —`>= 4`, ofrecer una persona— es por tanto
+    // inalcanzable en cuanto la conversación cruza cualquiera de esas tres cosas. Lo justo es
+    // decir que la tapa del bucle solo protege dentro de una misma sesión viva.
     sinServicioStreak: 0,
     // El menú de rescate ya ofreció explícitamente la consulta de valoración: un "sí" en
     // el turno siguiente la selecciona.
@@ -5791,6 +5797,14 @@ async function flushBuffer(sKey) {
     logger.info('buffer_flush', { orgId, telefono: userPhone, mensajesCombinados: msgCount, textoLength: combinedText.length, textoCombinado: combinedText.slice(0, 200) });
 
     try {
+        // HALLAZGO ANOTADO, NO ARREGLADO (09/08/2026) — este `null` es el messageKey, y por
+        // eso el dedupe de SESIÓN está muerto en la ruta real: session.seenMessages no se
+        // rellena nunca (solo lo haría processMessageCore, con la clave que no le llega), así
+        // que la guarda de handleIncomingMessage que lo consulta no puede saltar jamás. Toda
+        // la protección contra la doble respuesta recae en buffer.seenKeys, que se vacía en
+        // cada flush y se destruye a los 60 s de inactividad: un reenvío tardío del mismo
+        // wamid se contestaría dos veces. No es la causa de ninguno de los seis síntomas de
+        // Michal/Esther —se comprobó—, es un agujero latente. Se deja fuera a propósito.
         await processMessageCore(client, message, userPhone, combinedText, null, orgId, dbPhone);
     } catch (e) {
         logger.error('error_buffer_process', { orgId, telefono: userPhone, error: e.message });

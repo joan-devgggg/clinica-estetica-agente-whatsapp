@@ -414,6 +414,103 @@ pasarlos, y si no, manda decir que no se pueden enviar y ofrecer la consulta —
 prohibición explícita de «te las mando en un momento». Enviar imágenes de verdad sigue sin
 implementarse.
 
+## Michal Gradziel y Esther Cediloo: seis síntomas, cuatro causas
+
+Dos conversaciones del 07 y 08/08/2026, arregladas el 09/08. Michal
+(`447432204269`) pidió una decoloración completa **en inglés**; Esther
+(`19723581589`) quería nombrar a dos personas en una reseña de Google.
+
+**La factura, que es lo que ordena todo lo demás:** la conversación de Michal muere a las
+11:10:26 y a las 11:19:26 aparece una cita `Deco Total Blond Corto + Retocar mujer` (Natalia,
+lunes 10 a las 09:00) **sin un solo mensaje saliente entre medias**. El bot no la cerró: la
+cerró una persona desde el panel. El servicio de más ticket del catálogo, perdido entero.
+
+### La cascada: el detector solo hablaba castellano, y el prompt empujaba hacia delante
+
+`largoKeywords` tenía para Deco Total Blond `['total blond','decoloracion','decolorar','deco']`.
+Ella escribió «near platinum», «full platinum blonde», «colouring my hair from dark to cool
+platinum»: nada casó. Para una clienta anglófona el servicio solo aterrizaba si el LLM
+rellenaba `datos.servicio` con un nombre del catálogo **en castellano** — el escenario 3 con la
+moneda cargada en contra. Ahora las keywords van en los cuatro idiomas, con un criterio de
+admisión: **que nadie la diga de pasada**. `blonde` a secas se queda fuera («I'm blonde and I
+want a haircut» es una descripción) y tiene test de falso positivo.
+
+Y encima, **el prompt le decía que siguiera**. `__servicioMencionado` (`bot.js`) se monta
+justo cuando el match falló pero el LLM capturó prosa, y su rama le ordenaba «mapéalo al
+catálogo … **y continúa el flujo**», dando por hecho que puede mapearlo. Cuando no puede,
+cumple la segunda mitad igual: preguntó el día, preguntó la franja e inventó tres horas, todo
+con `selectedService` a null.
+
+Las guardas de CÓDIGO estaban bien y ninguna falló: `loadAvailableSlots` y
+`askDatePreferenceFirst` exigen las dos `selectedService`. **Lo que no existía era una guarda
+sobre lo que el modelo DICE**: `proposesTimingWithoutService`, que sustituye por
+`salonNoSlotsMsg`. Es la recomendación 2 de `docs/escenario-3-servicio-sin-resolver.md`.
+
+### La red de horas era ciega a las horas sin minutos
+
+«around 10, 11, or 12», sin un hueco cargado, **no lo vio ninguna de las tres redes**:
+`HORA_HHMM_SRC` exige los dos puntos y los dos dígitos, y `respondsWithInventedSlots` salía en
+su primera línea con `mentioned.length === 0`. **La exención de horario del 07/08 queda
+exonerada**: se evalúa una línea después y nunca llegó a ejecutarse.
+
+El agujero era anterior y estaba en los tres sitios — incluido `detectHoraFueraDeHorario`, el
+gate escrito el 07/08 para Olga, que tampoco veía «solo puedo después de las 23» sin los
+`:00`. Y el patrón se declaraba «ÚNICO» mientras `bot.js` lo tenía copiado a mano dos veces
+sin importar la constante.
+
+`extractLooseClockHours` **exige marcador temporal delante** (a las / around / at / после /
+в …): un número a secas no es una hora. **«Largo 2» no son las dos**, «35 €» no son las nueve
+y «August 10» es una fecha. Dos trampas cubiertas: la enumeración lleva coma **y** conjunción
+entre las dos últimas («10, 11, or 12» se cortaba en el 11), y se aplica la misma regla de 12h
+que `normalizeHora` — que en `bot.js` se conserva encima, porque es quien convierte «5:30» en
+17:30 y hace que case con un hueco real de la tarde.
+
+### Las fotos: dos motores ciegos entre sí
+
+La rama de media hace `return` **antes** del buffer. A las 11:04:54.939 salió el aviso fijo, y
+a las 11:05:02.443 el LLM contestó a su texto con «Your hair looks beautiful». Tres cosas
+distintas, las tres arregladas:
+
+- **El idioma.** Leía solo `userSessions` (RAM), y en el PRIMER mensaje de una conversación no
+  hay sesión: se crea en `processMessageCore`, que corre 5 s después. Ese camino no podía
+  acertar nunca, ni con la ficha en `'en'` y `'observed'`. Cascada nueva: sesión → **el texto
+  que espera en el buffer** (evidencia directa del mismo turno, y es lo que la salva) → la
+  ficha solo si es `'observed'`. Un `'default'` o un `'inferred'` no deciden en qué idioma le
+  hablamos. Es la familia de Tammy por una puerta peor.
+- **El historial.** El placeholder `[image]` va a `messages` —o sea, al PANEL— y la respuesta
+  fija sale por `sendWithDelay`; **ninguna de las dos toca `session.history`**, que es lo que
+  lee el prompt. Para el modelo la foto no existía y nuestro aviso tampoco. Ahora el turno se
+  anota y lo drena `processMessageCore` justo después del texto de la clienta.
+- **La doble respuesta.** Si ya hay texto suyo en vuelo, la foto **no se contesta aparte**.
+  Una foto sola sí, y tiene su test.
+
+### Si le preguntan un dato que no tiene, ahora lo ofrece preguntar dentro
+
+Esther quería nombrar a dos personas en una reseña; el bot sabía una y de la otra contestó «I'm
+not sure I have that information», pidiéndole a ella el dato que le faltaba a él. **No hay
+arreglo de datos posible**: sus dos citas del 08/08 están las dos a nombre de Natalia y la
+segunda persona no está registrada en ningún sitio. Solo lo sabe alguien del salón.
+
+Para Sante **no existía el concepto de «pregunta sin respuesta»**, y el prompt lo prohibía
+(«NUNCA escales por ningún otro motivo») mientras el de San Remo lleva la instrucción contraria
+desde siempre. Caso 7 nuevo, `motivo_escalado: "dato_no_disponible"`, acotado a lo CONCRETO y
+COMPROBABLE y explícitamente fuera para precios, servicios, horarios y disponibilidad.
+Escenario 23 de `verify:robustez:llm`, que afirma el ESTADO y no la redacción.
+
+### Lo que se decidió NO arreglar
+
+- **La ventana del buffer** (la otra mitad del «responde dos veces»). Los dos mensajes de
+  Esther van a **7,9 s** y `BUFFER_DELAY_MS` es **5000**, mientras el LLM tardó entre 8,2 y
+  12,2 s: lo que entre en ese hueco se contesta por separado. No es el dedupe, es el
+  dimensionado. Reencolar el turno cuesta llamadas al modelo y cambia el diseño.
+- **El dedupe de sesión está muerto en la ruta real**: `flushBuffer` pasa `messageKey = null`,
+  así que `session.seenMessages` no se rellena y su guarda no puede saltar. Toda la protección
+  es `buffer.seenKeys`, que se vacía en cada flush. Latente, no fue causa de nada aquí.
+- **`sinServicioStreak` no viaja en `buildSessionExtra`**: se resetea en cada rehidratación, y
+  el nivel «ofrecer una persona» (`>= 4`) es inalcanzable si la conversación cruza un timeout.
+
+Las tres están anotadas en el propio código, donde mirará quien las toque.
+
 ## Bloquear agenda: `schedule_blocks`, nunca una cita con clienta inventada
 
 Un hueco que se cierra **es un `schedule_blocks`**. Hacerlo como cita a nombre de un contacto
@@ -703,6 +800,8 @@ cifra. Medida el **06/08/2026, después de arreglar balayage y de reescribir el 
 | OK | 21 | 21 | 21 |
 | DEGRADADO | 0 | 0 | 0 |
 | SILENCIO · BUCLE · ERROR · BUG | 0 | 0 | 0 |
+
+**Desde el 09/08/2026 son 23**: se añadió el de Esther Cediloo («¿cómo se llama la otra chica?»), que afirma que la escalada por dato no disponible OCURRIÓ —ficha en manual o con escalation_reason—, no que el texto suene bien.
 
 **Desde el 07/08/2026 son 22 escenarios**, no 21: se añadió el 12 («solo puedo después de las
 23:00»), que afirma que la respuesta lleva las DOS puntas del horario **leídas de
