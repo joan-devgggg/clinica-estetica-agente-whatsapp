@@ -2544,13 +2544,25 @@ function detectLargoCategory(text, servicesCatalog) {
         if (t.includes(normalizeText(name))) return name;
     }
 
+    // Las keywords van en los CUATRO idiomas del salón (es/en/ru/uk), no solo en castellano.
+    // Michal Gradziel (07/08/2026) pidió una decoloración entera en inglés —«near platinum»,
+    // «full platinum blonde»— y aquí no había una sola palabra que la cazara: el servicio no
+    // aterrizó nunca, el bot preguntó día y franja sin saberlo, inventó tres horas y acabó
+    // repreguntándole el servicio. La cita la cerró una persona a mano.
+    // Ver tests/servicio-idioma-detector.test.js.
+    //
+    // Criterio para admitir una palabra: que NADIE la diga de pasada. 'platinum', 'bleach' o
+    // 'обесцвечивание' solo aparecen cuando se pide el servicio. 'blonde' a secas se queda
+    // FUERA por eso mismo — «I'm blonde and I want a haircut» es una descripción, y meterla
+    // aquí le preguntaría el largo de una decoloración que no ha pedido.
     const largoKeywords = [
-        { kw: ['alisado', 'alisar', 'straighten', 'keratin'], cat: 'alisado vegano' },
+        { kw: ['alisado', 'alisar', 'straighten', 'keratin', 'keratina', 'кератин', 'выпрямление', 'випрямлення'], cat: 'alisado vegano' },
         { kw: ['airtouch'], cat: 'mechas airtouch' },
-        { kw: ['clasica', 'clasicas'], cat: 'mechas clasicas' },
-        { kw: ['total blond', 'decoloracion', 'decolorar', 'deco'], cat: 'deco total blond' },
-        { kw: ['antifrizz', 'anti frizz', 'encrespamiento', 'anti-encrespamiento'], cat: 'anti-encrespamiento' },
-        { kw: ['color completo'], cat: 'color premium' },
+        { kw: ['clasica', 'clasicas', 'classic highlights', 'классическое мелирование', 'класичне мелірування'], cat: 'mechas clasicas' },
+        // 'deco' ya cubre por subcadena 'decolorisation'/'decolorization'/'decoloración'.
+        { kw: ['total blond', 'decoloracion', 'decolorar', 'deco', 'platinum', 'bleach', 'lightening', 'go blonde', 'обесцвечивание', 'осветление', 'знебарвлення', 'освітлення'], cat: 'deco total blond' },
+        { kw: ['antifrizz', 'anti frizz', 'encrespamiento', 'anti-encrespamiento', 'frizz'], cat: 'anti-encrespamiento' },
+        { kw: ['color completo', 'full colour', 'full color', 'полное окрашивание', 'повне фарбування'], cat: 'color premium' },
         // Faltaba, y era la única categoría con variantes de largo sin entrada aquí. El
         // match por nombre completo de arriba exige "mechas balayage" literal, así que
         // "quiero un balayage" —o "reflejos o balayage", que es como lo escribió una clienta
