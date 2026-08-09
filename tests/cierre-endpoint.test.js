@@ -14,6 +14,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ||
 
 const assert = require('assert');
 const http = require('http');
+const { toLocalDateStr } = require('../services/date-utils');
 
 const telegramPath = require.resolve('../services/telegram');
 require.cache[telegramPath] = {
@@ -137,7 +138,11 @@ await test('4 · una diferencia se guarda CON SIGNO y sin pedir motivo', async (
 });
 
 await test('5 · un día del FUTURO no se puede haber revisado', async () => {
-    const manana = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    // El "mañana" hay que sacarlo en la TZ del NEGOCIO, no en UTC. Con .toISOString() este
+    // test se caía todas las noches entre las 00:00 y las 02:00 de Madrid: en esa franja el
+    // día UTC va uno por detrás, así que el "mañana" calculado en UTC es HOY en el salón —
+    // una fecha que el endpoint acepta con razón. Fallaba el test, no la guarda.
+    const manana = toLocalDateStr(new Date(Date.now() + 86400000));
     const r = await pedir(server, {
         metodo: 'POST', path: '/api/caja/cierre',
         body: { fecha: manana, contadoEfectivo: 0, tpvDeclarado: 0 },
