@@ -286,6 +286,51 @@ const insertsOn = (table) => sqlCalls.filter(c => c.table === table && c.op === 
         });
     }
 
+    // ═══ Sante · foto + texto en el mismo acto = UNA respuesta ═════════════════════════
+    // Michal Gradziel, 07/08/2026, tres eventos en 8 segundos:
+    //   11:04:54.230  in   «Hi! That's my hair in natural light, really dark»
+    //   11:04:54.938  in   [image]
+    //   11:04:54.939  OUT  «No puedo ver fotos ni vídeos 😅 …»   ← rama de media, castellano
+    //   11:05:02.443  OUT  «Hi! Your hair looks beautiful 😊 …»  ← el LLM, inglés
+    // La rama de media hace `return` ANTES del buffer, así que contestaba al instante
+    // mientras el texto esperaba sus 5 s. Un solo acto de la clienta, dos motores y dos
+    // idiomas. Ahora, si ya hay texto suyo en vuelo, la foto no se contesta aparte: se anota
+    // y la respuesta la da el LLM con las dos cosas delante.
+    {
+        const d = makeDriver(SANTE_ORG, `34612${suffix}`);
+        // Su texto entra al buffer y NO se flushea: es el estado real de las 11:04:54.938.
+        const trasTexto = await d.raw(makeMessage(d.phone, 'Hi! That’s my hair in natural light, really dark'));
+        const trasFoto = await d.raw(cloudMessage(d.digits, 'image', { image: { id: 'm' } }));
+        const trasFlush = await d.raw(makeMessage(d.phone, ''), { flush: true });
+
+        await test('Sante · con texto en vuelo, la foto NO se contesta aparte', async () => {
+            assert.strictEqual(trasTexto.length, 0, 'el texto solo bufferea, no responde todavía');
+            assert.strictEqual(trasFoto.length, 0,
+                `la foto no debe generar su propia respuesta, salió: ${JSON.stringify(trasFoto)}`);
+            assert.ok(!trasFlush.some(t => /No puedo ver fotos/i.test(t)),
+                `no debe salir el aviso fijo además del LLM: ${JSON.stringify(trasFlush)}`);
+            assert.strictEqual(trasFlush.length, 1,
+                `esperaba UNA sola respuesta al flush, salieron ${trasFlush.length}: ${JSON.stringify(trasFlush)}`);
+        });
+
+        await test('Sante · y el LLM sabe que llegó una foto que no puede ver', async () => {
+            const hist = d.session()?.history || [];
+            const marcador = hist.find(h => h.role === 'user' && /ha enviado una foto/.test(h.content || ''));
+            assert.ok(marcador, `el historial debía llevar el marcador de la foto: ${JSON.stringify(hist.map(h => h.content))}`);
+            assert.match(marcador.content, /no puedes verlo/);
+        });
+    }
+
+    // ═══ Sante · una foto SOLA se sigue contestando ════════════════════════════════════
+    {
+        const d = makeDriver(SANTE_ORG, `34613${suffix}`);
+        const out = await d.raw(cloudMessage(d.digits, 'image', { image: { id: 'm' } }));
+        await test('Sante · sin texto en vuelo, la foto sí recibe su aviso', async () => {
+            assert.strictEqual(out.length, 1, 'una foto sola no puede quedarse sin respuesta');
+            assert.match(out[0], /No puedo ver fotos|can't see photos/i);
+        });
+    }
+
     await test('San Remo · no se registran mensajes de media en el panel', async () => {
         const sanremoInbound = insertsOn('messages').filter(
             c => c.payload?.direction === 'inbound' && c.payload?.organization_id === SANREMO_ORG,

@@ -5694,7 +5694,14 @@ function notePendingMediaTurn(sKey, kind, avisoEnviado) {
     const ts = Date.now();
     // El marcador es para el modelo, no para la clienta: dice qué llegó y qué no podemos
     // hacer con ello, para que no dé por visto lo que nadie ha visto.
-    turnos.push({ role: 'user', content: `[la clienta ha enviado ${kind === 'image' ? 'una foto' : `un ${kind}`}; no puedes verlo]`, ts });
+    //
+    // Cuando NO salió aviso fijo —porque ya había texto suyo esperando y contesta el LLM—,
+    // el marcador lleva además qué hacer: si no, nadie le dice que no vemos la foto.
+    const qué = kind === 'image' ? 'una foto' : `un ${kind}`;
+    const instruccion = avisoEnviado
+        ? ''
+        : ' — dile que no puedes ver fotos ni vídeos y pídele que te lo describa con palabras';
+    turnos.push({ role: 'user', content: `[la clienta ha enviado ${qué}; no puedes verlo${instruccion}]`, ts });
     if (avisoEnviado) turnos.push({ role: 'assistant', content: avisoEnviado, ts });
     pendingMediaHistory.set(sKey, turnos.slice(-MAX_PENDING_MEDIA_TURNS));
 }
@@ -5910,6 +5917,20 @@ async function handleIncomingMessage(client, message, orgId) {
                 // bloqueado no vuelve a hablar con el bot con normalidad.
                 if (await isBlacklistedNow(orgId, dbPhone, sKey)) {
                     logger.info('media_ignorada_lista_negra', { orgId, telefono: userPhone, kind });
+                    return;
+                }
+                // Si ya hay texto suyo esperando en el buffer, la foto NO se contesta aparte:
+                // esa respuesta ya está garantizada y la va a dar el LLM con las dos cosas
+                // delante. Es la mitad de Michal del "responde dos veces" — la rama de media
+                // hace `return` antes del buffer, así que contestaba al instante mientras el
+                // texto esperaba sus 5 s: 11:04:54.939 el aviso fijo (en castellano) y
+                // 11:05:02.443 el LLM (en inglés). Un solo acto de la clienta, dos motores.
+                const bufferEnVuelo = messageBuffers.get(sKey);
+                const hayTextoEnVuelo = !!(bufferEnVuelo
+                    && ((bufferEnVuelo.texts?.length || 0) + (bufferEnVuelo.pendingTexts?.length || 0)) > 0);
+                if (hayTextoEnVuelo) {
+                    logger.info('media_sin_respuesta_hay_texto_en_vuelo', { orgId, telefono: userPhone, kind });
+                    notePendingMediaTurn(sKey, kind, null);
                     return;
                 }
                 const aviso = unsupportedMediaMsg(kind, language);
