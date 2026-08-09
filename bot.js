@@ -1247,6 +1247,51 @@ function respondsWithInventedSlots(respuesta, availableSlots, horasHorario = nul
     return !anyValid;
 }
 
+// ─── Sin servicio no se propone día ni hora ──────────────────────────────────
+// Michal Gradziel (07/08/2026), con selectedService a null de principio a fin: el bot le
+// preguntó el día ("Monday August 10 works! What time suits you best — morning or
+// afternoon?") y un turno después le ofreció "around 10, 11, or 12" sin un solo hueco
+// cargado. Dos turnos gastados sobre humo, y solo entonces admitió que no sabía el servicio.
+//
+// Las guardas de CÓDIGO estaban bien y ninguna falló: loadAvailableSlots y
+// askDatePreferenceFirst exigen las dos selectedService, así que no se cargó ni un hueco ni
+// salió la pregunta determinista del día. Lo que no existía era una guarda sobre lo que el
+// modelo DICE. Y el prompt empujaba justo en la dirección contraria: la rama
+// __servicioMencionado le ordenaba «mapéalo al catálogo … y continúa el flujo», dando por
+// hecho que puede mapearlo. Cuando no puede —«platinum blonde» contra un catálogo en
+// castellano— cumple la segunda mitad igual, y el flujo es día → franja → horas.
+//
+// Es la recomendación 2 de docs/escenario-3-servicio-sin-resolver.md, abierta desde el
+// 05/08/2026. Solo prompt no basta: el modelo ya ignoró una vez su SIGUIENTE PASO.
+const TIMING_MARKERS = [
+    /\bque (dia|semana)\b/, /\bque dias\b/, /\bcuando (te|le) (viene|va|vendria|iria)\b/,
+    /\b(por la )?manana o (por la )?tarde\b/, /\bla semana que viene\b/, /\besta semana\b/,
+    /\bwhat day\b/, /\bwhich day\b/, /\bwhat time\b/, /\bwhich time\b/, /\bwhat date\b/,
+    /\bwhen would\b/, /\bwhen are you\b/, /\bwhen do you\b/, /\bmorning or afternoon\b/,
+    /\bthis week\b/, /\bnext week\b/,
+    buildCyrillicRe(['какой день', 'какое время', 'когда тебе', 'когда вам', 'во сколько',
+        'утром или', 'на этой неделе', 'на следующей неделе',
+        'який день', 'яка година', 'коли тобі', 'коли вам', 'вранці чи',
+        'цього тижня', 'наступного тижня']),
+];
+function proposesTimingWithoutService(respuesta, session, horasHorario) {
+    if (!respuesta || !session) return false;
+    if (session.selectedService || session.reservaConfirmada) return false;
+    // Una conversación que gira sobre una cita YA existente habla de días y horas con toda
+    // la razón y sin servicio seleccionado: consultarla, cancelarla, reagendarla, ampliarla.
+    if (session.citaEnCurso || session.pendingCitaAccion || session.modoReagendamiento
+        || session.anchorAppointment) return false;
+    const t = normalizeText(respuesta);
+    const horas = [...String(respuesta).matchAll(new RegExp(HORA_HHMM_SRC, 'g'))]
+        .map(m => normalizeHora(m[0])).filter(Boolean);
+    if (!horas.length && !TIMING_MARKERS.some(re => re.test(t))) return false;
+    // Decir el horario del salón NO es proponer un hueco, y es una respuesta legítima sin
+    // servicio: "¿a qué hora abrís?" no exige saber a qué viene. Misma exención que la red
+    // de huecos inventados, compartida a propósito — es el mensaje que se comió a Olga.
+    if (soloDeclaraHorarioDelSalon(respuesta, horas, horasHorario)) return false;
+    return true;
+}
+
 // Horas HH:MM que el mensaje MENCIONA y que NO tienen una cita real detrás.
 // Complemento de respondsWithInventedSlots: aquella contrasta contra los huecos OFRECIDOS
 // (¿existe ese hueco?), esta contrasta contra las citas GUARDADAS (¿está escrito?).
@@ -5485,7 +5530,23 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         const horasHorario = orgType === 'salon'
             ? horasLimiteHorario((await getAgentConfig(orgId))?.business_hours)
             : [];
-        if (orgType === 'salon' && !session.reservaConfirmada && !aiResponse._rectificadoPorRedFantasma
+        // Va ANTES de la red de huecos inventados: si aún no hay servicio, el mensaje
+        // correcto es pedirlo, y sustituirlo aquí ahorra el turno que Michal perdió
+        // eligiendo entre tres horas que no existían.
+        let _timingSinServicio = false;
+        if (orgType === 'salon' && !aiResponse._rectificadoPorRedFantasma
+                && proposesTimingWithoutService(aiResponse.respuesta, session, horasHorario)) {
+            logger.warn('cita_sante_timing_sin_servicio_bloqueado', {
+                orgId, telefono: userPhone,
+                servicioMencionado: session.partialData?.servicio || null,
+                streak: session.sinServicioStreak || 0,
+            });
+            aiResponse.respuesta = salonNoSlotsMsg(session);
+            aiResponse.reserva_confirmada = false;
+            _timingSinServicio = true;
+        }
+
+        if (orgType === 'salon' && !_timingSinServicio && !session.reservaConfirmada && !aiResponse._rectificadoPorRedFantasma
                 && respondsWithInventedSlots(aiResponse.respuesta, session.availableSlots, horasHorario)) {
             logger.warn('cita_sante_disponibilidad_inventada_bloqueada', {
                 orgId, telefono: userPhone,
@@ -5972,7 +6033,7 @@ module.exports = {
     extractSentMessageId,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
-        respondsWithInventedSlots, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
+        respondsWithInventedSlots, proposesTimingWithoutService, soloDeclaraHorarioDelSalon, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover, offersHumanHandover, ensureHandoverAcknowledged, HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, porTrato,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:

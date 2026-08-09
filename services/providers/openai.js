@@ -543,7 +543,13 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
                 if (esCorteGenerico) {
                     return `La clienta mencionó "${partialData.__servicioMencionado}" pero es un corte genérico sin tipo especificado. Aplica el árbol del paso 2: pregunta "¿El corte es para hombre, para niño o para mujer?" antes de mapear al catálogo.`;
                 }
-                return `La clienta ya mencionó que quiere "${partialData.__servicioMencionado}". NO le preguntes de nuevo qué servicio quiere: mapéalo al servicio más parecido del catálogo, confírmaselo (precio y duración) y continúa el flujo.`;
+                // "…y continúa el flujo" es lo que costó la conversación de Michal Gradziel
+                // (07/08/2026). Esta rama da por hecho que el modelo PUEDE mapearlo, y cuando
+                // no puede —«platinum blonde» contra un catálogo en castellano— cumple la
+                // segunda mitad igual: preguntó el día, preguntó la franja e inventó tres
+                // horas, todo con selectedService a null. Ahora el flujo se para aquí hasta
+                // que el servicio esté fijado.
+                return `La clienta ya mencionó que quiere "${partialData.__servicioMencionado}". NO le preguntes de nuevo qué servicio quiere: mapéalo al servicio más parecido del catálogo y confírmaselo (precio y duración) esperando su confirmación. Si NO consigues mapearlo a ninguna entrada del catálogo, dile con naturalidad qué opciones parecidas hay y pregúntale cuál es. En los dos casos: NO preguntes el día, ni la semana, ni la hora, ni propongas horarios — el servicio todavía no está fijado.`;
             }
             return 'Pregunta qué servicio necesita. Si no tiene claro, ofrécele las categorías principales.';
         }
@@ -695,6 +701,8 @@ de un color o de una estilista)${instagram || web ? `, dilo y pásale el enlace 
 ${equipoStr}
 ${avisoEstilista}${avisoEstilistaCorregida}
 IMPORTANTE: Cada estilista SOLO trabaja los días indicados arriba. Si la clienta pide un día en que su estilista no trabaja, explícale amablemente qué días sí trabaja y sugiere el más cercano. NUNCA agendes en un día libre de la estilista.
+REGLA — PRIMERO EL SERVICIO: mientras no sepas qué servicio concreto del catálogo quiere, NUNCA le preguntes qué día, qué semana ni a qué hora quiere venir, ni le propongas horarios. Sin servicio no hay huecos que mirar: preguntar el día antes solo gasta turnos y luego hay que volver atrás. Decirle el HORARIO del salón cuando lo pregunte sí puedes, siempre: eso no es proponer un hueco.
+
 REGLA — EQUIPO CERRADO: el equipo es EXACTAMENTE el de la lista de arriba, no hay nadie más. Si la clienta pide a alguien que no está en ella, NUNCA aceptes el nombre, ni lo repitas como si trabajara aquí, ni confirmes una cita con esa persona: dile que no tienes a nadie con ese nombre y ofrécele el equipo real.
 
 # ── CATÁLOGO DE SERVICIOS ──────────────────────────────────────────────────
