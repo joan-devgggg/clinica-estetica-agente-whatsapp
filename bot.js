@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, detectHoraFueraDeHorario, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, detectHoraFueraDeHorario, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -1228,8 +1228,10 @@ function soloDeclaraHorarioDelSalon(respuesta, horasMencionadas, horasHorario) {
     return soloHorario && puntasDistintas >= 2 && statesOpeningHours(respuesta) && !llmClaimsBooked(respuesta);
 }
 function respondsWithInventedSlots(respuesta, availableSlots, horasHorario = null) {
-    const horaRegex = new RegExp(HORA_HHMM_SRC, 'g');
-    const mentioned = [...String(respuesta || '').matchAll(horaRegex)].map(m => normalizeHora(m[0]));
+    // Las HH:MM y las sueltas con marcador ("around 10, 11, or 12"). El normalizeHora de
+    // encima se mantiene: es el que convierte "5:30" en 17:30 y hace que case con un hueco
+    // real de la tarde. Sin él, quitarlo sería marcar como inventado un hueco que existe.
+    const mentioned = extractMentionedHours(respuesta).map(normalizeHora).filter(Boolean);
     if (mentioned.length === 0) return false;
     if (soloDeclaraHorarioDelSalon(respuesta, mentioned, horasHorario)) return false;
     const realSlots = Array.isArray(availableSlots) ? availableSlots : [];
@@ -1282,8 +1284,7 @@ function proposesTimingWithoutService(respuesta, session, horasHorario) {
     if (session.citaEnCurso || session.pendingCitaAccion || session.modoReagendamiento
         || session.anchorAppointment) return false;
     const t = normalizeText(respuesta);
-    const horas = [...String(respuesta).matchAll(new RegExp(HORA_HHMM_SRC, 'g'))]
-        .map(m => normalizeHora(m[0])).filter(Boolean);
+    const horas = extractMentionedHours(respuesta).map(normalizeHora).filter(Boolean);
     if (!horas.length && !TIMING_MARKERS.some(re => re.test(t))) return false;
     // Decir el horario del salón NO es proponer un hueco, y es una respuesta legítima sin
     // servicio: "¿a qué hora abrís?" no exige saber a qué viene. Misma exención que la red
@@ -1304,8 +1305,7 @@ function proposesTimingWithoutService(respuesta, session, horasHorario) {
 // comercial ("abrimos de 10:00 a 19:00") marcará esas horas como no respaldadas. El coste
 // es un mensaje honesto de más; el coste de no mirar es una cita perdida en silencio.
 function unbackedBookingClaim(respuesta, horasReales) {
-    const horaRegex = new RegExp(HORA_HHMM_SRC, 'g');
-    const mencionadas = [...String(respuesta || '').matchAll(horaRegex)].map(m => normalizeHora(m[0]));
+    const mencionadas = extractMentionedHours(respuesta).map(normalizeHora).filter(Boolean);
     if (!mencionadas.length) return [];
     const reales = new Set((Array.isArray(horasReales) ? horasReales : []).map(normalizeHora).filter(Boolean));
     return [...new Set(mencionadas.filter(h => h && !reales.has(h)))];

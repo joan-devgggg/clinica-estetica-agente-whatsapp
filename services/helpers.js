@@ -1782,6 +1782,65 @@ function extractClockHours(text) {
     });
 }
 
+// ─── Hora SUELTA, sin minutos ────────────────────────────────────────────────
+// «around 10, 11, or 12» (Michal Gradziel, 07/08/2026) son tres horas ofrecidas sin un solo
+// hueco cargado, y las tres redes eran ciegas a ellas: HORA_HHMM_SRC exige los dos puntos y
+// los minutos. También «solo puedo después de las 23», que es el caso de Olga escrito sin
+// «:00» — o sea que el gate del 07/08 tenía el mismo agujero por dentro.
+//
+// Un número a secas NO es una hora, y por eso se EXIGE un marcador temporal delante: "Largo
+// 2" no son las dos, "35 €" no son las nueve y "August 10" es una fecha. El marcador es la
+// diferencia entre leer una hora y leer cualquier cifra del mensaje.
+const HORA_SUELTA_MARCADORES = [
+    // es — 'a la' cubre "a la 1"; el resto llevan el artículo plural.
+    'a las', 'a la', 'sobre las', 'hacia las', 'despues de las', 'antes de las',
+    'desde las', 'hasta las', 'entre las', 'a partir de las',
+    // en
+    'at', 'around', 'about', 'after', 'before', 'from', 'until', 'till',
+    // ru/uk — solo los que no son una letra suelta ambigua, más 'в'/'о', que en ruso son
+    // EL marcador de hora ("в 10", "о 15-й") y aquí van con lookbehind unicode, no con \b.
+    'в', 'о', 'около', 'после', 'до', 'близько', 'після', 'починаючи з',
+];
+// Separadores de una ENUMERACIÓN de horas: el marcador va solo delante de la primera
+// («around 10, 11, or 12»), así que sin esto se leería una hora de las tres.
+// Se encadenan a propósito (`+`): "10, 11, or 12" lleva coma Y conjunción entre los dos
+// últimos, y con un solo separador la lista se cortaba en el 11 — la tercera hora que
+// Michal llegó a leer se habría quedado fuera de la red.
+const HORA_LISTA_SEP = '(?:\\s*(?:,|;|y|o|and|or|или|чи|та)\\s*)+';
+// Lo que descarta un número que sí lleva marcador: 30 % de descuento, 20 €, 45 min.
+const NO_ES_HORA_DETRAS = '(?!\\s*(?:%|€|eur|euros|min|minutos|minutes|anos|years|dias|days))';
+const NUM_HORA = `(\\d{1,2})(?![:.\\d])${NO_ES_HORA_DETRAS}`;
+
+function extractLooseClockHours(text) {
+    const t = normalizeText(text);
+    if (!t) return [];
+    const marcadores = HORA_SUELTA_MARCADORES.map(m => m.replace(/ /g, '\\s+')).join('|');
+    // Lookbehind unicode en vez de \b: el límite de palabra de JS es ASCII y no sirve para
+    // 'в' ni 'после' — sin esto no casarían nunca (misma lección que buildCyrillicRe).
+    const re = new RegExp(`(?<![\\p{L}\\p{N}])(?:${marcadores})\\s+${NUM_HORA}((?:${HORA_LISTA_SEP}\\s*\\d{1,2}(?![:.\\d]))*)`, 'giu');
+    const horas = [];
+    for (const m of t.matchAll(re)) {
+        const nums = [m[1], ...(m[2] || '').match(/\d{1,2}/g) || []];
+        for (const n of nums) {
+            const h = Number(n);
+            // 0 y >23 no son horas de reloj; y las 0:00 no las propone nadie en un salón.
+            if (h < 1 || h > 23) continue;
+            // MISMA regla de 12h que normalizeHora (bot.js): "a las 5" en un salón que cierra
+            // a las 19:00 son las 17:00, no las 5 de la mañana. Si una de las dos cambia, la
+            // otra tiene que cambiar con ella — viven separadas porque helpers no puede
+            // importar bot.js, no porque sean decisiones distintas.
+            horas.push(`${String(h >= 1 && h <= 8 ? h + 12 : h).padStart(2, '0')}:00`);
+        }
+    }
+    return horas;
+}
+
+// Todas las horas que menciona un texto: las HH:MM y las sueltas con marcador. Es lo que
+// tienen que mirar las tres redes — que antes miraban solo las primeras.
+function extractMentionedHours(text) {
+    return [...new Set([...extractClockHours(text), ...extractLooseClockHours(text)])];
+}
+
 // 'HH:MM' → minutos del día, o null si no es una hora válida. Con regex y no con Number():
 // Number('') es 0 y una hora ausente se leería como medianoche.
 function hhmmToMin(hhmm) {
@@ -1817,7 +1876,9 @@ const DOW_A_CLAVE_HORARIO = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes'
 // Un día sin entrada devuelve null — que el salón cierre ese día es otra conversación y ya
 // tiene su propia red (respondsWithFalseClosureClaim).
 function detectHoraFueraDeHorario(text, businessHours, { diaSemana = null } = {}) {
-    const horas = extractClockHours(text);
+    // Las sueltas también: «solo puedo después de las 23» es el caso de Olga escrito sin
+    // «:00», y hasta el 09/08/2026 este gate no lo veía.
+    const horas = extractMentionedHours(text);
     if (!horas.length) return null;
     if (!businessHours || typeof businessHours !== 'object') return null;
 
@@ -3529,6 +3590,8 @@ module.exports = {
     detectNoStylistPreference,
     HORA_HHMM_SRC,
     extractClockHours,
+    extractLooseClockHours,
+    extractMentionedHours,
     hhmmToMin,
     detectHoraFueraDeHorario,
     detectTratamiento,
