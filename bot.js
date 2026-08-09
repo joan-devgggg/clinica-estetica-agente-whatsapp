@@ -4934,6 +4934,28 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         //
         // Se AÑADE, no se sustituye: el texto del modelo puede llevar información útil
         // (una disculpa, una respuesta a medias) y lo que le falta es el acuse, no el resto.
+        // ─── "Dato que no tenemos": la confirmación NO se le deja al modelo ────────────
+        // El escenario 23 lo cazó a la primera: el LLM contestó «I don't have that
+        // information, but our team does 😊 Would you like me to connect you with them?» y en
+        // el MISMO turno puso accion:"escalar_humano". O sea que preguntó y escaló a la vez.
+        // Resultado: bot_mode a manual en el turno de la oferta, y el «yes please» siguiente
+        // se encontró el bot ya callado. Es exactamente el fallo de Olga Yarmak —escalada
+        // real seguida de silencio, indistinguible de que la ignoren— por otra puerta.
+        //
+        // La REGLA CRÍTICA del prompt ya lo prohíbe, y aun así pasó: un protocolo de dos
+        // turnos no se sostiene sobre una instrucción. Se baja a pendingEscalation, que es la
+        // maquinaria que YA resuelve el "sí" de forma determinista y en los cuatro idiomas.
+        // Solo para este motivo: los otros seis los sigue gobernando el prompt, que lleva
+        // meses funcionando, y tocarlos aquí sería cambiar conducta que nadie ha pedido.
+        if (orgType === 'salon' && aiResponse.accion === 'escalar_humano'
+            && aiResponse.motivo_escalado === 'dato_no_disponible' && !session.pendingEscalation) {
+            logger.info('escalada_dato_no_disponible_a_pendiente', { orgId, telefono: userPhone });
+            aiResponse.accion = null;
+            aiResponse.motivo_escalado = null;
+            session.pendingEscalation = true;
+            session.pendingEscalationService = 'dato_no_disponible';
+        }
+
         if (orgType === 'salon' && aiResponse.accion === 'escalar_humano') {
             const conAcuse = ensureHandoverAcknowledged(aiResponse.respuesta, session.language, session.tratamiento);
             if (conAcuse !== aiResponse.respuesta) {
