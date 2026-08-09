@@ -1765,6 +1765,12 @@ function resolveUpcomingDate(dom, month) {
 
 // Patrón ÚNICO de hora HH:MM. Lo comparten las dos redes de invención de bot.js y este
 // gate; escrito tres veces, el día que uno cambie los otros dos se quedan atrás en silencio.
+//
+// Y eso es exactamente lo que pasó: se declaró "ÚNICO" pero bot.js lo tenía copiado a mano
+// dos veces (respondsWithInventedSlots y unbackedBookingClaim) sin importar esta constante,
+// así que el punto ciego era triple. Michal Gradziel (07/08/2026) recibió «around 10, 11,
+// or 12» sin un solo hueco cargado: ninguna de las tres lo vio, porque los dos puntos y los
+// dos dígitos de minutos son obligatorios aquí. Ahora sí lo importan las tres.
 const HORA_HHMM_SRC = '\\b([01]?\\d|2[0-3]):[0-5]\\d\\b';
 
 // Horas HH:MM que MENCIONA un texto, normalizadas a dos dígitos ('9:30' → '09:30').
@@ -3509,6 +3515,7 @@ module.exports = {
     extractDateSignalSante,
     detectNoPreferenceSignal,
     detectNoStylistPreference,
+    HORA_HHMM_SRC,
     extractClockHours,
     hhmmToMin,
     detectHoraFueraDeHorario,

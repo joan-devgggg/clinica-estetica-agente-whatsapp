@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, detectHoraFueraDeHorario, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, detectHoraFueraDeHorario, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -1204,22 +1204,34 @@ function statesOpeningHours(text) {
     const t = normalizeText(text);
     return HORARIO_MARKERS.some(re => re.test(t));
 }
+// ¿El texto DECLARA el horario del salón, en vez de ofrecer huecos? Las cuatro condiciones
+// y el porqué de cada una, en el comentario de arriba.
+//
+// Extraída de respondsWithInventedSlots para que la comparta el gate de «sin servicio no se
+// propone día ni hora»: allí «¿abrís los domingos?» → «abrimos de 10:00 a 19:00» es una
+// respuesta legítima SIN servicio seleccionado, y sin esta exención sería el caso de Olga
+// otra vez —la red comiéndose el único mensaje correcto—. Copiarla habría sido la tercera
+// copia del mismo patrón, que es justo el bug que arregla este commit.
+function soloDeclaraHorarioDelSalon(respuesta, horasMencionadas, horasHorario) {
+    if (!Array.isArray(horasHorario) || !horasHorario.length) return false;
+    if (!Array.isArray(horasMencionadas) || !horasMencionadas.length) return false;
+    const limites = new Set(horasHorario.map(normalizeHora).filter(Boolean));
+    if (!limites.size) return false;
+    const toMinutos = hhmm => { const [H, M] = hhmm.split(':').map(Number); return H * 60 + M; };
+    const limMins = [...limites].map(toMinutos);
+    const primera = Math.min(...limMins);
+    const ultima = Math.max(...limMins);
+    // Fuera del sobre [primera apertura, último cierre) no hay hueco posible.
+    const noReservable = h => toMinutos(h) < primera || toMinutos(h) >= ultima;
+    const soloHorario = horasMencionadas.every(h => h && (limites.has(h) || noReservable(h)));
+    const puntasDistintas = new Set(horasMencionadas.filter(h => h && limites.has(h))).size;
+    return soloHorario && puntasDistintas >= 2 && statesOpeningHours(respuesta) && !llmClaimsBooked(respuesta);
+}
 function respondsWithInventedSlots(respuesta, availableSlots, horasHorario = null) {
-    const horaRegex = /\b([01]?\d|2[0-3]):[0-5]\d\b/g;
+    const horaRegex = new RegExp(HORA_HHMM_SRC, 'g');
     const mentioned = [...String(respuesta || '').matchAll(horaRegex)].map(m => normalizeHora(m[0]));
     if (mentioned.length === 0) return false;
-    if (Array.isArray(horasHorario) && horasHorario.length) {
-        const limites = new Set(horasHorario.map(normalizeHora).filter(Boolean));
-        const toMinutos = hhmm => { const [H, M] = hhmm.split(':').map(Number); return H * 60 + M; };
-        const limMins = [...limites].map(toMinutos);
-        const primera = Math.min(...limMins);
-        const ultima = Math.max(...limMins);
-        // Fuera del sobre [primera apertura, último cierre) no hay hueco posible.
-        const noReservable = h => toMinutos(h) < primera || toMinutos(h) >= ultima;
-        const soloHorario = mentioned.every(h => h && (limites.has(h) || noReservable(h)));
-        const puntasDistintas = new Set(mentioned.filter(h => h && limites.has(h))).size;
-        if (soloHorario && puntasDistintas >= 2 && statesOpeningHours(respuesta) && !llmClaimsBooked(respuesta)) return false;
-    }
+    if (soloDeclaraHorarioDelSalon(respuesta, mentioned, horasHorario)) return false;
     const realSlots = Array.isArray(availableSlots) ? availableSlots : [];
     const realHoras = new Set(realSlots.map(s => normalizeHora(s.hora)).filter(Boolean));
     const toMin = hhmm => { const [H, M] = hhmm.split(':').map(Number); return H * 60 + M; };
@@ -1247,7 +1259,7 @@ function respondsWithInventedSlots(respuesta, availableSlots, horasHorario = nul
 // comercial ("abrimos de 10:00 a 19:00") marcará esas horas como no respaldadas. El coste
 // es un mensaje honesto de más; el coste de no mirar es una cita perdida en silencio.
 function unbackedBookingClaim(respuesta, horasReales) {
-    const horaRegex = /\b([01]?\d|2[0-3]):[0-5]\d\b/g;
+    const horaRegex = new RegExp(HORA_HHMM_SRC, 'g');
     const mencionadas = [...String(respuesta || '').matchAll(horaRegex)].map(m => normalizeHora(m[0]));
     if (!mencionadas.length) return [];
     const reales = new Set((Array.isArray(horasReales) ? horasReales : []).map(normalizeHora).filter(Boolean));
