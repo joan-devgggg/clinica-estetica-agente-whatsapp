@@ -453,11 +453,32 @@ function extractTelefono(text) {
     return null;
 }
 
+// El salón habla cuatro idiomas y esta lista no conocía el "yes" a secas: `isAffirmative`
+// devolvía FALSE para «yes», «yes please», «sure» y «yeah». Es la puerta que confirma las
+// escaladas (pendingEscalation) y la elección de hueco, así que una clienta anglófona podía
+// decir que sí y no pasar nada — la oferta se desarmaba en silencio. Lo cazó el escenario 23
+// (Esther Cediloo, que escribe en inglés) el 09/08/2026.
+//
+// Las nuevas van con \b y no con `includes`, que es como está escrita la lista de arriba: un
+// 'yes' por subcadena convertiría «yesterday I came» en un sí. El coste de un falso positivo
+// aquí es confirmar algo que la clienta no ha confirmado.
+// Y los DEMOSTRATIVOS salen de la lista de subcadenas por el mismo motivo, que es cómo se
+// descubrió lo anterior: «yesterday I came and it was bad» ya devolvía TRUE antes de tocar
+// nada, porque 'este' está dentro de «y-este-rday». Igual 'eso' en «peso» o «queso», 'esa' en
+// «mesa» y 'ese' en «meses». Son las cuatro palabras más cortas y más propensas de la lista,
+// y significan "ese hueco": con \b siguen funcionando sueltas y dejan de disparar dentro de
+// otra palabra.
+const AFIRMATIVOS_PALABRA = [
+    /\b(yes|yeah|yep|yup|sure|okay|of course|go ahead|please do|sounds great)\b/,
+    /\b(este|ese|esa|eso)\b/,
+    buildCyrillicRe(['добре', 'звичайно', 'згоден', 'згодна', 'конечно']),
+];
 function isAffirmative(text) {
     const t = normalizeText(text);
-    return ['si', 'sí', 'este', 'mismo', 'vale', 'correcto', 'perfecto', 'ok',
+    if (AFIRMATIVOS_PALABRA.some(re => re.test(t))) return true;
+    return ['si', 'sí', 'mismo', 'vale', 'correcto', 'perfecto', 'ok',
         'de acuerdo', 'confirmo', 'confirmado', 'genial', 'claro',
-        'dale', 'venga', 'listo', 'bueno', 'adelante', 'eso', 'ese', 'esa',
+        'dale', 'venga', 'listo', 'bueno', 'adelante',
         'me viene bien', 'me va bien', 'quiero ese',
         'that works', 'sounds good', 'да', 'давай', 'так'].some(w => t.includes(w));
 }
