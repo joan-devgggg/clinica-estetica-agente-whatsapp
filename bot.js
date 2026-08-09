@@ -5666,6 +5666,63 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 }
 
 // ─── Buffer flush: combina mensajes acumulados y los procesa ────────────────
+// ─── ¿En qué idioma le contestamos a una foto? ───────────────────────────────
+// El aviso de "no puedo ver fotos" salía SIEMPRE en castellano cuando no había sesión en
+// RAM — y en el primer mensaje de una conversación NUNCA la hay: la sesión se crea dentro de
+// processMessageCore, que corre cuando el buffer hace flush, 5 s más tarde. Michal Gradziel
+// (07/08/2026) mandó su foto 0,7 s después de su primer texto en inglés y recibió el aviso
+// en castellano; 7,5 s después le llegó la respuesta del LLM, en inglés.
+//
+// El texto inglés EXISTE (helpers.unsupportedMediaMsg): no faltaba traducción, fallaba la
+// resolución. Y su `|| set.es` final es un default silencioso de manual (regla 3).
+//
+// Es la familia del caso de Tammy (CLAUDE.md, "el idioma de una clienta"), que ya dejó
+// anotado «a ella y a la foto que mandó 36 s después, que coge el idioma de la misma
+// session.language» — pero por una puerta peor: allí el valor era erróneo, aquí no hay
+// sesión de la que sacarlo, así que este camino no podía acertar nunca.
+//
+// Cascada, de la señal más fuerte a la más débil:
+//   1. la sesión, que ya aplicó todas las reglas de idioma;
+//   2. lo que la clienta acaba de escribir y espera en el buffer — evidencia DIRECTA de este
+//      mismo turno, y es lo que salva el caso de Michal;
+//   3. la ficha, y SOLO si su fuente es 'observed'. Un 'default' es el 'es' del INSERT que
+//      nadie tocó, y un 'inferred' es una conjetura por el nombre de pila: ninguno de los dos
+//      puede decidir en qué idioma le hablamos. La ficha de Michal era 'default' en ese
+//      instante (se había creado 1,5 s antes), así que aquí tampoco habría salvado nada.
+// Si nada resuelve devuelve null y se dice: unsupportedMediaMsg cae a castellano, pero
+// queda la traza de que fue un fallback y no una lectura.
+async function resolveMediaLanguage(orgId, sKey, dbPhone) {
+    const valido = l => (l && IDIOMAS_SOPORTADOS.includes(l)) ? l : null;
+
+    const enSesion = valido(userSessions.get(sKey)?.language);
+    if (enSesion) return enSesion;
+
+    const enBuffer = (messageBuffers.get(sKey)?.texts || []).join('\n').trim();
+    if (enBuffer) {
+        const detectado = valido(detectLanguage(enBuffer));
+        if (detectado) {
+            logger.info('media_idioma_del_buffer', { orgId, telefono: dbPhone, idioma: detectado });
+            return detectado;
+        }
+    }
+
+    try {
+        const contact = await findByPhone(orgId, dbPhone);
+        if (contact?.language_source === 'observed') {
+            const deFicha = valido(contact.language);
+            if (deFicha) {
+                logger.info('media_idioma_de_ficha', { orgId, telefono: dbPhone, idioma: deFicha });
+                return deFicha;
+            }
+        }
+    } catch (e) {
+        logger.warn('media_idioma_ficha_error', { orgId, telefono: dbPhone, error: e.message });
+    }
+
+    logger.info('media_idioma_sin_resolver', { orgId, telefono: dbPhone });
+    return null;
+}
+
 async function flushBuffer(sKey) {
     const buffer = messageBuffers.get(sKey);
     if (!buffer || buffer.texts.length === 0) return;
@@ -5798,7 +5855,7 @@ async function handleIncomingMessage(client, message, orgId) {
             // escrito la clienta: responderlo sería spam, ahí el silencio es lo correcto.
             const kind = classifyIncomingMedia(message);
             if (getOrgType(orgId) === 'salon' && kind !== 'system') {
-                const language = userSessions.get(sKey)?.language || null;
+                const language = await resolveMediaLanguage(orgId, sKey, dbPhone);
                 logger.info('media_no_soportada', { orgId, telefono: userPhone, kind });
                 // Dejamos rastro en el panel: antes estos mensajes no existían en el historial.
                 saveMessage(orgId, {
@@ -6063,5 +6120,7 @@ module.exports = {
         // Solo para introspección en tests (no usar en producción):
         getSession: (orgId, userPhone) => userSessions.get(sessionKey(orgId, userPhone)),
         getBuffer: (orgId, userPhone) => messageBuffers.get(sessionKey(orgId, userPhone)),
+        userSessions, sessionKey,
+        resolveMediaLanguage: (orgId, userPhone, dbPhone) => resolveMediaLanguage(orgId, sessionKey(orgId, userPhone), dbPhone),
         messageBuffers, BUFFER_DELAY_MS, flushBuffer: (orgId, userPhone) => flushBuffer(sessionKey(orgId, userPhone)) },
 };
