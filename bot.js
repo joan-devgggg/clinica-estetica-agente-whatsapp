@@ -3799,6 +3799,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         };
 
         session.history.push({ role: 'user', content: sanitized, ts: Date.now() });
+        // Las fotos que llegaron mientras esto se cocía van DESPUÉS de su texto, que es el
+        // orden real en el que ocurrieron (Michal: texto 11:04:54.230, foto 11:04:54.938).
+        const mediaDrenados = drainPendingMediaTurns(sKey, session);
+        if (mediaDrenados) logger.info('media_turnos_al_historial', { orgId, telefono: userPhone, turnos: mediaDrenados });
         incrementMetric('userReplied');
 
         try { await (await client.getChatById(userPhone)).sendStateTyping(); } catch {}
@@ -5666,6 +5670,46 @@ async function processMessageCore(client, message, userPhone, userText, messageK
 }
 
 // ─── Buffer flush: combina mensajes acumulados y los procesa ────────────────
+// ─── El turno de la foto tiene que llegarle al LLM ───────────────────────────
+// La rama de media contesta y hace `return` antes del buffer, así que el modelo no se entera
+// de nada: el placeholder `[image]` se escribe con saveMessage —que va a la tabla `messages`,
+// o sea AL PANEL— y la respuesta fija sale por sendWithDelay, que tampoco toca el historial.
+// El historial que consume el prompt es session.history, otro array.
+//
+// Resultado el 07/08/2026: a las 11:04:54.939 le dijimos «No puedo ver fotos ni vídeos» y a
+// las 11:05:02.443 el LLM contestó a su texto con «Hi! Your hair looks beautiful 😊». Para el
+// modelo la foto no existía y nuestro aviso tampoco, así que dio por hecho que la había
+// visto. Dos mensajes seguidos, y el segundo desmintiendo al primero.
+//
+// Los turnos se guardan aquí y los drena processMessageCore en cuanto la sesión existe —en el
+// primer mensaje de una conversación la rama de media corre ANTES de que haya sesión, que es
+// justo el caso de Michal. Se anotan DESPUÉS de que el envío no haya lanzado: escribir en el
+// historial que dijimos algo que no salió sería inventarse una conversación.
+const pendingMediaHistory = new Map();
+const MAX_PENDING_MEDIA_TURNS = 6;
+
+function notePendingMediaTurn(sKey, kind, avisoEnviado) {
+    if (!sKey) return;
+    const turnos = pendingMediaHistory.get(sKey) || [];
+    const ts = Date.now();
+    // El marcador es para el modelo, no para la clienta: dice qué llegó y qué no podemos
+    // hacer con ello, para que no dé por visto lo que nadie ha visto.
+    turnos.push({ role: 'user', content: `[la clienta ha enviado ${kind === 'image' ? 'una foto' : `un ${kind}`}; no puedes verlo]`, ts });
+    if (avisoEnviado) turnos.push({ role: 'assistant', content: avisoEnviado, ts });
+    pendingMediaHistory.set(sKey, turnos.slice(-MAX_PENDING_MEDIA_TURNS));
+}
+
+function drainPendingMediaTurns(sKey, session) {
+    const turnos = pendingMediaHistory.get(sKey);
+    if (!turnos?.length) return 0;
+    pendingMediaHistory.delete(sKey);
+    // Una foto de hace hora y media no explica el turno de ahora, y meterla desordenaría un
+    // historial que el modelo lee como una conversación seguida.
+    const frescos = turnos.filter(t => Date.now() - t.ts < SESSION_TIMEOUT);
+    for (const t of frescos) session.history.push(t);
+    return frescos.length;
+}
+
 // ─── ¿En qué idioma le contestamos a una foto? ───────────────────────────────
 // El aviso de "no puedo ver fotos" salía SIEMPRE en castellano cuando no había sesión en
 // RAM — y en el primer mensaje de una conversación NUNCA la hay: la sesión se crea dentro de
@@ -5868,7 +5912,11 @@ async function handleIncomingMessage(client, message, orgId) {
                     logger.info('media_ignorada_lista_negra', { orgId, telefono: userPhone, kind });
                     return;
                 }
-                await sendWithDelay(client, userPhone, unsupportedMediaMsg(kind, language), orgId, dbPhone);
+                const aviso = unsupportedMediaMsg(kind, language);
+                await sendWithDelay(client, userPhone, aviso, orgId, dbPhone);
+                // Que el LLM se entere: sin esto contesta al texto de al lado como si hubiera
+                // visto la foto ("Your hair looks beautiful", 11:05:02 del 07/08/2026).
+                notePendingMediaTurn(sKey, kind, aviso);
             } else if (message.hasMedia) {
                 // San Remo: literal exacto de siempre (regla de oro, comportamiento sin cambios).
                 await sendWithDelay(client, userPhone, 'Gracias por tu mensaje 😊 Solo proceso texto y audios. Si tienes alguna duda, escríbeme.', orgId, dbPhone);
@@ -6121,6 +6169,7 @@ module.exports = {
         getSession: (orgId, userPhone) => userSessions.get(sessionKey(orgId, userPhone)),
         getBuffer: (orgId, userPhone) => messageBuffers.get(sessionKey(orgId, userPhone)),
         userSessions, sessionKey,
+        notePendingMediaTurn, drainPendingMediaTurns, pendingMediaHistory,
         resolveMediaLanguage: (orgId, userPhone, dbPhone) => resolveMediaLanguage(orgId, sessionKey(orgId, userPhone), dbPhone),
         messageBuffers, BUFFER_DELAY_MS, flushBuffer: (orgId, userPhone) => flushBuffer(sessionKey(orgId, userPhone)) },
 };
