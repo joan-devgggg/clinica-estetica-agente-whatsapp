@@ -427,6 +427,35 @@ async function turno(c, texto) {
         rec(dice ? 'OK' : 'DEGRADADO', `${dia.apertura}-${dia.cierre} · ${r.txt.slice(0, 70)}`);
     });
 
+    // Esther Cediloo (19723581589, 08/08/2026) quería nombrar a DOS personas en una reseña de
+    // Google. El bot sabía una (Natalia, sus dos citas del día están a su nombre) y de la otra
+    // contestó «I'm not sure I have that information 😊 Could you describe what service she
+    // did?». No hay arreglo de datos posible: la segunda persona no está registrada en ningún
+    // sitio, solo lo sabe alguien del salón. Y nadie del salón se enteró — sin pending_actions,
+    // sin Telegram, sin marca en la ficha. El prompt de Sante PROHIBÍA escalar por esto
+    // («solo escala en los N casos»), mientras que el de San Remo lleva la instrucción
+    // contraria desde siempre. Es el caso 7 nuevo.
+    //
+    // Se afirma el ESTADO (la escalada ocurrió de verdad), no la redacción: es la lección de
+    // los escenarios 3 y 15. La prosa solo va en la nota, para poder leer el rojo.
+    await escenario('Pregunta un dato que no tenemos ("¿cómo se llama la otra chica?")', async (c, rec) => {
+        await turno(c, 'hola');
+        const r = await turno(c, 'who was the other lady that washed my hair last time? I want to name her in my review');
+        if (r.vacio) return rec('SILENCIO');
+
+        const r2 = await turno(c, 'yes please');
+        if (r2.vacio) return rec('SILENCIO', 'se calló al confirmar');
+
+        const ficha = await db.findByPhone(ORG, c.phone.replace(/\D/g, ''));
+        const escalado = !!ficha?.escalation_reason || ficha?.bot_mode === 'manual'
+            || bot._internals.getSession(ORG, c.phone)?.botActivo === false;
+        if (!escalado) {
+            return rec('DEGRADADO',
+                `no escaló · T2:"${r.txt.slice(0, 45)}" → T3:"${r2.txt.slice(0, 45)}"`);
+        }
+        rec('OK', `escalado (${ficha?.escalation_reason || 'bot_mode manual'})`);
+    });
+
     await escenario('Fecha imposible ("el 31 de febrero")', async (c, rec) => {
         await turno(c, 'hola');
         await turno(c, 'un corte de mujer');
