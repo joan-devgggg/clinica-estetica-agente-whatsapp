@@ -110,6 +110,7 @@ server.js              ← Punto de entrada: crea N clientes WA, arranca workers
     ├── channel-health.js  ← Aviso de canal caído: 3 fallos de plataforma seguidos
     ├── llm-health.js      ← Aviso de proveedor del modelo caído (cuenta: 1 fallo · transitorio: 3)
     ├── bot-pause-alert.js ← Bot pausado: al tirar un mensaje, y a las 2 h de apertura
+    ├── espera-alert.js    ← Alguien esperando: escalada sin resolver / entrante sin salida (1 h)
     ├── horario-apertura.js← Puro: cuánto tiempo de ATENCIÓN hay entre dos instantes
     ├── telegram.js        ← Bot admin multi-org (mismo token, admins por org)
     ├── helpers.js         ← Extracción de datos (restaurante + salón)
@@ -215,6 +216,42 @@ mensaje, un vigilante cada 10 min mira el ESTADO. Umbral: **2 h de horario de ap
 23:00 mandaría un Telegram a la 1:00. Si el salón abre con el bot ya pausado de antes, avisa
 al abrir sin esperar. "Pausado desde" = `config.updated_at` de `bot_activo`, sin columna
 nueva. Una org sin `horario` (hoy San Remo) cuenta reloj, y se dice: no se le inventa jornada.
+
+## Alguien esperando: el vigilante de esperas (`services/espera-alert.js`)
+
+Nace de la auditoría del 09/08/2026 sobre las 38 conversaciones de Sante. El agujero no era
+ningún bug: era que **cuando el bot suelta una conversación no se entera nadie**, así que los
+fallos se descubrían leyendo conversaciones tres semanas después. Dos reglas, una por cada
+puerta por la que alguien acaba esperando: **escalada sin resolver** y **entrante sin salida**.
+
+**El umbral es 60 minutos de APERTURA, y de dónde sale es lo único que hay que recordar.** De
+213 entrantes, 199 se contestaron en menos de 20 s (p50 9,6 · p95 13,1 · p99 16,0 · máx 18) y
+los otros 14 no se contestaron nunca o tardaron horas. Entre 18 s y 236 min **no hay nada**:
+no es una cola larga, son dos poblaciones a cuatro órdenes de magnitud. O sea que la
+distribución **no elige el número** — cualquier valor entre 1 y ~200 min da 0 falsos positivos
+y caza los 14. Lo elige la jornada, que es un dato editable (`config.horario`, hoy 9 h): con
+120 min, toda espera que empiece después de las 17:00 se va al día siguiente; con 60, solo la
+de después de las 18:00. Olga escaló un viernes a las 17:42 con 78 minutos de jornada por
+delante. **Un solo umbral para las dos reglas**: son la misma pregunta por dos puertas.
+
+Se mide en horario de atención por lo mismo que `bot-pause-alert` (un Telegram de madrugada es
+cómo se silencian los avisos), y quien escribió de noche o en domingo no espera otra hora: se
+avisa al abrir (`vieneDeAntesDeAbrir`, el mismo predicado con nombre sin sujeto).
+
+**Lo que NO avisa es la mitad del diseño:** con el bot pausado para la org calla —ahí *todas*
+se quedan sin responder y `bot-pause-alert` ya lo dice mejor y una vez—; una clienta con
+escalada abierta recibe UN aviso y no dos; lista negra, porque ese silencio es deliberado; y
+más allá de **7 días** no hay nadie esperando sino una conversación muerta (el mismo número
+con el que `auto-return` la da por terminada — sin él, el primer arranque desentierra meses).
+
+El texto se escribe para actuar **sin abrir el panel**: quién, desde cuándo en hora de pared,
+cuánto lleva en tiempo de salón abierto, qué dijo, y un enlace `wa.me`. Los motivos se dicen
+en español corriente y uno desconocido se enseña crudo, porque inventarle traducción es peor.
+
+Las dos lecturas van con `assertRead` y **no** reutilizan `getPendingActions`, que se traga el
+`error` de Supabase: una lectura fallida se leería como "no hay ninguna escalada pendiente".
+Un vigilante ciego es peor que ninguno, porque además tranquiliza. (`getPendingActions` sigue
+igual: es de otro camino.)
 
 ## Retorno automático a `auto` tras silencio (`services/auto-return.js`)
 
@@ -370,6 +407,49 @@ sin servicio se **ofrece** una persona y se espera el «sí» (`pendingEscalatio
 maquinaria que ya existía), porque los casos 1-6 del prompt no escalan sin confirmación.
 `pendingEscalation` se arma a mano y no vía `offersHumanHandover`, que solo reconoce el
 castellano: para una clienta rusa la oferta se habría quedado colgando.
+
+### Las fechas también se inventan, y no las miraba nadie
+
+Ludmila Zarahovich (03/08/2026) pidió el 28 de agosto, el bot le ofreció «el 27, 29 o 30» y
+luego negó los tres, uno por turno. Una persona le creó a mano la cita del 28 —el día que
+pidió— con el servicio de más ticket del periodo. **Las tres redes de horas quedan exoneradas**:
+no hubo ni una `HH:MM` en toda la conversación y `respondsWithInventedSlots` sale en su primera
+línea con `mentioned.length === 0`. El agujero era de unidad, no de cobertura: se vigilaban las
+horas y nadie las fechas, cuando una cita son las dos cosas.
+
+`respondsWithInventedDates` tiene la misma forma que su gemela (basta con que UNA fecha
+mencionada tenga respaldo) y **dos exenciones, que son la parte que importa** — la lección de
+Olga es que una red demasiado ancha se come el único mensaje correcto:
+
+1. la fecha de una cita que la clienta YA tiene no sale de `availableSlots` y es legítima;
+2. declarar que no hay hueco en **UNA** fecha es correcto, no es una oferta. El límite de una
+   es lo que separa la negación honesta del mensaje de Ludmila, que negaba una y ofrecía tres.
+
+`extractMentionedDates` lee **todas** las fechas y en los cuatro idiomas (el bot responde en el
+de ella). La enumeración lleva coma **y** conjunción —«27, 29 o 30»— y quedarse en la coma
+pierde el último, la misma trampa de `extractLooseClockHours`; en inglés el día va detrás del
+mes; los límites de palabra van a mano porque `\b` es ASCII y sin eso «mayo» casa dentro de
+«mayoría»; y un día suelto sin mes se deja fuera, que choca con elegir hueco por número.
+
+### Cancelar no lo ejecuta el modelo
+
+Celeste González (06/08/2026) reservó a las 11:03:59 y a las 11:04:51 escribió «No entiendo» y
+«Cancélala», confundida por el bloque de promoción del mensaje de confirmación. **El bot se la
+canceló 60 s después de crearla, sin preguntar** (`last_change.by = 'bot'`). Siete minutos
+después seguía queriendo el servicio.
+
+La guarda existía y no falló: el camino determinista recita la cita y espera un sí desde el
+04/08. Lo que había eran **dos caminos para la misma acción y solo uno con guarda** — el
+`accion` del modelo se descartaba con `salon && !session.appointmentId`, o sea únicamente
+cuando no había nada que cancelar. Ahora el `accion` pasa por `cancelarConConfirmacion`, y la
+guarda vive **dentro de `handleAppointmentAction`** (el salón no cancela por ahí, punto) para
+que un camino nuevo dentro de seis meses no pueda reabrirlo. San Remo intacto, con test.
+
+Y el hallazgo lateral que lo hizo posible: `detectCancelRequest` **no reconocía «Cancélala»**.
+Su lista tenía el enclítico `-me` pero no `-la/-lo`, así que el turno no lo cogió la capa
+determinista. Los sufijos van enumerados y no con comodín porque «cancelada» es *nuestro* acuse
+y «cancelación» es preguntar por la política — los dos tienen test de falso positivo, igual que
+«cáncer» y «canela».
 
 ### Si se escala, se dice
 

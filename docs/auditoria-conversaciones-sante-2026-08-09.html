@@ -1,0 +1,639 @@
+<title>Sante · las 38 conversaciones, leídas enteras</title>
+<style>
+  :root{
+    --ground:#FAF8F5; --surface:#FFFFFF; --sunk:#F3EFE9;
+    --ink:#1B1917; --ink-2:#413B35; --muted:#6B645C;
+    --line:#E4DDD3; --line-soft:#EFE9E0;
+    --accent:#2E5E5A; --accent-soft:#E2EDEB;
+    --crit:#A32B22; --crit-bg:#F7E7E4;
+    --warn:#8A5A0F; --warn-bg:#F7EEDC;
+    --ok:#2F6140;  --ok-bg:#E6F0E7;
+    --serif: Georgia,'Iowan Old Style','Source Serif 4',Palatino,serif;
+    --sans: system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    --mono: ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ground:#151412; --surface:#1D1B18; --sunk:#232019;
+      --ink:#EDE7DF; --ink-2:#C9C1B7; --muted:#968E84;
+      --line:#332E28; --line-soft:#28241F;
+      --accent:#71B4AC; --accent-soft:#1E2E2C;
+      --crit:#E08B81; --crit-bg:#33201D;
+      --warn:#D9AC5E; --warn-bg:#302615;
+      --ok:#84BC97;  --ok-bg:#1C2A20;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#151412; --surface:#1D1B18; --sunk:#232019;
+    --ink:#EDE7DF; --ink-2:#C9C1B7; --muted:#968E84;
+    --line:#332E28; --line-soft:#28241F;
+    --accent:#71B4AC; --accent-soft:#1E2E2C;
+    --crit:#E08B81; --crit-bg:#33201D;
+    --warn:#D9AC5E; --warn-bg:#302615;
+    --ok:#84BC97;  --ok-bg:#1C2A20;
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--ground); color:var(--ink);
+    font-family:var(--sans); font-size:16px; line-height:1.6;
+    margin:0; padding:0 20px 96px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1020px; margin:0 auto}
+  .prose{max-width:68ch}
+
+  /* ── cabecera ── */
+  header{padding:64px 0 32px; border-bottom:2px solid var(--ink)}
+  .eyebrow{
+    font-family:var(--mono); font-size:11px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--accent); margin:0 0 18px;
+  }
+  h1{
+    font-family:var(--serif); font-weight:400; font-size:clamp(34px,5.2vw,52px);
+    line-height:1.08; letter-spacing:-.012em; margin:0 0 18px; text-wrap:balance;
+  }
+  .standfirst{font-size:19px; line-height:1.55; color:var(--ink-2); margin:0; max-width:60ch}
+
+  /* ── cifras ── */
+  .stats{
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+    gap:1px; background:var(--line); border:1px solid var(--line);
+    margin:32px 0 0;
+  }
+  .stat{background:var(--surface); padding:18px 20px}
+  .stat b{
+    display:block; font-family:var(--serif); font-size:34px; font-weight:400;
+    line-height:1; font-variant-numeric:tabular-nums; margin-bottom:8px;
+  }
+  .stat span{font-size:12.5px; color:var(--muted); line-height:1.35; display:block}
+
+  /* ── secciones ── */
+  section{padding:56px 0 0}
+  h2{
+    font-family:var(--serif); font-weight:400; font-size:30px; line-height:1.15;
+    letter-spacing:-.01em; margin:0 0 8px; text-wrap:balance;
+  }
+  h2 + .lead{color:var(--muted); font-size:15.5px; margin:0 0 28px; max-width:64ch}
+  h3{font-family:var(--sans); font-size:14px; font-weight:650; letter-spacing:.01em; margin:26px 0 8px}
+  p{margin:0 0 14px}
+  a{color:var(--accent)}
+  strong{font-weight:650}
+
+  .rule{height:1px; background:var(--line); border:0; margin:0}
+
+  /* ── fichas de causa ── */
+  .cause{
+    background:var(--surface); border:1px solid var(--line);
+    border-left:4px solid var(--sev); margin:0 0 22px; overflow:hidden;
+  }
+  .cause[data-sev="crit"]{--sev:var(--crit)}
+  .cause[data-sev="warn"]{--sev:var(--warn)}
+  .cause[data-sev="ok"]{--sev:var(--ok)}
+
+  .cause-head{padding:22px 26px 18px; display:flex; gap:18px; align-items:flex-start}
+  .rank{
+    font-family:var(--serif); font-size:30px; line-height:1; color:var(--sev);
+    font-variant-numeric:tabular-nums; flex:none; padding-top:2px;
+  }
+  .cause-title{flex:1; min-width:0}
+  .cause-title h3{
+    font-family:var(--serif); font-weight:400; font-size:23px; line-height:1.2;
+    margin:0 0 6px; letter-spacing:-.005em; color:var(--ink); text-wrap:balance;
+  }
+  .cause-title p{margin:0; color:var(--muted); font-size:14.5px}
+
+  .chip{
+    display:inline-block; font-family:var(--mono); font-size:10.5px; letter-spacing:.1em;
+    text-transform:uppercase; padding:4px 9px; border-radius:2px; white-space:nowrap; flex:none;
+  }
+  .chip.vivo{background:var(--crit-bg); color:var(--crit)}
+  .chip.parcial{background:var(--warn-bg); color:var(--warn)}
+  .chip.hecho{background:var(--ok-bg); color:var(--ok)}
+
+  .metrics{
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+    gap:1px; background:var(--line-soft); border-top:1px solid var(--line-soft);
+    border-bottom:1px solid var(--line-soft);
+  }
+  .metric{background:var(--surface); padding:13px 26px}
+  .metric dt{
+    font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--muted); margin:0 0 5px;
+  }
+  .metric dd{margin:0; font-size:14.5px; line-height:1.35; font-weight:550}
+
+  .cause-body{padding:20px 26px 24px}
+  .cause-body h4{
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--accent); margin:20px 0 9px; font-weight:600;
+  }
+  .cause-body h4:first-child{margin-top:0}
+  .cause-body p, .cause-body li{font-size:15px}
+  ul{margin:0 0 4px; padding-left:20px}
+  li{margin:0 0 8px}
+  li::marker{color:var(--muted)}
+
+  q{quotes:"«" "»"; font-style:italic; color:var(--ink-2)}
+  code{font-family:var(--mono); font-size:.87em; background:var(--sunk); padding:1px 5px; border-radius:2px}
+  .who{font-family:var(--mono); font-size:11.5px; color:var(--muted); letter-spacing:.01em}
+
+  /* ── caja de abiertos ── */
+  .open{background:var(--crit-bg); border:1px solid var(--crit); padding:24px 26px; margin:0 0 4px}
+  .open h2{margin-bottom:4px}
+  .open ol{margin:16px 0 0; padding-left:20px}
+  .open li{margin-bottom:12px; font-size:15px}
+
+  /* ── tabla ── */
+  .scroll{overflow-x:auto; border:1px solid var(--line); background:var(--surface)}
+  table{border-collapse:collapse; width:100%; min-width:760px; font-size:13.5px}
+  th,td{text-align:left; padding:10px 14px; border-bottom:1px solid var(--line-soft); vertical-align:top}
+  th{
+    font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--muted); font-weight:600; background:var(--sunk); position:sticky; top:0;
+  }
+  tbody tr:last-child td{border-bottom:0}
+  td.d{font-family:var(--mono); font-size:12px; color:var(--muted); white-space:nowrap}
+  td.n{font-weight:600; white-space:nowrap}
+  .tag{font-family:var(--mono); font-size:10px; letter-spacing:.06em; padding:2px 6px; border-radius:2px; white-space:nowrap}
+  .t-ok{background:var(--ok-bg); color:var(--ok)}
+  .t-bad{background:var(--crit-bg); color:var(--crit)}
+  .t-mid{background:var(--warn-bg); color:var(--warn)}
+
+  footer{margin-top:64px; padding-top:24px; border-top:1px solid var(--line); color:var(--muted); font-size:13.5px}
+
+  @media (max-width:640px){
+    .cause-head{flex-wrap:wrap; gap:12px}
+    .rank{font-size:24px}
+    .metric,.cause-body,.cause-head,.open{padding-left:18px; padding-right:18px}
+  }
+</style>
+
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">Auditoría · 9 de agosto de 2026 · solo lectura</p>
+  <h1>Las 38 conversaciones de Sante, leídas enteras</h1>
+  <p class="standfirst">
+    Todo lo que salió mal desde el punto de vista de la clienta, agrupado por causa y ordenado
+    por daño. Nueve días de tráfico real, sin muestreo. Ninguna escritura: ni en Supabase ni en el código.
+  </p>
+
+  <div class="stats">
+    <div class="stat"><b>38</b><span>conversaciones · 392 mensajes<br>31 jul – 9 ago</span></div>
+    <div class="stat"><b>29</b><span>de clientas reales (el resto: pruebas, spam, autocontestadores)</span></div>
+    <div class="stat"><b>20</b><span>con al menos un fallo que la clienta vio</span></div>
+    <div class="stat"><b>6</b><span>citas que tuvo que cerrar una persona a mano</span></div>
+    <div class="stat"><b>3</b><span>conversaciones abiertas ahora mismo, esperando</span></div>
+  </div>
+</header>
+
+<section>
+  <div class="open">
+    <h2>Antes de decidir nada: tres cosas están esperando hoy</h2>
+    <p class="lead" style="margin-bottom:0">Esto no es deuda técnica. Son personas sin respuesta.</p>
+    <ol>
+      <li><strong>Olga Yarmak</strong> <span class="who">34674987146</span> — escaló el 7 de agosto a las 15:42. Su último mensaje fue <q>me niego a hablar con un robot, solo con personas</q>. La ficha sigue en manual y <strong>lleva dos días sin que nadie le escriba</strong>. La fila de <code>pending_actions</code> sigue en <code>pending</code>.</li>
+      <li><strong>34656332064</strong> — pidió un alisado permanente el 8 de agosto. El bot escaló bien y le dijo <q>en breve una de nuestras especialistas se pondrá en contacto contigo</q>. Han pasado <strong>33 horas</strong> y no ha salido ningún mensaje. También sigue en <code>pending</code>.</li>
+      <li><strong>34665015509</strong> — ayer a las 17:44 escribió <q>Hola, ¿puedes cambiarme la cita al miércoles?</q> y el bot le contestó <q>No me consta ninguna cita reservada a tu nombre</q>. No tiene ninguna cita en la agenda. O se equivoca de salón, o cree que reservó algo que nunca se guardó. Nadie ha mirado.</li>
+    </ol>
+  </div>
+</section>
+
+<section>
+  <h2>Sí, hay una quinta familia</h2>
+  <p class="lead">Y es la que más daño hace de las seis.</p>
+  <div class="prose">
+    <p>
+      Las cuatro conocidas siguen ahí, pero la mayoría de lo que encontré no encaja limpiamente
+      en ninguna. El patrón repetido es otro: <strong>lo que el modelo dice y lo que la máquina
+      hace son dos canales separados, y nada obliga a que coincidan.</strong>
+    </p>
+    <p>
+      El modelo ofrece tres días que nadie consultó. Promete pasar con una persona sin que se cree
+      la escalada. Dice <q>te apunto</q> sin que se escriba nada. Da garantías técnicas sobre un
+      tratamiento de 260 € que no salen de ningún dato.
+    </p>
+    <p>
+      La respuesta hasta ahora ha sido una red por cada frase que salió mal:
+      <code>respondsWithInventedSlots</code>, <code>unbackedBookingClaim</code>,
+      <code>proposesTimingWithoutService</code>, <code>announcesHumanHandover</code>,
+      <code>ensureHandoverAcknowledged</code>, <code>llmClaimsBooked</code>… Ya son ocho, cada una
+      cubre <em>una forma de frase en una dirección</em>, y cada conversación nueva encuentra la
+      forma que nadie escribió todavía. Las tres redes de horas miran <code>HH:MM</code>; Ludmila
+      cayó por <strong>días</strong>, que ninguna mira.
+    </p>
+    <p>
+      Eso ya no es una lista de bugs. Es la falta de un contrato: qué le está permitido afirmar al
+      modelo, y qué tiene que estar respaldado por estado antes de salir.
+    </p>
+  </div>
+</section>
+
+<section>
+  <h2>Las seis causas, por daño</h2>
+  <p class="lead">
+    «Coste de arreglo» es tiempo de trabajo, no dificultad conceptual.
+    «Vivo» significa que lo he comprobado contra el código de hoy y sigue estando.
+  </p>
+
+  <!-- 1 -->
+  <article class="cause" data-sev="crit">
+    <div class="cause-head">
+      <div class="rank">1</div>
+      <div class="cause-title">
+        <h3>El modelo afirma y la máquina no lo respalda</h3>
+        <p>La quinta familia. Seis conversaciones, cuatro formas distintas del mismo fallo.</p>
+      </div>
+      <span class="chip vivo">Vivo</span>
+    </div>
+    <dl class="metrics">
+      <div class="metric"><dt>Conversaciones</dt><dd>6 de 29</dd></div>
+      <div class="metric"><dt>Coste al salón</dt><dd>1 cita perdida · 2 rescatadas a mano · 2 clientas mal informadas</dd></div>
+      <div class="metric"><dt>Coste de arreglo</dt><dd>2 parches de medio día · el contrato, 2–3 días</dd></div>
+      <div class="metric"><dt>Qué es</dt><dd>2 bugs concretos dentro de un diseño que falta</dd></div>
+    </dl>
+    <div class="cause-body">
+      <h4>Lo que se ve</h4>
+      <ul>
+        <li>
+          <strong>Ludmila Zarahovich</strong> <span class="who">3 ago</span> pidió el 28 de agosto con Veronika.
+          El bot: <q>no hay huecos el 28, los más cercanos son el 27, 29 o 30</q>. Ella eligió el 27 → <q>no hay huecos el 27,
+          los más cercanos el 29 o el 30</q>. Eligió el 29 → <q>tampoco hay el 29, el más cercano es el 4 de agosto o el 11</q>.
+          <strong>Le ofreció tres días y negó los tres.</strong> Una hora después, una persona le creó a mano la cita del 28
+          — el día que ella había pedido desde el principio. Es la cita más cara del periodo: <code>Color raíz + Ampolla + Retocar + Mechas 3</code>.
+        </li>
+        <li>
+          <strong>Celeste González</strong> <span class="who">6 ago</span> reservó una consulta a las 11:03:59.
+          A las 11:04:51 escribió <q>No entiendo</q> y <q>Cancélala</q> — confundida por el bloque de promoción del mensaje de confirmación.
+          El bot <strong>la canceló a los 60 segundos, sin preguntar</strong>. Siete minutos después ella seguía queriendo el servicio:
+          <q>Me gustaría sacarme el color negro del cabello</q>. No hay cita.
+        </li>
+        <li>
+          <strong>Estefania Sanz</strong> <span class="who">3 ago</span> y <strong>Celeste</strong> recibieron
+          <q>¿Te paso con alguien del salón?</q>, dijeron que sí, y <strong>no se creó ninguna escalada</strong>.
+          A Estefania el bot le contestó <q>¿Qué servicio necesitas hoy?</q>. En todo el periodo hay 4 escaladas; ninguna es de ellas.
+        </li>
+        <li>
+          <strong>Tania Daza</strong> <span class="who">2 ago</span>: <q>te apunto para el lunes al mediodía</q>. No se apuntó nada.
+        </li>
+        <li>
+          <strong>Nastya Nizenko</strong> <span class="who">9 ago, hoy</span> preguntó si el alisado le cambiaría el color y si duraría
+          después de lavarse. El bot: <q>No, el color no cambiará</q> y <q>Sí, el pelo seguirá liso incluso después de lavarlo</q>.
+          Dos garantías sobre un servicio de 260 € que no salen de ningún dato del salón.
+        </li>
+      </ul>
+
+      <h4>Por qué pasa</h4>
+      <p>
+        Dos cosas distintas, y conviene no mezclarlas. La de Celeste es un <strong>bug localizable</strong>:
+        el camino determinista de cancelar recita la cita y espera un sí (<code>pendingCitaAccion</code>), pero
+        el <code>accion: 'cancelar'</code> que devuelve el modelo entra por otra puerta
+        (<code>bot.js:4980</code>) que solo comprueba que exista <code>session.appointmentId</code> — y ella
+        acababa de reservar, así que existía. <strong>Dos caminos para la misma acción y solo uno lleva la guarda.</strong>
+      </p>
+      <p>
+        Lo de Ludmila es el <strong>agujero de diseño</strong>: las redes anti-invención solo saben leer horas
+        (<code>HH:MM</code>). Un día del calendario no lo mira ninguna.
+      </p>
+
+      <h4>Qué haría falta</h4>
+      <p>
+        Lo barato primero: mandar el <code>accion</code> del modelo por la misma confirmación que el camino
+        determinista, y extender la red de invención a fechas. Eso son dos tardes y cubre los dos casos caros.
+        Lo otro —decidir qué puede afirmar el modelo sin respaldo— es una decisión de diseño que conviene
+        tomar antes de escribir la novena red.
+      </p>
+    </div>
+  </article>
+
+  <!-- 2 -->
+  <article class="cause" data-sev="crit">
+    <div class="cause-head">
+      <div class="rank">2</div>
+      <div class="cause-title">
+        <h3>Nadie vigila lo que el bot suelta</h3>
+        <p>Cuando el bot calla —bien o mal— no hay quien se entere.</p>
+      </div>
+      <span class="chip vivo">Vivo</span>
+    </div>
+    <dl class="metrics">
+      <div class="metric"><dt>Conversaciones</dt><dd>5 de 29</dd></div>
+      <div class="metric"><dt>Coste al salón</dt><dd>Clientas enfadadas, no citas. La peor cara del negocio</dd></div>
+      <div class="metric"><dt>Coste de arreglo</dt><dd>Medio día. La maquinaria ya está escrita</dd></div>
+      <div class="metric"><dt>Qué es</dt><dd>Diseño que falta, pequeño</dd></div>
+    </dl>
+    <div class="cause-body">
+      <h4>Lo que se ve</h4>
+      <ul>
+        <li><strong>Dos escaladas llevan días en <code>pending</code></strong> (Olga, 2 días; 34656332064, 33 horas). La segunda tenía un <q>en breve</q> por delante.</li>
+        <li><strong>Valeria Rivera</strong> <span class="who">1 ago</span>: el bot se quedó mudo a las 14:22, justo al ir a proponer huecos. Una persona escribió a las <strong>18:18</strong> — cuatro horas.</li>
+        <li><strong>Svetlana Yurchenko</strong> <span class="who">2 ago</span>: pidió cambiar una cita y mandó <strong>siete mensajes seguidos sin una sola respuesta</strong>. La cita la movió una persona desde el panel tres días después.</li>
+        <li><strong>Mariana Becker</strong> <span class="who">3 ago</span>: la dueña tuvo que escribirle <strong>a la 01:18 de la madrugada</strong> para deshacer una reserva equivocada del bot.</li>
+      </ul>
+
+      <h4>Por qué pasa</h4>
+      <p>
+        No hay ninguna alarma sobre una conversación parada. <code>bot-pause-alert.js</code> ya sabe medir
+        <em>horas de apertura</em> y no de reloj, y <code>alertOnce</code> ya sabe no avisar dos veces de lo mismo.
+        Lo que falta es apuntar esa maquinaria a <code>pending_actions</code> y a un entrante sin respuesta.
+      </p>
+
+      <h4>Qué haría falta</h4>
+      <p>
+        Un vigilante más, del mismo molde que los tres que ya existen: escalada sin resolver pasadas
+        <em>N</em> horas de apertura, y entrante sin salida pasadas <em>M</em>. Es la causa con mejor
+        relación daño/esfuerzo de toda la lista, y la única que además <strong>tapa las otras cinco</strong>:
+        con esto puesto, cualquier fallo futuro lo ve alguien el mismo día.
+      </p>
+    </div>
+  </article>
+
+  <!-- 3 -->
+  <article class="cause" data-sev="warn">
+    <div class="cause-head">
+      <div class="rank">3</div>
+      <div class="cause-title">
+        <h3>El servicio se habla, se pone precio, y no aterriza en la sesión</h3>
+        <p>La familia del escenario 3, que ya estaba documentada. Sigue siendo la más frecuente.</p>
+      </div>
+      <span class="chip parcial">Parcial</span>
+    </div>
+    <dl class="metrics">
+      <div class="metric"><dt>Conversaciones</dt><dd>4 de 29</dd></div>
+      <div class="metric"><dt>Coste al salón</dt><dd>1 cita perdida (90 €) · 1 servicio equivocado · bucles</dd></div>
+      <div class="metric"><dt>Coste de arreglo</dt><dd>Desconocido. Es donde hay que gastar el diagnóstico</dd></div>
+      <div class="metric"><dt>Qué es</dt><dd>Bug, sin localizar del todo</dd></div>
+    </dl>
+    <div class="cause-body">
+      <h4>Lo que se ve</h4>
+      <ul>
+        <li>
+          <strong>Mariana Becker</strong> <span class="who">2 ago</span> pidió que la valorase alguien que supiera de rubios.
+          El bot le propuso la Consulta con Yulia, ella dijo que sí, eligió miércoles… y entonces:
+          <q>Para mirarte los huecos primero necesito saber qué servicio quieres</q>. <strong>Tres veces.</strong>
+          Acabó rindiéndose y diciendo <q>Hidratación</q>. Le reservó una <strong>Hidratación de 110 € con Natalia</strong>
+          en vez de la valoración con la tricóloga. Eso es lo que obligó al mensaje de disculpa de la 01:18.
+        </li>
+        <li>
+          <strong>Estefania Sanz</strong> <span class="who">3–4 ago</span>: el bot le dio precio y duración
+          (<q>corte mujer con secado, 40 €, 45 minutos</q>) y después le preguntó qué servicio quería
+          <strong>cuatro veces más, a lo largo de dos días</strong>. Nunca se cerró por WhatsApp; vino igual el día 8.
+        </li>
+        <li>
+          <strong>Gabriela Completo</strong> <span class="who">3 ago</span>: eligió las 17:30, el bot pidió confirmación
+          y ahí se quedó. Cuatro horas después le contestó con la pregunta genérica del día, y cuando volvió a
+          ofrecerle huecos <strong>la estilista había cambiado de Irina a Natalia sin decir nada</strong>. La cita
+          la creó una persona y acabó cancelada.
+        </li>
+      </ul>
+
+      <h4>Por qué pasa — con una salvedad honesta</h4>
+      <p>
+        <strong>No es la rehidratación.</strong> Lo comprobé: <code>selectedService</code> sí viaja en
+        <code>buildSessionExtra</code> desde junio. Y el detector tampoco falla con estas frases: probado
+        contra el catálogo real de hoy, <code>extractServiceFromText</code> resuelve
+        <q>Corte mujer con secado</q> → <code>Mujer y secado</code> y <q>Consulta de valoración</q> → <code>Consulta</code>.
+      </p>
+      <p>
+        O sea que <strong>el fallo está aguas arriba del detector</strong>: en qué texto se le pasa y en qué
+        turnos se le llega a llamar. Los arreglos del 9 de agosto (<code>ac51bc9</code> el detector en cuatro
+        idiomas, <code>53f1e36</code> sin servicio no se pregunta el día) atacan esta familia y tapan el caso de
+        Michal, que era inglés. <strong>Los tres de arriba son en castellano y no los tapa ninguno de los dos.</strong>
+        Antes de tocar nada aquí hace falta terminar el diagnóstico.
+      </p>
+    </div>
+  </article>
+
+  <!-- 4 -->
+  <article class="cause" data-sev="warn">
+    <div class="cause-head">
+      <div class="rank">4</div>
+      <div class="cause-title">
+        <h3>La ventana del buffer parte turnos — y no es un caso aislado</h3>
+        <p>Se decidió no arreglarlo el 9 de agosto con un caso sobre la mesa. Son siete.</p>
+      </div>
+      <span class="chip vivo">Vivo</span>
+    </div>
+    <dl class="metrics">
+      <div class="metric"><dt>Conversaciones</dt><dd>7 de 29</dd></div>
+      <div class="metric"><dt>Coste al salón</dt><dd>Parece descuidado. Ninguna cita perdida demostrable</dd></div>
+      <div class="metric"><dt>Coste de arreglo</dt><dd>Alto: cambia el diseño y cuesta llamadas al modelo</dd></div>
+      <div class="metric"><dt>Qué es</dt><dd>Dimensionado, no bug</dd></div>
+    </dl>
+    <div class="cause-body">
+      <h4>Lo que se ve</h4>
+      <p>
+        <code>BUFFER_DELAY_MS</code> son 5 segundos y el modelo tarda entre 8 y 12: lo que la clienta escriba
+        en ese hueco se contesta por separado. En el barrido aparece en siete conversaciones, no en una:
+        <strong>Alicia Medio</strong> (el bot le contesta al servicio antes que al nombre, en orden invertido),
+        <strong>Valeria Rivera</strong>, <strong>Gabriela Completo</strong> (dos respuestas seguidas a lo mismo),
+        <strong>Michal</strong>, <strong>Olga</strong>, <strong>Celeste</strong> y <strong>Esther</strong>.
+      </p>
+      <h4>Lo que cambia respecto a la decisión anterior</h4>
+      <p>
+        Nada del diagnóstico —sigue siendo dimensionado, y reencolar el turno sigue costando lo mismo—.
+        Lo que cambia es la frecuencia: se descartó sobre <strong>n=1</strong> y el dato real es
+        <strong>7 de 29 conversaciones, casi una de cada cuatro</strong>. Con eso encima de la mesa la decisión
+        puede seguir siendo «no», pero merece tomarse otra vez.
+      </p>
+    </div>
+  </article>
+
+  <!-- 5 -->
+  <article class="cause" data-sev="warn">
+    <div class="cause-head">
+      <div class="rank">5</div>
+      <div class="cause-title">
+        <h3>El idioma se decide con la evidencia equivocada</h3>
+        <p>Tres formas ya arregladas. Dos vivas, y una es de una campaña de 252 envíos.</p>
+      </div>
+      <span class="chip parcial">Parcial</span>
+    </div>
+    <dl class="metrics">
+      <div class="metric"><dt>Conversaciones</dt><dd>5 vivas · 3 ya arregladas</dd></div>
+      <div class="metric"><dt>Coste al salón</dt><dd>Primera impresión. Recuperable en un mensaje</dd></div>
+      <div class="metric"><dt>Coste de arreglo</dt><dd>Una hora la primera, media día la segunda</dd></div>
+      <div class="metric"><dt>Qué es</dt><dd>Bug pequeño y concreto</dd></div>
+    </dl>
+    <div class="cause-body">
+      <h4>Vivo — el botón bilingüe de la campaña decide el idioma</h4>
+      <p>
+        La respuesta rápida de la plantilla llega literalmente como
+        <q>Hola, quiero pedir cita / Привет, хочу записаться</q>. El texto trae los dos idiomas, el detector
+        elige uno, y <strong>tres hispanohablantes han recibido el saludo en ruso</strong>: Mariana Becker
+        (2 ago), 34665015509 (8 ago) y <strong>Candela (ayer)</strong>. Es un literal conocido —lo escribimos
+        nosotros en la plantilla—, así que la solución es que nunca cuente como evidencia de idioma.
+      </p>
+      <h4>Vivo — un <code>inferred</code> no aguanta un emoji</h4>
+      <p>
+        Svetlana Shapavalova, Polina Nenya e Irina Leonidovna recibieron la plantilla rusa
+        (<code>sante_verano_tratamientos_ru2</code>), contestaron <q>👍</q> y <q>👌</q>, y
+        <strong>el bot les respondió en castellano</strong> a las tres. La ficha lleva <code>ru</code> con fuente
+        <code>inferred</code>: el prompt lo anuncia como «probable» y con un mensaje sin letras el modelo se va
+        al castellano. Con una plantilla rusa recién enviada, la respuesta debería quedarse en ruso.
+      </p>
+      <h4>Ya arreglado — no perseguir</h4>
+      <p>
+        <q>Доброго дня</q> leído como ruso (1 ago) lo arregló la lista de frases ucranianas del 7 de agosto.
+        Tammy y su <q>Thursday</q> en castellano (5 ago) lo arregló ignorar el <code>'default'</code> de la ficha.
+        El aviso de <q>no puedo ver fotos</q> siempre en castellano (Michal, 7 ago) lo arregló <code>6c742c7</code>.
+      </p>
+    </div>
+  </article>
+
+  <!-- 6 -->
+  <article class="cause" data-sev="ok">
+    <div class="cause-head">
+      <div class="rank">6</div>
+      <div class="cause-title">
+        <h3>El upsell se escribe en la cita antes de que la clienta lo acepte</h3>
+        <p>Un solo caso. Pero es dinero y sillón, y es silencioso.</p>
+      </div>
+      <span class="chip vivo">Vivo</span>
+    </div>
+    <dl class="metrics">
+      <div class="metric"><dt>Conversaciones</dt><dd>1 de 29</dd></div>
+      <div class="metric"><dt>Coste al salón</dt><dd>Precio dicho ≠ servicio guardado, y tiempo de agenda de más</dd></div>
+      <div class="metric"><dt>Coste de arreglo</dt><dd>Desconocido hasta mirarlo. La comprobación, 20 minutos</dd></div>
+      <div class="metric"><dt>Qué es</dt><dd>Bug, si se confirma</dd></div>
+    </dl>
+    <div class="cause-body">
+      <h4>Lo que dicen los datos</h4>
+      <p>
+        <strong>Leonardo González</strong> <span class="who">1 ago</span>. La cita se creó a las <strong>09:54:53</strong>
+        con <code>service = "Corte niño + Exfoliación del cuero cabelludo"</code>. El mensaje de confirmación salió a las
+        <strong>09:54:55</strong> diciendo <q>Corte niño con Irina · 25 € · 60 minutos</q> y ofreciendo la exfoliación
+        al final: <q>¿Te lo añado?</q>. Él contestó <q>No gracias</q> a las 09:55:28.
+        La fila tiene <code>last_change</code> y <code>updated_by</code> en <code>null</code>: <strong>nunca se
+        volvió a tocar</strong>. Nació con la exfoliación dentro, dos segundos antes de que se la ofrecieran, y el «no» no la quitó.
+      </p>
+      <h4>La salvedad</h4>
+      <p>
+        <code>last_change</code> lo escribe un trigger que llegó con la migración 033. Si esa migración se aplicó
+        después del 1 de agosto, el <code>null</code> no prueba que no hubiera un UPDATE — solo que el trigger no
+        estaba. <strong>Eso hay que comprobarlo antes de dar el diagnóstico por bueno</strong>, y es lo primero
+        que haría al abrir este hilo.
+      </p>
+    </div>
+  </article>
+</section>
+
+<section>
+  <h2>Lo que yo no arreglaría</h2>
+  <p class="lead">Pasó, es real, y aun así no vale lo que cuesta.</p>
+
+  <div class="prose">
+    <h3>Los mensajes del propio salón entrando como si fueran de la clienta</h3>
+    <p>
+      Dos conversaciones, las dos de la primera semana. En <span class="who">380672161779</span> (31 jul) el texto
+      firmado por <q>Tatiana, administradora del salón</q> entró como mensaje de la clienta, el bot le contestó
+      preguntándole por el <strong>Bizum</strong> —que es el flujo de San Remo, no el de Sante— y se abrió una
+      escalada cuyo contenido era el propio mensaje del salón. En Svetlana Yurchenko (2 ago) aparece
+      <q>Отлично. В среду на 12.00. К какому мастеру?</q> como entrante, que no es algo que pregunte una clienta.
+      <strong>No lo perseguiría:</strong> no vuelve a pasar desde el 2 de agosto, coincide con el cambio de canal a
+      360dialog, y <code>wa_message_id</code> está a <code>null</code> en todas las filas, así que ni siquiera puedo
+      distinguir un eco de un reenvío sin instrumentar. Si reaparece, entonces sí.
+    </p>
+
+    <h3>El nombre cogido de cualquier palabra</h3>
+    <p>
+      A Mariana el bot la llamó <q>rubia pero</q> en su mensaje de confirmación, sacado de <q>Soy rubia pero me han
+      hecho mechas</q>. A Gabriela le puso <q>Completo</q> de apellido, que era su respuesta a qué tipo de color quería
+      — y <strong>sigue así en la ficha hoy</strong>. Comprobado contra el código actual:
+      <code>isValidName("rubia pero")</code> ya devuelve <code>false</code>. El grueso está arreglado; lo que queda es
+      un dato sucio en una ficha, que se corrige en el panel en diez segundos. No abriría trabajo por esto.
+    </p>
+
+    <h3>La clienta que recibió el fallback del modelo</h3>
+    <p>
+      Julia Belenkaya <span class="who">5 ago</span> recibió <q>Извини, не удалось обработать</q> y no volvió a escribir.
+      Fue el día que se acabó el saldo de OpenRouter. Ya tiene su alarma desde ese mismo día
+      (<code>llm-health.js</code>, aviso al primer fallo de cuenta). <strong>No hay nada que arreglar</strong>, solo
+      constatar que costó una clienta.
+    </p>
+
+    <h3>El nombre de estilista inventado a partir de una palabra cualquiera</h3>
+    <p>
+      A Alicia el bot le dijo <q>No tengo a nadie con ese nombre en el equipo</q> cuando ella escribió su segundo
+      apellido, <q>Verdú</q>; y a 34665015509 lo mismo con <q>Para hidratación?</q>. Lo probé contra el código de hoy:
+      <code>resolveStylistMention</code> devuelve <code>none</code> para <q>Verdú</q>, <q>Completo</q>, <q>Medio</q> y
+      <q>Para hidratación?</q>. <strong>El camino determinista ya está tapado</strong> desde el 29 de julio. La frase
+      que le llegó a la de agosto la escribió el modelo por su cuenta —ese literal no existe en el código—, así que cae
+      dentro de la causa 1 y se arregla ahí o no se arregla.
+    </p>
+  </div>
+</section>
+
+<section>
+  <h2>Las 38, una por una</h2>
+  <p class="lead">Ordenadas por fecha del primer mensaje. «Cerró» dice quién acabó la cita, cuando hubo cita.</p>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>Fecha</th><th>Quién</th><th>Qué salió mal para ella</th><th>Cerró</th><th>Causa</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="d">31 jul</td><td class="n">380672161779</td><td>El texto del propio salón entra como suyo; el bot le contesta preguntando por Bizum, que Sante no usa</td><td>—</td><td><span class="tag t-mid">no perseguir</span></td></tr>
+        <tr><td class="d">31 jul</td><td class="n">34672923401</td><td>Nada. Preguntó precio, no volvió</td><td>—</td><td><span class="tag t-ok">limpia</span></td></tr>
+        <tr><td class="d">1 ago</td><td class="n">Francesca</td><td>Nada</td><td>—</td><td><span class="tag t-ok">limpia</span></td></tr>
+        <tr><td class="d">1 ago</td><td class="n">Leonardo González</td><td>La cita nace con la exfoliación dentro, 2 s antes de ofrecérsela; dijo que no y no se quitó</td><td>bot</td><td><span class="tag t-bad">6</span></td></tr>
+        <tr><td class="d">1 ago</td><td class="n">Alicia Medio</td><td>Su apellido leído como estilista; le dice «Largo 2» a la cara; respuestas en orden invertido; quería que le vieran el pelo y el bot insiste en el día</td><td>—</td><td><span class="tag t-mid">4 · arreglado</span></td></tr>
+        <tr><td class="d">1 ago</td><td class="n">34696073110</td><td>«Доброго дня» contestado en ruso. Personal del salón probando</td><td>—</td><td><span class="tag t-ok">arreglado</span></td></tr>
+        <tr><td class="d">1 ago</td><td class="n">Valeria Rivera</td><td><strong>Cuatro horas de silencio</strong> justo al ir a proponer huecos</td><td>persona</td><td><span class="tag t-bad">2</span></td></tr>
+        <tr><td class="d">2 ago</td><td class="n">Svetlana Yurchenko</td><td>Le pide datos que acaba de dar y luego <strong>siete mensajes sin respuesta</strong></td><td>persona</td><td><span class="tag t-bad">2</span></td></tr>
+        <tr><td class="d">2 ago</td><td class="n">Tania Daza</td><td>«No tengo registro de tu mensaje anterior» ×3; «te apunto» sin apuntar; su último mensaje sin contestar</td><td>persona</td><td><span class="tag t-bad">1</span></td></tr>
+        <tr><td class="d">2 ago</td><td class="n">Mariana Becker</td><td>La llama «rubia pero»; bucle de servicio ×3; <strong>le reserva Hidratación 110 € en vez de la valoración</strong>; la dueña escribe a la 01:18</td><td>persona</td><td><span class="tag t-bad">3 · 2</span></td></tr>
+        <tr><td class="d">3 ago</td><td class="n">Gabriela Completo</td><td>«Completo» de apellido; confirmación colgada; estilista cambiada de Irina a Natalia sin avisar</td><td>persona</td><td><span class="tag t-bad">3</span></td></tr>
+        <tr><td class="d">3 ago</td><td class="n">Ludmila Zarahovich</td><td><strong>Le ofrece tres días y niega los tres.</strong> La cita más cara del periodo</td><td>persona</td><td><span class="tag t-bad">1</span></td></tr>
+        <tr><td class="d">3 ago</td><td class="n">Estefania Sanz</td><td>Acepta que la pasen con una persona y no pasa nada; el servicio ya tarificado se pregunta 4 veces más</td><td>persona</td><td><span class="tag t-bad">1 · 3</span></td></tr>
+        <tr><td class="d">3 ago</td><td class="n">Lorena Pérez</td><td>Nada. Conversación limpia con precios combinados bien calculados</td><td>—</td><td><span class="tag t-ok">limpia</span></td></tr>
+        <tr><td class="d">3 ago</td><td class="n">34602501793</td><td>Nada</td><td>—</td><td><span class="tag t-ok">limpia</span></td></tr>
+        <tr><td class="d">3 ago</td><td class="n">34606055402</td><td>Nada</td><td>—</td><td><span class="tag t-ok">limpia</span></td></tr>
+        <tr><td class="d">3 ago</td><td class="n">34623626805</td><td>Nada</td><td>—</td><td><span class="tag t-ok">limpia</span></td></tr>
+        <tr><td class="d">4 ago</td><td class="n">34687578086</td><td>Spam comercial. Respuesta razonable</td><td>—</td><td><span class="tag t-ok">limpia</span></td></tr>
+        <tr><td class="d">4 ago</td><td class="n">33624482119</td><td>«Yes of course» contestado en castellano</td><td>—</td><td><span class="tag t-mid">5</span></td></tr>
+        <tr><td class="d">5 ago</td><td class="n">Joan Gascón</td><td>Prueba interna</td><td>—</td><td><span class="tag t-ok">—</span></td></tr>
+        <tr><td class="d">5 ago</td><td class="n">Tammy Natalla</td><td>«Thursday» contestado en castellano; la foto en castellano</td><td>persona</td><td><span class="tag t-ok">arreglado</span></td></tr>
+        <tr><td class="d">5 ago</td><td class="n">Eva Nakonechnivo</td><td>Nada</td><td>—</td><td><span class="tag t-ok">limpia</span></td></tr>
+        <tr><td class="d">5 ago</td><td class="n">Julia Belenkaya</td><td>Recibió el fallback del modelo (día del 402) y no volvió</td><td>—</td><td><span class="tag t-ok">arreglado</span></td></tr>
+        <tr><td class="d">6 ago</td><td class="n">Celeste González</td><td><strong>El bot le cancela la cita 60 s después de crearla, sin preguntar.</strong> Luego le ofrece una persona y no escala</td><td>nadie</td><td><span class="tag t-bad">1</span></td></tr>
+        <tr><td class="d">7 ago</td><td class="n">Mari Carmen Rivera</td><td>Nada. Pidió 10:30, no había, aceptó otro día</td><td>bot</td><td><span class="tag t-ok">limpia</span></td></tr>
+        <tr><td class="d">7 ago</td><td class="n">Michal Gradziel</td><td>Documentado: detector solo en castellano, horas sin minutos, la foto. Se perdió el servicio de más ticket</td><td>persona</td><td><span class="tag t-ok">arreglado</span></td></tr>
+        <tr><td class="d">7 ago</td><td class="n">Dasha · ALLA · Oksana</td><td>Autocontestadores de otras empresas. Bien gestionados los tres</td><td>—</td><td><span class="tag t-ok">limpia</span></td></tr>
+        <tr><td class="d">7 ago</td><td class="n">Svetlana Sh. · Polina · Irina L.</td><td>Plantilla rusa, contestan «👍», <strong>el bot responde en castellano</strong></td><td>—</td><td><span class="tag t-bad">5</span></td></tr>
+        <tr><td class="d">7 ago</td><td class="n">Olga Yarmak</td><td>Documentado. <strong>Su escalada sigue sin atender dos días después</strong></td><td>—</td><td><span class="tag t-bad">2</span></td></tr>
+        <tr><td class="d">8 ago</td><td class="n">34665015509</td><td>Saludo en ruso siendo hispanohablante; «hidratación» leída como nombre; ráfaga de 4 mensajes ignorada; <strong>hoy pide cambiar una cita que no existe</strong></td><td>—</td><td><span class="tag t-bad">5 · 2</span></td></tr>
+        <tr><td class="d">8 ago</td><td class="n">34656332064</td><td>Escalada correcta y <strong>33 horas sin que nadie le escriba</strong> tras un «en breve»</td><td>—</td><td><span class="tag t-bad">2</span></td></tr>
+        <tr><td class="d">8 ago</td><td class="n">Esther Cediloo</td><td>Documentado: no sabía el nombre de la segunda persona y se lo pidió a ella</td><td>—</td><td><span class="tag t-ok">arreglado</span></td></tr>
+        <tr><td class="d">9 ago</td><td class="n">Nastya Nizenko</td><td>Dos garantías técnicas sin respaldo sobre un alisado de 260 €. Sin cita todavía</td><td>—</td><td><span class="tag t-bad">1</span></td></tr>
+        <tr><td class="d">9 ago</td><td class="n">Candela</td><td>Saludo en ruso siendo hispanohablante; <strong>«no he podido fijar ese hueco» sin que hubiera ningún hueco en juego</strong>. Sin cita</td><td>—</td><td><span class="tag t-bad">5 · 1</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>Si solo se hace una cosa</h2>
+  <div class="prose">
+    <p>
+      <strong>La causa 2.</strong> No arregla ningún bug, y es la única que cambia la naturaleza del problema:
+      hoy los fallos se descubren leyendo conversaciones semanas después —esto mismo—, y con un vigilante puesto
+      se descubren el mismo día, por Telegram, mientras la clienta todavía está al otro lado.
+    </p>
+    <p>
+      Las dos escaladas que llevan días paradas habrían avisado solas. Las cuatro horas de silencio de Valeria y
+      los siete mensajes de Svetlana también. Y la próxima forma de frase que el modelo se invente —que la habrá,
+      porque ese es justamente el argumento de la causa 1— la vería alguien antes de que se repita seis veces.
+    </p>
+  </div>
+</section>
+
+<footer>
+  Leído el 9 de agosto de 2026 sobre las 38 conversaciones de Sante entre el 31 de julio y el 9 de agosto
+  (392 mensajes, sin muestreo), cruzado con <code>appointments</code>, <code>pending_actions</code> y
+  <code>broadcast_sends</code>, y contrastado con el código en <code>main</code> a día de hoy.
+  Solo lectura: no se ha modificado nada en Supabase ni en el repositorio.
+</footer>
+
+</div>
