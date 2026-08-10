@@ -63,6 +63,23 @@ require.cache[dbPath] = {
     },
 };
 
+// Stub de admin-alerts: evita cargar telegram.js (y node-telegram-bot-api) y deja afirmar
+// sobre el aviso. Reproduce el throttle por clave, que es lo que hace que cinco tics no sean
+// cinco Telegrams; el throttle REAL se prueba contra el módulo de verdad en
+// tests/recordatorio-sin-nombre.test.js.
+const alertsPath = require.resolve('../services/admin-alerts');
+require.cache[alertsPath] = {
+    id: alertsPath, filename: alertsPath, loaded: true,
+    exports: {
+        async alertOnce(orgId, clave, mensaje) {
+            if (state.alertas.some(a => a.clave === clave)) return false;
+            state.alertas.push({ orgId, clave, mensaje });
+            return true;
+        },
+        _resetThrottle() {},
+    },
+};
+
 // El logger real escribe a stdout; capturamos los warn para poder afirmar el aviso de la
 // fecha corrupta.
 const loggerPath = require.resolve('../lib/logger');
@@ -265,6 +282,7 @@ function resetState() {
         pendientes: {},
         marcados: [],
         warns: [],
+        alertas: [],
     };
 }
 
@@ -379,23 +397,82 @@ test('el idioma de la ficha manda también en la fecha', async () => {
     }
 });
 
-test('fecha corrupta: sale la hora sola (el mensaje de siempre) y se avisa en el log', async () => {
+// ─── Fecha corrupta: sale igual, pero no en silencio ─────────────────────────
+
+const conFechaRota = (p, fecha = '2026-99-99') => [{ ...p, fecha_cita: fecha }];
+
+test('fecha corrupta: sale la hora sola, que es el mensaje de siempre', async () => {
     resetState();
     state.lastInbound['34600111222'] = new Date(Date.now() - 3600 * 1000).toISOString();
     const p = pendiente();
-    const horaBuena = p.hora_cita;
     // Pasa el filtro de ventana (minutosHastaCita da NaN y NaN>minutos es false) y llega aquí.
-    state.pendientes[SANTE_ORG_ID] = [{ ...p, fecha_cita: '2026-99-99' }];
+    state.pendientes[SANTE_ORG_ID] = conFechaRota(p);
 
     const reqs = await correr(santeClients());
 
-    assert.strictEqual(reqs.length, 1);
+    assert.strictEqual(reqs.length, 1, 'el recordatorio NO se bloquea por esto');
     assert.strictEqual(
         reqs[0].body.text.body,
-        `Hola Anna 😊 Te recordamos tu cita en ${SALON} a las ${horaBuena}. ¡Te esperamos!`
+        `Hola Anna 😊 Te recordamos tu cita en ${SALON} a las ${p.hora_cita}. ¡Te esperamos!`
     );
+    assert.strictEqual(state.marcados.length, 1, 'y se marca enviado: no se reintenta');
     assert.ok(state.warns.some(w => w.evento === 'recordatorio_fecha_no_formateable'),
         `esperaba el warn; hubo: ${JSON.stringify(state.warns)}`);
+});
+
+test('fecha corrupta: además del log, un Telegram — nada falla en silencio', async () => {
+    resetState();
+    state.lastInbound['34600111222'] = new Date(Date.now() - 3600 * 1000).toISOString();
+    const p = pendiente();
+    state.pendientes[SANTE_ORG_ID] = conFechaRota(p);
+
+    await correr(santeClients());
+
+    assert.strictEqual(state.alertas.length, 1, 'el log no lo lee nadie');
+    const { mensaje } = state.alertas[0];
+    assert.ok(mensaje.includes('Anna'), mensaje);
+    assert.ok(mensaje.includes('+34600111222'), mensaje);
+    assert.ok(mensaje.includes('2026-99-99'), 'el valor crudo, para poder buscarlo en el panel');
+    assert.ok(mensaje.includes(p.hora_cita), 'la hora que sí ha salido');
+    // El aviso no puede leerse como "no ha salido": el mensaje SÍ salió y reenviarlo a mano
+    // sería un duplicado para la clienta.
+    assert.ok(/ha salido/.test(mensaje) && !/sin enviar/.test(mensaje), mensaje);
+});
+
+test('fecha corrupta: cinco tics seguidos → UN solo aviso', async () => {
+    resetState();
+    state.lastInbound['34600111222'] = new Date(Date.now() - 3600 * 1000).toISOString();
+    const p = pendiente();
+    state.pendientes[SANTE_ORG_ID] = conFechaRota(p);
+    // El marcado saca la cita de la cola en producción; aquí se deja para forzar los 5 tics.
+    for (let i = 0; i < 5; i++) await correr(santeClients());
+
+    assert.strictEqual(state.alertas.length, 1, 'el worker tica cada 5 min: serían ~288');
+});
+
+test('la clave del aviso lleva el VALOR: se corrige mal y vuelve a avisar', async () => {
+    resetState();
+    state.lastInbound['34600111222'] = new Date(Date.now() - 3600 * 1000).toISOString();
+    const p = pendiente();
+
+    state.pendientes[SANTE_ORG_ID] = conFechaRota(p, '2026-99-99');
+    await correr(santeClients());
+    state.pendientes[SANTE_ORG_ID] = conFechaRota(p, '12/08/2026');   // corregida, y sigue mal
+    await correr(santeClients());
+
+    assert.strictEqual(state.alertas.length, 2);
+    assert.notStrictEqual(state.alertas[0].clave, state.alertas[1].clave);
+});
+
+test('con la fecha bien NO se avisa de nada', async () => {
+    resetState();
+    state.lastInbound['34600111222'] = new Date(Date.now() - 3600 * 1000).toISOString();
+    state.pendientes[SANTE_ORG_ID] = [pendiente()];
+
+    await correr(santeClients());
+
+    assert.strictEqual(state.alertas.length, 0);
+    assert.strictEqual(state.warns.filter(w => w.evento === 'recordatorio_fecha_no_formateable').length, 0);
 });
 
 // ─── Regla de oro ────────────────────────────────────────────────────────────
@@ -419,6 +496,19 @@ test('SAN REMO: su recordatorio queda byte por byte como estaba, sin fecha', asy
     );
     assert.ok(!CON_FECHA_ES.test(enviados[0].text), 'a San Remo no se le mete la fecha');
     assert.strictEqual(state.marcados.length, 1);
+});
+
+test('SAN REMO: una fecha corrupta no le manda un Telegram a nadie', async () => {
+    resetState();
+    const enviados = [];
+    // No usa la fecha, así que no puede tener un problema con ella: avisar aquí sería avisar
+    // de un fallo que no existe, y el aviso que no molesta es el que se lee.
+    state.pendientes[SANREMO_ORG_ID] = conFechaRota(pendiente({ telefono: '34600999888', nombre: 'Alberto' }));
+
+    await correr(new Map([[SANREMO_ORG_ID, { client: fakeWwebjsClient(enviados), orgId: SANREMO_ORG_ID }]]));
+
+    assert.strictEqual(enviados.length, 1, 'su recordatorio sale igual');
+    assert.strictEqual(state.alertas.length, 0);
 });
 
 test('SAN REMO: tampoco cambia con una clienta en otro idioma', async () => {

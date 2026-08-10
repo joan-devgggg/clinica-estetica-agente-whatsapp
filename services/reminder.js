@@ -48,21 +48,51 @@ function buildReminderMessage(nombre, salon, cuando, language) {
  * nuestra. Se gatea por `getOrgType`, no por UUID, para que un salón futuro la herede sin
  * tocar nada — la fecha es útil para cualquier salón, no para esta org en concreto.
  *
- * Si la fecha no se entiende sale la hora sola, que es el mensaje de siempre, y se dice en el
- * log. Nunca se inventa un día. Puede pasar de verdad: `minutosHastaCita` no descarta una
+ * Si la fecha no se entiende sale la hora sola, que es el mensaje de siempre, y lo sabe una
+ * persona. Nunca se inventa un día. Puede pasar de verdad: `minutosHastaCita` no descarta una
  * `fecha_cita` malformada —`new Date('basura')` da NaN y `NaN > minutos` es false—, así que
  * una fila así llega hasta aquí.
  */
-function resolveCuando(orgId, record) {
+async function resolveCuando(orgId, record) {
     if (getOrgType(orgId) !== 'salon') return record.hora_cita;
 
     const cuando = formatReminderWhen(record.fecha_cita, record.hora_cita, record.language);
     if (cuando) return cuando;
 
-    logger.warn('recordatorio_fecha_no_formateable', {
-        orgId, contactId: record.id, fecha: record.fecha_cita || null, hora: record.hora_cita || null,
-    });
+    await avisarFechaNoFormateable(orgId, record);
     return record.hora_cita;
+}
+
+// El recordatorio SALE igual, con la hora sola: no mandarlo por no poder escribir la fecha
+// sería cambiar un mensaje incompleto por ninguno, y por eso esto NO es un motivo de
+// `motivoNoEnviable` — ahí caen las cosas que impiden el envío, y esta no lo impide.
+//
+// Pero tampoco puede pasar en silencio. Una `fecha_cita` ilegible no es solo un recordatorio
+// más pobre: es una ficha rota, la cita se ve mal en la agenda y mañana sigue rota. Un fallo
+// que solo deja rastro en el log es un fallo que no ve nadie.
+//
+// Throttle por CLAVE Y VALOR, como `avisarVentanaInvalida`: el worker tica cada 5 min dentro
+// de una ventana de 24 h, así que sin throttle serían ~288 mensajes por cita; y si la fecha se
+// corrige y vuelve a quedar mal de otra forma, el aviso tiene que volver a salir.
+async function avisarFechaNoFormateable(orgId, record) {
+    const cruda = String(record.fecha_cita ?? '').slice(0, 40);
+    logger.warn('recordatorio_fecha_no_formateable', {
+        orgId, contactId: record.id, fecha: record.fecha_cita ?? null, hora: record.hora_cita || null,
+    });
+    const digits = String(record.telefono || '').replace(/\D/g, '');
+    const mensaje =
+        '⚠️ <b>Recordatorio enviado SIN la fecha</b>\n\n'
+        + `Le he mandado el recordatorio a ${record.nombre || 'una clienta'} `
+        + `(${digits ? `+${digits}` : 'sin teléfono'}) con la hora, pero sin el día: la fecha de `
+        + `la cita está guardada como «${cruda || '(vacía)'}» y no se entiende.\n\n`
+        + `🕐 Ha salido: a las ${record.hora_cita || ''}\n\n`
+        // Sin "se lo vuelvo a mandar": el recordatorio ya está marcado como enviado y no
+        // vuelve a salir. Prometerlo sería prometer algo que no va a pasar.
+        + 'El mensaje ha salido, no hay que reenviarlo. Revisa la fecha de esa cita en el '
+        + 'panel: si está así de mal, la cita tampoco estará bien en la agenda.';
+    // Se espera: si el aviso no llega a Telegram, alertOnce deja la clave libre y el siguiente
+    // tic lo reintenta. El envío del recordatorio no depende de esto.
+    await alertOnce(orgId, `recordatorio_fecha|${record.id}|${cruda}`, mensaje);
 }
 
 function minutosHastaCita(fechaStr, horaStr) {
@@ -372,7 +402,7 @@ async function checkAndSendReminders() {
                     // UN solo valor para los dos caminos: el texto libre y el {{2}} de la
                     // plantilla. Resolverlo dos veces es cómo una clienta dentro de la ventana
                     // de 24 h y otra fuera acaban recibiendo mensajes distintos.
-                    const cuando = resolveCuando(orgId, record);
+                    const cuando = await resolveCuando(orgId, record);
                     const mensaje = buildReminderMessage(record.nombre, companyName, cuando, record.language);
                     const resultado = await sendReminderMessage(orgId, record, {
                         mensaje,

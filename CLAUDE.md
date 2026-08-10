@@ -178,9 +178,18 @@ uno es cómo dos clientas con la misma cita reciben mensajes distintos sin que n
 
 **San Remo queda fuera**, gateado por `getOrgType(orgId) === 'salon'` (no por UUID, para que un
 salón futuro lo herede). No lo ha pedido su dueño y su recordatorio sigue byte por byte igual,
-con test que lo fija. Si la fecha no se entiende sale la hora sola —el mensaje de siempre— y se
-dice en el log (`recordatorio_fecha_no_formateable`): nunca se inventa un día. Pasa de verdad,
-porque `minutosHastaCita` no descarta una `fecha_cita` malformada (`NaN > minutos` es false).
+con test que lo fija.
+
+**Una fecha que no se entiende NO bloquea el envío, pero tampoco pasa en silencio.** Sale la
+hora sola —el mensaje de siempre—, y además del log (`recordatorio_fecha_no_formateable`) sale
+un Telegram. Por eso **no** es un motivo de `motivoNoEnviable`: ahí caen las cosas que impiden
+el envío, y esta no lo impide; cambiar un mensaje incompleto por ninguno sería peor. El aviso
+dice que el mensaje YA salió —reenviarlo a mano sería un duplicado— y enseña el valor crudo,
+porque una `fecha_cita` ilegible no es solo un recordatorio más pobre: esa cita también está
+mal en la agenda. Throttle por clave Y VALOR, como `avisarVentanaInvalida`: el worker tica cada
+5 min dentro de una ventana de 24 h (~288 mensajes sin él), y una fecha corregida que sigue mal
+tiene que volver a avisar. Nunca se inventa un día. Pasa de verdad, porque `minutosHastaCita`
+no descarta una `fecha_cita` malformada (`NaN > minutos` es false).
 
 Red: `tests/recordatorio-con-fecha.test.js` — los siete días en los cuatro idiomas uno por uno,
 que es donde va a fallar si falla. Las cinco protecciones están probadas por mutación.
