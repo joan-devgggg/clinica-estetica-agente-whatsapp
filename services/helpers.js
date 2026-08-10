@@ -2454,7 +2454,18 @@ function detectExistingAppointmentReference(text) {
 function detectCancelRequest(text) {
     if (!text) return null;
     const t = normalizeText(text);
-    if (/\b(cancelar|cancela|cancelame|anular|anula|anulame|cancelo)\b/.test(t)
+    // El verbo con sus ENCLÍTICOS pegados, que en español es la forma normal de pedirlo:
+    // «cancélala», «anúlamela», «cancelármela». La lista anterior era literal
+    // (cancelar|cancela|cancelame|anular|anula|anulame|cancelo) y tenía el -me pero no el
+    // -la/-lo, así que «Cancélala» devolvía null. No es teórico: es exactamente lo que
+    // escribió Celeste González el 06/08/2026, y por eso su turno no lo cogió esta capa
+    // —que habría recitado la cita y esperado un sí— sino el `accion` del modelo, que en
+    // aquel momento cancelaba directo.
+    //
+    // Lo que NO puede casar, y por eso los sufijos van enumerados en vez de un .* :
+    //   · «cancelada» / «cancelado» — es NUESTRO acuse ("Tu cita ha sido cancelada ✅");
+    //   · «cancelación» — sustantivo, y además `\b` corta antes de -cion.
+    if (/\b(?:cancel|anul)(?:ar|a|o|en?)(?:me|nos)?(?:la|lo|las|los)?\b/.test(t)
         || /\bcancel\b/.test(t) || /отмен/.test(t) || /скасу/.test(t)) {
         return { fuerza: 'explicita' };
     }
