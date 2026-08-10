@@ -1115,13 +1115,29 @@ Lo que hace **no es «el bot deja de contestarle»**, y la diferencia importa:
 
 | | Qué pasa |
 |---|---|
-| Conversación | **Le contesta UNA vez más**: «En breve te atenderá nuestro equipo» (`bot.js:3813-3836`), y a partir de ahí calla — texto, fotos y audios (`isBlacklistedNow`). |
-| …y en cada sesión nueva | **Vuelve a mandarlo.** `blacklistNotified` no viaja en `buildSessionExtra`, así que un timeout de 1 h o un reinicio lo reabren. |
+| Conversación (salón) | **Silencio.** No se le contesta nada: ni texto, ni fotos, ni audios (`isBlacklistedNow`). Ni siquiera sabe que está bloqueado. |
+| Conversación (San Remo) | **Sigue recibiendo** «En breve te atenderá nuestro equipo», y debe seguir. Ver abajo. |
 | Ficha | `bot_mode='manual'` + `escalation_reason='lista_negra'` + una fila en `pending_actions`. |
-| Telegram | Un aviso por mensaje suyo, **con un botón «✅ Sí, continuar» que lo DESBLOQUEA y encima le escribe** (`telegram.js:589-601`). |
+| Telegram | **UN aviso**, no uno por mensaje: `blacklistNotified` viaja en `buildSessionExtra`. Desbloquear desde ahí cuesta dos toques y no le escribe. |
 | Monitor / Clientes | **Sigue apareciendo**, y en el Monitor el PRIMERO: ordena delante lo que está en manual con escalada, que es lo que el bloqueo acaba de poner. |
 | Campañas · recordatorio · reseña | **No le llega ninguno de los tres.** Filtran en la consulta: `getBroadcastAudience` (incluso con allowlist explícito), `getLeadsPendientesRecordatorio`, `getCompletedAppointmentsForReview`. |
 | Citas | **Intactas.** `setBlacklist` solo escribe en `contacts`: lo que tenga sigue en la agenda, sin recordatorio. |
+
+**Las dos filas de «Conversación» son la misma marca con dos significados.** En el salón,
+bloquear es terminal: lo pide la dueña sobre alguien con quien no quiere tratar, y «En breve te
+atenderá nuestro equipo» era una promesa de atención a quien se acaba de decidir no atender —
+con el acosador del 10/08/2026, además, la confirmación de que hay alguien al otro lado
+leyéndole. En San Remo la lista negra es una **retención a la espera de que un humano decida**
+(no-show y Bizum rechazado abren un Telegram con «¿Qué hacemos?»), así que allí la frase es
+verdad y se queda. El mensaje sigue al significado, no a la columna.
+
+**El aviso no se repite, pero se REARMA si la ficha deja de reflejar el bloqueo.** Persistir
+`blacklistNotified` abre un hueco: bloquear → escribe → desbloquear → **volver a bloquear sin
+que él escriba en medio**. La sesión guardada seguiría diciendo «ya avisado», así que el
+segundo bloqueo no pondría manual, ni escalada, ni Telegram, y el panel enseñaría la
+conversación en 'auto' —«el bot le contesta»— mientras el bot calla.
+`rearmarSiLaFichaNoLoRefleja` lo desempata contra la FICHA, no contra el flag: en lista negra
+y `bot_mode` distinto de 'manual' significa que ese bloqueo no lo ha procesado nadie.
 
 **Desbloquear son DOS escrituras y el orden importa.** Quitar solo `is_blacklisted` deja la
 conversación en manual con la escalada sin resolver, o sea **el bot mudo igual** — y
@@ -1129,18 +1145,41 @@ conversación en manual con la escalada sin resolver, o sea **el bot mudo igual*
 escalada abierta. Primero `PUT /api/leads/:id/bot-mode {mode:'auto'}` (que limpia
 `escalation_reason` y resuelve la `pending_action`) y después `DELETE /api/lista-negra/:id`:
 si falla el segundo paso el contacto sigue BLOQUEADO, que es el lado recuperable. Al revés,
-el fallo deja un «desbloqueado» al que no le contesta nadie. Así lo hace la ficha de Clientes;
-el «Quitar» de `/lista-negra` hace solo el DELETE y arrastra ese defecto (el botón del Monitor
-y el de Telegram sí hacen los dos pasos, y además le escriben).
+el fallo deja un «desbloqueado» al que no le contesta nadie. **Los tres caminos hacen los dos
+pasos en ese orden** desde el 10/08/2026: la ficha de Clientes, el «Quitar» de `/lista-negra`
+(que hasta entonces hacía solo el DELETE) y `ejecutarDesbloqueo` de Telegram.
+
+**Y ninguno le escribe.** El botón de Telegram mandaba además «Hola 😊 Hemos revisado tu caso.
+¿En qué puedo ayudarte?» de un solo toque y sin confirmar: con un acosador, un dedo torcido en
+una notificación del móvil le reabre la puerta y le invita a seguir. Ahora `bl_ok` **pregunta**
+y `bl_do` ejecuta — `bl_ok` conserva el nombre A PROPÓSITO, para que un toque en un aviso ya
+enviado caiga también en la confirmación en vez de desbloquear a la primera.
+
+Al separarlo apareció que **ese mensaje no se enviaba desde hacía tiempo**: `sendDirectMessage`
+no está definido ni importado en `telegram.js`, así que la llamada lanzaba `ReferenceError`, lo
+recogía el `catch` y el admin leía «❌ Error al reactivar el cliente» sobre un contacto que SÍ
+había quedado desbloqueado (las dos escrituras van antes). Mentía en la dirección peligrosa:
+te hace creer que el bloqueo aguanta. Quitar la línea no cambia nada de lo que le llega a
+nadie —hoy no le llega—; lo que cambia es que el parte diga la verdad.
 
 **Dos formas de bloquear, ninguna es atajo de la otra**: `/lista-negra` es la vista completa
 (quién está bloqueado, buscar a cualquiera, desbloquear) y la ficha de Clientes actúa sobre el
-contacto que ya tienes abierto. Las dos llaman a `POST`/`DELETE /api/lista-negra/:id`. La de
-la ficha es **solo salón** (`isSalon`) y pide confirmación; el texto de esa confirmación vive
-en `dashboard-app/src/lib/blacklist.ts` con cada línea anclada al código que la hace cierta, y
-`tests/lista-negra-panel.test.js` lo afirma —incluido que **no** prometa un silencio que no
-existe—. Si alguien cambia una de las conductas de la tabla de arriba, ese test es el que
-avisa de que la confirmación se ha vuelto mentira.
+contacto que ya tienes abierto. Las dos pasan por `POST`/`DELETE /api/lista-negra/:id` (más el
+`bot-mode` del desbloqueo). La de la ficha es **solo salón** (`isSalon`) y pide confirmación.
+
+Las dos redes, y por qué son dos:
+
+- `tests/blacklist-no-promete.test.js` — la CONDUCTA, contra el motor real: que al salón no le
+  sale ni un mensaje, que el aviso no se repite ni tras un timeout de sesión, que sí se rearma
+  con la ficha desincronizada, que San Remo recibe su frase palabra por palabra, y el orden de
+  las dos escrituras del desbloqueo. Hermético (Supabase, Telegram y LLM interceptados).
+- `tests/lista-negra-panel.test.js` — el TEXTO de la confirmación, que vive en
+  `dashboard-app/src/lib/blacklist.ts` con cada línea anclada al código que la hace cierta.
+  Afirma, entre otras, que **no** le promete atención a quien se acaba de bloquear.
+
+Están separadas a propósito: la primera protege lo que hace el sistema y la segunda que el
+panel siga contando lo mismo. Cuando cambie una conducta de la tabla de arriba, la segunda es
+la que avisa de que la confirmación se ha vuelto mentira.
 
 ## Regla de oro
 
