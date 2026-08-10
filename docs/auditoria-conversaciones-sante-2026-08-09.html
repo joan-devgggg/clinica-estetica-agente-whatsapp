@@ -144,6 +144,24 @@
   .open ol{margin:16px 0 0; padding-left:20px}
   .open li{margin-bottom:12px; font-size:15px}
 
+  /* ── la lección: lo primero que se lee ── */
+  .leccion{
+    border:2px solid var(--accent); background:var(--accent-soft);
+    padding:28px 30px; margin:36px 0 0;
+  }
+  .leccion .eyebrow{color:var(--accent); margin-bottom:14px}
+  .leccion p.frase{
+    font-family:var(--serif); font-size:clamp(21px,3vw,27px); line-height:1.3;
+    margin:0 0 18px; color:var(--ink); text-wrap:balance; letter-spacing:-.005em;
+  }
+  .leccion p{font-size:15.5px; color:var(--ink-2); margin:0 0 12px; max-width:70ch}
+  .leccion p:last-child{margin-bottom:0}
+  .corr{
+    display:inline-block; font-family:var(--mono); font-size:10.5px; letter-spacing:.1em;
+    text-transform:uppercase; padding:4px 9px; border-radius:2px;
+    background:var(--warn-bg); color:var(--warn); margin-bottom:14px;
+  }
+
   /* ── tabla ── */
   .scroll{overflow-x:auto; border:1px solid var(--line); background:var(--surface)}
   table{border-collapse:collapse; width:100%; min-width:760px; font-size:13.5px}
@@ -172,31 +190,75 @@
 <div class="wrap">
 
 <header>
-  <p class="eyebrow">Auditoría · 9 de agosto de 2026 · solo lectura</p>
+  <p class="eyebrow">Auditoría · 9 de agosto de 2026 · revisada el 10 de agosto</p>
   <h1>Las 38 conversaciones de Sante, leídas enteras</h1>
   <p class="standfirst">
     Todo lo que salió mal desde el punto de vista de la clienta, agrupado por causa y ordenado
     por daño. Nueve días de tráfico real, sin muestreo. Ninguna escritura: ni en Supabase ni en el código.
   </p>
 
+  <div class="leccion">
+    <p class="eyebrow">Antes de leer un solo número</p>
+    <p class="frase">
+      En este salón la mitad de la atención sale por una puerta que no registramos.
+      <strong>Ausencia de saliente NO es ausencia de atención.</strong>
+    </p>
+    <p>
+      La dueña contesta a las clientas <strong>desde el WhatsApp de su móvil</strong>, y esos mensajes
+      no se escriben en la base de datos. Para cualquier consulta que hagamos, una conversación
+      atendida por teléfono es indistinguible de una abandonada.
+    </p>
+    <p>
+      Esta auditoría cayó en esa trampa y la primera versión llegó a publicar tres clientas
+      «esperando ahora mismo» de las que <strong>dos estaban atendidas</strong>. Casi puso en producción
+      un vigilante que les habría mandado avisos falsos a las dos. Lo que sigue está corregido —
+      y la regla vale para el siguiente informe, no solo para este: <strong>cualquier conclusión
+      que se apoye en un silencio hay que confirmarla con una persona antes de escribirla.</strong>
+    </p>
+  </div>
+
   <div class="stats">
     <div class="stat"><b>38</b><span>conversaciones · 392 mensajes<br>31 jul – 9 ago</span></div>
     <div class="stat"><b>29</b><span>de clientas reales (el resto: pruebas, spam, autocontestadores)</span></div>
-    <div class="stat"><b>20</b><span>con al menos un fallo que la clienta vio</span></div>
-    <div class="stat"><b>6</b><span>citas que tuvo que cerrar una persona a mano</span></div>
-    <div class="stat"><b>3</b><span>conversaciones abiertas ahora mismo, esperando</span></div>
+    <div class="stat"><b>19</b><span>con al menos un fallo que la clienta vio · <em>era 20</em></span></div>
+    <div class="stat"><b>3</b><span>citas perdidas de verdad · las otras las cazó el salón</span></div>
+    <div class="stat"><b>0</b><span>conversaciones abandonadas · <em>eran 3</em></span></div>
   </div>
 </header>
 
 <section>
   <div class="open">
-    <h2>Antes de decidir nada: tres cosas están esperando hoy</h2>
-    <p class="lead" style="margin-bottom:0">Esto no es deuda técnica. Son personas sin respuesta.</p>
+    <span class="corr">Corregido el 10 de agosto</span>
+    <h2>Lo que decía aquí era falso</h2>
+    <p class="lead" style="margin-bottom:0">
+      Esta caja anunciaba «tres cosas están esperando hoy». Dos de las tres estaban atendidas.
+      Se conserva el error a la vista en vez de borrarlo, porque la forma de equivocarse importa
+      más que el dato.
+    </p>
     <ol>
-      <li><strong>Olga Yarmak</strong> <span class="who">34674987146</span> — escaló el 7 de agosto a las 15:42. Su último mensaje fue <q>me niego a hablar con un robot, solo con personas</q>. La ficha sigue en manual y <strong>lleva dos días sin que nadie le escriba</strong>. La fila de <code>pending_actions</code> sigue en <code>pending</code>.</li>
-      <li><strong>34656332064</strong> — pidió un alisado permanente el 8 de agosto. El bot escaló bien y le dijo <q>en breve una de nuestras especialistas se pondrá en contacto contigo</q>. Han pasado <strong>33 horas</strong> y no ha salido ningún mensaje. También sigue en <code>pending</code>.</li>
-      <li><strong>34665015509</strong> — ayer a las 17:44 escribió <q>Hola, ¿puedes cambiarme la cita al miércoles?</q> y el bot le contestó <q>No me consta ninguna cita reservada a tu nombre</q>. No tiene ninguna cita en la agenda. O se equivoca de salón, o cree que reservó algo que nunca se guardó. Nadie ha mirado.</li>
+      <li>
+        <strong>Olga Yarmak</strong> <span class="who">34674987146</span> — se publicó como
+        «lleva dos días sin que nadie le escriba». <strong>La dueña le había contestado desde el
+        móvil.</strong> Lo que llevaba dos días abierto era la fila de <code>pending_actions</code>,
+        que nadie cierra porque no hace falta cerrarla para atender a nadie.
+      </li>
+      <li>
+        <strong>34656332064</strong> — se publicó como «33 horas sin que nadie le escriba» tras un
+        <q>en breve</q>. <strong>También estaba atendida desde el móvil.</strong>
+      </li>
+      <li>
+        <strong>34665015509</strong> — este sigue mereciendo una mirada, pero por otro motivo: el
+        bot le contestó <q>No me consta ninguna cita reservada a tu nombre</q> a una clienta que
+        pedía cambiar una cita, y en la agenda no hay ninguna a su nombre. El fallo es lo que el
+        bot <em>dijo</em>, no un silencio.
+      </li>
     </ol>
+    <p style="margin:16px 0 0; font-size:15px">
+      El error no fue de lectura: las conversaciones estaban bien leídas. Fue de inferencia —
+      <strong>tomar «no hay saliente en la base de datos» por «nadie le contestó»</strong>. Con la
+      dueña respondiendo desde el móvil, esas dos frases no significan lo mismo, y no hay consulta
+      que las distinga.
+    </p>
   </div>
 </section>
 
@@ -233,8 +295,9 @@
 <section>
   <h2>Las seis causas, por daño</h2>
   <p class="lead">
-    «Coste de arreglo» es tiempo de trabajo, no dificultad conceptual.
-    «Vivo» significa que lo he comprobado contra el código de hoy y sigue estando.
+    «Coste de arreglo» es tiempo de trabajo, no dificultad conceptual. «Vivo» significa que lo he
+    comprobado contra el código de hoy y sigue estando. <strong>La causa 2 se retiró el 10 de agosto</strong>
+    y se conserva tachada, con su sitio en el orden, porque el hueco que deja es la información.
   </p>
 
   <!-- 1 -->
@@ -308,43 +371,42 @@
   </article>
 
   <!-- 2 -->
-  <article class="cause" data-sev="crit">
+  <article class="cause" data-sev="ok">
     <div class="cause-head">
       <div class="rank">2</div>
       <div class="cause-title">
-        <h3>Nadie vigila lo que el bot suelta</h3>
-        <p>Cuando el bot calla —bien o mal— no hay quien se entere.</p>
+        <h3><s>Nadie vigila lo que el bot suelta</s></h3>
+        <p>Esta causa no existe. Era el mismo error de inferencia, convertido en diagnóstico.</p>
       </div>
-      <span class="chip vivo">Vivo</span>
+      <span class="chip hecho">Retirada</span>
     </div>
     <dl class="metrics">
-      <div class="metric"><dt>Conversaciones</dt><dd>5 de 29</dd></div>
-      <div class="metric"><dt>Coste al salón</dt><dd>Clientas enfadadas, no citas. La peor cara del negocio</dd></div>
-      <div class="metric"><dt>Coste de arreglo</dt><dd>Medio día. La maquinaria ya está escrita</dd></div>
-      <div class="metric"><dt>Qué es</dt><dd>Diseño que falta, pequeño</dd></div>
+      <div class="metric"><dt>Conversaciones</dt><dd>0 · <em>se publicaron 5</em></dd></div>
+      <div class="metric"><dt>Coste al salón</dt><dd>Ninguno. Las cinco estaban atendidas</dd></div>
+      <div class="metric"><dt>Coste de arreglo</dt><dd>Se escribió el vigilante. Está dormido</dd></div>
+      <div class="metric"><dt>Qué es</dt><dd>Un fallo de esta auditoría</dd></div>
     </dl>
     <div class="cause-body">
-      <h4>Lo que se ve</h4>
+      <h4>Qué eran en realidad las cinco</h4>
       <ul>
-        <li><strong>Dos escaladas llevan días en <code>pending</code></strong> (Olga, 2 días; 34656332064, 33 horas). La segunda tenía un <q>en breve</q> por delante.</li>
-        <li><strong>Valeria Rivera</strong> <span class="who">1 ago</span>: el bot se quedó mudo a las 14:22, justo al ir a proponer huecos. Una persona escribió a las <strong>18:18</strong> — cuatro horas.</li>
-        <li><strong>Svetlana Yurchenko</strong> <span class="who">2 ago</span>: pidió cambiar una cita y mandó <strong>siete mensajes seguidos sin una sola respuesta</strong>. La cita la movió una persona desde el panel tres días después.</li>
-        <li><strong>Mariana Becker</strong> <span class="who">3 ago</span>: la dueña tuvo que escribirle <strong>a la 01:18 de la madrugada</strong> para deshacer una reserva equivocada del bot.</li>
+        <li><strong>Olga Yarmak</strong> y <strong>34656332064</strong> — atendidas desde el móvil de la dueña, confirmado por ella. Lo que llevaba días abierto era la fila de <code>pending_actions</code>.</li>
+        <li><strong>Svetlana Yurchenko</strong> <span class="who">2 ago</span> — siete mensajes sin respuesta registrada, pero <strong>su cita se movió desde el panel el 5 de agosto</strong>: alguien la leyó y actuó.</li>
+        <li><strong>Tania Daza</strong> <span class="who">2 ago</span> — sus dos últimos mensajes sin contestar, pero su escalada se cerró en el panel y tenía cita creada el día 3.</li>
+        <li><strong>Valeria Rivera</strong> <span class="who">1 ago</span> — <strong>este sí se sostiene</strong>: a las 18:18 le contestó una persona <em>desde el panel</em>, y esos tres mensajes sí están registrados. El hueco de cuatro horas es real. Queda contado dentro de la causa 3, que es donde estaba su fallo de verdad.</li>
       </ul>
 
-      <h4>Por qué pasa</h4>
+      <h4>Por qué se publicó</h4>
       <p>
-        No hay ninguna alarma sobre una conversación parada. <code>bot-pause-alert.js</code> ya sabe medir
-        <em>horas de apertura</em> y no de reloj, y <code>alertOnce</code> ya sabe no avisar dos veces de lo mismo.
-        Lo que falta es apuntar esa maquinaria a <code>pending_actions</code> y a un entrante sin respuesta.
+        Porque un vigilante que mire la base de datos <strong>no puede distinguir una clienta
+        abandonada de una atendida por teléfono</strong>. Se escribió uno (dos reglas: escalada sin
+        resolver y entrante sin salida) y sus dos primeros avisos habrían sido falsos, precisamente
+        sobre Olga y sobre 34656332064.
       </p>
-
-      <h4>Qué haría falta</h4>
       <p>
-        Un vigilante más, del mismo molde que los tres que ya existen: escalada sin resolver pasadas
-        <em>N</em> horas de apertura, y entrante sin salida pasadas <em>M</em>. Es la causa con mejor
-        relación daño/esfuerzo de toda la lista, y la única que además <strong>tapa las otras cinco</strong>:
-        con esto puesto, cualquier fallo futuro lo ve alguien el mismo día.
+        Está en el repositorio y <strong>dormido a propósito</strong>, con el motivo escrito en tres
+        sitios para que nadie lo encienda dentro de un mes creyendo que se olvidó. Vuelve a tener
+        sentido el día —y solo el día— en que <strong>las respuestas enviadas desde el móvil se
+        registren en la base de datos</strong>. Eso ya está escrito en una rama, sin fusionar.
       </p>
     </div>
   </article>
@@ -580,10 +642,10 @@
         <tr><td class="d">1 ago</td><td class="n">Leonardo González</td><td>La cita nace con la exfoliación dentro, 2 s antes de ofrecérsela; dijo que no y no se quitó</td><td>bot</td><td><span class="tag t-bad">6</span></td></tr>
         <tr><td class="d">1 ago</td><td class="n">Alicia Medio</td><td>Su apellido leído como estilista; le dice «Largo 2» a la cara; respuestas en orden invertido; quería que le vieran el pelo y el bot insiste en el día</td><td>—</td><td><span class="tag t-mid">4 · arreglado</span></td></tr>
         <tr><td class="d">1 ago</td><td class="n">34696073110</td><td>«Доброго дня» contestado en ruso. Personal del salón probando</td><td>—</td><td><span class="tag t-ok">arreglado</span></td></tr>
-        <tr><td class="d">1 ago</td><td class="n">Valeria Rivera</td><td><strong>Cuatro horas de silencio</strong> justo al ir a proponer huecos</td><td>persona</td><td><span class="tag t-bad">2</span></td></tr>
-        <tr><td class="d">2 ago</td><td class="n">Svetlana Yurchenko</td><td>Le pide datos que acaba de dar y luego <strong>siete mensajes sin respuesta</strong></td><td>persona</td><td><span class="tag t-bad">2</span></td></tr>
-        <tr><td class="d">2 ago</td><td class="n">Tania Daza</td><td>«No tengo registro de tu mensaje anterior» ×3; «te apunto» sin apuntar; su último mensaje sin contestar</td><td>persona</td><td><span class="tag t-bad">1</span></td></tr>
-        <tr><td class="d">2 ago</td><td class="n">Mariana Becker</td><td>La llama «rubia pero»; bucle de servicio ×3; <strong>le reserva Hidratación 110 € en vez de la valoración</strong>; la dueña escribe a la 01:18</td><td>persona</td><td><span class="tag t-bad">3 · 2</span></td></tr>
+        <tr><td class="d">1 ago</td><td class="n">Valeria Rivera</td><td><strong>Cuatro horas de silencio</strong> justo al ir a proponer huecos. Le contestó una persona desde el panel</td><td>persona</td><td><span class="tag t-bad">3</span></td></tr>
+        <tr><td class="d">2 ago</td><td class="n">Svetlana Yurchenko</td><td>Le pide datos que acaba de dar. Los siete mensajes «sin respuesta» los atendió la dueña por el móvil: su cita se movió desde el panel</td><td>persona</td><td><span class="tag t-mid">3</span></td></tr>
+        <tr><td class="d">2 ago</td><td class="n">Tania Daza</td><td>«No tengo registro de tu mensaje anterior» ×3; «te apunto» sin apuntar nada</td><td>persona</td><td><span class="tag t-bad">1</span></td></tr>
+        <tr><td class="d">2 ago</td><td class="n">Mariana Becker</td><td>La llama «rubia pero»; bucle de servicio ×3; <strong>le reserva Hidratación 110 € en vez de la valoración</strong>; la dueña escribe a la 01:18</td><td>persona</td><td><span class="tag t-bad">3</span></td></tr>
         <tr><td class="d">3 ago</td><td class="n">Gabriela Completo</td><td>«Completo» de apellido; confirmación colgada; estilista cambiada de Irina a Natalia sin avisar</td><td>persona</td><td><span class="tag t-bad">3</span></td></tr>
         <tr><td class="d">3 ago</td><td class="n">Ludmila Zarahovich</td><td><strong>Le ofrece tres días y niega los tres.</strong> La cita más cara del periodo</td><td>persona</td><td><span class="tag t-bad">1</span></td></tr>
         <tr><td class="d">3 ago</td><td class="n">Estefania Sanz</td><td>Acepta que la pasen con una persona y no pasa nada; el servicio ya tarificado se pregunta 4 veces más</td><td>persona</td><td><span class="tag t-bad">1 · 3</span></td></tr>
@@ -602,9 +664,9 @@
         <tr><td class="d">7 ago</td><td class="n">Michal Gradziel</td><td>Documentado: detector solo en castellano, horas sin minutos, la foto. Se perdió el servicio de más ticket</td><td>persona</td><td><span class="tag t-ok">arreglado</span></td></tr>
         <tr><td class="d">7 ago</td><td class="n">Dasha · ALLA · Oksana</td><td>Autocontestadores de otras empresas. Bien gestionados los tres</td><td>—</td><td><span class="tag t-ok">limpia</span></td></tr>
         <tr><td class="d">7 ago</td><td class="n">Svetlana Sh. · Polina · Irina L.</td><td>Plantilla rusa, contestan «👍», <strong>el bot responde en castellano</strong></td><td>—</td><td><span class="tag t-bad">5</span></td></tr>
-        <tr><td class="d">7 ago</td><td class="n">Olga Yarmak</td><td>Documentado. <strong>Su escalada sigue sin atender dos días después</strong></td><td>—</td><td><span class="tag t-bad">2</span></td></tr>
-        <tr><td class="d">8 ago</td><td class="n">34665015509</td><td>Saludo en ruso siendo hispanohablante; «hidratación» leída como nombre; ráfaga de 4 mensajes ignorada; <strong>hoy pide cambiar una cita que no existe</strong></td><td>—</td><td><span class="tag t-bad">5 · 2</span></td></tr>
-        <tr><td class="d">8 ago</td><td class="n">34656332064</td><td>Escalada correcta y <strong>33 horas sin que nadie le escriba</strong> tras un «en breve»</td><td>—</td><td><span class="tag t-bad">2</span></td></tr>
+        <tr><td class="d">7 ago</td><td class="n">Olga Yarmak</td><td>Documentado y arreglado. <strong>La dueña le contestó desde el móvil</strong>: lo que quedó abierto fue la fila, no la clienta</td><td>dueña (móvil)</td><td><span class="tag t-ok">arreglado</span></td></tr>
+        <tr><td class="d">8 ago</td><td class="n">34665015509</td><td>Saludo en ruso siendo hispanohablante; «hidratación» leída como nombre; ráfaga de 4 mensajes ignorada; <strong>pide cambiar una cita y el bot le dice que no consta ninguna</strong></td><td>—</td><td><span class="tag t-bad">5 · 1</span></td></tr>
+        <tr><td class="d">8 ago</td><td class="n">34656332064</td><td>Escalada correcta y <strong>atendida por la dueña desde el móvil</strong>. Sin fallo para la clienta</td><td>dueña (móvil)</td><td><span class="tag t-ok">limpia</span></td></tr>
         <tr><td class="d">8 ago</td><td class="n">Esther Cediloo</td><td>Documentado: no sabía el nombre de la segunda persona y se lo pidió a ella</td><td>—</td><td><span class="tag t-ok">arreglado</span></td></tr>
         <tr><td class="d">9 ago</td><td class="n">Nastya Nizenko</td><td>Dos garantías técnicas sin respaldo sobre un alisado de 260 €. Sin cita todavía</td><td>—</td><td><span class="tag t-bad">1</span></td></tr>
         <tr><td class="d">9 ago</td><td class="n">Candela</td><td>Saludo en ruso siendo hispanohablante; <strong>«no he podido fijar ese hueco» sin que hubiera ningún hueco en juego</strong>. Sin cita</td><td>—</td><td><span class="tag t-bad">5 · 1</span></td></tr>
@@ -617,14 +679,30 @@
   <h2>Si solo se hace una cosa</h2>
   <div class="prose">
     <p>
-      <strong>La causa 2.</strong> No arregla ningún bug, y es la única que cambia la naturaleza del problema:
-      hoy los fallos se descubren leyendo conversaciones semanas después —esto mismo—, y con un vigilante puesto
-      se descubren el mismo día, por Telegram, mientras la clienta todavía está al otro lado.
+      <span class="corr">Reescrito el 10 de agosto</span>
     </p>
     <p>
-      Las dos escaladas que llevan días paradas habrían avisado solas. Las cuatro horas de silencio de Valeria y
-      los siete mensajes de Svetlana también. Y la próxima forma de frase que el modelo se invente —que la habrá,
-      porque ese es justamente el argumento de la causa 1— la vería alguien antes de que se repita seis veces.
+      La primera versión decía «la causa 2, el vigilante». Ese consejo era el error del informe
+      convertido en recomendación: habría puesto en producción una alarma que mandaba avisos falsos
+      sobre clientas atendidas. Se escribió, se midió, y está dormida.
+    </p>
+    <p>
+      <strong>Lo que de verdad desbloquea todo lo demás es registrar las respuestas del móvil.</strong>
+      No es una alarma ni una red: es cerrar el agujero por el que se pierde la mitad de lo que pasa
+      en este salón. Con eso puesto, tres cosas dejan de ser imposibles a la vez —saber si a una
+      clienta la han atendido, ver la conversación entera en el panel, y que el bot deje de escribir
+      encima de la dueña mientras ella contesta a mano—. Y solo entonces el vigilante vuelve a tener
+      sentido, porque por fin mediría lo que dice medir.
+    </p>
+    <p>
+      Ya está escrito, en una rama sin fusionar. Lo que le falta no es código: es <strong>confirmar
+      contra un envío real</strong> qué nombre trae el campo de eco y si Meta ecoa también lo que
+      manda el bot por API — porque si lo hace, cada mensaje del bot pondría a esa clienta en manual
+      y el bot se iría callando solo, clienta a clienta, sin un error en los logs.
+    </p>
+    <p>
+      Después de eso, la causa 1: el modelo afirmando cosas que la máquina no respalda. Sigue siendo
+      la que más citas cuesta, y ahora es la primera de la lista sin nada que la tape.
     </p>
   </div>
 </section>
@@ -634,6 +712,11 @@
   (392 mensajes, sin muestreo), cruzado con <code>appointments</code>, <code>pending_actions</code> y
   <code>broadcast_sends</code>, y contrastado con el código en <code>main</code> a día de hoy.
   Solo lectura: no se ha modificado nada en Supabase ni en el repositorio.
+  <br><br>
+  <strong>Revisado el 10 de agosto de 2026</strong> tras confirmar la dueña que contesta a las
+  clientas desde el WhatsApp de su móvil, y que esos mensajes no llegan a la base de datos.
+  Se retiró la causa 2 entera, se corrigieron cinco conversaciones y la caja de «esperando hoy».
+  Las correcciones se dejan a la vista, tachadas o marcadas, en vez de borrarse.
 </footer>
 
 </div>
