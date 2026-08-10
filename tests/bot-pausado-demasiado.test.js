@@ -188,3 +188,53 @@ test('reactivar sin aviso previo no manda un "vuelve a responder" de la nada', a
     await revisarPausaProlongada(ORG, { activo: true, pausadoDesde: null, horario: HORARIO }, new Date());
     assert.strictEqual(avisos.length, 0);
 });
+
+// ─── No basta con no CONTAR de noche: tampoco hay que ENVIAR ─────────────────
+// Medio arreglo detectado el 10/08/2026. El contador estaba protegido y el envío no: la
+// deuda se completa al filo del cierre, el tic siguiente cae con el salón cerrado y el
+// Telegram sale igual. Podía sonar el móvil a las 2 de la madrugada por algo del día.
+
+test('la deuda se cumple justo al cerrar: NO se avisa de noche', () => {
+    // Martes 17:00: las 2 h se cumplen EXACTAMENTE a las 19:00, que es la hora de cierre.
+    // Por ese camino el aviso solo podía salir ya cerrado.
+    const pausadoDesde = t('2026-08-04T17:00');
+
+    assert.strictEqual(decidirAvisoPausa({ pausadoDesde, ahora: t('2026-08-04T18:59'), horario: HORARIO }).motivo,
+        'aun_no', 'a las 18:59 lleva 119 min: todavía no toca');
+
+    const deNoche = decidirAvisoPausa({ pausadoDesde, ahora: t('2026-08-05T02:00'), horario: HORARIO });
+    assert.strictEqual(deNoche.avisar, false, 'un Telegram a las 2 de la mañana no lo puede arreglar nadie');
+    assert.strictEqual(deNoche.motivo, 'cerrado_ahora');
+    assert.ok(deNoche.minutosAbierto >= MINUTOS_PARA_AVISAR, 'la deuda está cumplida: solo se retrasa el envío');
+
+    // Y no se pierde: al abrir dispara la regla de pausa heredada, sin volver a acumular.
+    const alAbrir = decidirAvisoPausa({ pausadoDesde, ahora: t('2026-08-05T10:01'), horario: HORARIO });
+    assert.strictEqual(alAbrir.avisar, true);
+    assert.strictEqual(alAbrir.motivo, 'abierto_con_pausa_anterior');
+});
+
+test('con el salón ABIERTO se avisa exactamente igual que antes', () => {
+    // La contrapartida del test de arriba: esto es lo que no puede cambiar.
+    const d = decidirAvisoPausa({ pausadoDesde: t('2026-08-04T16:00'), ahora: t('2026-08-04T18:00'), horario: HORARIO });
+    assert.strictEqual(d.avisar, true);
+    assert.strictEqual(d.motivo, 'acumulado');
+    assert.strictEqual(d.minutosAbierto, 120);
+});
+
+test('lo peor que pasa es que llegue en el primer minuto del día siguiente', () => {
+    // Sábado 17:00: deuda cumplida al cerrar, domingo cerrado, lunes al abrir.
+    const pausadoDesde = t('2026-08-08T17:00');
+    assert.strictEqual(decidirAvisoPausa({ pausadoDesde, ahora: t('2026-08-08T20:00'), horario: HORARIO }).motivo,
+        'cerrado_ahora', 'el sábado ya cerrado');
+    assert.strictEqual(decidirAvisoPausa({ pausadoDesde, ahora: t('2026-08-09T12:00'), horario: HORARIO }).motivo,
+        'cerrado_ahora', 'el domingo entero');
+    const lunes = decidirAvisoPausa({ pausadoDesde, ahora: t('2026-08-10T10:01'), horario: HORARIO });
+    assert.strictEqual(lunes.avisar, true, 'lunes al abrir: el primer momento en que alguien puede actuar');
+});
+
+test('una org SIN horario no cambia: no se le inventa una jornada para callarla', () => {
+    // San Remo. estaAbierto devuelve true sin horario, así que sigue contando reloj y avisando.
+    const d = decidirAvisoPausa({ pausadoDesde: t('2026-08-04T23:00'), ahora: t('2026-08-05T02:00'), horario: null });
+    assert.strictEqual(d.avisar, true, 'la regla de oro: San Remo se comporta exactamente igual que antes');
+    assert.strictEqual(d.motivo, 'acumulado');
+});

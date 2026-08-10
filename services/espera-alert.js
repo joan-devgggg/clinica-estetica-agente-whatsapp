@@ -63,7 +63,7 @@
 
 const logger = require('../lib/logger');
 const { alertOnce, clearAlert } = require('./admin-alerts');
-const { minutosDeAperturaEntre, vieneDeAntesDeAbrir } = require('./horario-apertura');
+const { minutosDeAperturaEntre, vieneDeAntesDeAbrir, estaAbierto } = require('./horario-apertura');
 const { BUSINESS_TZ, toLocalDateStr } = require('./date-utils');
 
 // Un solo umbral para las dos reglas, y es deliberado. Son la misma pregunta —«¿hay alguien
@@ -106,7 +106,18 @@ function decidirAvisoEspera({ desde, ahora, horario }) {
     if (vieneDeAntesDeAbrir(ini, ahora, horario)) {
         return { avisar: true, motivo: 'abierto_con_espera_anterior', minutosAbierto: minutos };
     }
-    if (minutos >= MINUTOS_PARA_AVISAR) return { avisar: true, motivo: 'acumulado', minutosAbierto: minutos };
+    if (minutos >= MINUTOS_PARA_AVISAR) {
+        // Contar en horario de apertura no basta: hay que ENVIAR dentro de él. Mismo medio
+        // arreglo que tenía bot-pause-alert — se protegía el contador y no el envío, que es
+        // lo que suena en el móvil. Medido el 10/08/2026 a las 02:34 con el salón cerrado:
+        // Olga acumulaba 618 minutos de apertura y 34656332064 otros 472, así que los dos
+        // avisos habrían salido de madrugada. Retrasarlo no cuesta nada: si al abrir sigue
+        // esperando, `vieneDeAntesDeAbrir` dispara a las 10:00 en punto.
+        if (!estaAbierto(ahora, horario)) {
+            return { avisar: false, motivo: 'cerrado_ahora', minutosAbierto: minutos };
+        }
+        return { avisar: true, motivo: 'acumulado', minutosAbierto: minutos };
+    }
     return { avisar: false, motivo: 'aun_no', minutosAbierto: minutos };
 }
 

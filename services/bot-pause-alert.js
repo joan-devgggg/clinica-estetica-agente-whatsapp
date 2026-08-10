@@ -16,7 +16,7 @@
 
 const logger = require('../lib/logger');
 const { alertOnce, clearAlert } = require('./admin-alerts');
-const { minutosDeAperturaEntre, pausaVieneDeAntesDeAbrir } = require('./horario-apertura');
+const { minutosDeAperturaEntre, pausaVieneDeAntesDeAbrir, estaAbierto } = require('./horario-apertura');
 
 const ALERT_THROTTLE_MS = 15 * 60 * 1000;
 
@@ -122,6 +122,23 @@ function decidirAvisoPausa({ pausadoDesde, ahora, horario }) {
     }
 
     if (minutos >= MINUTOS_PARA_AVISAR) {
+        // Contar en horario de apertura no basta: hay que ENVIAR dentro de él. La deuda se
+        // completa a las 18:55, el tic siguiente cae a las 19:05 con el salón ya cerrado, y
+        // el Telegram sale igual — el aviso puede llegar a las 2 de la madrugada por algo
+        // acumulado durante el día. Es medio arreglo: se protegía el contador y no el envío,
+        // que es lo que suena en el móvil.
+        //
+        // Retrasarlo no cuesta nada, y esa es la parte que lo hace seguro: si sigue pausado
+        // al abrir, `pausaVieneDeAntesDeAbrir` dispara a las 10:00 en punto sin esperar a
+        // acumular otra vez. O sea que lo peor que pasa es que el aviso llegue en el primer
+        // minuto del día siguiente, que es también el primer minuto en que alguien puede
+        // hacer algo con él.
+        //
+        // Sin `horario` configurado (hoy San Remo) `estaAbierto` devuelve true y esto no
+        // cambia nada: a quien no tiene jornada no se le inventa una, aquí tampoco.
+        if (!estaAbierto(ahora, horario)) {
+            return { avisar: false, motivo: 'cerrado_ahora', minutosAbierto: minutos };
+        }
         return { avisar: true, motivo: 'acumulado', minutosAbierto: minutos };
     }
     return { avisar: false, motivo: 'aun_no', minutosAbierto: minutos };
