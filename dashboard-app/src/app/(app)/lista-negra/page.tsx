@@ -1,10 +1,12 @@
 "use client";
 
-// NO BORRAR: fuera del menú de SANTE desde el 07/08/2026 (sigue en el de San Remo), pero viva
-// y accesible por URL. El filtro de lista negra SIGUE CORRIENDO por debajo — el bot no
-// contesta a quien esté marcada—, así que esta es la única forma de DESBLOQUEAR a alguien.
-// Sin ella, un bloqueo sería definitivo y silencioso.
-// Contexto completo en `dashboard-app/src/components/layout/app-sidebar.tsx`.
+// En el menú de las DOS organizaciones. Estuvo fuera del de Sante entre el 07 y el 10/08/2026
+// y hubo que devolverla: ver el porqué en `dashboard-app/src/components/layout/app-sidebar.tsx`.
+//
+// Esta pantalla es la vista COMPLETA (quién está bloqueado, buscar y añadir a cualquiera,
+// desbloquear). Desde el 10/08/2026 la ficha de Clientes bloquea y desbloquea también, sobre
+// el contacto que ya tienes abierto; las dos llaman a los mismos endpoints
+// (POST/DELETE /api/lista-negra/:id) y ninguna es un atajo de la otra.
 
 import { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/utils/supabase/client";

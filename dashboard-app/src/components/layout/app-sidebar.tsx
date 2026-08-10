@@ -61,20 +61,19 @@ const salonNavItems: NavItem[] = [
   { href: "/whatsapp", label: "WhatsApp", icon: MessageCircle },
 ];
 
-// PANTALLAS DE SANTE QUE NO ESTÁN EN EL MENÚ Y NO SE PUEDEN BORRAR (07/08/2026)
+// `/lista-negra` VOLVIÓ AL MENÚ EL 10/08/2026, y conviene saber por qué no debe volver a irse.
 //
-// `/lista-negra` y `/resenas` se quitaron de aquí porque la dueña no las abre a diario, pero
-// las páginas siguen vivas y se llega a ellas escribiendo la URL. No son código muerto:
+// Se quitó el 07/08 con el argumento de que la dueña no la abre a diario. Es verdad y da
+// igual: no se usa a diario, se usa el día que hace falta, y ese día llegó tres días después
+// —alguien escribiendo barbaridades y amenazando— con la pantalla accesible solo escribiendo
+// la URL a mano. Una capacidad que solo se necesita en una urgencia es exactamente la que no
+// puede depender de que alguien recuerde la ruta.
 //
-//   · /lista-negra — el filtro de lista negra SIGUE CORRIENDO por debajo (el bot no contesta
-//     a quien esté marcada). Sin pantalla no habría ninguna forma de desbloquear a nadie:
-//     el bloqueo sería definitivo y silencioso.
-//   · /resenas — el 06/08/2026 aparecieron cinco reseñas marcadas como enviadas que nunca
-//     salieron. Esta pantalla es el único sitio donde se ve la cola: el día que el worker
-//     (`services/review.js`) vuelva a fallar, sin ella no se entera nadie.
-//
-// Si algún día se borran de verdad, hay que sustituir antes esas dos capacidades —
-// desbloquear una clienta y ver la cola de reseñas—, no solo la ruta.
+// `/resenas` sigue fuera del menú de Sante y su página sigue viva: se llega por URL. Tampoco
+// es código muerto — el 06/08/2026 aparecieron cinco reseñas marcadas como enviadas que nunca
+// salieron, y esta pantalla es el único sitio donde se ve la cola. El día que el worker
+// (`services/review.js`) vuelva a fallar, sin ella no se entera nadie. Si algún día se borra
+// de verdad, hay que sustituir antes esa capacidad, no solo la ruta.
 //
 // «Pagos» (`/stripe`) sí se borró entero el 07/08/2026: era un placeholder con badge SOON
 // que no hacía nada, y su hueco lo ocupa ahora Caja.
@@ -88,6 +87,9 @@ const salonSettingsItems: NavItem[] = [
   { href: "/caja/revision", label: "Revisión de caja", icon: ClipboardCheck },
   { href: "/facturacion", label: "Facturación", icon: Receipt },
   { href: "/lista-vip", label: "Lista VIP", icon: Star },
+  // Justo debajo de Lista VIP: son la misma pregunta ("¿a quién trato distinto?") con los dos
+  // signos, y se buscan en el mismo sitio.
+  { href: "/lista-negra", label: "Lista negra", icon: Ban },
   { href: "/campanas", label: "Campañas", icon: Megaphone },
   { href: "/configuracion", label: "Configuración", icon: Settings },
 ];
