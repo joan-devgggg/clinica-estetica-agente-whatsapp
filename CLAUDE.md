@@ -110,7 +110,7 @@ server.js              ← Punto de entrada: crea N clientes WA, arranca workers
     ├── channel-health.js  ← Aviso de canal caído: 3 fallos de plataforma seguidos
     ├── llm-health.js      ← Aviso de proveedor del modelo caído (cuenta: 1 fallo · transitorio: 3)
     ├── bot-pause-alert.js ← Bot pausado: al tirar un mensaje, y a las 2 h de apertura
-    ├── espera-alert.js    ← Alguien esperando: escalada sin resolver / entrante sin salida (1 h)
+    ├── espera-alert.js    ← DORMIDO a propósito (mide el panel, no la atención) — ver su sección
     ├── horario-apertura.js← Puro: cuánto tiempo de ATENCIÓN hay entre dos instantes
     ├── telegram.js        ← Bot admin multi-org (mismo token, admins por org)
     ├── helpers.js         ← Extracción de datos (restaurante + salón)
@@ -217,12 +217,32 @@ mensaje, un vigilante cada 10 min mira el ESTADO. Umbral: **2 h de horario de ap
 al abrir sin esperar. "Pausado desde" = `config.updated_at` de `bot_activo`, sin columna
 nueva. Una org sin `horario` (hoy San Remo) cuenta reloj, y se dice: no se le inventa jornada.
 
-## Alguien esperando: el vigilante de esperas (`services/espera-alert.js`)
+## El vigilante de esperas está DORMIDO, y no por olvido (`services/espera-alert.js`)
 
-Nace de la auditoría del 09/08/2026 sobre las 38 conversaciones de Sante. El agujero no era
-ningún bug: era que **cuando el bot suelta una conversación no se entera nadie**, así que los
-fallos se descubrían leyendo conversaciones tres semanas después. Dos reglas, una por cada
-puerta por la que alguien acaba esperando: **escalada sin resolver** y **entrante sin salida**.
+**No lo enciendas.** Escrito el 09/08/2026 y apagado el 10/08 —antes de correr nunca en
+producción— porque **mide otra cosa distinta de la que dice medir**.
+
+Lo que pasa de verdad cuando el bot escala: la dueña recibe su Telegram, entra al WhatsApp
+**desde el móvil** y contesta. Ese circuito funciona. Lo que no hace nadie nunca es entrar al
+panel a cerrar la fila de `pending_actions`, porque no hace falta para atender a nadie. Así
+que el vigilante no mide atención: mide **si alguien cerró la `pending_action` en el panel**, y
+cada aviso suyo sería sobre una clienta ya atendida. La regla 2 tiene el mismo agujero por otra
+puerta: una respuesta enviada desde el móvil no se escribe en `messages`, así que lo que mide
+es «el bot no contestó», que no es «nadie contestó».
+
+Lo destapó la propia auditoría al revés: leyó a Olga Yarmak (3 días) y a 34656332064 (33 h)
+como abandonadas, y a las dos les había contestado la dueña desde el móvil. Los dos primeros
+Telegrams del vigilante habrían sido falsos, y sobre sus dos casos estrella.
+
+**Requisito único para encenderlo: que los ECOS registren en `messages` las respuestas
+enviadas desde el móvil.** Con eso la regla 2 se sostiene sola; la regla 1 necesita además que
+la escalada se cierre con el eco y no a mano en el panel. No es calibración: sin ecos no hay
+umbral que lo arregle. Interruptor: `VIGILANTE_ESPERAS=on`, apagado **por defecto** para que
+un despliegue sin la variable no lo resucite.
+
+El código se deja entero a propósito —umbrales medidos, textos, lecturas con `assertRead`—
+para no reescribirlo el día que los ecos entren. Lo de abajo sigue siendo cierto, y conviene
+no perderlo:
 
 **El umbral es 60 minutos de APERTURA, y de dónde sale es lo único que hay que recordar.** De
 213 entrantes, 199 se contestaron en menos de 20 s (p50 9,6 · p95 13,1 · p99 16,0 · máx 18) y

@@ -305,3 +305,39 @@ test('sin nombre en la ficha, el teléfono se dice UNA vez', () => {
         'concatenar nombre y teléfono sin mirar daba "+34 656 332 064 · +34 656 332 064"');
     assert.ok(/el sábado 8 de agosto a las 11:08/.test(m), 'sin la coma que mete es-ES');
 });
+
+// ─── El interruptor ──────────────────────────────────────────────────────────
+// 10/08/2026: la dueña contestó a Olga y a 34656332064 desde el móvil, y esas respuestas no
+// llegan a `messages`. Los dos avisos habrían sido FALSOS. El vigilante duerme hasta que los
+// ecos entren, y duerme POR DEFECTO — un despliegue que pierda la variable no puede
+// resucitarlo.
+
+test('sin VIGILANTE_ESPERAS=on el vigilante NO se arma', () => {
+    const { startEsperaWatchdog, vigilanteActivado, VIGILANTE_VAR } = require('../services/espera-alert');
+    const previo = process.env[VIGILANTE_VAR];
+    try {
+        for (const valor of [undefined, '', 'off', 'false', '0', 'ON ', 'sí', 'on-ish']) {
+            if (valor === undefined) delete process.env[VIGILANTE_VAR];
+            else process.env[VIGILANTE_VAR] = valor;
+            if (valor === 'ON ') continue;   // se normaliza (trim+lower): ese sí enciende
+            assert.strictEqual(vigilanteActivado(), false, `no debía activar con ${JSON.stringify(valor)}`);
+            assert.strictEqual(startEsperaWatchdog([ORG]), false, 'no puede programar ningún tic');
+        }
+    } finally {
+        if (previo === undefined) delete process.env[VIGILANTE_VAR]; else process.env[VIGILANTE_VAR] = previo;
+    }
+});
+
+test('el estado seguro es el DEFAULT, no un valor concreto', () => {
+    const { vigilanteActivado, VIGILANTE_VAR } = require('../services/espera-alert');
+    const previo = process.env[VIGILANTE_VAR];
+    try {
+        delete process.env[VIGILANTE_VAR];
+        assert.strictEqual(vigilanteActivado(), false,
+            'apagarlo con un "off" explícito haría que perder la variable devolviera los avisos falsos');
+        process.env[VIGILANTE_VAR] = 'on';
+        assert.strictEqual(vigilanteActivado(), true, 'encenderlo tiene que ser un acto explícito');
+    } finally {
+        if (previo === undefined) delete process.env[VIGILANTE_VAR]; else process.env[VIGILANTE_VAR] = previo;
+    }
+});

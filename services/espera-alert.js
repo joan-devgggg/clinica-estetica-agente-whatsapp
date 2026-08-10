@@ -1,9 +1,45 @@
 /**
  * espera-alert.js — Aviso de "hay una clienta esperando y nadie le ha contestado".
  *
- * Nace de la auditoría del 09/08/2026 sobre las 38 conversaciones de Sante. El agujero no
- * era ningún bug concreto: era que **cuando el bot suelta una conversación, nadie se entera**.
- * Lo que se midió, y que es lo que justifica los umbrales de abajo:
+ * ╔══════════════════════════════════════════════════════════════════════════════════════╗
+ * ║  ESTE VIGILANTE ESTÁ DORMIDO A PROPÓSITO. NO LO ENCIENDAS SIN LEER ESTO.              ║
+ * ╚══════════════════════════════════════════════════════════════════════════════════════╝
+ *
+ * No está apagado porque falle, ni porque se olvidara encenderlo, ni porque haya que
+ * calibrarlo mejor. Está apagado porque **mide otra cosa distinta de la que dice medir**, y
+ * mientras siga así todos sus avisos son falsos. Decidido el 10/08/2026, un día después de
+ * escribirlo.
+ *
+ * QUÉ PASA DE VERDAD CUANDO EL BOT ESCALA. La dueña ya recibe su Telegram, entra al WhatsApp
+ * **desde el móvil** y contesta a la clienta. Ese circuito funciona y no necesita vigilancia.
+ * Lo que NO ocurre nunca es que alguien entre al panel a cerrar la fila de `pending_actions`:
+ * no hace falta para atender a nadie, así que no se hace.
+ *
+ * QUÉ MIDE ESTE MÓDULO, ENTONCES. No mide atención. Mide **si alguien cerró la
+ * `pending_action` en el panel** — y no la cierra nadie. Cada aviso suyo sería sobre una
+ * clienta que YA está atendida. La regla 2 (entrante sin salida) tiene el mismo agujero por
+ * otra puerta: una respuesta enviada desde el móvil no se escribe en `messages`, así que lo
+ * que mide es "el bot no contestó", que no es "nadie contestó".
+ *
+ * CÓMO SE DESTAPÓ. La auditoría del 09/08 leyó a Olga Yarmak (3 días) y a 34656332064 (33 h)
+ * como dos clientas abandonadas, y el vigilante las tenía en la mira para su primer arranque.
+ * La dueña confirmó que a las dos les había contestado desde el móvil. Los dos primeros
+ * Telegrams del vigilante habrían sido falsos, y sobre sus dos casos estrella.
+ *
+ * QUÉ HARÍA FALTA PARA ENCENDERLO — y es una sola cosa: que las respuestas enviadas desde el
+ * móvil de la dueña se registren en `messages` (los ECOS). Con eso, la regla 2 pasa a medir
+ * de verdad "nadie ha contestado" y se sostiene sola. La regla 1 necesita además que cerrar
+ * la escalada deje de depender de que alguien abra el panel — lo natural es resolverla con el
+ * eco, no a mano. Sin ecos, ninguna de las dos mide nada útil y no hay umbral que lo arregle.
+ *
+ * Lo que sigue vivo y no depende de esto: los umbrales medidos, el texto del aviso y las
+ * lecturas con assertRead. Cuando los ecos entren, esto se enciende y se vuelve a medir; el
+ * código se deja entero a propósito para no tener que reescribirlo entonces.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * Lo que se midió el 09/08 y que fijó los umbrales. Sigue siendo válido PARA EL BOT: dice
+ * cuánto tarda el bot en contestar, y no dice nada de lo que pasa desde el móvil.
  *
  *  - De 213 entrantes, 199 se contestaron en **menos de 20 segundos** (p50 9,6 s · p95 13,1 s
  *    · p99 16,0 s · máximo 18 s). Los otros 14 no se contestaron nunca o tardaron horas.
@@ -282,11 +318,40 @@ async function revisarEsperas(orgId, { botActivo = true, horario, escaladas = []
     return entregados;
 }
 
+// ─── Interruptor: por defecto DORMIDO ────────────────────────────────────────
+//
+// El PORQUÉ está entero en la cabecera del fichero. En una línea: esto no mide si a la
+// clienta la han atendido, mide si alguien cerró la `pending_action` en el panel — y nadie
+// la cierra, porque la dueña contesta desde el móvil y no le hace falta.
+//
+// Se apaga con el DEFAULT y no con un valor. Si la variable falta, viene vacía o está mal
+// escrita, el vigilante duerme. Al revés —apagarlo con un `=off` explícito— cualquier
+// despliegue que perdiera la variable devolvería los avisos falsos sin que nadie lo pidiera,
+// que es exactamente el fallo que esto viene a evitar.
+//
+// NO lo pongas a 'on' hasta que los ecos registren en `messages` las respuestas del móvil.
+// Es el único requisito, y no es de calibración: sin él no hay umbral que valga.
+const VIGILANTE_VAR = 'VIGILANTE_ESPERAS';
+function vigilanteActivado() {
+    return String(process.env[VIGILANTE_VAR] || '').trim().toLowerCase() === 'on';
+}
+
 /**
  * Arranca el vigilante. La BD se lee aquí y solo aquí: `revisarEsperas` se queda sin I/O
  * para poder probarlo entero.
+ *
+ * @returns {boolean} true si ha quedado armado; false si duerme.
  */
 function startEsperaWatchdog(orgIds) {
+    if (!vigilanteActivado()) {
+        // warn y no info: que se vea en el arranque que hay una red apagada a propósito.
+        logger.warn('espera_watchdog_dormido', {
+            motivo: `${VIGILANTE_VAR} != 'on'`,
+            requisitoPrevio: 'los ecos del móvil de la dueña no llegan a messages',
+        });
+        return false;
+    }
+
     const orgs = Array.isArray(orgIds) ? orgIds : [...(orgIds?.keys?.() || [])];
     const db = require('./db');
 
@@ -318,13 +383,14 @@ function startEsperaWatchdog(orgIds) {
     logger.info('espera_watchdog_iniciado', { orgs: orgs.length, minutosParaAvisar: MINUTOS_PARA_AVISAR });
     setInterval(tick, WATCHDOG_INTERVAL_MS).unref();
     setTimeout(tick, 90 * 1000).unref();
+    return true;
 }
 
 /** Solo para tests. */
 function _resetWatchdog() { _avisadas.clear(); }
 
 module.exports = {
-    decidirAvisoEspera, revisarEsperas, startEsperaWatchdog,
+    decidirAvisoEspera, revisarEsperas, startEsperaWatchdog, vigilanteActivado, VIGILANTE_VAR,
     mensajeEscalada, mensajeSinResponder, cuandoTexto, duracionTexto, telefonoBonito,
     MINUTOS_PARA_AVISAR, HORIZONTE_DIAS, WATCHDOG_INTERVAL_MS, _resetWatchdog,
 };
