@@ -1107,6 +1107,41 @@ alguien escribiendo barbaridades y amenazando, y la única forma de llegar era t
 Una capacidad que solo se necesita en una urgencia es justo la que no puede depender de que
 alguien recuerde la ruta.
 
+## Bloquear a alguien: qué hace de verdad `is_blacklisted`
+
+La marca la ponen cuatro sitios (`setBlacklist`): el no-show desde el panel, el rechazo de
+Bizum, el comando de Telegram, y a mano desde `/lista-negra` o desde la ficha de Clientes.
+Lo que hace **no es «el bot deja de contestarle»**, y la diferencia importa:
+
+| | Qué pasa |
+|---|---|
+| Conversación | **Le contesta UNA vez más**: «En breve te atenderá nuestro equipo» (`bot.js:3813-3836`), y a partir de ahí calla — texto, fotos y audios (`isBlacklistedNow`). |
+| …y en cada sesión nueva | **Vuelve a mandarlo.** `blacklistNotified` no viaja en `buildSessionExtra`, así que un timeout de 1 h o un reinicio lo reabren. |
+| Ficha | `bot_mode='manual'` + `escalation_reason='lista_negra'` + una fila en `pending_actions`. |
+| Telegram | Un aviso por mensaje suyo, **con un botón «✅ Sí, continuar» que lo DESBLOQUEA y encima le escribe** (`telegram.js:589-601`). |
+| Monitor / Clientes | **Sigue apareciendo**, y en el Monitor el PRIMERO: ordena delante lo que está en manual con escalada, que es lo que el bloqueo acaba de poner. |
+| Campañas · recordatorio · reseña | **No le llega ninguno de los tres.** Filtran en la consulta: `getBroadcastAudience` (incluso con allowlist explícito), `getLeadsPendientesRecordatorio`, `getCompletedAppointmentsForReview`. |
+| Citas | **Intactas.** `setBlacklist` solo escribe en `contacts`: lo que tenga sigue en la agenda, sin recordatorio. |
+
+**Desbloquear son DOS escrituras y el orden importa.** Quitar solo `is_blacklisted` deja la
+conversación en manual con la escalada sin resolver, o sea **el bot mudo igual** — y
+`auto-return` no la rescata nunca, precisamente porque no devuelve a 'auto' nada con una
+escalada abierta. Primero `PUT /api/leads/:id/bot-mode {mode:'auto'}` (que limpia
+`escalation_reason` y resuelve la `pending_action`) y después `DELETE /api/lista-negra/:id`:
+si falla el segundo paso el contacto sigue BLOQUEADO, que es el lado recuperable. Al revés,
+el fallo deja un «desbloqueado» al que no le contesta nadie. Así lo hace la ficha de Clientes;
+el «Quitar» de `/lista-negra` hace solo el DELETE y arrastra ese defecto (el botón del Monitor
+y el de Telegram sí hacen los dos pasos, y además le escriben).
+
+**Dos formas de bloquear, ninguna es atajo de la otra**: `/lista-negra` es la vista completa
+(quién está bloqueado, buscar a cualquiera, desbloquear) y la ficha de Clientes actúa sobre el
+contacto que ya tienes abierto. Las dos llaman a `POST`/`DELETE /api/lista-negra/:id`. La de
+la ficha es **solo salón** (`isSalon`) y pide confirmación; el texto de esa confirmación vive
+en `dashboard-app/src/lib/blacklist.ts` con cada línea anclada al código que la hace cierta, y
+`tests/lista-negra-panel.test.js` lo afirma —incluido que **no** prometa un silencio que no
+existe—. Si alguien cambia una de las conductas de la tabla de arriba, ese test es el que
+avisa de que la confirmación se ha vuelto mentira.
+
 ## Regla de oro
 
 **San Remo NO se toca.** Cualquier cambio en el código compartido debe mantener el comportamiento exacto de San Remo. El flujo Bizum, party_size, mock calendar — todo sigue igual para `orgType === 'restaurant'`.

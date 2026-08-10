@@ -15,7 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { Cliente } from "@/lib/types";
-import { API, apiHeaders } from "@/lib/api";
+import { API, apiHeaders, apiMutate } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
 
 export default function ClientesPage() {
@@ -94,6 +94,41 @@ export default function ClientesPage() {
     await fetchClientes();
   }
 
+  // La ficha abierta es estado aparte de la lista: sin esto, bloquear no se vería hasta cerrar
+  // y volver a abrir, y el propio botón seguiría diciendo "Bloquear contacto".
+  function patchSeleccionado(id: number, cambios: Partial<Cliente>) {
+    setSelectedCliente((prev) => (prev && prev.id === id ? { ...prev, ...cambios } : prev));
+  }
+
+  async function handleBlock(id: number, motivo: string) {
+    await apiMutate(`/api/lista-negra/${id}`, { method: "POST", body: { motivo }, orgId });
+    patchSeleccionado(id, { is_blacklisted: true, blacklist_reason: motivo || undefined });
+    await fetchClientes();
+  }
+
+  // Desbloquear son DOS escrituras, y el orden no es indiferente.
+  //
+  // Bloquear deja la conversación en `bot_mode='manual'` con `escalation_reason='lista_negra'`
+  // (bot.js, rama de lista negra), y quitar solo `is_blacklisted` NO deshace eso: el bot
+  // seguiría mudo, y `auto-return` no la rescata nunca porque no devuelve a 'auto' nada que
+  // tenga una escalada sin resolver. O sea que un "desbloqueado" a medias es un contacto que
+  // el panel da por atendido y al que no le contesta nadie.
+  //
+  // Por eso primero 'auto' —que además limpia `escalation_reason` y resuelve la pending_action
+  // (webhook.js: PUT /api/leads/:id/bot-mode)— y después la marca. Si falla el segundo paso,
+  // el contacto sigue BLOQUEADO, que es el lado recuperable: el bot sigue callado, se ve el
+  // error, y su siguiente mensaje lo vuelve a dejar en manual él solo.
+  //
+  // No se le manda ningún mensaje, al revés que el "Sí, continuar" de Telegram y que el botón
+  // de reactivar del Monitor: desde una ficha se desbloquea a alguien que igual ni sabe que
+  // estaba bloqueado, y escribirle sin querer es peor que no escribirle.
+  async function handleUnblock(id: number) {
+    await apiMutate(`/api/leads/${id}/bot-mode`, { method: "PUT", body: { mode: "auto" }, orgId });
+    await apiMutate(`/api/lista-negra/${id}`, { method: "DELETE", orgId });
+    patchSeleccionado(id, { is_blacklisted: false, blacklist_reason: undefined, bot_mode: "auto" });
+    await fetchClientes();
+  }
+
   function openCliente(cliente: Cliente) {
     setSelectedCliente(cliente);
     setSheetOpen(true);
@@ -158,6 +193,8 @@ export default function ClientesPage() {
         onClose={() => setSheetOpen(false)}
         onSave={handleSave}
         onDelete={handleDelete}
+        onBlock={handleBlock}
+        onUnblock={handleUnblock}
         orgType={orgType}
       />
     </>
