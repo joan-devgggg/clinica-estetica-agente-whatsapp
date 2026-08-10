@@ -1723,6 +1723,91 @@ const MESES_MAP = {
     agosto: 7, septiembre: 8, setiembre: 8, octubre: 9, noviembre: 10, diciembre: 11,
 };
 
+// Los meses en los cuatro idiomas del salón. MESES_MAP (castellano) se queda como está
+// porque lo usa extractDatePreferenceSante, que lee lo que escribe la CLIENTA; este mapa es
+// para leer lo que escribe el BOT, que responde en el idioma de ella.
+const MESES_MULTI = {
+    ...MESES_MAP,
+    january: 0, february: 1, march: 2, april: 3, may: 4, june: 5, july: 6,
+    august: 7, september: 8, october: 9, november: 10, december: 11,
+    // Ruso — genitivo, que es la forma que sale en una fecha ("28 августа").
+    января: 0, февраля: 1, марта: 2, апреля: 3, мая: 4, июня: 5, июля: 6,
+    августа: 7, сентября: 8, октября: 9, ноября: 10, декабря: 11,
+    // Ucraniano.
+    січня: 0, лютого: 1, березня: 2, квітня: 3, травня: 4, червня: 5, липня: 6,
+    серпня: 7, вересня: 8, жовтня: 9, листопада: 10, грудня: 11,
+};
+
+// Conjunciones y separadores que pueden ir ENTRE los días de una enumeración, en los cuatro
+// idiomas. Es la misma trampa que ya se cubrió para las horas en extractLooseClockHours:
+// «27, 29 o 30 de agosto» lleva coma Y conjunción, y quedarse en la coma pierde el último.
+const SEPARADOR_DIAS = String.raw`(?:,|y|o|or|and|или|и|та|чи)`;
+
+/**
+ * TODAS las fechas de calendario que menciona un texto, como 'YYYY-MM-DD'.
+ *
+ * Distinta de `extractDatePreferenceSante`, que devuelve UNA (la preferencia de la clienta).
+ * Aquí hacen falta todas porque lo que se va a comprobar es si el bot ha ofrecido días que
+ * no existen, y Ludmila Zarahovich (03/08/2026) recibió tres en el mismo mensaje.
+ *
+ * Solo se leen fechas con MES explícito. Un día suelto («el 28») se deja fuera a propósito:
+ * choca con la selección de hueco por número, y el fallo que esto viene a cazar siempre trae
+ * el mes porque el bot está proponiendo fechas de calendario.
+ */
+function extractMentionedDates(text) {
+    if (!text) return [];
+    const t = normalizeText(text);
+    const esLetra = c => !!c && /\p{L}/u.test(c);
+    const fechas = new Set();
+
+    for (const [nombre, mesIdx] of Object.entries(MESES_MULTI)) {
+        for (let from = 0; ;) {
+            const at = t.indexOf(nombre, from);
+            if (at === -1) break;
+            from = at + nombre.length;
+            // Límite de palabra a mano: \b es ASCII y no sirve con cirílico, y sin esto
+            // "mayo" casaría dentro de "mayoría".
+            if (esLetra(t[at - 1]) || esLetra(t[at + nombre.length])) continue;
+
+            const dias = [];
+            // Días ANTES del mes: "28 de agosto", "27, 29 или 30 августа".
+            const antes = t.slice(Math.max(0, at - 60), at);
+            const enumRe = new RegExp(String.raw`(\d{1,2}(?:\s*${SEPARADOR_DIAS}?\s*\d{1,2})*)\s*(?:de\s+)?$`);
+            const m = antes.match(enumRe);
+            if (m) for (const d of m[1].match(/\d{1,2}/g) || []) dias.push(Number(d));
+            // …y DESPUÉS, que es como se escribe en inglés: "August 10".
+            if (!dias.length) {
+                const despues = t.slice(at + nombre.length, at + nombre.length + 6).match(/^\s*(\d{1,2})\b/);
+                if (despues) dias.push(Number(despues[1]));
+            }
+
+            for (const dom of dias) {
+                if (dom < 1 || dom > 31) continue;
+                const f = resolveUpcomingDate(dom, mesIdx);
+                if (f) fechas.add(f);
+            }
+        }
+    }
+    return [...fechas].sort();
+}
+
+// El bot DECLARA que no hay hueco, que no es lo mismo que ofrecer uno. Sirve para dejar pasar
+// un «el 28 no tengo disponibilidad», que es la respuesta correcta y no una invención.
+const SIN_DISPONIBILIDAD_MARKERS = [
+    /\bno (?:tengo|hay|nos quedan|queda|tenemos)\b[^.!?]{0,30}\b(?:hueco|huecos|disponibilidad|sitio|citas?)\b/,
+    /\b(?:esta|estamos|estoy)\b[^.!?]{0,15}\b(?:completo|completa|completos|llenos?)\b/,
+    /\bno (?:me )?queda\b[^.!?]{0,20}\b(?:nada|libre)\b/,
+    /\bno (?:availability|slots?|openings?)\b/, /\bfully booked\b/, /\bnothing available\b/,
+    /\bdon(?:'|’)?t have (?:any )?(?:availability|slots?|openings?)\b/,
+    buildCyrillicRe(['нет свободных', 'нет мест', 'нет окон', 'все занято', 'немає вільних',
+        'немає місць', 'все зайнято', 'усе зайнято']),
+];
+function declaraSinDisponibilidad(text) {
+    if (!text) return false;
+    const t = normalizeText(text);
+    return SIN_DISPONIBILIDAD_MARKERS.some(re => re.test(t));
+}
+
 // Extrae preferencia de FECHA del salón a partir de texto ya normalizado (sin tildes).
 // Devuelve { diaSemana } y/o { fecha: 'YYYY-MM-DD' }, o null. Para no chocar con la
 // selección de hueco por número ("el 2" = opción 2), solo tomamos día del mes suelto
@@ -3624,6 +3709,8 @@ module.exports = {
     extractClockHours,
     extractLooseClockHours,
     extractMentionedHours,
+    extractMentionedDates,
+    declaraSinDisponibilidad,
     hhmmToMin,
     detectHoraFueraDeHorario,
     detectTratamiento,

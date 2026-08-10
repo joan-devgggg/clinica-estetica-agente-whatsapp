@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, detectHoraFueraDeHorario, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, detectHoraFueraDeHorario, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -1259,6 +1259,51 @@ function respondsWithInventedSlots(respuesta, availableSlots, horasHorario = nul
         return m >= minR && m <= maxR;
     });
     return !anyValid;
+}
+
+// ─── La misma red, pero para FECHAS ──────────────────────────────────────────
+//
+// Ludmila Zarahovich, 03/08/2026. Pidió el 28 de agosto con Veronika y recibió: «no hay
+// huecos el 28, los más cercanos son el 27, 29 o 30». Eligió el 27 → «no hay el 27, los más
+// cercanos el 29 o el 30». Eligió el 29 → «tampoco el 29, el más cercano es el 4 de agosto o
+// el 11». **Le ofreció tres días y negó los tres.** Una hora después una persona le creó a
+// mano la cita del 28 —el día que había pedido desde el principio— y con el servicio de más
+// ticket del periodo.
+//
+// Las tres redes de horas no vieron nada porque ahí no había ni una HH:MM: la conversación
+// entera fue de días de calendario, y `respondsWithInventedSlots` sale en su primera línea
+// cuando no hay horas mencionadas. Este es su gemelo exacto, con la misma forma —basta con
+// que UNA fecha mencionada tenga respaldo para dejar pasar el mensaje— y con las dos
+// exenciones que hacen falta para no repetir el fallo de Olga, o sea comerse el mensaje
+// correcto:
+//
+//   1. Las fechas de una cita que la clienta YA tiene son legítimas y no salen de
+//      availableSlots: confirmarla, cancelarla o reagendarla habla de su día con razón.
+//   2. Declarar que NO hay hueco en UNA fecha concreta es la respuesta correcta, no una
+//      oferta. Se exige que sea UNA sola: el mensaje de Ludmila negaba una y ofrecía tres,
+//      y esa mezcla es justo la que hay que bloquear.
+//
+// El coste que se acepta a cambio, dicho en voz alta: un «no tengo huecos el 28» con la
+// agenda vacía y sin fecha alternativa se sustituye por el mensaje genérico de sin
+// disponibilidad, que dice lo mismo con menos precisión. Es el mismo trato que
+// unbackedBookingClaim —un mensaje honesto de más—, y aquí sale más barato que en el caso de
+// Olga porque el sustituto no pierde información: allí el mensaje bloqueado era el ÚNICO que
+// contestaba a la pregunta.
+function respondsWithInventedDates(respuesta, availableSlots, opts = {}) {
+    const { citasVivas = [] } = opts;
+    let fechas = extractMentionedDates(respuesta);
+    if (!fechas.length) return false;
+
+    const suyas = new Set((citasVivas || []).map(c => c && c.fecha).filter(Boolean));
+    fechas = fechas.filter(f => !suyas.has(f));
+    if (!fechas.length) return false;
+
+    if (fechas.length === 1 && declaraSinDisponibilidad(respuesta)) return false;
+
+    const realFechas = new Set((Array.isArray(availableSlots) ? availableSlots : [])
+        .map(s => s && s.fecha).filter(Boolean));
+    if (!realFechas.size) return true;              // agenda sin consultar: cualquier día es humo
+    return !fechas.some(f => realFechas.has(f));
 }
 
 // ─── Sin servicio no se propone día ni hora ──────────────────────────────────
@@ -5678,6 +5723,24 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             });
             aiResponse.respuesta = salonNoSlotsMsg(session);
             aiResponse.reserva_confirmada = false;
+            _timingSinServicio = true;   // ya sustituido: la red de fechas no lo vuelve a hacer
+        }
+
+        // Y el gemelo por FECHAS. Va aparte y no dentro de la red de horas porque su
+        // disparador es el contrario: la conversación de Ludmila no tuvo ni una HH:MM, así
+        // que aquella salía en su primera línea. Se le pasan las citas vivas del turno para
+        // no bloquear el día de una cita que la clienta YA tiene.
+        if (orgType === 'salon' && !_timingSinServicio && !session.reservaConfirmada && !aiResponse._rectificadoPorRedFantasma
+                && respondsWithInventedDates(aiResponse.respuesta, session.availableSlots,
+                    { citasVivas: session._citasVivasTurno || [] })) {
+            logger.warn('cita_sante_fechas_inventadas_bloqueada', {
+                orgId, telefono: userPhone,
+                fechas: extractMentionedDates(aiResponse.respuesta),
+                huecosReales: (session.availableSlots || []).length,
+                tieneServicio: !!session.selectedService,
+            });
+            aiResponse.respuesta = salonNoSlotsMsg(session);
+            aiResponse.reserva_confirmada = false;
         }
 
         // ─── Red anti-cierre-falso (Sante) ────────────────────────────────────
@@ -6286,7 +6349,7 @@ module.exports = {
     extractSentMessageId,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
-        respondsWithInventedSlots, proposesTimingWithoutService, soloDeclaraHorarioDelSalon, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
+        respondsWithInventedSlots, respondsWithInventedDates, proposesTimingWithoutService, soloDeclaraHorarioDelSalon, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover, offersHumanHandover, ensureHandoverAcknowledged, HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, porTrato,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:
