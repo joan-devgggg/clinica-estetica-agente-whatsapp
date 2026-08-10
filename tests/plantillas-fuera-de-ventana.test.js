@@ -14,6 +14,7 @@ process.env.WHATSAPP_360_BASE_URL = 'https://waba-v2.360dialog.io';
 const assert = require('assert');
 const { SANTE_ORG_ID, SANREMO_ORG_ID } = require('../services/org-registry');
 const { build360Client } = require('../services/providers/threesixty-dialog');
+const { formatReminderWhen } = require('../services/helpers');
 
 // db.js requiere el cliente Supabase real. Se stubea services/supabase ANTES de
 // requerir db para poder cargar db de verdad y quedarnos con isWithin24hWindow (que
@@ -166,7 +167,7 @@ test('recordatorio DENTRO de la ventana de 24h: sigue en texto libre', async () 
     assert.strictEqual(state.marcados.length, 1, 'marca recordatorio_enviado');
 });
 
-test('recordatorio FUERA de la ventana: plantilla sante_recordatorio_cita con {{1}}=nombre {{2}}=hora', async () => {
+test('recordatorio FUERA de la ventana: plantilla sante_recordatorio_cita con {{1}}=nombre {{2}}=cuándo', async () => {
     resetState();
     state.lastInbound['34600111222'] = horasAtras(30);
     const pendiente = contactoPendiente();
@@ -183,9 +184,12 @@ test('recordatorio FUERA de la ventana: plantilla sante_recordatorio_cita con {{
     assert.strictEqual(body.text, undefined, 'no debe llevar texto libre');
     assert.strictEqual(body.template.name, 'sante_recordatorio_cita');
     assert.deepStrictEqual(body.template.language, { code: 'es' });
+    // {{2}} lleva la hora Y su fecha desde el 10/08/2026. La forma exacta de esa frase, en los
+    // cuatro idiomas, la fija tests/recordatorio-con-fecha.test.js; lo que se comprueba aquí es
+    // que viaja en el parámetro que Meta aprobó, sin plantilla nueva.
     assert.deepStrictEqual(body.template.components[0].parameters, [
         { type: 'text', text: 'María López' },
-        { type: 'text', text: pendiente.hora_cita },
+        { type: 'text', text: formatReminderWhen(pendiente.fecha_cita, pendiente.hora_cita, 'es') },
     ]);
     assert.strictEqual(state.marcados.length, 1, 'marca recordatorio_enviado');
 });

@@ -84,7 +84,7 @@ require.cache[loggerPath].exports = {
 };
 
 const reminder = require('../services/reminder');
-const { isUsableName } = require('../services/helpers');
+const { isUsableName, formatReminderWhen } = require('../services/helpers');
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -205,9 +205,11 @@ test('le completan la ficha entre dos tics → el recordatorio SALE', async () =
     assert.strictEqual(reqs.length, 1, 'segundo tic: ya se puede mandar');
     const body = reqs[0].body;
     assert.strictEqual(body.type, 'template');
+    // {{2}} es «la hora Y su fecha» desde el 10/08/2026 (tests/recordatorio-con-fecha.test.js);
+    // aquí lo que se afirma es que sale el mismo valor que en el camino normal, no su forma.
     assert.deepStrictEqual(body.template.components[0].parameters, [
         { type: 'text', text: 'Marta Ruiz' },
-        { type: 'text', text: record.hora_cita },
+        { type: 'text', text: formatReminderWhen(record.fecha_cita, record.hora_cita, 'es') },
     ]);
     assert.strictEqual(state.marcados.length, 1, 'ahora sí se marca enviado');
 });

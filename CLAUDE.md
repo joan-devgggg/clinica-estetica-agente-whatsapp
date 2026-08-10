@@ -145,7 +145,45 @@ Rollback sin deploy: `SANTE_CHANNEL=wwebjs`.
 
 La ventana se calcula sobre `messages.direction = 'inbound'` — nunca sobre `conversations.last_message_at`, que un saliente nuestro refrescaría reabriendo una ventana que Meta considera cerrada.
 
-Plantillas aprobadas (Sante): `sante_recordatorio_cita` ({{1}}=nombre, {{2}}=hora) y `sante_solicitud_resena` ({{1}}=nombre, {{2}}=enlace). Los nombres viven en `config` (`plantilla_recordatorio`, `plantilla_resena`), no en el código. `sanitizeTemplateParam` limpia saltos de línea/tabuladores/espacios múltiples: Meta rechaza el mensaje entero (132000) si un parámetro los lleva.
+Plantillas aprobadas (Sante): `sante_recordatorio_cita` ({{1}}=nombre, {{2}}=**cuándo**) y `sante_solicitud_resena` ({{1}}=nombre, {{2}}=enlace). Los nombres viven en `config` (`plantilla_recordatorio`, `plantilla_resena`), no en el código. `sanitizeTemplateParam` limpia saltos de línea/tabuladores/espacios múltiples: Meta rechaza el mensaje entero (132000) si un parámetro los lleva.
+
+### El `{{2}}` del recordatorio dice la hora Y la fecha (`formatReminderWhen`)
+
+El recordatorio decía solo la hora y la clienta no sabía de qué día le hablaban. La fecha entra
+por el hueco que ya había —`{{2}}` es texto libre, o sea **sin plantilla nueva**— y va DETRÁS
+de la hora, porque el texto fijo aprobado la precede con «a las / at / в / о»:
+
+| | `{{2}}` | cómo queda |
+|---|---|---|
+| es | `12:00 del miércoles 12 de agosto` | …tu cita en Sante **a las 12:00 del miércoles 12 de agosto**. |
+| en | `12:00 on Wednesday 12 August` | …your appointment at Sante **at 12:00 on Wednesday 12 August**. |
+| ru | `12:00 в среду, 12 августа` | …о вашей записи в Sante **в 12:00 в среду, 12 августа**. |
+| uk | `12:00 у середу, 12 серпня` | …про ваш запис у Sante **о 12:00 у середу, 12 серпня**. |
+
+**El día de la semana va en tabla a mano, y ese es todo el motivo de que esto sea una función
+y no un `toLocaleDateString`.** Intl devuelve el día en NOMINATIVO (`среда`, `середа`) y detrás
+de la preposición el ruso y el ucraniano piden ACUSATIVO: `в среду`, `у середу`. Concatenar lo
+que da Intl escribe «в 12:00 в среда», que está mal, y el martes cambia además la preposición
+(«**во** вторник»). Es la misma decisión que la tabla genitiva de `MESES_MULTI`. De paso
+desaparecen los otros dos sitios donde se rompía: a Intl solo se le pide el día y el mes, así
+que ya no hay coma de es-ES que quitar («miércoles, 12 de agosto») ni mayúscula que corregir.
+
+**Fecha concreta, nunca «mañana».** Hoy el recordatorio sale 24 h antes y las dos coincidirían
+casi siempre, pero `horas_recordatorio` la edita la dueña y un envío que se retrase convierte
+«mañana» en mentira. Una fecha no envejece mal.
+
+**Un solo valor para los dos caminos.** Texto libre (dentro de la ventana de 24 h) y plantilla
+(fuera) son código distinto: `resolveCuando` se llama UNA vez y alimenta a los dos. Tocar solo
+uno es cómo dos clientas con la misma cita reciben mensajes distintos sin que nadie lo vea.
+
+**San Remo queda fuera**, gateado por `getOrgType(orgId) === 'salon'` (no por UUID, para que un
+salón futuro lo herede). No lo ha pedido su dueño y su recordatorio sigue byte por byte igual,
+con test que lo fija. Si la fecha no se entiende sale la hora sola —el mensaje de siempre— y se
+dice en el log (`recordatorio_fecha_no_formateable`): nunca se inventa un día. Pasa de verdad,
+porque `minutosHastaCita` no descarta una `fecha_cita` malformada (`NaN > minutos` es false).
+
+Red: `tests/recordatorio-con-fecha.test.js` — los siete días en los cuatro idiomas uno por uno,
+que es donde va a fallar si falla. Las cinco protecciones están probadas por mutación.
 
 **La resolución de proveedor saliente es única**: `services/outbound.js` → `resolveOutboundClient(orgId, fallback)`, que enruta por `getOrgChannel` (registry), no por `SANTE_360_API_KEY`. La usan el panel (`webhook.js` → `getOutboundClient`) y los dos workers.
 

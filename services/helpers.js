@@ -190,6 +190,98 @@ function resolveReminderWindowMin({ minutos = null, horas = null } = {}) {
     return { ok: true, minutos: 1440, via: 'default' };
 }
 
+// ─── CUÁNDO es la cita, redactado para ir DETRÁS de la hora ──────────────────
+//
+// El recordatorio decía solo la hora ("a las 12:00") y la clienta no sabía de qué día le
+// hablaban. La fecha entra por el hueco que ya existe: el {{2}} de `sante_recordatorio_cita`
+// es texto libre, así que no hace falta plantilla nueva — pero el texto FIJO que la precede
+// («a las {{2}}» / «at {{2}}» / «в {{2}}» / «о {{2}}») ya está aprobado por Meta y manda:
+// la fecha va detrás de la hora, y cada idioma la engancha distinto.
+//
+// Fecha concreta y NUNCA "mañana": hoy el recordatorio sale 24 h antes y las dos coincidirían
+// casi siempre, pero `horas_recordatorio` lo edita la dueña y un envío que se retrase
+// convierte "mañana" en mentira. Una fecha no puede envejecer mal.
+//
+// El día de la semana va en TABLA A MANO, con su preposición pegada, y esto es lo único que
+// hay que entender de aquí:
+//
+//   `toLocaleDateString` devuelve el día en NOMINATIVO (`среда`, `середа`), y detrás de la
+//   preposición el ruso y el ucraniano piden ACUSATIVO: `в среду`, `у середу`. Formatear y
+//   concatenar escribiría «в 12:00 в среда», que está mal. Y el martes cambia además la
+//   preposición: «во вторник», no «в вторник». No hay opción de Intl que dé esa forma.
+//
+// Al meter la preposición en la tabla desaparecen de paso los otros dos sitios donde esto se
+// rompía: ya no se pide el weekday a Intl, así que no hay coma que quitar en es-ES
+// («miércoles, 12 de agosto») ni mayúscula que corregir. A Intl solo se le pide el día y el
+// mes, que sí salen bien en los cuatro idiomas —y en ruso y ucraniano ya en genitivo, que es
+// la forma de una fecha: «12 августа», «12 серпня»—. Es la misma decisión que la tabla
+// genitiva de MESES_MULTI, más abajo.
+//
+// Índice 0 = lunes, la convención de `stylist_schedules` y de DIA_SEMANA_MAP.
+const REMINDER_WEEKDAY = {
+    es: ['del lunes', 'del martes', 'del miércoles', 'del jueves', 'del viernes', 'del sábado', 'del domingo'],
+    en: ['on Monday', 'on Tuesday', 'on Wednesday', 'on Thursday', 'on Friday', 'on Saturday', 'on Sunday'],
+    // Acusativo. «во вторник» lleva la preposición larga por el grupo consonántico «вт-».
+    ru: ['в понедельник', 'во вторник', 'в среду', 'в четверг', 'в пятницу', 'в субботу', 'в воскресенье'],
+    // Acusativo. El apóstrofo de «пʼятницю» es U+02BC, el que usa el propio ICU para el
+    // ucraniano (`toLocaleDateString('uk-UA')` devuelve «пʼятниця»): así el recordatorio y el
+    // resto de fechas de la app se escriben igual. No lo cambies por el ASCII `'`.
+    uk: ['у понеділок', 'у вівторок', 'у середу', 'у четвер', 'у пʼятницю', 'у суботу', 'у неділю'],
+};
+
+// Cómo se pega el día de la semana a la fecha. En castellano e inglés van seguidos («del
+// miércoles 12 de agosto», «on Wednesday 12 August»); en ruso y ucraniano la fecha es una
+// aposición y lleva coma («в среду, 12 августа»).
+const REMINDER_DATE_SEP = { es: ' ', en: ' ', ru: ', ', uk: ', ' };
+
+// en-GB, no en-US: «12 August», no «August 12». Es lo que ya usa _formatFechaHora para el
+// mensaje de confirmación, y las dos fechas las lee la misma clienta.
+const REMINDER_DATE_LOCALE = { es: 'es-ES', en: 'en-GB', ru: 'ru-RU', uk: 'uk-UA' };
+
+/**
+ * «12:00 del miércoles 12 de agosto» — el valor de `{{2}}`, y el mismo texto que va en el
+ * mensaje de texto libre. Los dos caminos salen de aquí a propósito: cambiar uno y no el
+ * otro es cómo una clienta dentro de la ventana de 24 h y otra fuera reciben mensajes
+ * distintos sin que nadie lo note.
+ *
+ * El idioma cae a 'es' con el MISMO criterio que REMINDER_TEMPLATES (reminder.js): si las dos
+ * tablas no cayeran igual, un idioma sin plantilla daría una frase en español con la fecha en
+ * inglés dentro.
+ *
+ * Devuelve **null** si la fecha no se entiende, y quien llama manda entonces la hora sola,
+ * que es exactamente el mensaje de hoy. Ni se inventa una fecha ni se calla el fallo.
+ *
+ * @param {string} fecha 'YYYY-MM-DD' (contacts.fecha_cita)
+ * @param {string} hora  'HH:MM'      (contacts.hora_cita)
+ * @param {string} lang  'es' | 'en' | 'ru' | 'uk'
+ * @returns {string|null}
+ */
+function formatReminderWhen(fecha, hora, lang) {
+    const h = String(hora || '').trim();
+    if (!h) return null;
+
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(fecha || '').trim());
+    if (!m) return null;
+    const [y, mes, dia] = [Number(m[1]), Number(m[2]), Number(m[3])];
+
+    // Mediodía UTC y formateo en UTC: la fecha de la cita es un día de calendario, no un
+    // instante, y así ningún huso puede moverlo. Anclar a mediodía LOCAL y formatear en otra
+    // zona —lo que hace _formatFechaHora— deja la puerta abierta a que el día se corra en una
+    // máquina que no esté en Europe/Madrid.
+    const d = new Date(Date.UTC(y, mes - 1, dia, 12, 0, 0));
+    // Date.UTC no valida: el 31 de febrero se convierte en marzo tan campante. Si la fecha no
+    // vuelve igual, no era una fecha.
+    if (d.getUTCFullYear() !== y || d.getUTCMonth() !== mes - 1 || d.getUTCDate() !== dia) return null;
+
+    const lg = REMINDER_WEEKDAY[lang] ? lang : 'es';
+    const diaSemana = REMINDER_WEEKDAY[lg][(d.getUTCDay() + 6) % 7];
+    const diaMes = d.toLocaleDateString(REMINDER_DATE_LOCALE[lg], {
+        day: 'numeric', month: 'long', timeZone: 'UTC',
+    });
+
+    return `${h} ${diaSemana}${REMINDER_DATE_SEP[lg]}${diaMes}`;
+}
+
 // De dónde salió `contacts.language`. La columna mezcla tres calidades muy distintas y hasta
 // ahora nada las separaba: a 05/08/2026, de 720 fichas de Sante, ~20 traían un idioma
 // observado en conversación, 184 uno deducido del nombre y ~516 el 'es' del INSERT que nadie
@@ -3668,6 +3760,7 @@ module.exports = {
     CONFIG_NUMERICAS,
     validateConfigValue,
     resolveReminderWindowMin,
+    formatReminderWhen,
     LANGUAGE_SOURCES,
     resolveLanguageSource,
     TEST_PHONE_PREFIX,

@@ -6,7 +6,8 @@
 
 const { getAppointmentsPendientesRecordatorio, marcarRecordatorioSent, getConfigValue, getAgentConfig, autoCompleteAppointments } = require('./db');
 const { resolveOutboundClient, resolveAutomatedSend } = require('./outbound');
-const { isUsableName, resolveReminderWindowMin } = require('./helpers');
+const { isUsableName, resolveReminderWindowMin, formatReminderWhen } = require('./helpers');
+const { getOrgType } = require('./org-registry');
 const { alertOnce } = require('./admin-alerts');
 const { noteSendResult } = require('./channel-health');
 const logger = require('../lib/logger');
@@ -17,20 +18,51 @@ let waClients = null; // Map<orgId, { client, orgId, ... }>
 // Mismo patrón que REVIEW_TEMPLATES en review.js: la clienta habla en su idioma durante
 // toda la conversación (bot.js detecta ES/EN/RU/UK), así que el recordatorio no puede ser
 // el único mensaje que le llega siempre en español.
+//
+// El parámetro se llama `cuando` y no `hora` porque desde el 10/08/2026 puede ser las dos
+// cosas: la hora sola («17:30») o la hora con su fecha detrás («17:30 del miércoles 12 de
+// agosto»). Quien llama lo decide —ver `resolveCuando`—; aquí solo se interpola, y por eso
+// estas cuatro frases son literalmente el texto fijo de las plantillas aprobadas de Meta
+// alrededor de `{{2}}`. Cambiar una de estas cuatro sin cambiar su plantilla las separa.
 const REMINDER_TEMPLATES = {
-    es: (nombre, salon, hora) =>
-        `Hola ${nombre || ''} 😊 Te recordamos tu cita en ${salon} a las ${hora || ''}. ¡Te esperamos!`,
-    en: (nombre, salon, hora) =>
-        `Hi ${nombre || ''} 😊 Just a reminder of your appointment at ${salon} at ${hora || ''}. See you soon!`,
-    ru: (nombre, salon, hora) =>
-        `Привет ${nombre || ''} 😊 Напоминаем о вашей записи в ${salon} в ${hora || ''}. Ждём вас!`,
-    uk: (nombre, salon, hora) =>
-        `Привіт ${nombre || ''} 😊 Нагадуємо про ваш запис у ${salon} о ${hora || ''}. Чекаємо на вас!`,
+    es: (nombre, salon, cuando) =>
+        `Hola ${nombre || ''} 😊 Te recordamos tu cita en ${salon} a las ${cuando || ''}. ¡Te esperamos!`,
+    en: (nombre, salon, cuando) =>
+        `Hi ${nombre || ''} 😊 Just a reminder of your appointment at ${salon} at ${cuando || ''}. See you soon!`,
+    ru: (nombre, salon, cuando) =>
+        `Привет ${nombre || ''} 😊 Напоминаем о вашей записи в ${salon} в ${cuando || ''}. Ждём вас!`,
+    uk: (nombre, salon, cuando) =>
+        `Привіт ${nombre || ''} 😊 Нагадуємо про ваш запис у ${salon} о ${cuando || ''}. Чекаємо на вас!`,
 };
 
-function buildReminderMessage(nombre, salon, hora, language) {
+function buildReminderMessage(nombre, salon, cuando, language) {
     const template = REMINDER_TEMPLATES[language] || REMINDER_TEMPLATES.es;
-    return template(nombre, salon, hora);
+    return template(nombre, salon, cuando);
+}
+
+/**
+ * Qué se pone donde antes iba la hora: «17:30» o «17:30 del miércoles 12 de agosto».
+ *
+ * **Solo el salón lleva fecha.** San Remo no la ha pedido y su recordatorio tiene que quedar
+ * byte por byte como estaba: la regla de oro no admite cambiarle el mensaje por comodidad
+ * nuestra. Se gatea por `getOrgType`, no por UUID, para que un salón futuro la herede sin
+ * tocar nada — la fecha es útil para cualquier salón, no para esta org en concreto.
+ *
+ * Si la fecha no se entiende sale la hora sola, que es el mensaje de siempre, y se dice en el
+ * log. Nunca se inventa un día. Puede pasar de verdad: `minutosHastaCita` no descarta una
+ * `fecha_cita` malformada —`new Date('basura')` da NaN y `NaN > minutos` es false—, así que
+ * una fila así llega hasta aquí.
+ */
+function resolveCuando(orgId, record) {
+    if (getOrgType(orgId) !== 'salon') return record.hora_cita;
+
+    const cuando = formatReminderWhen(record.fecha_cita, record.hora_cita, record.language);
+    if (cuando) return cuando;
+
+    logger.warn('recordatorio_fecha_no_formateable', {
+        orgId, contactId: record.id, fecha: record.fecha_cita || null, hora: record.hora_cita || null,
+    });
+    return record.hora_cita;
 }
 
 function minutosHastaCita(fechaStr, horaStr) {
@@ -243,7 +275,7 @@ async function sendReminderMessage(orgId, record, { mensaje, templateParams }) {
             await client.sendTemplate(chatId, {
                 name: decision.template.name,
                 language: decision.template.language,
-                params: templateParams, // [{{1}} nombre, {{2}} hora]
+                params: templateParams, // [{{1}} nombre, {{2}} cuándo — hora, y en el salón su fecha]
             });
             logger.info('recordatorio_por_plantilla', {
                 orgId, telefono: record.telefono, plantilla: decision.template.name,
@@ -337,10 +369,14 @@ async function checkAndSendReminders() {
                         continue;
                     }
 
-                    const mensaje = buildReminderMessage(record.nombre, companyName, record.hora_cita, record.language);
+                    // UN solo valor para los dos caminos: el texto libre y el {{2}} de la
+                    // plantilla. Resolverlo dos veces es cómo una clienta dentro de la ventana
+                    // de 24 h y otra fuera acaban recibiendo mensajes distintos.
+                    const cuando = resolveCuando(orgId, record);
+                    const mensaje = buildReminderMessage(record.nombre, companyName, cuando, record.language);
                     const resultado = await sendReminderMessage(orgId, record, {
                         mensaje,
-                        templateParams: [record.nombre, record.hora_cita],
+                        templateParams: [record.nombre, cuando],
                     });
 
                     if (resultado === 'enviado') {
