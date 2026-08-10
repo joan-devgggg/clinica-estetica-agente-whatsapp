@@ -95,18 +95,22 @@ test('una ficha sin nombre se identifica igual, por teléfono', () => {
 
 const bloqueo = EFECTOS_BLOQUEO.join(' ').toLowerCase();
 
-test('NO promete que el bot deje de contestar del todo (bot.js:3829 manda un mensaje más)', () => {
-    // El aviso «En breve te atenderá nuestro equipo» sale la primera vez que escribe tras el
-    // bloqueo, y vuelve a salir en cada sesión nueva: `blacklistNotified` no viaja en
-    // buildSessionExtra. Prometer silencio total sería falso justo con quien más importa.
-    assert.ok(/no se calla del todo|contest/.test(bloqueo), 'no menciona qué contesta el bot');
-    assert.ok(bloqueo.includes('en breve te atenderá nuestro equipo'), 'no cita el mensaje que recibirá');
-    assert.ok(!/deja de contestarle del todo|silencio total|no volverá a recibir nada/.test(bloqueo));
+test('NO le promete atención a quien se acaba de bloquear', () => {
+    // Es la conducta que se arregló el 10/08/2026 y la razón de ser de este fichero: el salón
+    // ya no manda «En breve te atenderá nuestro equipo», así que la confirmación tampoco puede
+    // anunciarlo. La red de verdad de esa conducta es tests/blacklist-no-promete.test.js; aquí
+    // se vigila que las dos no se separen — un panel que promete lo que el bot ya no hace es
+    // exactamente el fallo que este texto existe para evitar.
+    assert.ok(bloqueo.includes('deja de contestarle'), 'no dice que el bot deja de contestarle');
+    assert.ok(!/en breve|te atender|nuestro equipo/.test(bloqueo),
+        `la confirmación sigue prometiendo atención: "${bloqueo}"`);
 });
 
-test('avisa del botón de Telegram que DESBLOQUEA (telegram.js:589-601)', () => {
+test('dice que el aviso de Telegram NO se repite, y que desbloquear pide confirmación', () => {
     assert.ok(bloqueo.includes('telegram'), 'no menciona el aviso de Telegram');
-    assert.ok(bloqueo.includes('desbloquea'), 'no avisa de que ese botón desbloquea');
+    assert.ok(/no uno por cada mensaje|no se repite/.test(bloqueo),
+        'no aclara que el aviso llega una vez y no por mensaje');
+    assert.ok(bloqueo.includes('confirmación'), 'no dice que desbloquear desde Telegram confirma aparte');
 });
 
 test('dice que sigue viéndose en el Monitor y en Clientes (ninguno filtra lista negra)', () => {

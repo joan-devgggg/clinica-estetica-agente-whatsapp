@@ -702,7 +702,41 @@ function buildSessionExtra(session) {
         // recarga, la clienta contesta su nombre al vacío y la cita no se guarda jamás.
         pendingNameForBooking: session.pendingNameForBooking || null,
         preguntasCierre: session.preguntasCierre || 0,
+        // Sin esto, la rama de lista negra se rearmaba entera en cada sesión nueva —timeout de
+        // 1 h, GC o reinicio—: otro Telegram, otra fila en pending_actions y (antes de quitarlo)
+        // otro mensaje. O sea que a quien está bloqueado se le trataba como "recién bloqueado"
+        // indefinidamente, y el aviso que debía significar "está escribiendo otra vez" acababa
+        // significando "sigue existiendo".
+        //
+        // Va en el bloque de salón, no en `base`: para San Remo persistirlo cambiaría su
+        // conducta observable (su aviso dejaría de repetirse), y su lista negra es otra cosa
+        // —una retención a la espera de que el admin decida—. Ver la rama de bot.js.
+        blacklistNotified: !!session.blacklistNotified,
     };
+}
+
+/**
+ * Vuelve a armar la rama de lista negra cuando la FICHA no refleja un bloqueo vivo.
+ *
+ * `blacklistNotified` ya viaja a SQLite (buildSessionExtra) para que el aviso no se repita en
+ * cada sesión nueva, y eso abre un hueco pequeño y muy feo: bloquear → escribe (marca puesta)
+ * → desbloquear → **volver a bloquear sin que él escriba en medio**. La sesión guardada sigue
+ * diciendo "ya avisado", así que el segundo bloqueo no pondría `bot_mode='manual'`, ni
+ * `escalation_reason`, ni Telegram, ni fila en `pending_actions`: el panel enseñaría la
+ * conversación en 'auto' —o sea, "el bot le está contestando"— mientras el bot calla.
+ *
+ * El desempate no es el flag sino la ficha: si está en lista negra y su `bot_mode` no es
+ * 'manual', el bloqueo que hay en la BD no lo ha procesado nadie todavía. Es la misma
+ * disciplina que la red anti-cita-fantasma —decidir contra la BD y no contra la sesión— y por
+ * el mismo motivo: la sesión es una copia, y la copia puede llevar días equivocada.
+ */
+function rearmarSiLaFichaNoLoRefleja(orgId, userPhone, session, contact) {
+    if (!session.blacklistNotified) return;
+    if (contact?.bot_mode === 'manual') return;
+    session.blacklistNotified = false;
+    logger.info('blacklist_rearmada_ficha_no_lo_refleja', {
+        orgId, telefono: userPhone, bot_mode: contact?.bot_mode || 'auto',
+    });
 }
 
 function persistSession(orgId, userPhone, session) {
@@ -3568,6 +3602,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession.pendingCitaAccion         = ex.pendingCitaAccion || null;
                     newSession.pendingNameForBooking = ex.pendingNameForBooking || null;
                     newSession.preguntasCierre       = ex.preguntasCierre || 0;
+                    newSession.blacklistNotified     = !!ex.blacklistNotified;
 
                     const assistantTurns = newSession.history.filter(m => m.role === 'assistant').length;
                     const extraIncoherente =
@@ -3688,7 +3723,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         clearServiceState(session);
                         logger.info('session_service_reset_post_escalada', { orgId, telefono: userPhone, source: 'sqlite_load_supabase_auto' });
                     }
-                    if (contact.is_blacklisted) { session.isBlacklisted = true; logger.info('process_core_blacklisted', { orgId, telefono: userPhone }); }
+                    if (contact.is_blacklisted) { session.isBlacklisted = true; rearmarSiLaFichaNoLoRefleja(orgId, userPhone, session, contact); logger.info('process_core_blacklisted', { orgId, telefono: userPhone }); }
                     else if (session.isBlacklisted) { session.isBlacklisted = false; session.blacklistNotified = false; logger.info('process_core_blacklist_cleared', { orgId, telefono: userPhone, source: 'db_no_blacklist' }); }
                     session.leadId = session.leadId || contact.id;
                     // Un 'es' que no ha elegido nadie NO es una observación: es el default del
@@ -3789,9 +3824,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         clearServiceState(session);
                         logger.info('session_botActivo_reconcile_memory', { orgId, telefono: userPhone, db_bot_mode: _reconContact.bot_mode || 'auto', source: 'existing_session_supabase_reconcile' });
                     }
-                    if (_reconContact.is_blacklisted && !session.isBlacklisted) {
-                        session.isBlacklisted = true;
-                        logger.info('session_blacklisted_reconcile', { orgId, telefono: userPhone });
+                    if (_reconContact.is_blacklisted) {
+                        if (!session.isBlacklisted) {
+                            session.isBlacklisted = true;
+                            logger.info('session_blacklisted_reconcile', { orgId, telefono: userPhone });
+                        }
+                        rearmarSiLaFichaNoLoRefleja(orgId, userPhone, session, _reconContact);
                     } else if (!_reconContact.is_blacklisted && session.isBlacklisted) {
                         // Reconciliación INVERSA: un admin sacó al contacto de la lista negra en la
                         // DB (p.ej. "Sí, continuar" en Telegram → removeBlacklist), pero la sesión
@@ -3826,7 +3864,22 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         payload: { motivo: 'lista_negra', mensaje: userText },
                     });
                 } catch (e) { logger.error('error_blacklist_notify', { telefono: userPhone, error: e.message }); }
-                await _send('Gracias por tu mensaje 🙏 En breve te atenderá nuestro equipo.');
+                // EL SALÓN NO CONTESTA NADA. Aquí salía «Gracias por tu mensaje 🙏 En breve te
+                // atenderá nuestro equipo», que es una PROMESA DE ATENCIÓN, y bloquear a
+                // alguien significa exactamente lo contrario: no queremos tratar con esta
+                // persona. Con un acosador —el caso del 10/08/2026— ese mensaje es peor que
+                // inútil: le confirma que hay alguien al otro lado leyéndole y le da a
+                // entender que van a responderle.
+                //
+                // San Remo SÍ lo sigue mandando, y no es por la regla de oro sino porque allí
+                // la frase es VERDAD: su lista negra es una retención a la espera de que un
+                // humano decida (no-show y Bizum rechazado abren un Telegram con «¿Qué
+                // hacemos?» y el admin resuelve). Ahí sí atiende alguien en breve. Es la misma
+                // marca con dos significados, y el mensaje sigue al significado, no a la
+                // columna.
+                if (getOrgType(orgId) !== 'salon') {
+                    await _send('Gracias por tu mensaje 🙏 En breve te atenderá nuestro equipo.');
+                }
                 persistSession(orgId, userPhone, session);
             }
             // Log explícito ANTES del return: un contacto silenciado por lista negra

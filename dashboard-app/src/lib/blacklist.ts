@@ -11,16 +11,19 @@
 // cierta hay que cambiar las dos cosas a la vez; el texto no es decoración, es la descripción
 // de un comportamiento:
 //
-//  1. `bot.js:3813-3836` — el bot NO se queda mudo del todo. La primera vez que escribe tras
-//     el bloqueo recibe «Gracias por tu mensaje 🙏 En breve te atenderá nuestro equipo» y solo
-//     a partir de ahí calla. Y `blacklistNotified` NO viaja en `buildSessionExtra`, así que
-//     cada sesión nueva (timeout de 1 h, GC o reinicio del proceso) lo vuelve a mandar.
-//     Fotos y audios tampoco se contestan: `isBlacklistedNow` (bot.js:6015) cubre esa rama,
-//     que responde antes de llegar a `processMessageCore`.
+//  1. `bot.js`, rama de lista negra — el salón NO le contesta nada, ni al texto ni a fotos ni
+//     a audios (`isBlacklistedNow` cubre la rama de media, que responde antes de llegar a
+//     `processMessageCore`). Hasta el 10/08/2026 salía «En breve te atenderá nuestro equipo»,
+//     que es una promesa de atención justo a quien se acaba de decidir no atender. San Remo
+//     sigue mandándolo porque allí es verdad: su lista negra retiene a la espera de que un
+//     humano decida por Telegram.
 //  2. Mismo bloque — pone `bot_mode='manual'`, `escalation_reason='lista_negra'`, abre una
-//     `pending_actions` y dispara `notifyBlacklistAlert`.
-//  3. `services/telegram.js:187-206` y `:589-601` — ese aviso lleva un botón «✅ Sí, continuar»
-//     que llama a `removeBlacklist`, devuelve el bot a 'auto' y ADEMÁS le manda un mensaje.
+//     `pending_actions` y dispara `notifyBlacklistAlert`. **Una sola vez**: desde el
+//     10/08/2026 `blacklistNotified` viaja en `buildSessionExtra`, así que un timeout de
+//     sesión o un reinicio ya no rearman el aviso. Si la ficha deja de reflejar el bloqueo
+//     (un rebloqueo sin mensaje en medio), `rearmarSiLaFichaNoLoRefleja` lo vuelve a armar.
+//  3. `services/telegram.js` — desbloquear desde ese aviso cuesta DOS toques desde el
+//     10/08/2026, y ya no le manda ningún mensaje al contacto.
 //  4. `db.js:getBroadcastAudience` — campañas fuera siempre, incluso pasando allowlist
 //     explícito: el `.or(is_blacklisted…)` va en la consulta, antes del `.in(wa_phone)`.
 //  5. `db.js:getLeadsPendientesRecordatorio` — recordatorio de 24 h fuera.
@@ -59,8 +62,8 @@ export function nombreParaAviso(t: BlacklistTarget): string {
 }
 
 export const EFECTOS_BLOQUEO: readonly string[] = [
-  "El bot no se calla del todo de golpe: la próxima vez que escriba recibirá «En breve te atenderá nuestro equipo», y a partir de ahí ya no le contesta nada, ni a fotos ni a audios.",
-  "Cada vez que escriba, su conversación pasa a manual y llega un aviso a Telegram con un botón «✅ Sí, continuar» que lo DESBLOQUEA y le manda un mensaje: no lo pulses.",
+  "El bot deja de contestarle: ni a los mensajes, ni a las fotos, ni a los audios. Él no recibe ningún aviso de que está bloqueado.",
+  "A ti te llega un aviso por Telegram la primera vez que escriba, no uno por cada mensaje. Desbloquear desde ahí pide confirmación aparte.",
   "Seguirá apareciendo arriba del Monitor y en Clientes, con todo su historial: bloquear no borra ni oculta nada.",
   "No le llegará ninguna campaña, ni el recordatorio de 24 h, ni la petición de reseña de Google.",
   "Sus citas NO se cancelan: las que tenga siguen en la agenda (lo que no recibirá es su recordatorio).",

@@ -184,6 +184,18 @@ async function notifyVipSuggestion(orgId, contacto) {
     notifyOrgAdmin(orgId, msg);
 }
 
+// DESBLOQUEAR DESDE AQUÍ CUESTA DOS TOQUES, Y NO ES BUROCRACIA.
+//
+// Hasta el 10/08/2026 este aviso traía un botón «✅ Sí, continuar» que, de un solo toque y sin
+// confirmar nada, quitaba la lista negra Y le mandaba un WhatsApp («Hola 😊 Hemos revisado tu
+// caso. ¿En qué puedo ayudarte?»). Ese mensaje llega a un móvil, entre notificaciones, y se
+// pulsa sin querer. Con un no-show da igual; con alguien que está amenazando a la dueña, un
+// dedo torcido le reabre la puerta y encima le invita a seguir.
+//
+// `bl_ok` ya NO ejecuta: PREGUNTA. Y es a propósito que conserve ese nombre — los avisos ya
+// enviados siguen teniendo botones con `bl_ok` dentro, y así un toque en un mensaje viejo cae
+// también en la confirmación en vez de desbloquear a la primera. Quien ejecuta es `bl_do`,
+// que solo existe en el teclado que aparece DESPUÉS de preguntar.
 async function notifyBlacklistAlert(orgId, contacto) {
     if (!_botInstance) { logger.warn('telegram_no_iniciado_notify'); return; }
     const msg = `🚫 <b>Cliente en lista negra</b>\n\n` +
@@ -197,12 +209,42 @@ async function notifyBlacklistAlert(orgId, contacto) {
             parse_mode: 'HTML',
             reply_markup: {
                 inline_keyboard: [[
-                    { text: '✅ Sí, continuar',    callback_data: `bl_ok|${orgId}|${phoneKey}` },
-                    { text: '🚫 No, mantener',     callback_data: `bl_no|${orgId}|${phoneKey}` },
+                    { text: '✅ Desbloquear…',     callback_data: `bl_ok|${orgId}|${phoneKey}` },
+                    { text: '🚫 Mantener bloqueado', callback_data: `bl_no|${orgId}|${phoneKey}` },
                 ]]
             }
         }).catch(e => logger.error('telegram_notify_error', { error: e.message, userId, orgId }));
     }
+}
+
+/**
+ * Desbloquear: quita la marca y devuelve la conversación a 'auto'. **NO le escribe.**
+ *
+ * Hasta el 10/08/2026 esto mandaba además un «Hola 😊 Hemos revisado tu caso. ¿En qué puedo
+ * ayudarte?». Dos motivos para separarlo, y el segundo se descubrió al arreglar el primero:
+ *
+ *  1. Desbloquear y escribir son dos decisiones. Juntas, un toque de más invita a seguir a
+ *     quien acabas de bloquear; separadas, lo peor que pasa es que alguien vuelva a entrar en
+ *     la cola normal. Para escribirle está el Monitor, que es donde se escribe a la gente.
+ *  2. **Ese mensaje no se enviaba.** `sendDirectMessage` no está definido ni importado en este
+ *     fichero: la llamada lanzaba `ReferenceError`, lo recogía el catch de la rama, y el admin
+ *     leía «❌ Error al reactivar el cliente» sobre un contacto que SÍ había quedado
+ *     desbloqueado (las dos escrituras van antes). O sea que el aviso mentía en la dirección
+ *     peligrosa: te hace creer que el bloqueo aguanta. Quitar la línea no cambia nada de lo
+ *     que le llega a nadie —hoy no le llega—; lo que cambia es que el parte diga la verdad.
+ *
+ * El orden importa y es el mismo que usa la ficha del panel: primero 'auto' (que además limpia
+ * `escalation_reason`) y después la marca. Si falla el segundo paso, el contacto sigue
+ * BLOQUEADO, que es el lado recuperable. Al revés, un fallo dejaría un "desbloqueado" mudo
+ * para siempre, porque `auto-return` no devuelve a 'auto' nada con una escalada abierta.
+ */
+async function ejecutarDesbloqueo(orgId, phone) {
+    const contact = await findByPhone(orgId, phone);
+    if (!contact) return { ok: false, motivo: 'no_encontrado' };
+    await setLeadBotMode(orgId, phone, 'auto');
+    await removeBlacklist(orgId, contact.id);
+    logger.info('blacklist_desbloqueo_ok', { orgId, telefono: phone, contactId: contact.id });
+    return { ok: true, nombre: contact.nombre || null };
 }
 
 // ─── Resolución de pending_actions ──────────────────────────────────────────
@@ -582,25 +624,47 @@ function startTelegramBot(options = {}) {
         const data = query.data || '';
         bot.answerCallbackQuery(query.id).catch(() => {});
 
-        if (!data.startsWith('bl_ok|') && !data.startsWith('bl_no|')) return;
+        if (!/^bl_(ok|do|no)\|/.test(data)) return;
         if (!isAuthorized(userId)) return;
 
         const [action, orgId, phone] = data.split('|');
+
+        // PRIMER TOQUE: pregunta y cambia el teclado. No escribe nada en ningún sitio.
+        // El teclado NO se vacía aquí (por eso el return): si se vaciara, la confirmación se
+        // quedaría sin botones y no habría forma de terminar lo que se acaba de empezar.
         if (action === 'bl_ok') {
+            bot.editMessageReplyMarkup({
+                inline_keyboard: [[
+                    { text: '⚠️ Sí, desbloquear', callback_data: `bl_do|${orgId}|${phone}` },
+                    { text: '← Cancelar',         callback_data: `bl_no|${orgId}|${phone}` },
+                ]]
+            }, { chat_id: chatId, message_id: query.message.message_id }).catch(() => {});
+            bot.sendMessage(chatId,
+                `⚠️ <b>Confirma el desbloqueo de ${esc(phone)}</b>\n\n` +
+                `El bot volverá a atenderle con normalidad y volverá a entrar en campañas, ` +
+                `recordatorios y peticiones de reseña.\n\n` +
+                `<b>No se le envía ningún mensaje.</b> Si quieres escribirle, hazlo desde el ` +
+                `Monitor de WhatsApp.`,
+                { parse_mode: 'HTML' }
+            ).catch(() => {});
+            return;
+        }
+
+        if (action === 'bl_do') {
             try {
-                const contact = await findByPhone(orgId, phone);
-                if (contact) {
-                    await removeBlacklist(orgId, contact.id);
-                    await setLeadBotMode(orgId, phone, 'auto');
-                    await sendDirectMessage(orgId, phone, 'Hola 😊 Hemos revisado tu caso. ¿En qué puedo ayudarte?');
-                }
-                bot.sendMessage(chatId, '✅ Cliente reactivado y mensaje enviado.');
+                const r = await ejecutarDesbloqueo(orgId, phone);
+                bot.sendMessage(chatId, r.ok
+                    ? `✅ ${esc(r.nombre || phone)} desbloqueado. El bot vuelve a atenderle. No se le ha enviado ningún mensaje.`
+                    : '⚠️ No se ha encontrado ese contacto: no se ha tocado nada.');
             } catch (e) {
                 logger.error('blacklist_reactivate_error', { orgId, phone, error: e.message });
-                bot.sendMessage(chatId, '❌ Error al reactivar el cliente.');
+                // El orden de ejecutarDesbloqueo hace que un fallo deje el bloqueo EN PIE, y eso
+                // es lo que se dice: lo contrario —"error" sobre un contacto ya desbloqueado—
+                // es justo lo que hacía esta rama hasta el 10/08/2026.
+                bot.sendMessage(chatId, '❌ No se ha podido desbloquear. Sigue bloqueado; vuelve a intentarlo.');
             }
         } else {
-            bot.sendMessage(chatId, '🚫 Cliente mantiene en lista negra.');
+            bot.sendMessage(chatId, '🚫 Se mantiene en la lista negra.');
         }
         bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
             chat_id: chatId, message_id: query.message.message_id,
@@ -629,4 +693,8 @@ module.exports = {
     // tests/config-escritura-verificada.test.js para afirmar que pause_bot/resume_bot no
     // anuncian un guardado que no ocurrió.
     _ejecutarAccion: ejecutarAccion,
+    // Expuesto para tests: el desbloqueo real, sin polling ni Telegram. Lo usa
+    // tests/blacklist-no-promete.test.js para afirmar el orden de las dos escrituras y que
+    // NO se le manda ningún mensaje al contacto.
+    _ejecutarDesbloqueo: ejecutarDesbloqueo,
 };
