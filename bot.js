@@ -769,14 +769,26 @@ async function escalateToHuman(session, userPhone, reason, ultimoMensaje) {
 async function handleAppointmentAction(client, session, userPhone, accion, respuesta, motivoEscalado) {
     const orgId = session.orgId;
     if (accion === 'cancelar') {
-        // Sin cita que cancelar, el salón NO anuncia una cancelación: el `if` de abajo se
-        // saltaba entero y el mensaje "cancelada ✅" salía igual, con la cita viva en la
-        // agenda y la clienta sin aparecer el día de su cita. La ruta buena para el salón es
-        // handleCitasExistentes, que resuelve la cita contra Supabase y verifica la escritura.
-        // San Remo queda intacto: rehidrata appointment_id desde partialData en las dos ramas
-        // de carga de sesión, así que no llega aquí en blanco.
-        if (session.orgType === 'salon' && !session.appointmentId) {
-            logger.warn('cancelacion_sin_cita_descartada', { orgId, telefono: userPhone });
+        // El salón NO cancela por aquí. Nunca, ni con appointmentId.
+        //
+        // Antes la guarda era `salon && !session.appointmentId`, o sea que solo protegía el
+        // caso en el que no había nada que cancelar: el mensaje "cancelada ✅" salía igual con
+        // la cita viva en la agenda. Pero al taparlo quedó abierto el contrario, y es el que
+        // costó una cita de verdad. Celeste González (06/08/2026) acababa de reservar, tenía
+        // appointmentId, el modelo devolvió `accion:'cancelar'` leyendo un «Cancélala» suelto
+        // y ESTA función se la canceló 60 segundos después de crearla, sin preguntar.
+        //
+        // La única ruta legítima del salón es `pendingCitaAccion` → `ejecutarCancelacion`:
+        // resuelve la cita contra Supabase, la recita, espera un sí y verifica la escritura.
+        // La guarda vive aquí y no en el call site a propósito — un call site nuevo dentro de
+        // seis meses no puede volver a abrir el agujero sin tropezarse con esto.
+        //
+        // San Remo intacto: `orgType === 'restaurant'` sigue cancelando por su camino de
+        // siempre, con su appointment_id rehidratado desde partialData.
+        if (session.orgType === 'salon') {
+            logger.warn('cancelacion_salon_sin_confirmar_descartada', {
+                orgId, telefono: userPhone, appointmentId: session.appointmentId || null,
+            });
             return false;
         }
         if (session.appointmentId) {
@@ -2401,6 +2413,66 @@ async function iniciarAccionSobreCita(client, orgId, session, cita, accion, _sen
     }
     logger.info('cita_reagendado_iniciado', { orgId, telefono: userPhone, appointmentId: cita.id });
     return handleAppointmentAction(client, session, userPhone, 'cambiar');
+}
+
+/**
+ * Cancelar cuando quien lo pide es el MODELO (`aiResponse.accion === 'cancelar'`), no el
+ * detector determinista.
+ *
+ * Existe por Celeste González (06/08/2026). Reservó una consulta a las 11:03:59; a las
+ * 11:04:51 escribió «No entiendo» y «Cancélala», confundida por el bloque de promoción del
+ * mensaje de confirmación. El bot se la canceló **60 segundos después de crearla y sin
+ * preguntar**. Siete minutos más tarde seguía queriendo el servicio: «Me gustaría sacarme el
+ * color negro del cabello». No hay cita.
+ *
+ * La guarda de confirmación existía —el camino determinista recita la cita y espera un sí—,
+ * pero el `accion` del LLM entraba por otra puerta que solo comprobaba que hubiera un
+ * `session.appointmentId`, y ella acababa de reservar, así que lo había. **Dos caminos para
+ * la misma acción y solo uno llevaba la guarda**: el más frágil de los dos, además, porque su
+ * disparador es una lectura del modelo y no una frase reconocida.
+ *
+ * Aquí no se cancela nada: se pregunta. El `accion` del modelo pasa a ser lo que siempre
+ * debió ser —una SEÑAL de que la clienta puede estar pidiendo cancelar— y la cita se resuelve
+ * contra Supabase igual que en el camino determinista, con sus mismos mensajes honestos para
+ * los tres casos que no son "una cita clara": no se pudo leer, no tiene ninguna, o tiene
+ * varias y no sabemos cuál.
+ *
+ * @returns {Promise<boolean>} true si el turno queda resuelto aquí.
+ */
+async function cancelarConConfirmacion(client, orgId, session, sanitized, _send, userPhone) {
+    const lang = session.language;
+
+    const citas = await resolveCitasVivas(orgId, session);
+    if (citas === null) {
+        // No se ha podido mirar la agenda. "Cancelada ✅" sin haber leído es exactamente la
+        // cita fantasma en versión escritura.
+        logger.warn('cancelacion_llm_sin_lectura', { orgId, telefono: userPhone });
+        await _send(salonRetryMsg(lang));
+        return true;
+    }
+    if (!citas.length) {
+        logger.info('cancelacion_llm_sin_citas', { orgId, telefono: userPhone });
+        await _send(buildCitasVivasMsg({ citas: [], language: lang }));
+        return true;
+    }
+
+    const m = matchCitaByPistas(citas, extractCitaPistas(sanitized));
+    if (m.contradice) {
+        logger.info('cancelacion_llm_pistas_no_casan', { orgId, telefono: userPhone });
+        await _send(buildCitasVivasMsg({ citas, campo: 'no_casa', language: lang }));
+        return true;
+    }
+    if (m.cita) {
+        logger.info('cancelacion_llm_pide_confirmacion', {
+            orgId, telefono: userPhone, appointmentId: m.cita.id,
+        });
+        return iniciarAccionSobreCita(client, orgId, session, m.cita, 'cancelar', _send, userPhone);
+    }
+
+    session.pendingCitaAccion = { estado: 'elegir', accion: 'cancelar', opciones: m.candidatas };
+    logger.info('cancelacion_llm_ambigua', { orgId, telefono: userPhone, opciones: m.candidatas.length });
+    await _send(buildElegirCitaMsg({ citas: m.candidatas, accion: 'cancelar', language: lang }));
+    return true;
 }
 
 // ¿Ampliar la cita hasta `endsAt` pisaría la siguiente cita de esa estilista? Se mira la
@@ -4983,6 +5055,25 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             aiResponse.accion = null;
         }
 
+        // …y CON cita resuelta, cancelar tampoco lo ejecuta el modelo: se pregunta primero.
+        // El párrafo de arriba ya decía "nunca como orden", pero el código solo lo cumplía
+        // cuando no había appointmentId — o sea, en el único caso en el que no había nada que
+        // cancelar. Con cita en sesión el `accion` del LLM sí ejecutaba, y ese es exactamente
+        // el hueco por el que Celeste González perdió la suya 60 s después de reservarla, sin
+        // que nadie le preguntara. El camino determinista recita la cita y espera un sí; a
+        // partir de aquí este hace lo mismo, con la misma función.
+        if (orgType === 'salon' && aiResponse.accion === 'cancelar') {
+            if (await cancelarConConfirmacion(client, orgId, session, sanitized, _send, userPhone)) {
+                // Nada de `session.history.push(aiResponse.respuesta)`: ese texto anuncia una
+                // cancelación que NO ha ocurrido. Lo que ha salido es la pregunta, y el
+                // camino determinista tampoco la mete en el historial — el estado lo lleva
+                // `pendingCitaAccion`, que se resuelve antes de volver a llamar al modelo.
+                persistSession(orgId, userPhone, session);
+                return;
+            }
+            aiResponse.accion = null;   // no se pudo encauzar: el turno sigue su curso normal
+        }
+
         // Handle actions (cancel, reschedule, escalate)
         if (aiResponse.accion && !(aiResponse.accion === 'cambiar' && session.modoReagendamiento)) {
             const handled = await handleAppointmentAction(client, session, userPhone, aiResponse.accion, aiResponse.respuesta, aiResponse.motivo_escalado);
@@ -6200,6 +6291,9 @@ module.exports = {
         announcesHumanHandover, offersHumanHandover, ensureHandoverAcknowledged, HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, porTrato,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:
         escalateToHuman,
+        // El `accion:'cancelar'` del LLM, encauzado por la misma confirmación que el determinista.
+        // handleAppointmentAction se expone para poder afirmar que el salón NO cancela por ahí.
+        cancelarConConfirmacion, handleAppointmentAction,
         // Estado de servicio centralizado (fuente de verdad + limpieza):
         buildSessionExtra,
         clearServiceState, assignStylistIfAppropriate, applyStylistMention, computeStylistGating, shouldFixStylistFromLlm, SERVICE_STATE_DEFAULTS, SERVICE_PARTIAL_FIELDS, createEmptySession,
