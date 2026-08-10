@@ -95,8 +95,19 @@ export default function ListaNegraPage() {
     await fetchItems();
   }
 
+  // Desbloquear son DOS escrituras, igual que en la ficha de Clientes y en el botón de
+  // Telegram. Aquí faltaba la primera hasta el 10/08/2026, y por eso "Quitar" era una trampa:
+  // bloquear deja la conversación en bot_mode='manual' con escalation_reason='lista_negra'
+  // (bot.js, rama de lista negra) y quitar SOLO la marca no deshace nada de eso. El contacto
+  // se iba de esta lista con el bot igual de mudo que antes, y sin rescate posible —
+  // auto-return no devuelve a 'auto' nada que tenga una escalada sin resolver—. O sea: la
+  // pantalla decía "desbloqueado" sobre alguien a quien seguía sin contestarle nadie.
+  //
+  // Primero 'auto' (que además limpia escalation_reason y resuelve la pending_action) y
+  // después la marca: si falla el segundo paso, sigue BLOQUEADO, que es el lado recuperable.
   async function removeFromBlacklist(id: number) {
     try {
+      await apiMutate(`/api/leads/${id}/bot-mode`, { method: "PUT", body: { mode: "auto" }, orgId });
       await apiMutate(`/api/lista-negra/${id}`, { method: "DELETE", orgId });
       toast.success("Eliminado de la lista negra");
     } catch (e) {
