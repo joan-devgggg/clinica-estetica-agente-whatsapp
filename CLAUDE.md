@@ -600,13 +600,9 @@ fila por fila en `tests/oferta-no-es-afirmacion.test.js`, probado por mutación.
 Es la lección de Olga otra vez, y la de Michal: **una red demasiado ancha no sobra un mensaje,
 pierde el bueno.**
 
-**Debajo hay una causa estructural que NO se ha arreglado**: `extractLargoPelo` no entiende
-«por encima del pecho» (ni otras 26 formas medidas), así que el bloque determinista no
-resuelve y el turno queda entero en manos del modelo. **Mapearlas es decisión de la dueña, no
-nuestra** — son 20-60 € de diferencia en un precio que la clienta se cree, y «pecho» se mide
-por delante mientras el pelo cae por detrás. La lista completa, con dos casos que hoy
-responde MAL («por debajo de los hombros» → Corto; «до талии» → nada), está en
-[`docs/largos-pendientes-yulia.md`](docs/largos-pendientes-yulia.md), pendiente de respuesta.
+**Debajo había una causa estructural, y esa ya está arreglada** (ver la sección siguiente):
+`extractLargoPelo` no entendía «por encima del pecho», así que el bloque determinista no
+resolvía y el turno quedaba entero en manos del modelo.
 
 **El otro síntoma de la misma conversación es la ventana del buffer** (causa 4 de la auditoría
 del 09/08, ya decidida como no-arreglar): a las 12:03 el bot preguntó el largo **dos veces
@@ -614,6 +610,44 @@ seguidas con redacción distinta** porque los dos mensajes de ella iban a **7,19
 `BUFFER_DELAY_MS` son 5 000. El matiz que aquí duele más de lo que dice esa nota: el segundo
 mensaje era **«Al menos\*», la corrección de una errata** — se contestó dos veces a la misma
 frase.
+
+## El largo del pelo: el modificador manda, y se evalúa de 4 a 1
+
+El largo fija el precio (Anti-encrespamiento: 120 / 160 / 180 €) y se le dice a la clienta
+como cifra buena. **Un `null` no es un fallo** —el bot vuelve a preguntar o acepta el «no
+sé»—; lo caro es devolver el tramo EQUIVOCADO. Mapeo completo, los cuatro idiomas y la única
+medida que sigue sin decidirse («a la altura del sujetador», que cae justo entre los omóplatos
+y media espalda): [`docs/largo-del-pelo.md`](docs/largo-del-pelo.md).
+
+**El mapeo lo fija la dueña, no el código** (11/08/2026). Dónde cae cada punto del cuerpo es
+criterio de salón: «pecho» se mide por delante y el pelo cae por detrás.
+
+**El invariante, que es lo único que hay que recordar al tocar `extractLargoPelo`:** un punto
+SUELTO se registra en su tramo («hombros» → 1) y con eso cubre gratis «hasta los hombros»,
+«por encima de los hombros» y «a la altura de los hombros». Lo que se registra aparte es el
+**«por debajo de»**, porque significa un tramo MÁS ALTO — y por eso el bucle va **de 4 hacia
+1**: el tramo alto lo atrapa antes de que el bajo vea el punto suelto que lleva dentro.
+Registrarlo en su propio tramo o más abajo **pierde el modificador en silencio**.
+
+Las tres que lo hacían, y que eran las únicas que respondían MAL (las demás simplemente no se
+entendían, que sale mucho más barato):
+
+| decía | debía decir | por qué |
+|---|---|---|
+| «por debajo de los hombros» → **Corto (120 €)** | Medio (160 €) | casaba «hombros» e ignoraba el «por debajo»: cobraba de menos, y con seguridad |
+| «media espalda» → **Medio** | Largo | «media» y «espalda», las dos en el tramo 2 |
+| «hasta la mitad de la espalda» → **Medio** | Largo | íd. |
+
+**Ruso y ucraniano no comparten entrada** aunque se parezcan a la vista: «до талии» (ru, `и`)
+y «до талії» (uk, `і`) llevan letras DISTINTAS, y por eso la ucraniana casaba y la rusa
+devolvía null. Todo el cirílico va por `buildCyrillicRe`, nunca con `\b` (que es ASCII).
+
+Red: `tests/largo-del-pelo.test.js`, por tramo y por idioma. Probado con **dos** mutaciones,
+porque prueban cosas distintas: revertir la función tumba los 21 bloques nuevos, e invertir
+**solo el orden del bucle** —mismo vocabulario— tumba 12. Lo segundo es lo que demuestra que
+el que protege es el orden, no las palabras. Y `verify:sante` (Fase 2-largo) llevaba el bug
+metido en su propio fixture: usaba `'por media espalda'` como texto de nivel 2, o sea que
+afirmaba el mapeo equivocado; ahora usa «por debajo de los hombros» y vigila el caso caro.
 
 ## Michal Gradziel y Esther Cediloo: seis síntomas, cuatro causas
 

@@ -181,9 +181,13 @@ const addDays = (dateStr, n) => {
 
     // ─── Fase 2: variantes de largo + cambio de opinión (offline) ─────────────────────
     // Texto natural del cliente por nivel de largo (mismo vocabulario que extractLargoPelo).
+    // El 2 era 'por media espalda', y eso codificaba el BUG: media espalda es LARGO (3), y
+    // solo daba 2 porque «media» y «espalda» estaban las dos en el tramo 2 (arreglado el
+    // 11/08/2026). Se cambia por el caso que costaba dinero —«por debajo de los hombros»
+    // decía Corto—, así que además de no mentir, esta fase lo vigila.
     const largoText = {
         1: 'hasta los hombros',
-        2: 'por media espalda',
+        2: 'por debajo de los hombros',
         3: 'por la cintura',
         4: 'muy largo, por debajo de la cintura',
     };

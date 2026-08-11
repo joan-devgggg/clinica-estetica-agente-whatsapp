@@ -3149,22 +3149,90 @@ function detectHairProblemDescription(text) {
     return { residual: residual.replace(/\s+/g, ' ').trim() };
 }
 
-// Extracts hair length from user response.
-// Returns 1 (short/hombros), 2 (medium/espalda), 3 (long/cintura), 4 (very long), or null.
+// ─── El largo del pelo ───────────────────────────────────────────────────────
+//
+// Devuelve 1 (corto) · 2 (medio) · 3 (largo) · 4 (muy largo), o null si no se reconoce.
+// Un null NO es un fallo: el caller vuelve a preguntar o acepta el "no sé". Lo que no puede
+// pasar nunca es devolver el tramo EQUIVOCADO, porque el largo fija el precio (en
+// Anti-encrespamiento son 120 / 160 / 180 €) y se le comunica a la clienta como cifra buena.
+//
+// **El mapeo lo fija la dueña, no el código.** Dónde cae cada punto del cuerpo es criterio de
+// salón: «pecho» se mide por delante y el pelo cae por detrás, así que «por encima del pecho»
+// podría ser medio o largo según dónde se ponga la raya. La tabla de abajo es la que dio ella
+// el 11/08/2026, y no se amplía por intuición.
+//
+// ─── INVARIANTE: se evalúa de 4 a 1, y el modificador manda ──────────────────
+//
+// Un punto SUELTO se registra en su tramo («hombros» → 1) y con eso cubre gratis todas sus
+// formas neutras: «hasta los hombros», «por encima de los hombros», «a la altura de los
+// hombros». Lo que hay que registrar aparte es el **«por debajo de»**, porque significa un
+// tramo MÁS ALTO — y por eso el bucle va de 4 hacia 1: el tramo alto lo atrapa antes de que
+// el bajo llegue a ver el punto suelto que lleva dentro.
+//
+// Registrar un «por debajo de» en su propio tramo, o más abajo, hace que el modificador se
+// pierda EN SILENCIO. No es teórico: es lo que hacían estas tres hasta el 11/08/2026.
+//
+//   · «por debajo de los hombros»    → decía CORTO (120 €). Casaba «hombros» e ignoraba el
+//                                       «por debajo»: cobraba de menos, y con seguridad.
+//   · «media espalda»                → decían MEDIO, con «media» y «espalda» las dos en el
+//   · «hasta la mitad de la espalda»   tramo 2, cuando media espalda es LARGO.
+//
+// Al añadir una frase con modificador: comprobar que su tramo es más alto que el del punto
+// que lleva dentro, y dejarle test. Si no, no protege de nada.
+//
+// Los patrones cirílicos van SIEMPRE por buildCyrillicRe y jamás con \b (que es ASCII y no
+// casa contra letras cirílicas). Y el ruso y el ucraniano no comparten entrada aunque se
+// parezcan a la vista: «до талии» (ru, и) y «до талії» (uk, і) llevan letras DISTINTAS, que
+// es exactamente por qué la ucraniana casaba y la rusa devolvía null.
+const LARGO_REGLAS = [
+    // ── 4 · MUY LARGO — por debajo de la cintura ─────────────────────────────
+    { nivel: 4, res: [
+        /\b(muy larg[oa]s?|mas de cintura|por debajo de la cintura|bajo la cintura|caderas?)\b/,
+        /\b(very long|below the waist|past the waist|hip length|hips)\b/,
+        buildCyrillicRe(['очень длинн', 'ниже талии', 'ниже пояса', 'до бедер',
+            'дуже довг', 'нижче талії', 'нижче пояса', 'до стегон']),
+    ] },
+    // ── 3 · LARGO — por debajo del pecho, media espalda, cintura ─────────────
+    { nivel: 3, res: [
+        /\b(larg[oa]s?|cintura|codos?)\b/,
+        /\b(por debajo del pecho|bajo el pecho|media espalda|mitad de la espalda)\b/,
+        /\b(por debajo de (los omoplatos|las paletillas|las escapulas))\b/,
+        /\b(long|waist|elbows?)\b/,
+        /\b(below the (chest|bust|shoulder blades)|mid.?back|middle of (my |the )?back)\b/,
+        buildCyrillicRe(['до пояса', 'до талии', 'до талі', 'ниже груди', 'ниже лопаток',
+            'до середины спины', 'до локтей', 'длинн',
+            'нижче грудей', 'нижче лопаток', 'до середини спини', 'до ліктів', 'довг']),
+    ] },
+    // ── 2 · MEDIO — de los hombros al pecho ──────────────────────────────────
+    { nivel: 2, res: [
+        /\b(medi[oa]s?|normal|medium|mid|espalda|escapulas?|omoplatos?|paletillas?)\b/,
+        /\b(claviculas?|pecho|axilas?)\b/,
+        /\b(por debajo de los hombros|bajo los hombros)\b/,
+        /\b(collar ?bone|chest|bust|shoulder blades|armpits?)\b/,
+        /\b(below|under) the shoulders\b/,
+        buildCyrillicRe(['до лопаток', 'до ключиц', 'до груди', 'ниже плеч', 'выше груди', 'средн',
+            'до ключиці', 'до ключиць', 'до грудей', 'нижче плечей', 'нижче плеч',
+            'вище грудей', 'середн']),
+    ] },
+    // ── 1 · CORTO — hasta los hombros ────────────────────────────────────────
+    { nivel: 1, res: [
+        /\b(cort[oa]s?|hombros?|barbilla|menton|mandibula|orejas?|bob)\b/,
+        /\b(short|shoulders?|chin|jaw|ears?)\b/,
+        // 'до плеч', no 'до плечей': la й se descompone al normalizar. Sin esto, "до плечей"
+        // ("hasta los hombros") no daba largo y el bot repreguntaba — y el largo fija el precio.
+        buildCyrillicRe(['до плеч', 'выше плеч', 'вище плечей', 'до подбородка', 'до підборіддя',
+            'коротк', 'каре']),
+    ] },
+];
+
 function extractLargoPelo(text) {
     if (!text) return null;
     const t = normalizeText(text);
+    // "Largo 2" es el NOMBRE de una variante del catálogo, no una medida del cuerpo.
     if (/\blargo\s+\d\b/.test(t)) return null;
-    if (/\b(muy largo|very long|mas de cintura|por debajo de la cintura)\b/.test(t)) return 4;
-    if (/(очень длинн|дуже довг)/.test(t)) return 4;
-    if (/\b(largo|long|cintura)\b/.test(t)) return 3;
-    if (/(до пояса|до талі|длинн|довг[іе])/.test(t)) return 3;
-    if (/\b(medio|media|normal|medium|espalda|escapula|mid)\b/.test(t)) return 2;
-    if (/(до лопаток|средн|середн)/.test(t)) return 2;
-    if (/\b(corto|short|hombros)\b/.test(t)) return 1;
-    // 'до плеч', no 'до плечей': la й se descompone al normalizar. Sin esto, "до плечей"
-    // ("hasta los hombros") no daba largo y el bot repreguntaba — y el largo fija el precio.
-    if (/(до плеч|коротк)/.test(t)) return 1;
+    for (const { nivel, res } of LARGO_REGLAS) {
+        if (res.some(re => re.test(t))) return nivel;
+    }
     return null;
 }
 
