@@ -3184,6 +3184,22 @@ function detectHairProblemDescription(text) {
 // casa contra letras cirílicas). Y el ruso y el ucraniano no comparten entrada aunque se
 // parezcan a la vista: «до талии» (ru, и) y «до талії» (uk, і) llevan letras DISTINTAS, que
 // es exactamente por qué la ucraniana casaba y la rusa devolvía null.
+//
+// ─── EL SUJETADOR SE QUEDA FUERA, Y ES UNA DECISIÓN ──────────────────────────
+//
+// «a la altura del sujetador» · «bra strap length» · «hasta el sostén» · «до бретельки» y
+// familia devuelven **null a propósito**. No es un olvido ni una entrada que falte por
+// traducir: es la decisión que tomó la dueña el 11/08/2026, junto con el resto de la tabla.
+//
+// Cae exactamente en la RAYA entre los omóplatos (tramo 2) y media espalda (tramo 3), y no
+// hay forma de deducir a cuál va. Con null el bot vuelve a preguntar el largo, que es gratis;
+// meterlo en un tramo cualquiera son 20 € de error EN CUALQUIERA DE LAS DOS DIRECCIONES,
+// dichos como precio bueno.
+//
+// O sea que añadirlo «para completar la lista» no mejora la cobertura: cambia una pregunta
+// de más por un precio equivocado. Si algún día la dueña dice el tramo, entonces sí — en los
+// cuatro idiomas y con su test. Hasta entonces, `tests/largo-del-pelo.test.js` afirma que
+// sigue en null, así que un añadido bienintencionado sale en rojo en vez de en la factura.
 const LARGO_REGLAS = [
     // ── 4 · MUY LARGO — por debajo de la cintura ─────────────────────────────
     { nivel: 4, res: [

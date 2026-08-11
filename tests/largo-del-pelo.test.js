@@ -171,6 +171,34 @@ test('MUY LARGO · ucraniano', () => tramo(4, [
 
 // ═══ 3. Regresiones y falsos positivos ═══════════════════════════════════════════════
 
+// ═══ El sujetador se queda en null, y es una DECISIÓN ════════════════════════════════
+//
+// Este test no protege una conducta: protege una decisión de no tenerla. Está aquí para que
+// añadir el sujetador «para completar la lista» salga en ROJO y obligue a leer el porqué, en
+// vez de pasar de largo y aparecer en la factura de una clienta.
+
+test('DECISIÓN · el sujetador NO se mapea: se queda en null y el bot pregunta', () => {
+    // Cae exactamente en la raya entre los omóplatos (2) y media espalda (3), y no se puede
+    // deducir a cuál va. Preguntar otra vez es gratis; meterlo en un tramo cualquiera son
+    // 20 € de error en CUALQUIERA de las dos direcciones, dichos como precio bueno.
+    // Si algún día la dueña dice el tramo: se añade en los CUATRO idiomas y este test cambia
+    // a la vez. Mientras siga aquí, es que la decisión sigue siendo no tenerlo.
+    const enLaRaya = [
+        'a la altura del sujetador', 'hasta el sujetador', 'por el sujetador',
+        'la tira del sujetador', 'a la altura del sostén', 'hasta el brasier',
+        'bra strap length', 'bra-strap', 'at bra strap',
+        'до бретели', 'до бретельки',
+    ];
+    const mapeadas = enLaRaya
+        .map(t => [t, extractLargoPelo(t)])
+        .filter(([, got]) => got !== null)
+        .map(([t, got]) => `      «${t}» → ${got}`);
+    assert.ok(mapeadas.length === 0,
+        'alguien mapeó el sujetador a un tramo. Es la raya entre el 2 y el 3 y no se puede\n'
+        + '   deducir: si la dueña lo ha decidido, cambia este test y dilo; si no, quítalo.\n'
+        + mapeadas.join('\n'));
+});
+
 test('REGRESIÓN · «Largo 2» es el nombre de una variante, no una medida', () => {
     assert.strictEqual(extractLargoPelo('largo 2'), null);
     assert.strictEqual(extractLargoPelo('Largo 3'), null);

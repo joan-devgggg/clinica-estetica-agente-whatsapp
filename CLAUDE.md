@@ -615,9 +615,16 @@ frase.
 
 El largo fija el precio (Anti-encrespamiento: 120 / 160 / 180 €) y se le dice a la clienta
 como cifra buena. **Un `null` no es un fallo** —el bot vuelve a preguntar o acepta el «no
-sé»—; lo caro es devolver el tramo EQUIVOCADO. Mapeo completo, los cuatro idiomas y la única
-medida que sigue sin decidirse («a la altura del sujetador», que cae justo entre los omóplatos
-y media espalda): [`docs/largo-del-pelo.md`](docs/largo-del-pelo.md).
+sé»—; lo caro es devolver el tramo EQUIVOCADO. Mapeo completo y los cuatro idiomas:
+[`docs/largo-del-pelo.md`](docs/largo-del-pelo.md).
+
+**El sujetador devuelve `null` A PROPÓSITO** («a la altura del sujetador», «bra strap
+length», «до бретельки»…). No es un hueco por rellenar: cae en la raya entre los omóplatos
+(2) y media espalda (3), no se puede deducir a cuál va, y preguntar otra vez es gratis
+mientras que meterlo en un tramo son 20 € de error **en cualquiera de las dos direcciones**.
+Añadirlo «para completar la lista» cambia una pregunta de más por un precio equivocado. Está
+escrito en el propio `LARGO_REGLAS` y hay un test que lo afirma, para que ese añadido salga en
+rojo y no en la factura de una clienta.
 
 **El mapeo lo fija la dueña, no el código** (11/08/2026). Dónde cae cada punto del cuerpo es
 criterio de salón: «pecho» se mide por delante y el pelo cae por detrás.

@@ -52,12 +52,22 @@ Ruso y ucraniano **no comparten entrada** aunque se parezcan a la vista: «до 
 «до талії» (uk, `і`) llevan letras distintas, y por eso la ucraniana casaba y la rusa devolvía
 `null`. Todo el cirílico va por `buildCyrillicRe` y nunca con `\b`, que es ASCII.
 
-## Lo único que queda por decidir
+## El sujetador se queda fuera, y es una DECISIÓN
 
-**«A la altura del sujetador» / «bra strap length»** — NO está metido, a propósito. Cae justo
-entre los omóplatos (tramo 2) y media espalda (tramo 3), y no hay forma de deducir cuál sin
-preguntarlo. Hoy devuelve `null`, así que el bot vuelve a preguntar el largo: es el lado
-recuperable. Cuando la dueña diga el tramo, se añade en los cuatro idiomas con su test.
+**«A la altura del sujetador» · «bra strap length» · «hasta el sostén» · «до бретельки»**
+devuelven `null` **a propósito**. No es un hueco por rellenar ni una traducción que falte:
+está decidido así (11/08/2026), junto con el resto de la tabla.
+
+Cae exactamente en la **raya** entre los omóplatos (tramo 2) y media espalda (tramo 3), y no
+hay forma de deducir a cuál va. Con `null` el bot vuelve a preguntar el largo, y **preguntar
+es gratis**; meterlo en un tramo cualquiera son **20 € de error en cualquiera de las dos
+direcciones**, dichos como precio bueno.
+
+O sea que añadirlo «para completar la lista» no mejora la cobertura: **cambia una pregunta de
+más por un precio equivocado.** Está escrito en el propio `LARGO_REGLAS` para quien vaya a
+tocarlo, y `tests/largo-del-pelo.test.js` lo afirma, así que un añadido bienintencionado sale
+en rojo en vez de en la factura de una clienta. Si algún día la dueña dice el tramo, se añade
+en los cuatro idiomas y ese test cambia a la vez.
 
 ## Al añadir una frase nueva
 
