@@ -1202,8 +1202,15 @@ function llmClaimsBooked(text) {
     return BOOKING_CLAIM_PATTERNS.some(re => re.test(t));
 }
 
-// Mensaje de reintento (multiidioma) cuando no se pudo fijar el hueco. Se reutiliza en
-// las tres ramas de confirmación de Sante para no triplicar el literal.
+// Mensaje de reintento (multiidioma) cuando no se pudo fijar el hueco.
+//
+// OJO CON DÓNDE SE LLAMA. Decía «las tres ramas de confirmación» y son NUEVE, de las que
+// solo cuatro hablan de un hueco que existió: las otras cinco son fallos de LECTURA
+// (cancelar, consultar, verificar una promesa) o casos en los que no se identificó ningún
+// hueco, y ahí este texto —«ese hueco», «los horarios disponibles»— cuenta algo que no ha
+// pasado. Es la fila de Candela en la auditoría del 09/08/2026: «no he podido fijar ese
+// hueco» sin que hubiera ningún hueco en juego. Antes de añadir la décima, mirar si lo que
+// falló se parece a lo que este mensaje dice.
 function salonRetryMsg(language) {
     const retryMsgs = {
         en: "Sorry, I couldn't lock that slot 😕 Which of the available times works best for you?",
@@ -5518,6 +5525,37 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         aiResponse.reserva_confirmada = false;
                         aiResponse.respuesta = salonRetryMsg(session.language);
                     }
+                } else if (asksForBookingApproval(aiResponse.respuesta)) {
+                    // OFRECER NO ES AFIRMAR, y aquí no hay hueco que rectificar.
+                    //
+                    // «¿Te lo reservo?» dispara llmClaimsBooked por el patrón de 1ª persona
+                    // (te lo reservo / te la apunto): la red se activa sobre una PREGUNTA. Y
+                    // como no hay hora ni fecha que casar, pickChosenSlot devuelve null y el
+                    // `else` de abajo pisaba el texto con "no he podido fijar ese hueco" —
+                    // hablando de un hueco que nunca existió.
+                    //
+                    // El coste no es un mensaje de más, es perder el BUENO: 11/08/2026, una
+                    // clienta contesta al largo del pelo («lo tengo por encima del pecho») y
+                    // el modelo le responde bien —«cabello medio, 160 €»— cerrando con «¿te lo
+                    // reservo?». Eso es lo que se sustituyó, dos veces, y se fue sin cita. Es
+                    // la lección de Olga Yarmak: una red demasiado ancha se come el único
+                    // mensaje correcto. Medido: 6 de cada 10 turnos en ese estado.
+                    //
+                    // Va en el `else` y NO en el gate de arriba a propósito: en el gate se
+                    // saltaría la red también cuando SÍ hay hueco identificado («te la apunto
+                    // el jueves a las 10:00, ¿te va bien?»), que es justo lo que debe seguir
+                    // verificándose contra la agenda. Aquí solo actúa cuando no hay nada que
+                    // guardar, así que ninguna reserva cambia de comportamiento.
+                    //
+                    // Las AFIRMACIONES de verdad no se cuelan por aquí en ninguno de los
+                    // cuatro idiomas: asksForBookingApproval es false para «te la he
+                    // reservado», «queda confirmada», «you are all set», «записала тебя» y
+                    // «запис підтверджено». Está fijado test a test.
+                    logger.info('cita_sante_oferta_sin_slot', {
+                        orgId, telefono: userPhone,
+                        tieneServicio: !!session.selectedService,
+                        numHuecos: (session.availableSlots || []).length,
+                    });
                 } else {
                     logger.warn('cita_sante_texto_sin_guardar', { orgId, telefono: userPhone, tieneServicio: !!session.selectedService, numHuecos: (session.availableSlots || []).length });
                     aiResponse.reserva_confirmada = false;

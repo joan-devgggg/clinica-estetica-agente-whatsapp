@@ -561,6 +561,60 @@ pasarlos, y si no, manda decir que no se pueden enviar y ofrecer la consulta —
 prohibición explícita de «te las mando en un momento». Enviar imágenes de verdad sigue sin
 implementarse.
 
+## «¿Te lo reservo?» es una pregunta, y la red final se la comía
+
+11/08/2026, conv `7a92ac2a`. Una clienta pregunta por el anti-encrespamiento, el bot le pide
+el largo del pelo, ella contesta **«Lo tengo por encima del pecho»** y recibe «Uy, no he
+podido fijar ese hueco 😕 ¿Cuál de los horarios disponibles te viene mejor?». Dos veces —
+12:04 y 12:40, las dos justo tras describir el largo— sin que se hubiera hablado de horarios
+en toda la conversación. Se fue sin cita, y 38 s después escribió «No puedo 160 € más
+productos»: **mapeó ella sola su largo al precio correcto**, que es justo lo que el bot iba a
+decirle y no dijo.
+
+**La causa es el texto del PROPIO bot, no nada que dijera ella.** Con el servicio ya resuelto
+el modelo cierra ofreciendo «¿Te lo reservo?», y `llmClaimsBooked` lo casa por su patrón de
+1ª persona (`te lo reservo` / `te la apunto`): la red final anti-mentira se activa **sobre una
+pregunta**. Como no hay hora ni fecha que casar, `pickChosenSlot` devuelve null y el `else`
+de `bot.js` pisaba la respuesta buena. Medido: **6 de cada 10** turnos reales en ese estado.
+
+Lo que se descartó con medición, porque las dos hipótesis naturales eran falsas: **no existe
+`accion: 'reservar'`** (el enum es `cancelar|cambiar|escalar_humano|null`) y
+**`cita_confirmada` vino `false` en 5 de 5** rejugadas del turno literal contra el LLM real —
+o sea que la rama del flag (`cita_sante_flag_sin_slot`) queda exonerada. Ningún detector
+determinista casa con ese texto, `isAffirmative` incluida. Y `pickChosenSlot` **no lee el
+mensaje de la clienta**: solo `HH:MM` + fecha de `aiResponse.datos`.
+
+**La exención va en el `else`, NUNCA en el gate.** Metida en el gate se saltaría la red
+también cuando SÍ hay hueco identificado («te la apunto el jueves a las 10:00, ¿te va bien?»),
+que es lo que debe seguir verificándose contra la agenda. En el `else` solo actúa cuando no
+hay nada que guardar, así que ninguna reserva cambia. Traza propia:
+`cita_sante_oferta_sin_slot`.
+
+**`asksForBookingApproval` tiene historia y por eso se comprobó en los cuatro idiomas**: el
+07/08 se QUITÓ de la exención de horario por exonerar de más (`подойдёт` está en
+`BOOKING_APPROVAL_QUESTIONS`). Aquí no reabre aquello — las seis afirmaciones reales
+(«te la he reservado», «queda confirmada», «you are all set», «записала тебя», «запис
+підтверджено») dan `asksForBookingApproval` **false** y mantienen la red activa. Está fijado
+fila por fila en `tests/oferta-no-es-afirmacion.test.js`, probado por mutación.
+
+Es la lección de Olga otra vez, y la de Michal: **una red demasiado ancha no sobra un mensaje,
+pierde el bueno.**
+
+**Debajo hay una causa estructural que NO se ha arreglado**: `extractLargoPelo` no entiende
+«por encima del pecho» (ni otras 26 formas medidas), así que el bloque determinista no
+resuelve y el turno queda entero en manos del modelo. **Mapearlas es decisión de la dueña, no
+nuestra** — son 20-60 € de diferencia en un precio que la clienta se cree, y «pecho» se mide
+por delante mientras el pelo cae por detrás. La lista completa, con dos casos que hoy
+responde MAL («por debajo de los hombros» → Corto; «до талии» → nada), está en
+[`docs/largos-pendientes-yulia.md`](docs/largos-pendientes-yulia.md), pendiente de respuesta.
+
+**El otro síntoma de la misma conversación es la ventana del buffer** (causa 4 de la auditoría
+del 09/08, ya decidida como no-arreglar): a las 12:03 el bot preguntó el largo **dos veces
+seguidas con redacción distinta** porque los dos mensajes de ella iban a **7,197 s** y
+`BUFFER_DELAY_MS` son 5 000. El matiz que aquí duele más de lo que dice esa nota: el segundo
+mensaje era **«Al menos\*», la corrección de una errata** — se contestó dos veces a la misma
+frase.
+
 ## Michal Gradziel y Esther Cediloo: seis síntomas, cuatro causas
 
 Dos conversaciones del 07 y 08/08/2026, arregladas el 09/08. Michal
