@@ -2889,7 +2889,13 @@ function detectLargoCategory(text, servicesCatalog) {
         // rellenaba `datos.servicio` por su cuenta. Fallaba 1 de cada 3 veces, y con el
         // nombre bien escrito — el typo del escenario 3 era una pista falsa.
         // Ver docs/escenario-3-servicio-sin-resolver.md.
-        { kw: ['balayage', 'balaiage', 'valayage'], cat: 'mechas balayage' },
+        // Typos ENUMERADOS, nunca un corrector difuso genérico: el fuzzy reabre los falsos
+        // positivos que el criterio de admisión de arriba existe para evitar. Cada typo de
+        // la lista lo ha escrito alguien: 'valayage' (escenario 3), 'bayalage' (Nora
+        // Benedikte, 10/08/2026 — lo escribió tres veces, «bayalage», «blonde bayalage», y
+        // el servicio no aterrizó ninguna). 'baleage' y 'balyage' son las otras dos grafías
+        // frecuentes de oído.
+        { kw: ['balayage', 'balaiage', 'valayage', 'bayalage', 'baleage', 'balyage'], cat: 'mechas balayage' },
     ];
 
     for (const { kw, cat: catKey } of largoKeywords) {

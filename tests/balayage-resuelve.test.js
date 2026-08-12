@@ -56,6 +56,23 @@ test('las formas reales con las que lo piden las clientas', () => {
     }
 });
 
+test('REGRESIÓN · los typos son ENUMERADOS, y «bayalage» es el de Nora (10/08/2026)', () => {
+    // Nora Benedikte lo escribió tres veces —«im thinking bayalage», «I want a bayalage»,
+    // «blonde bayalage»— y el servicio no aterrizó ninguna: el bloque determinista no
+    // resolvía y el turno quedaba entero en manos del modelo. Nada de corrector difuso
+    // genérico: cada grafía se añade a mano, con su falso positivo pensado.
+    const frases = [
+        'do you have an appoinment before thursday? im thinking bayalage',  // su 1er mensaje
+        'I want a bayalage',
+        'blonde bayalage',
+        'quiero un baleage',
+        'me apetece un balyage',
+    ];
+    for (const f of frases) {
+        assert.strictEqual(detectLargoCategory(f, CATALOGO), 'Mechas Balayage', `falla: "${f}"`);
+    }
+});
+
 test('los dos turnos completos: "valayage" → "medio" → servicio resuelto', () => {
     const categoria = detectLargoCategory('kiero un valayage', CATALOGO);
     assert.strictEqual(categoria, 'Mechas Balayage', 'turno 1: entra al flujo de largo');
