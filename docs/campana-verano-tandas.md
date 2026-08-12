@@ -19,15 +19,21 @@ const phones = destinatarios
 ```
 
 Por qué recalcular y no congelar los ~700 destinatarios: **el allowlist es una foto**. La
-audiencia enviable pasó de 718 a 723 en dos días — entran fichas nuevas continuamente. Una
-lista congelada deja fuera para siempre a toda clienta creada después, y sin dejar rastro,
-porque para el motor no existían. Lo que se guarda es lo que NO cambia: las exclusiones.
+audiencia enviable pasó de 718 a 723 en dos días, y de 724 a **745 entre la tanda 1 y la 2**
+(+21 en cinco días) — entran fichas nuevas continuamente. Una lista congelada deja fuera para
+siempre a toda clienta creada después, y sin dejar rastro, porque para el motor no existían.
+Lo que se guarda es lo que NO cambia: las exclusiones.
 
 **Y hay que aplicarlo en las TRES tandas.** El dedupe de `campaignKey` impide repetir
 destinatarios entre tandas, pero **no recuerda a quién excluiste**: no hay ninguna fila en
-`broadcast_sends` para alguien que nunca entró en la lista. Si la tanda 2 sale sin el
-allowlist, las 20 fichas de `data/campana-verano-exclusiones.json` reciben la campaña, y eso
+`broadcast_sends` para alguien que nunca entró en la lista. Si una tanda sale sin el
+allowlist, las 24 fichas de `data/campana-verano-exclusiones.json` reciben la campaña, y eso
 ya no se deshace.
+
+**El script que lo hace es [`scripts/campana-verano-tanda.js`](../scripts/campana-verano-tanda.js)**
+(creado para la tanda 2). Recalcula el allowlist en el instante del disparo y no lee ninguna
+lista guardada. `--dry-run` imprime los recuentos y para **antes** de construir el cliente
+saliente, así que se puede repetir sin riesgo.
 
 ## Los parámetros de la tanda
 
@@ -47,10 +53,24 @@ vez de su plantilla — que es justo lo que se quiere evitar con las 187 rusopar
 
 ## Las exclusiones están PENDIENTES de revisión
 
-`data/campana-verano-exclusiones.json` lleva `"revisado_por_duena": false`. Las 20 entradas
-salen de una heurística sobre el nombre de pila y **son conjeturas**: 19 vienen del import del
-Excel con 0 citas y 0 visitas, así que sobre ellas no hay más dato que el nombre. La dueña
-tiene que repasarlas antes de darlas por buenas.
+`data/campana-verano-exclusiones.json` lleva `"revisado_por_duena": false`. Son **24
+entradas**, de dos orígenes distintos que no hay que confundir (cada una lleva su `origen`):
+
+- **20 por heurística del nombre de pila** — **son conjeturas**: 19 vienen del import del
+  Excel con 0 citas y 0 visitas, así que sobre ellas no hay más dato que el nombre. La dueña
+  tiene que repasarlas antes de darlas por buenas.
+- **4 añadidas tras la tanda 1** (`origen: "observado_tanda_1"`), y estas **no son
+  conjeturas**: son lo que esas fichas contestaron a la campaña — tres autocontestadores de
+  otros negocios y una persona que dice no ser clienta del salón. Decisión de la dueña el
+  07/08/2026.
+
+Las cuatro del segundo bloque **ya habían recibido la tanda 1** (por eso se observaron), así
+que están tapadas dos veces: por el dedupe y por el allowlist. Es lo que explica el descuadre
+aparente de la tanda 2: de las 250 ya enviadas, solo **246** seguían en el allowlist.
+
+Una de las 24, `34674987146` (Olga Yarmak), **ya no tiene ficha en `contacts`**: su exclusión
+es un no-op y por eso el allowlist resta 23, no 24. Inocuo — excluir un teléfono que no existe
+no quita a nadie.
 
 Joan Gascon (`34644610120`) estaba en la lista y **se quitó a mano el 06/08/2026**: quiere
 recibirla.
@@ -100,7 +120,30 @@ Tiene dos consecuencias, y la segunda es la que importa:
 No se ha tocado nada de esto: son fichas de la dueña y el criterio para limpiarlas (¿borrar?,
 ¿marcar?, ¿solo revertir el idioma?) es suyo.
 
+## Tanda 2 — LANZADA el 12/08/2026 12:46 (hora local)
+
+`enviados: 250 · por_plantilla: 250 · texto_libre: 0 · omitidos: 0 · registro_fallido: 0 ·
+fallos: [] · restantes: 226`. En `broadcast_sends`: **500 `sent` acumuladas, 0 `pending`, 0
+`failed`** — verificado contra Supabase, no contra el resumen. Los 250 salieron en 38 s
+(10:46:28 → 10:47:06 UTC), todos con `mode: 'template'`.
+
+Preflight en el instante del disparo: audiencia **745** (era 724 en la tanda 1) − 23
+exclusiones con ficha = allowlist **722**; menos las 246 de la tanda 1 que seguían en él =
+**476 pendientes**; recortado a 250 por el `limit` y por el cupo, que estaba entero.
+
+Reparto **por plantilla realmente enviada**: 246 `es2` · 2 `_ru2` · 2 `_en2`. El vuelco
+respecto a la tanda 1 (181 `_ru2`) no es un error: la tanda 1 se llevó 181 de las 187
+rusoparlantes, así que a la 2 le quedaban 2.
+
+**Cupo:** 250/250 consumido. La ventana móvil de 24 h libera a partir de las **12:46:28 del
+13/08** (hora local; 10:46:28 UTC), y el cupo completo 38 s después.
+
+**Pendientes para la tanda 3: 226, las 226 en `es`** (no queda ninguna `ru`, `en` ni `uk`).
+
 ## Cifras de partida (06/08/2026)
+
+**Foto histórica, no cifras de hoy** — entonces las exclusiones eran 20 (hoy 24) y la
+audiencia 723 (hoy 745). Se conserva porque es la medición del tamaño del `in(...)`.
 
 - Audiencia `todos`: **723** enviables · **4** excluidas por teléfono (`numero_invalido` ×3,
   `sin_numero` ×1 — son clientas reales mal apuntadas, no descartes).
