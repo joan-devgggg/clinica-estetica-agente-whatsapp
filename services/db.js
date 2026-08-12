@@ -1462,7 +1462,7 @@ async function getAppointmentsByDateRange(orgId, desde, hasta) {
     const oid = resolveOrg(orgId);
     const desdeTs = new Date(`${desde}T00:00:00`).toISOString();
     const hastaTs = new Date(`${hasta}T23:59:59`).toISOString();
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from('appointments')
         .select('*, contacts!contact_id(id, full_name, wa_phone, origen, bot_mode, is_vip, is_blacklisted), stylists!stylist_id(id, name)')
         .eq('organization_id', oid)
@@ -1484,6 +1484,12 @@ async function getAppointmentsByDateRange(orgId, desde, hasta) {
         // porque no se puede deducir de ninguna otra señal.
         .eq('no_facturable', false)
         .order('starts_at', { ascending: true });
+
+    // Es la agenda que pinta el panel (`GET /api/citas`): un fallo de lectura NO puede salir
+    // como «no hay citas». Un día lleno y un día vacío se verían igual, y es la pantalla desde
+    // la que se decide si cabe alguien más. Su gemela `getCitasDelDiaParaCaja` ya lo hacía
+    // —mismos tres filtros, misma pregunta en otra pantalla— y esta se quedó atrás.
+    assertRead(error, 'appointments');
 
     return (data || []).map(row => {
         const startsAt = new Date(row.starts_at);
@@ -2509,7 +2515,18 @@ async function getPendingActions(orgId, type) {
         .eq('organization_id', oid)
         .eq('status', 'pending');
     if (type) query = query.eq('type', type);
-    const { data } = await query.order('created_at', { ascending: true });
+    const { data, error } = await query.order('created_at', { ascending: true });
+    // Un `[]` aquí AFIRMA que no hay nada pendiente, y de esa afirmación cuelga el primer paso
+    // del desbloqueo: `PUT /api/leads/:id/bot-mode` con mode:'auto' busca la escalada en esta
+    // lista y, si no la encuentra, no la resuelve — y responde `{ok:true}` igual, así que el
+    // panel canta «Eliminado de la lista negra» sobre una `pending_action` que sigue abierta.
+    // Con el error a la vista el endpoint da 500, el panel no encadena el DELETE y el contacto
+    // se queda BLOQUEADO, que es el lado recuperable (la misma regla de orden del 10/08/2026).
+    //
+    // CUIDADO al añadir call sites: esto LANZA. `tryResolvePendingReply` (telegram.js) lo llama
+    // desde un `bot.on('message')` sin try/catch y por eso lleva el suyo; sin él, una lectura
+    // caída tumbaría el proceso —el bot de las dos orgs— por un rechazo sin manejar.
+    assertRead(error, 'pending_actions');
     return data || [];
 }
 

@@ -308,8 +308,26 @@ async function tryResolvePendingReply(orgId, bot, chatId, userId, texto) {
     const esRechazar = ['rechazar', 'rechazo', 'rechaza', 'no'].includes(t);
     if (!esConfirmar && !esRechazar) return false;
 
-    const bizums = await getPendingActions(orgId, 'bizum_review');
-    const vips = await getPendingActions(orgId, 'vip_suggestion');
+    // `getPendingActions` LANZA desde el 12/08/2026 (antes se tragaba el error y devolvía []),
+    // y este camino cuelga de `bot.on('message')`, que no tiene try/catch: sin esto, una
+    // lectura caída saldría como rechazo sin manejar y en Node moderno eso tumba el proceso,
+    // o sea el bot de las DOS orgs. Misma trampa que `setBotActivo` (06/08/2026).
+    //
+    // Y se responde `true` —no `false`—: devolver false dejaría caer un «sí» suelto al
+    // intérprete del LLM, que lo leería fuera de contexto y podría ejecutar una acción de
+    // configuración. Pararse y decirlo es peor experiencia y mucho mejor conducta. Lo que NO
+    // se puede decir es «no hay nada pendiente»: es justo lo que no se ha podido comprobar.
+    let bizums, vips;
+    try {
+        bizums = await getPendingActions(orgId, 'bizum_review');
+        vips = await getPendingActions(orgId, 'vip_suggestion');
+    } catch (e) {
+        logger.error('telegram_pendientes_lectura_error', { orgId, error: e.message });
+        bot.sendMessage(chatId,
+            '⚠️ No he podido consultar las acciones pendientes ahora mismo, así que no he '
+            + 'tocado nada. Vuelve a intentarlo en un momento.');
+        return true;
+    }
 
     if (bizums.length > 0) {
         if (bizums.length === 1) {
@@ -697,4 +715,9 @@ module.exports = {
     // tests/blacklist-no-promete.test.js para afirmar el orden de las dos escrituras y que
     // NO se le manda ningún mensaje al contacto.
     _ejecutarDesbloqueo: ejecutarDesbloqueo,
+    // Expuesto para tests: la resolución de pendientes por texto, sin polling ni red. Lo usa
+    // tests/lectura-citas-y-pendientes.test.js para afirmar que una lectura caída de
+    // pending_actions NO sale de aquí como rechazo sin manejar — el `bot.on('message')` que
+    // la llama no tiene try/catch, así que saldría del proceso entero.
+    _tryResolvePendingReply: tryResolvePendingReply,
 };
