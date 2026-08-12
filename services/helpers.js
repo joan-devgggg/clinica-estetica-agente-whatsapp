@@ -3412,6 +3412,94 @@ function resolveK18ServiceFromText(text, mainCategoria, catalog) {
     return (catalog || []).find(s => normalizeText(s.nombre) === normalizeText(nombre)) || null;
 }
 
+// ─── El nombre con el que se PERSISTE un upsell aceptado ─────────────────────
+// `business_info.upselling` guarda frases de MARKETING, no nombres de catálogo, y eso está
+// así a propósito: es lo que se le dice a la clienta. El problema es que hasta ahora esa
+// misma frase se escribía tal cual en `appointments.service`, y de las 9 etiquetas vivas de
+// Sante solo DOS casan exacto contra el catálogo ("Reconstrucción K18" y "Matiz"). Las otras
+// siete dependían de que la facturación fuese difusa para poder valorarlas — o no se podían
+// valorar en absoluto.
+//
+// Aquí se rompe esa dependencia: el difuso corre AHORA, en la conversación, que es donde ser
+// tolerante es correcto; y lo que se guarda es un nombre de catálogo, que luego casa exacto.
+// Es la condición para que `computeServiceBilling` pueda dejar de ser difuso sin perder
+// dinero. Mismo patrón que `resolveK18ComplementIfNeeded`, que ya hacía esto para el K18 y
+// es justo por eso que el K18 es una de las dos que casan.
+//
+// `via` NO es decorativo: distingue "casa exacto" de "se ha parecido a", y el segundo caso hay
+// que decirlo (regla 3). Dos etiquetas de Sante caen ahí y su destino es una decisión de
+// PRECIO que no puede tomar un algoritmo:
+//   "Manicura"                          → Manicura + gel 35 € (no existe "Manicura" a secas,
+//                                          y "Higiénica mujer" son 25 €)
+//   "Tratamiento capilar personalizado" → Consulta tricológica con Yulia 85 €
+// Se conserva lo que hoy resuelve el difuso —no se cambia ningún importe por iniciativa
+// propia— y se anuncia con la etiqueta Y el destino, para que contestarlo sea editar una
+// línea de `business_info.upselling`.
+//
+// LA CAUSA DE FONDO no se arregla aquí: mientras una regla de upselling sea una FRASE y no
+// una referencia a una entrada de catálogo, esto seguirá siendo una traducción por parecido.
+// Es la deuda del upselling anotada el 05/08/2026 en CLAUDE.md, y es el trabajo que cierra
+// esta familia: ligar cada regla a su entrada. Ver
+// docs/observaciones-para-proxima-auditoria.md.
+//
+// Devuelve { etiqueta, nombre, resuelto, via, destino }:
+//   via 'k18'     → la decisión de contexto del K18 (complemento vs suelto)
+//   via 'exacto'  → la etiqueta YA era un nombre de catálogo
+//   via 'parecido'→ resuelta por difuso; `destino` dice a qué, y hay que avisar
+//   resuelto:false→ nadie la reconoce; se guarda la etiqueta cruda y hay que avisar
+function resolveAcceptedUpsellName(etiqueta, mainCategoria, catalog) {
+    const base = { etiqueta, nombre: etiqueta, resuelto: false, via: null, destino: null };
+    if (!etiqueta || !Array.isArray(catalog) || !catalog.length) return base;
+
+    // 1) El K18 tiene una decisión propia que depende del servicio principal, y se pregunta
+    // por `isBareK18Mention` y NO comparando si el string cambió: "Reconstrucción K18" con un
+    // color en curso resuelve a sí mismo, y por la comparación caería en la rama de match
+    // exacto declarando `via: 'exacto'`. El nombre saldría igual, pero `via` dejaría de decir
+    // la verdad sobre quién decidió — y `via` es lo que distingue "esto está bien" de "esto se
+    // ha parecido a algo".
+    if (isBareK18Mention(etiqueta)) {
+        return {
+            ...base,
+            nombre: resolveK18ComplementIfNeeded(etiqueta, mainCategoria, catalog),
+            resuelto: true,
+            via: 'k18',
+        };
+    }
+
+    // 2) Ya es un nombre de catálogo: nada que traducir.
+    const exacta = resolveCatalogEntryExact(etiqueta, catalog);
+    if (exacta) {
+        return { ...base, nombre: exacta.nombre, resuelto: true, via: 'exacto' };
+    }
+
+    // 3) Se parece a uno. Se acepta —es el comportamiento de hoy— pero se declara.
+    const parecida = extractServiceFromText(etiqueta, catalog);
+    if (parecida) {
+        return {
+            ...base,
+            nombre: parecida.nombre,
+            resuelto: true,
+            via: 'parecido',
+            destino: { nombre: parecida.nombre, categoria: parecida.categoria || null, precio: parecida.precio ?? null },
+        };
+    }
+
+    // 4) Nadie la reconoce. Se guarda la etiqueta cruda —quitarla del `service` borraría de
+    // la cita algo que la clienta SÍ aceptó y que el salón le va a hacer— y se avisa. Que no
+    // se pueda facturar es un problema de datos, no una razón para perder el dato.
+    return base;
+}
+
+// Las etiquetas aceptadas → los nombres con los que se escribe `appointments.service`.
+// Devuelve { nombres, resueltos } para que quien persiste pueda usar los nombres y, a la vez,
+// reportar lo que no casó exacto sin volver a resolver nada.
+function resolveAcceptedUpsellNames(etiquetas, mainCategoria, catalog) {
+    const resueltos = (etiquetas || [])
+        .filter(Boolean)
+        .map(e => resolveAcceptedUpsellName(e, mainCategoria, catalog));
+    return { nombres: resueltos.map(r => r.nombre), resueltos };
+}
+
 // Parte el string de appointments.service en NOMBRES de servicio. No basta con partir por
 // " + ": hay servicios de catálogo que llevan ese separador dentro del nombre ("Pedicura +
 // esmaltado", "Manicura + gel"). Un split ciego los trocea, el trozo suelto queda unmatched
@@ -4002,6 +4090,8 @@ module.exports = {
     findCatalogEntriesExact,
     resolveK18ComplementIfNeeded,
     resolveK18ServiceFromText,
+    resolveAcceptedUpsellName,
+    resolveAcceptedUpsellNames,
     isBareK18Mention,
     // Exportado para el test de paridad con la copia del panel (dashboard-app/src/lib/service-names.ts).
     splitServiceNames,

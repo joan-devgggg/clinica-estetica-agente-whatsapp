@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, detectHoraFueraDeHorario, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, detectHoraFueraDeHorario, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -2918,6 +2918,55 @@ function preguntaApellidoMsg(session) {
     return PREGUNTA_APELLIDO[session.language] || PREGUNTA_APELLIDO.es;
 }
 
+// Avisa de las etiquetas de upselling que NO son un nombre de catálogo, con su destino.
+//
+// Es la mitad visible de `resolveAcceptedUpsellName`: la traducción por parecido se acepta
+// (es el comportamiento de siempre y no se cambia ningún importe por iniciativa propia) pero
+// no se calla, porque lo que hay detrás es una decisión de PRECIO. El mensaje lleva la
+// etiqueta Y a qué está cayendo, con su importe, para que contestarlo sea editar una línea de
+// `business_info.upselling` en vez de tener que reproducir el caso.
+//
+// El require va en diferido, igual que en `stampBillingSnapshot` (db.js): admin-alerts tira de
+// telegram.js y cargarlo a nivel de módulo desde aquí cierra un ciclo.
+//
+// Una clave por ETIQUETA, no por cita: lo que hay que revisar es la regla, y con una clave por
+// cita Yulia recibiría el mismo aviso cada vez que alguien acepta ese upsell.
+async function reportarUpsellsSinNombreDeCatalogo(orgId, telefono, resueltos) {
+    const sospechosos = (resueltos || []).filter(r => r && (!r.resuelto || r.via === 'parecido'));
+    if (!sospechosos.length) return;
+
+    for (const r of sospechosos) {
+        if (r.via === 'parecido') {
+            logger.info('upsell_etiqueta_por_parecido', {
+                orgId, telefono, etiqueta: r.etiqueta, guardadoComo: r.nombre,
+                categoria: r.destino?.categoria || null, precio: r.destino?.precio ?? null,
+            });
+        } else {
+            logger.error('upsell_etiqueta_sin_catalogo', { orgId, telefono, etiqueta: r.etiqueta });
+        }
+    }
+
+    try {
+        const { alertOnce } = require('./services/admin-alerts');
+        for (const r of sospechosos) {
+            const mensaje = r.via === 'parecido'
+                ? `⚠️ La sugerencia de upselling «${r.etiqueta}» no es el nombre de ningún servicio del catálogo.\n\n`
+                  + `Se está cobrando como: *${r.nombre}*`
+                  + (r.destino?.precio != null ? ` — ${r.destino.precio} €` : ' — sin precio')
+                  + (r.destino?.categoria ? ` (${r.destino.categoria})` : '') + '\n\n'
+                  + `Si ese no es el servicio ni el precio que quieres para «${r.etiqueta}», dilo y se cambia: `
+                  + `basta con poner el nombre exacto del servicio en la regla de upselling.`
+                : `⚠️ La sugerencia de upselling «${r.etiqueta}» no corresponde a ningún servicio del catálogo, `
+                  + `así que las citas que la lleven NO se pueden valorar y quedan en «sin poder calcular».\n\n`
+                  + `Dime a qué servicio del catálogo equivale y se arregla.`;
+            await alertOnce(orgId, `upsell_sin_catalogo|${r.etiqueta}`, mensaje);
+        }
+    } catch (e) {
+        // Que no se pueda avisar no puede tumbar la reserva que se estaba guardando.
+        logger.error('upsell_aviso_error', { orgId, telefono, error: e.message });
+    }
+}
+
 // Mensaje de confirmación de Sante a partir del estado de la sesión.
 //
 // Extraído del camino del LLM para que la reserva que se completa tras preguntar el nombre
@@ -3230,9 +3279,17 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
         // Nombre completo del servicio (categoría + variante) para no guardar el
         // nombre suelto de la variante ("Largo 1") en appointments.service.
         const mainServiceName = buildFullServiceName(session.selectedService, catalogDur);
-        const allServices = [mainServiceName, ...(session.upsellingAccepted || [])].filter(Boolean).join(' + ');
+        // Los upsells se persisten por su NOMBRE DE CATÁLOGO, no por la frase de marketing
+        // con la que se le ofrecieron: es lo que permite que la facturación case exacto en vez
+        // de tener que adivinar por parecido. `session.upsellingAccepted` sigue guardando la
+        // ETIQUETA a propósito — la compara el guard de "ya aceptado" (`includes`) y la lee el
+        // mensaje de confirmación, y ahí la frase es la correcta.
+        const upsellPersistidos = resolveAcceptedUpsellNames(
+            session.upsellingAccepted, session.selectedService?.categoria, catalogDur);
+        await reportarUpsellsSinNombreDeCatalogo(orgId, userPhone, upsellPersistidos.resueltos);
+        const allServices = [mainServiceName, ...upsellPersistidos.nombres].filter(Boolean).join(' + ');
         // [DIAG-VARIANTE] String EXACTO que se escribirá en appointments.service.
-        const upsellingDuration = (session.upsellingAccepted || []).reduce(
+        const upsellingDuration = upsellPersistidos.nombres.reduce(
             (sum, name) => sum + resolveServiceDurationMin(name, catalogDur), 0);
         // La duración que sale de aquí es la que ocupa la agenda. Si no se ha podido
         // resolver, la cita se guarda igual —la clienta no puede quedarse sin hueco por
@@ -5417,13 +5474,20 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     // ("Largo 2") casa con 4 entradas de catálogo de precios distintos y la
                     // facturación no puede saber cuál era. buildFullServiceName lo desambigua
                     // con la categoría ("Mechas Airtouch Largo 2").
+                    // Mismo criterio que al crear la cita: al `service` va el nombre de
+                    // CATÁLOGO del upsell, no la frase con la que se ofreció.
+                    const upPersist = resolveAcceptedUpsellNames(
+                        session.upsellingAccepted, session.selectedService?.categoria, catUp);
+                    await reportarUpsellsSinNombreDeCatalogo(orgId, userPhone, upPersist.resueltos);
+                    const nuevosPersist = resolveAcceptedUpsellNames(
+                        upsellsNuevos, session.selectedService?.categoria, catUp);
                     const updServices = [
                         buildFullServiceName(session.selectedService, catUp),
-                        ...session.upsellingAccepted,
+                        ...upPersist.nombres,
                     ].filter(Boolean).join(' + ');
-                    const upDurNuevos = upsellsNuevos.reduce(
+                    const upDurNuevos = nuevosPersist.nombres.reduce(
                         (sum, name) => sum + resolveServiceDurationMin(name, catUp), 0);
-                    const upDurTotal = session.upsellingAccepted.reduce(
+                    const upDurTotal = upPersist.nombres.reduce(
                         (sum, name) => sum + resolveServiceDurationMin(name, catUp), 0);
                     const durPrincipal = resolveAppointmentDurationMin(session.selectedService, catUp);
                     const totalDur = durPrincipal.minutos + upDurTotal;
