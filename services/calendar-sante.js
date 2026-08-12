@@ -9,6 +9,10 @@ const logger = require('../lib/logger');
 // la resolución "día+semana → fecha" tiene que ser LA MISMA en el motor y en el reducer de
 // preferencia, o el bot verbaliza una fecha y busca huecos en otra.
 const { BUSINESS_TZ, toMinutes, toLocalDateStr, addDaysStr, mondayDow, resolveWeekdayToDate } = require('./date-utils');
+// El texto de cada hueco se fabrica en el idioma de la clienta, con el MISMO formateador de
+// día que el recordatorio de 24 h (formatReminderWhen por debajo): ver el comentario largo
+// sobre formatSlotTexto en helpers.js. helpers es puro, no re-importa esta capa.
+const { formatSlotTexto } = require('./helpers');
 
 const DIAS_SEMANA = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
 const SLOT_OFFER_STEP_MIN = 30; // intervalo entre huecos ofrecidos dentro de una ventana libre (10:00, 10:30, 11:00...)
@@ -44,9 +48,12 @@ function conCausa(slots, causa) {
  * @param {string} options.serviceCategory — categoría del servicio (para filtrar estilistas por skill)
  * @param {string} [options.preferredStylistId] — si la clienta pide una estilista concreta
  * @param {object} [options.preferencia] — { periodo: 'mañana'|'tarde', semana: 'esta'|'siguiente' }
+ * @param {string|null} [options.lang] — idioma de la clienta ('es'|'en'|'ru'|'uk'); decide el
+ *   idioma de `texto`. Null o desconocido caen a castellano (mismo criterio que el
+ *   recordatorio). Los llamadores que no lo pasan (scripts de verificación) reciben es.
  * @returns {Array} — top slots con { fecha, hora, diaNombre, stylistId, stylistName, texto }
  */
-async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory, preferredStylistId, preferencia = {} } = {}) {
+async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory, preferredStylistId, preferencia = {}, lang = null } = {}) {
     const allStylists = await db.getStylistsByOrg(orgId);
     if (!allStylists.length) return conCausa([], 'sin_estilistas');
 
@@ -234,7 +241,7 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
                     occupied: [...dayAppts, ...dayBlocks],
                     serviceDuration, minStart,
                 });
-                for (const t of starts) addSlot(out, dateStr, t, diaNombre, stylist, serviceDuration, pref);
+                for (const t of starts) addSlot(out, dateStr, t, diaNombre, stylist, serviceDuration, pref, lang);
             }
         }
         return out;
@@ -340,7 +347,7 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     return conCausa(unique, causa);
 }
 
-function addSlot(slots, dateStr, minuteOfDay, diaNombre, stylist, serviceDuration, preferencia) {
+function addSlot(slots, dateStr, minuteOfDay, diaNombre, stylist, serviceDuration, preferencia, lang = null) {
     const hora = `${String(Math.floor(minuteOfDay / 60)).padStart(2, '0')}:${String(minuteOfDay % 60).padStart(2, '0')}`;
     const hourNum = Math.floor(minuteOfDay / 60);
 
@@ -350,8 +357,19 @@ function addSlot(slots, dateStr, minuteOfDay, diaNombre, stylist, serviceDuratio
         if (hourNum < 14) return;
     }
 
-    const fechaDate = new Date(dateStr + 'T12:00:00');
-    const fechaFormatted = fechaDate.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+    // En el idioma de la clienta, y con el día formateado EXACTAMENTE como en el
+    // recordatorio (formatSlotTexto reutiliza formatReminderWhen — ver helpers.js). Hasta
+    // el 11/08/2026 esto era un toLocaleDateString('es-ES') a secas y una clienta anglófona
+    // recibía los huecos en castellano en mitad de su conversación en inglés.
+    let texto = formatSlotTexto(dateStr, hora, lang, stylist.name);
+    if (!texto) {
+        // dateStr lo fabrica addDaysStr y siempre es YYYY-MM-DD, así que esto no debería
+        // dispararse; si algún día una fecha no se entiende, sale el texto de siempre en
+        // castellano en vez de un hueco sin texto (regla 3: se degrada, no se calla).
+        const fechaDate = new Date(dateStr + 'T12:00:00');
+        const fechaFormatted = fechaDate.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+        texto = `el ${fechaFormatted} a las ${hora} con ${stylist.name}`;
+    }
 
     slots.push({
         fecha: dateStr,
@@ -359,7 +377,7 @@ function addSlot(slots, dateStr, minuteOfDay, diaNombre, stylist, serviceDuratio
         diaNombre,
         stylistId: stylist.id,
         stylistName: stylist.name,
-        texto: `el ${fechaFormatted} a las ${hora} con ${stylist.name}`,
+        texto,
     });
 }
 
@@ -479,5 +497,6 @@ async function rescheduleAppointment(orgId, appointmentId, slot, { servicio, dur
 }
 
 module.exports = { getAvailableSlots, bookAppointment, cancelAppointment, rescheduleAppointment, formatSlotForMessage, CAUSAS_CERO };
-// Expuesto para tests de regresión (huecos + TZ-independencia), no para uso en producción.
-module.exports._internals = { computeFreeSlots, toLocalDateStr, toMinutes, addDaysStr, mondayDow, resolveWeekdayToDate, BUSINESS_TZ };
+// Expuesto para tests de regresión (huecos + TZ-independencia + idioma del texto del
+// hueco), no para uso en producción.
+module.exports._internals = { computeFreeSlots, addSlot, toLocalDateStr, toMinutes, addDaysStr, mondayDow, resolveWeekdayToDate, BUSINESS_TZ };

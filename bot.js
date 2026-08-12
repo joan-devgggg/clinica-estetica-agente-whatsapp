@@ -548,6 +548,12 @@ async function loadAvailableSlots(session) {
                 serviceCategory: service?.categoria,
                 preferredStylistId: session.anyStylists ? null : (session.selectedStylist?.id || session.preferredStylistId),
                 preferencia: session.partialData.preferencia_horaria || {},
+                // El `texto` de cada hueco sale de aquí en el idioma de la clienta, y lo
+                // recitan tal cual el prompt Y los mensajes deterministas: si esto no
+                // llegara, Nora (10/08/2026) volvería a leer «El jueves, 13 de agosto…»
+                // en mitad de su conversación en inglés. Null (idioma aún no conocido)
+                // cae a castellano, que es el idioma de arranque del salón.
+                lang: session.language || null,
             });
             session.availableSlots = slots;
 
@@ -644,6 +650,9 @@ async function reloadSlotsForConfirmation(session, { fecha, stylistId }) {
             serviceCategory: service?.categoria,
             preferredStylistId: stylistId || session.selectedStylist?.id || session.preferredStylistId,
             preferencia: pref,
+            // Mismo idioma que la carga principal: si un hueco de esta recarga acaba
+            // enseñándose (alternativas al confirmar), no puede salir en otro idioma.
+            lang: session.language || null,
         });
         return Array.isArray(slots) ? slots : [];
     } catch (e) {
@@ -1897,14 +1906,17 @@ function salonNoSlotsMsg(session) {
     // buscó y devolvió (en session.availableSlots) los huecos reales más cercanos —
     // ofrecerlos aquí en vez de repreguntar "¿qué día?", que la clienta ya contestó.
     if (session.slotsRequestedDayUnavailable && session.availableSlots?.length) {
+        // Cada elemento de la lista empieza por la hora («a las 10:00 del jueves… con Irina»
+        // / «at 10:00 on Thursday… with Irina»), en el idioma de la clienta: el sustantivo
+        // («hueco» / «availability») lo pone esta frase, no el hueco.
         const alternativas = session.availableSlots.slice(0, 3).map(s => calendarSante.formatSlotForMessage(s));
         const lista = alternativas.join(', ');
         const noDayMsg = {
-            en: `I don't have anything free that day, but I do have ${lista}. Would any of those work for you?`,
-            ru: `На этот день свободного времени нет, но есть ${lista}. Подойдёт что-нибудь из этого?`,
-            uk: `На цей день вільного часу немає, але є ${lista}. Підійде щось із цього?`,
+            en: `I don't have anything free that day, but I do have availability ${lista}. Would any of those work for you?`,
+            ru: `На этот день свободного времени нет, но могу предложить ${lista}. Подойдёт что-нибудь из этого?`,
+            uk: `На цей день вільного часу немає, але можу запропонувати ${lista}. Підійде щось із цього?`,
         };
-        return (language && noDayMsg[language]) || `Ese día no tengo hueco libre, pero sí tengo ${lista}. ¿Te viene bien alguno?`;
+        return (language && noDayMsg[language]) || `Ese día no tengo hueco libre, pero sí tengo hueco ${lista}. ¿Te viene bien alguno?`;
     }
 
     // Cero REAL con el servicio ya conocido: el motor buscó y no hay nada. Antes se caía
@@ -2037,14 +2049,17 @@ function ensureHandoverAcknowledged(respuesta, language, tratamiento = null) {
 // calendario, sustituimos su texto por una propuesta verídica en vez de por una disculpa.
 // Nunca inventa: sale de session.availableSlots vía formatSlotForMessage.
 function salonOfferSlotsMsg(session) {
+    // Cada hueco llega ya en el idioma de la clienta y empezando por la hora («a las 10:00
+    // del jueves… con Irina» / «at 10:00 on Thursday… with Irina»): el sustantivo lo pone
+    // esta frase.
     const lista = session.availableSlots.slice(0, 3)
         .map(s => calendarSante.formatSlotForMessage(s)).join(', ');
     const msgs = {
-        en: `I've got ${lista}. Would any of those work for you?`,
-        ru: `Есть ${lista}. Подойдёт что-нибудь из этого?`,
-        uk: `Є ${lista}. Підійде щось із цього?`,
+        en: `I have availability ${lista}. Would any of those work for you?`,
+        ru: `Могу предложить ${lista}. Подойдёт что-нибудь из этого?`,
+        uk: `Можу запропонувати ${lista}. Підійде щось із цього?`,
     };
-    return (session.language && msgs[session.language]) || `Tengo ${lista}. ¿Te viene bien alguno?`;
+    return (session.language && msgs[session.language]) || `Tengo hueco ${lista}. ¿Te viene bien alguno?`;
 }
 
 // ─── Estado de servicio: fuente de verdad única ─────────────────────────────

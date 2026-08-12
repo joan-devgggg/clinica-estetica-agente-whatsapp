@@ -282,6 +282,54 @@ function formatReminderWhen(fecha, hora, lang) {
     return `${h} ${diaSemana}${REMINDER_DATE_SEP[lg]}${diaMes}`;
 }
 
+// ─── El texto de un hueco, en el idioma de la clienta ────────────────────────
+//
+// `slot.texto` se fabrica UNA vez (calendar-sante.js, addSlot) y de ahí lo leen los DOS
+// caminos que hablan con la clienta: el prompt del modelo —que recita los huecos tal cual,
+// y su regla le prohíbe recalcular el día— y los mensajes deterministas de bot.js
+// (salonOfferSlotsMsg y la alternativa de "ese día no tengo hueco"). Hasta el 11/08/2026 se
+// fabricaba con toLocaleDateString('es-ES') a secas: Nora Benedikte (10/08, ficha en inglés
+// y 'observed') recibió «El jueves, 13 de agosto a las 10:00 con Irina» cinco veces seguidas
+// en mitad de una conversación entera en inglés.
+//
+// El CUÁNDO sale de formatReminderWhen, y eso no es reutilización por comodidad: es el
+// invariante. El recordatorio y la oferta de huecos le dicen el día a la MISMA clienta; si
+// esto tuviera su propia tabla de días, las dos se separarían en el primer retoque y el
+// mismo miércoles se diría de dos formas distintas sin que nadie se enterara hasta que una
+// clienta lo notase. tests/slot-texto-idioma.test.js afirma la contención literal.
+//
+// Aquí solo viven las dos palabras que el recordatorio no necesita: el prefijo de la hora
+// (el MISMO texto fijo que precede al {{2}} en las plantillas aprobadas de Meta: «a las» /
+// «at» / «в» / «о») y el conector de la estilista. El nombre de la estilista va tal cual
+// está en la BD (alfabeto latino, lo edita la dueña): «с Irina» es correcto, y declinarlo
+// («с Ириной») sería inventarle una grafía a un dato editable.
+const SLOT_TEXTO_PARTES = {
+    es: { hora: 'a las', con: 'con' },
+    en: { hora: 'at', con: 'with' },
+    ru: { hora: 'в', con: 'с' },
+    uk: { hora: 'о', con: 'з' },
+};
+
+/**
+ * «a las 10:00 del jueves 13 de agosto con Irina» — el `texto` de un hueco ofrecible.
+ * Cae a 'es' con el MISMO criterio que formatReminderWhen (idioma desconocido o null =
+ * castellano), y devuelve null con su mismo contrato si la fecha no se entiende: quien
+ * llama decide el fallback, nunca se inventa un día.
+ *
+ * @param {string} fecha 'YYYY-MM-DD'
+ * @param {string} hora  'HH:MM'
+ * @param {string|null} lang 'es' | 'en' | 'ru' | 'uk' | null
+ * @param {string} stylistName nombre tal cual está en `stylists.name`
+ * @returns {string|null}
+ */
+function formatSlotTexto(fecha, hora, lang, stylistName) {
+    const lg = SLOT_TEXTO_PARTES[lang] ? lang : 'es';
+    const cuando = formatReminderWhen(fecha, hora, lg);
+    if (!cuando) return null;
+    const p = SLOT_TEXTO_PARTES[lg];
+    return `${p.hora} ${cuando} ${p.con} ${stylistName}`;
+}
+
 // De dónde salió `contacts.language`. La columna mezcla tres calidades muy distintas y hasta
 // ahora nada las separaba: a 05/08/2026, de 720 fichas de Sante, ~20 traían un idioma
 // observado en conversación, 184 uno deducido del nombre y ~516 el 'es' del INSERT que nadie
@@ -3845,6 +3893,7 @@ module.exports = {
     validateConfigValue,
     resolveReminderWindowMin,
     formatReminderWhen,
+    formatSlotTexto,
     LANGUAGE_SOURCES,
     resolveLanguageSource,
     TEST_PHONE_PREFIX,
