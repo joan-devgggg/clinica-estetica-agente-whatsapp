@@ -103,6 +103,64 @@ for (const [etiqueta, cat] of [['tras la 040', CATALOGO], ['antes de la 040', CA
     });
 }
 
+// ── La versión FUERTE, que es la que este fichero nació debiendo tener ────────
+// Cuando se escribió (12/08) salía en rojo por 21 de las 81 entradas y se dejó a medias a
+// propósito, con el daño fijado como caracterización. Con la facturación ya estricta se puede
+// exigir de verdad: **ninguna entrada, al desaparecer su nombre del catálogo, puede volver
+// como 'ok' a otro precio.** O casa exacto, o sale marcada.
+//
+// Quitar una entrada es el modelo de las tres formas de quedarse huérfano: renombrarla (040),
+// borrarla, o que alguien edite el `service` de una cita con una errata.
+test('PROPIEDAD FUERTE · un nombre huérfano NUNCA vuelve como "ok" a otro precio', () => {
+    const remapean = [];
+    for (const svc of CATALOGO) {
+        const full = buildFullServiceName(svc, CATALOGO);
+        const antes = computeServiceBilling(full, CATALOGO);
+        if (!antes.segments.every(s => s.status === 'ok')) continue;
+
+        const sinEsa = CATALOGO.filter(s => s !== svc);
+        const despues = computeServiceBilling(full, sinEsa);
+        const todoOk = despues.segments.every(s => s.status === 'ok');
+        if (todoOk && despues.totalConIva !== antes.totalConIva) {
+            remapean.push(`${full} (${svc.categoria}): ${antes.totalConIva}€ → ${despues.totalConIva}€ como "ok"`);
+        }
+    }
+    assert.deepStrictEqual(remapean, [],
+        'el fallback difuso ha vuelto a la facturación: un nombre huérfano está cobrando otro precio en silencio');
+});
+
+// Los dos pares simétricos que hacían de esto un problema de dinero en las dos direcciones.
+// Anclados a mano porque son los que se citaron al abrir el hallazgo, y porque un par es peor
+// que un remapeo suelto: el error no tiene un signo, lo tiene cada dirección.
+test('los pares simétricos: cada uno con su precio, y huérfano NO hereda el del otro', () => {
+    const pares = [
+        ['Matiz', 40, 'Matiz plus', 65],
+        ['Mechas Airtouch XL', 260, 'Deco Total Blond XL', 175],
+    ];
+    for (const [unoNombre, unoPrecio, otroNombre, otroPrecio] of pares) {
+        assert.strictEqual(computeServiceBilling(unoNombre, CATALOGO).totalConIva, unoPrecio, unoNombre);
+        assert.strictEqual(computeServiceBilling(otroNombre, CATALOGO).totalConIva, otroPrecio, otroNombre);
+
+        // Y con uno de los dos fuera del catálogo, el huérfano sale MARCADO, no con el precio
+        // del vecino — que es exactamente el intercambio de 25 € y de 85 € del hallazgo.
+        for (const [nombre, vecino] of [[unoNombre, otroPrecio], [otroNombre, unoPrecio]]) {
+            const sinEsa = CATALOGO.filter(s => buildFullServiceName(s, CATALOGO) !== nombre);
+            const r = computeServiceBilling(nombre, sinEsa);
+            assert.strictEqual(r.segments[0].status, 'unmatched', `"${nombre}" huérfano debería salir marcado`);
+            assert.notStrictEqual(r.totalConIva, vecino, `"${nombre}" ha heredado el precio del vecino`);
+        }
+    }
+});
+
+// El nombre crudo compartido ya estaba resuelto desde antes por 'ambiguous', y esto no lo
+// toca: es la otra mitad de la protección y conviene que se vea junta.
+test('el nombre crudo compartido sigue cayendo en "ambiguous", no en un precio', () => {
+    const xl = computeServiceBilling('XL', CATALOGO);
+    assert.strictEqual(xl.segments[0].status, 'ambiguous');
+    assert.deepStrictEqual(xl.segments[0].precios, [175, 260]);
+    assert.strictEqual(xl.totalConIva, 0, 'un nombre ambiguo no suma');
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. Los tres nombres nuevos, uno a uno
 // ─────────────────────────────────────────────────────────────────────────────
@@ -151,29 +209,41 @@ test('REGRESIÓN · una cita multi-servicio con un segmento renombrado tampoco s
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. Por qué la migración TENÍA que tocar `appointments`
+// 5. Los tres nombres viejos, ahora los tres MARCADOS
 // ─────────────────────────────────────────────────────────────────────────────
-// Fija el daño con su número. Si esto se pone en ROJO es una buena noticia —alguien ha
-// estrechado el fallback difuso de `computeServiceBilling`— pero hay que releer la 040:
-// su cabecera justifica el UPDATE de las citas exactamente con este 75.
-
-test('la cita que se queda con el nombre viejo NO se marca: devuelve otro precio como "ok"', () => {
-    const huerfana = computeServiceBilling('Relax 45min', CATALOGO);
-    assert.strictEqual(huerfana.segments[0].status, 'ok',
-        'ha dejado de ser silencioso: reléete la 040');
-    assert.strictEqual(huerfana.totalConIva, 75,
-        'el remapeo silencioso ha cambiado de destino: reléete la 040');
-    assert.notStrictEqual(huerfana.totalConIva, 85,
-        'si esto empieza a dar 85 €, el fallback ya no remapea y la 040 puede simplificarse');
-});
-
-test('los otros dos nombres viejos sí caen a "unmatched" (visible, no silencioso)', () => {
-    // La diferencia con el de arriba es la razón de que 'Relax 45min' fuera el peligroso:
-    // 'detox' e 'hidratacion' están protegidos por la regla de categorías cruzadas de la 028,
-    // así que devuelven null → unmatched → la cita sale en "sin poder calcular".
-    for (const viejo of ['Detox 60min', 'Spa Hidratación 60min']) {
+// Cuando se escribió este fichero (12/08), «Relax 45min» huérfano devolvía **75 € con status
+// 'ok'** —el masaje de otra categoría, presentado como cifra buena— y los otros dos caían en
+// 'unmatched' porque los protege la regla de categorías cruzadas de la 028. Esa asimetría era
+// la razón de que «Relax 45min» fuese el peligroso de los tres, y estaba fijada aquí como
+// caracterización con la nota de que ponerse en rojo sería una buena noticia.
+//
+// Lo es: la facturación ya es estricta y los tres se comportan igual. Se releyó la 040 como
+// pedía esa nota, y su decisión sigue en pie sin cambios — renombró las dos citas junto al
+// catálogo, así que facturan sus 85 €. Lo que cambia es el coste de NO haberlo hecho: antes
+// habrían sido 75 € congelados en silencio; ahora habría sido un 'unmatched' visible. La
+// migración era correcta por el resultado, y ahora además el fallo estaría a la vista.
+test('los tres nombres viejos caen a "unmatched": ninguno hereda un precio ajeno', () => {
+    for (const [viejo, precioAjeno] of [['Relax 45min', 75], ['Detox 60min', 115], ['Spa Hidratación 60min', 110]]) {
         const r = computeServiceBilling(viejo, CATALOGO);
         assert.strictEqual(r.segments[0].status, 'unmatched', `"${viejo}" debería salir marcada`);
-        assert.strictEqual(r.totalConIva, 0);
+        assert.strictEqual(r.totalConIva, 0, `"${viejo}" no puede sumar`);
+        assert.notStrictEqual(r.totalConIva, precioAjeno);
     }
+});
+
+// La prueba de que el remapeo silencioso no era hipotético, con una fila real de la BD.
+// Migración 023 (01/08/2026): "Largo 1" → "Corto". La cita 96bca537 se quedó con el nombre
+// viejo "Alisado vegano Largo 1" y hasta hoy facturaba **310 €** cuando su precio real era
+// **210 €** — el difuso se llevaba la entrada "Largo" por el token. Un error de 100 € vivo en
+// la base de datos, invisible solo porque la cita está cancelada. Es el mejor argumento de por
+// qué la lectura tiene que ser estricta, y por eso vive en un test y no solo en un commit.
+test('el caso REAL del 023: "Alisado vegano Largo 1" ya no cobra los 310 € de otra variante', () => {
+    const r = computeServiceBilling('Alisado vegano Largo 1', CATALOGO);
+    assert.strictEqual(r.segments[0].status, 'unmatched',
+        'la cita 96bca537 tiene que salir marcada, no valorada');
+    assert.notStrictEqual(r.totalConIva, 310, 'esto era el error: el precio de "Largo"');
+
+    // Y el precio que de verdad le correspondía, para que se vea el tamaño del desvío.
+    const corto = CATALOGO.find(s => s.nombre === 'Corto' && s.categoria === 'Alisado vegano');
+    assert.strictEqual(corto.precio, 210, 'si "Corto" ya no son 210 €, releer la 023');
 });

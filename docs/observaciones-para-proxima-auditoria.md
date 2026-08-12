@@ -183,3 +183,58 @@ Medición reproducible: es el barrido de `tests/renombrar-servicio-no-mueve-dine
 cuya propiedad sobre las 81 entradas se quedó a propósito en «cada servicio factura su propio
 precio» — la versión fuerte («ninguna remapea») sale en rojo por estas 21 y no se puede meter
 en `npm test` sin arreglar antes lo de arriba.
+
+### CERRADO el 13/08/2026 · `92ce19a` (escritura) y el commit siguiente (lectura)
+
+Arreglado en dos commits, en ese orden y nunca al revés:
+
+- **Escritura** (`92ce19a`): `resolveAcceptedUpsellName` traduce la etiqueta de upselling a su
+  nombre de catálogo ANTES de persistirla en `appointments.service`. El difuso se queda, pero
+  corre en la conversación. Sin esta mitad, la siguiente habría hecho desaparecer el dinero de
+  5 de las 9 etiquetas.
+- **Lectura**: `computeServiceBilling` pasa a ser estricto (`exactas[0] || null`). Un nombre
+  huérfano sale `unmatched`, que se ve, en vez de heredar el precio del vecino.
+
+Medido contra las 62 citas: **2 cambian, las dos `cancelled`, y 0 de las 37 `completed`.**
+El informe no se mueve — de esas 37, solo **1** depende del cálculo en vivo (`calculado`); las
+demás son 18 `congelado`, 16 `manual` y 2 `divergente` (esas dos por el detector de la 031, sin
+relación con esto). Las dos que cambian:
+
+- `96bca537` «Alisado vegano Largo 1» (cancelada): **310 € → `unmatched`**. Facturaba 310 €
+  cuando su precio real era **210 €** — el error lo introdujo la migración 023 al renombrar
+  «Largo 1» → «Corto», y el difuso se llevaba la entrada «Largo» por el token. Fijado en un
+  test, porque es la prueba de que esto no era hipotético.
+- `dd30234e` «Corte niño + Exfoliación del cuero cabelludo» (cancelada): **35 € → 25 € +
+  `unmatched`**. Es una etiqueta de upsell guardada como nombre de servicio; con la mitad de
+  escritura ya arreglada, una cita nueva guarda `Exfoliación/pilling` y factura sus 10 €.
+
+**Las dos filas históricas no se han tocado**: están canceladas y renombrarlas es una decisión
+del dueño, no del arreglo.
+
+### LO QUE QUEDA ABIERTO, y es el trabajo que cierra esta familia
+
+La causa de fondo de que 7 de las 9 etiquetas no casen: **una regla de
+`business_info.upselling` es una FRASE de marketing, no una referencia a una entrada de
+catálogo.** Es la deuda del upselling ya anotada en CLAUDE.md el 05/08/2026 —entonces por el
+lado de los servicios dados de baja— y esto la reabre por el lado del dinero: mientras la regla
+sea una frase, lo que hace `resolveAcceptedUpsellName` es una traducción por PARECIDO, y solo
+está bien porque hoy acierta.
+
+Arreglarlo de verdad es que cada regla apunte a su entrada de catálogo (un nombre exacto, o una
+referencia). Toca el formato de `business_info.upselling`, las 8 reglas actuales, el flujo de
+aceptación y el prompt. Con eso, `resolveAcceptedUpsellName` se queda en el match exacto y las
+dos etiquetas que hoy no resuelven (`Reconstrucción molecular`, `Tratamiento hidratación`)
+dejarían de poder existir.
+
+**Dos decisiones están preguntadas a la dueña** (13/08/2026) y son las que bloquean el paso
+siguiente, porque son precios y no código:
+
+| Etiqueta | Hoy se cobra como | Alternativa que existe en el catálogo |
+|---|---|---|
+| `Manicura` | `Manicura + gel` — **35 €** | `Higiénica mujer` — **25 €** (no hay ninguna «Manicura» a secas) |
+| `Tratamiento capilar personalizado` | `Consulta tricológica con Yulia` — **85 €** | — (¿es eso lo que se quiere ofrecer tras un corte?) |
+
+Mientras no conteste se conserva lo que resuelve el difuso —que es el comportamiento de
+siempre— y cada caso avisa por Telegram con la etiqueta Y su destino con precio, para que
+contestarlo sea editar una línea. Aviso `upsell_etiqueta_por_parecido`, una clave de throttle
+por etiqueta.

@@ -3546,7 +3546,37 @@ function computeServiceBilling(serviceString, catalog) {
         if (precios.length > 1) {
             return { name, precio: null, status: 'ambiguous', precios: precios.sort((a, b) => a - b) };
         }
-        const entry = exactas[0] || extractServiceFromText(name, catalog) || null;
+        // ESTRICTO, sin difuso, y es la línea que más importa de esta función.
+        //
+        // Aquí el texto lo escribimos NOSOTROS: `appointments.service` sale de
+        // buildFullServiceName y de resolveAcceptedUpsellName, los dos nombres de catálogo. No
+        // es lo que teclea una clienta, así que no hay nada que interpretar — y `unmatched` es
+        // la respuesta correcta cuando el nombre no existe, no una razón para buscar el
+        // parecido más cercano.
+        //
+        // Lo que había antes era `exactas[0] || extractServiceFromText(name, catalog)`, y
+        // medido contra el catálogo real de 81 entradas eso devolvía OTRO precio con status
+        // 'ok' en 21 de ellas, 8 cruzando de categoría. Los pares simétricos eran lo peor,
+        // porque el error va en las dos direcciones: Matiz 40 ⇄ Matiz plus 65, y Mechas
+        // Airtouch XL 260 ⇄ Deco Total Blond XL 175.
+        //
+        // Y no era hipotético: la cita 96bca537 ("Alisado vegano Largo 1", cancelada el
+        // 01/08) factura hoy 310 € y debería facturar 210 €. El error lo introdujo la
+        // migración 023 al renombrar "Largo 1" → "Corto": el nombre quedó huérfano y el difuso
+        // se llevó la entrada "Largo" (310 €) por el token. Un número equivocado, presentado
+        // como cifra buena, que nadie vio porque la cita está cancelada. Es la mejor prueba de
+        // por qué esto tiene que ser estricto: con `unmatched` se ve.
+        //
+        // El difuso sigue vivo donde sí hace falta —el detector de la conversación en bot.js,
+        // y `resolveServiceDurationMin` para las etiquetas de upselling—, que es lo que
+        // CLAUDE.md pide: el filtro va en el CALL SITE, jamás dentro del helper. Lo que hacía
+        // esta línea era prestarle a la facturación una tolerancia que no es suya.
+        //
+        // Requisito previo, y por eso este cambio va DESPUÉS del de escritura: los upsells se
+        // persisten ya por su nombre de catálogo (resolveAcceptedUpsellName). Sin eso, cinco
+        // de las nueve etiquetas de Sante caerían aquí en `unmatched` y su dinero desaparecería
+        // del informe.
+        const entry = exactas[0] || null;
         if (!entry) return { name, precio: null, status: 'unmatched' };
         if (entry.precio == null || !Number.isFinite(Number(entry.precio))) {
             return { name, precio: null, status: 'unpriced' };
