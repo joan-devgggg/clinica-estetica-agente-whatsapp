@@ -2327,7 +2327,18 @@ async function getBroadcastAudience(orgId, { audience = 'todos', phones } = {}) 
         query = query.eq('origen', 'importado_shortcuts');
     }
 
-    const { data } = await query.order('updated_at', { ascending: false });
+    const { data, error } = await query.order('updated_at', { ascending: false });
+    // Un `[]` aquí es la forma que tiene esta función de decir «no hay nadie a quien
+    // escribir», y encima sin un solo excluido que haga sospechar. Con la lectura rota eso
+    // hace daño de dos maneras y las dos calladas: `POST /api/broadcast` manda la tanda a CERO
+    // personas y devuelve su resumen tan tranquilo —y como no se escribe ninguna fila en
+    // `broadcast_sends`, el dedupe por campaignKey tampoco recuerda nada, así que la tanda se
+    // da por hecha sin estarlo—, y `GET /api/campaigns/status`, que es justo lo que se mira
+    // ANTES de disparar para no ir a ciegas, pinta 0 y 0.
+    //
+    // Con allowlist es peor: el `.in('wa_phone', …)` de una tanda por lotes falla igual, y la
+    // lista recalculada sale vacía como si las exclusiones se hubieran comido a todo el mundo.
+    assertRead(error, 'contacts');
 
     const destinatarios = [];
     const excluidos = [];

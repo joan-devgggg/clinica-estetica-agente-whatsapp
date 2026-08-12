@@ -32,6 +32,7 @@ const { SANTE_ORG_ID } = require('../services/org-registry');
 // alguien añade un filtro nuevo a la consulta, esto revienta en vez de ignorarlo en silencio
 // y dejar el test afirmando sobre una audiencia que ya no es la de producción.
 let filas = [];
+let fallo = false;   // true = la lectura de `contacts` falla (ver .order())
 
 function valorDe(fila, col) { return fila[col]; }
 
@@ -58,7 +59,12 @@ function makeBuilder() {
         eq(col, val) { filtros.push(f => valorDe(f, col) === val); return b; },
         or(expr) { filtros.push(f => evaluaOr(f, expr)); return b; },
         in(col, vals) { filtros.push(f => vals.includes(valorDe(f, col))); return b; },
-        order() { return Promise.resolve({ data: filas.filter(f => filtros.every(fn => fn(f))), error: null }); },
+        order() {
+            // La BD caída: PostgREST devuelve `error` y `data` a null. Es un modo aparte del
+            // "no hay nadie", y confundirlos es justo lo que se arregló el 12/08/2026.
+            if (fallo) return Promise.resolve({ data: null, error: { code: 'PGRST301', message: 'simulated failure on contacts' } });
+            return Promise.resolve({ data: filas.filter(f => filtros.every(fn => fn(f))), error: null });
+        },
         then(res, rej) { return b.order().then(res, rej); },
     };
     return b;
@@ -98,7 +104,7 @@ function seed() {
 const tel = destinatarios => destinatarios.map(d => d.telefono);
 
 async function test(name, fn) {
-    try { seed(); await fn(); console.log(`ok - ${name}`); }
+    try { fallo = false; seed(); await fn(); console.log(`ok - ${name}`); }
     catch (e) { console.error(`fail - ${name}`); console.error(e); process.exitCode = 1; }
 }
 
@@ -199,6 +205,60 @@ async function test(name, fn) {
         for (const malo of ['', '   ', '0789717626', '965288498', '77777777', '3460011111x', '3460011111122222', null, undefined]) {
             assert.ok(!isSendablePhone(malo), `${JSON.stringify(malo)} NO debería poder recibir`);
         }
+    });
+
+    // ─── Una lectura rota NO es una audiencia vacía ──────────────────────────────────
+    //
+    // Hallazgo de la auditoría del 12/08/2026, arreglado antes de la tanda 2. La consulta se
+    // tragaba el `error` y devolvía `{destinatarios: [], excluidos: []}`, que es la forma que
+    // tiene esta función de decir «no hay nadie a quien escribir» — y encima SIN un solo
+    // excluido que hiciera sospechar. Dos maneras de hacer daño, las dos silenciosas:
+    //
+    //   · `POST /api/broadcast` mandaba la tanda a CERO personas y devolvía su resumen tan
+    //     tranquilo. Como no se escribe ninguna fila en `broadcast_sends`, el dedupe por
+    //     campaignKey tampoco recuerda nada: la tanda se da por hecha y no lo está.
+    //   · `GET /api/campaigns/status`, que es lo que la dueña mira ANTES de disparar para no
+    //     ir a ciegas, pintaba 0 y 0.
+    //
+    // Y con allowlist es peor todavía: el `.in('wa_phone', …)` de una tanda por lotes falla
+    // igual, así que la lista recalculada de esa tanda sale vacía y parece que las exclusiones
+    // se han comido a todo el mundo.
+    await test('la lectura falla → getBroadcastAudience LANZA, no devuelve audiencia vacía', async () => {
+        fallo = true;
+        try { await db.getBroadcastAudience(SANTE_ORG_ID, { audience: 'todos' }); }
+        catch { return; }
+        throw new Error('debería haber lanzado: un [] aquí se lee como "no hay nadie a quien escribir"');
+    });
+
+    await test('la lectura falla con allowlist → también lanza (es el camino de las tandas)', async () => {
+        fallo = true;
+        try { await db.getBroadcastAudience(SANTE_ORG_ID, { audience: 'todos', phones: ['34600111111'] }); }
+        catch { return; }
+        throw new Error('la tanda por lotes recalcula el allowlist por aquí: no puede salir vacía en silencio');
+    });
+
+    await test('la lectura falla → getBroadcastRecipients LANZA (es la que alimenta runBroadcast)', async () => {
+        fallo = true;
+        try { await db.getBroadcastRecipients(SANTE_ORG_ID, { audience: 'todos' }); }
+        catch { return; }
+        throw new Error('runBroadcast recibiría [] y mandaría la tanda a cero personas');
+    });
+
+    // El control que separa las dos cosas. Sin él, una función que lanzara SIEMPRE pasaría los
+    // tres bloques de arriba y la campaña no se podría lanzar nunca.
+    await test('CONTROL: una org de verdad sin nadie devuelve 0 y 0, sin lanzar', async () => {
+        filas = [];
+        const { destinatarios, excluidos } = await db.getBroadcastAudience(SANTE_ORG_ID, { audience: 'todos' });
+        assert.deepStrictEqual(destinatarios, []);
+        assert.deepStrictEqual(excluidos, []);
+    });
+
+    // El atajo de allowlist vacío ni siquiera consulta, así que tiene que seguir sin lanzar
+    // aunque la BD esté caída: es una decisión tomada antes de mirar nada.
+    await test('CONTROL: allowlist vacío devuelve 0 y 0 sin consultar, caída o no', async () => {
+        fallo = true;
+        const r = await db.getBroadcastAudience(SANTE_ORG_ID, { audience: 'todos', phones: [] });
+        assert.deepStrictEqual(r, { destinatarios: [], excluidos: [] });
     });
 
     if (!process.exitCode) console.log('\nTests de audiencia de campaña OK');
