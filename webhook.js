@@ -479,7 +479,10 @@ app.delete('/api/stylists/:id/pin', async (req, res) => {
     try {
         const orgId = exigirSalon(req, res);
         if (!orgId) return;
-        await db.clearStylistPin(orgId, req.params.id);
+        const retirado = await db.clearStylistPin(orgId, req.params.id);
+        // El `{ok:true}` era incondicional y el panel canta «PIN retirado» con él: sin esto,
+        // un id que no casa (o de otra org) se anunciaba como retirado con el PIN aún puesto.
+        if (!retirado) return res.status(404).json({ error: 'Esa estilista no tenía PIN' });
         logger.info('pin_estilista_retirado', { orgId, stylistId: req.params.id, userId: req.authUserId || null });
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }

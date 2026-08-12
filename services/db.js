@@ -2115,12 +2115,22 @@ async function setStylistPin(orgId, stylistId, pin, { userId = null } = {}) {
     return data[0];
 }
 
+// Devuelve si de verdad retiró algún PIN.
+//
+// Tenía `assertWrite` —cubría un error de Supabase— pero no miraba las FILAS, y devolvía true
+// fijo: un DELETE cuyos `.eq()` no casan nada (id que no existe, estilista de otra org) sale
+// sin error, y el panel cantaba «PIN retirado» sobre un PIN que seguía puesto. Es el caso
+// `deleteLead` del 07/08/2026, y sus hermanas de esta capa ya lo hacían bien.
+//
+// No lanza cuando no casa: aquí «no había PIN» es un desenlace posible y lo cuenta quien
+// llama, con un 404. `assertRowsAffected` diría 500, que es otra cosa.
 async function clearStylistPin(orgId, stylistId) {
     const oid = resolveOrg(orgId);
-    const { error } = await supabase
-        .from('stylist_pins').delete().eq('stylist_id', stylistId).eq('organization_id', oid);
+    const { data, error } = await supabase
+        .from('stylist_pins').delete().eq('stylist_id', stylistId).eq('organization_id', oid)
+        .select('stylist_id');
     assertWrite(error, 'stylist_pins', 'clearStylistPin');
-    return true;
+    return (data?.length ?? 0) > 0;
 }
 
 // ¿Es el PIN de esa estilista? Devuelve solo true/false.
