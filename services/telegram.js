@@ -196,15 +196,33 @@ async function notifyVipSuggestion(orgId, contacto) {
 // enviados siguen teniendo botones con `bl_ok` dentro, y así un toque en un mensaje viejo cae
 // también en la confirmación en vez de desbloquear a la primera. Quien ejecuta es `bl_do`,
 // que solo existe en el teclado que aparece DESPUÉS de preguntar.
+//
+// DICE SI DE VERDAD SALIÓ, y por eso se espera. Hasta el 12/08/2026 disparaba sin esperar y
+// bot.js marcaba `blacklistNotified = true` ANTES de llamarla: la inversión exacta de la regla
+// de `alertOnce`, que marca la clave DESPUÉS de que Telegram confirme. Con el bot caído, la
+// org sin admins o un chat cerrado, el aviso se perdía para siempre — y no lo rescataba
+// `rearmarSiLaFichaNoLoRefleja`, porque su desempate es `bot_mode !== 'manual'` y en ese camino
+// el `setLeadBotMode` sí había funcionado: la ficha reflejaba el bloqueo perfectamente y lo
+// único que faltaba era el empujón que hace que alguien lo MIRE.
+//
+// Entregado = al menos un admin lo recibió, mismo criterio que `notifyOrgAdmin`. No lanza
+// nunca: avisar de un fallo no puede provocar otro.
+//
+// @returns {Promise<boolean>} true solo si algún envío se confirmó.
 async function notifyBlacklistAlert(orgId, contacto) {
-    if (!_botInstance) { logger.warn('telegram_no_iniciado_notify'); return; }
+    if (!_botInstance) { logger.warn('telegram_no_iniciado_notify', { orgId }); return false; }
     const msg = `🚫 <b>Cliente en lista negra</b>\n\n` +
         `${esc(contacto.nombre || 'Cliente')} (${esc(contacto.telefono)}) está en la lista negra.\n` +
         `Motivo: ${esc(contacto.blacklist_reason || 'sin motivo')}\n\n` +
         `¿Qué hacemos?`;
     const phoneKey = String(contacto.telefono).replace(/\D/g, '');
     const admins = getAdminIdsForOrg(orgId);
-    for (const userId of admins) {
+    if (!admins.length) {
+        // Sin destinatario no hay aviso posible, y callarlo es como se pierde.
+        logger.error('telegram_sin_admins', { orgId });
+        return false;
+    }
+    const resultados = await Promise.all(admins.map(userId =>
         _botInstance.sendMessage(userId, msg, {
             parse_mode: 'HTML',
             reply_markup: {
@@ -213,8 +231,17 @@ async function notifyBlacklistAlert(orgId, contacto) {
                     { text: '🚫 Mantener bloqueado', callback_data: `bl_no|${orgId}|${phoneKey}` },
                 ]]
             }
-        }).catch(e => logger.error('telegram_notify_error', { error: e.message, userId, orgId }));
-    }
+        })
+            .then(res => {
+                logger.info('telegram_notify_ok', { userId, orgId, messageId: res?.message_id });
+                return true;
+            })
+            .catch(e => {
+                logger.error('telegram_notify_error', { error: e.message, userId, orgId });
+                return false;
+            })
+    ));
+    return resultados.some(Boolean);
 }
 
 /**

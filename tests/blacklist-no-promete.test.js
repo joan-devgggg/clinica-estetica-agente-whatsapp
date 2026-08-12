@@ -122,7 +122,11 @@ require.cache[telegramPath] = {
     exports: {
         startTelegramBot: () => {},
         notifyEscalation:     async (...a) => { tg.escalations.push(a); },
-        notifyBlacklistAlert: async (...a) => { tg.blacklist.push(a); },
+        // Devuelve true = Telegram lo ENTREGÓ. Desde el 12/08/2026 ese booleano es el
+        // contrato: bot.js solo marca el aviso como dado si se confirma la entrega
+        // (patrón de alertOnce). Un stub que devolviera undefined estaría simulando un
+        // Telegram caído, y entonces los casos 4 y 5 medirían el reintento, no el aviso.
+        notifyBlacklistAlert: async (...a) => { tg.blacklist.push(a); return true; },
         notifyBizumPending:   async () => {},
         notifyVipSuggestion:  async () => {},
         notifyOrgAdmin:       () => {},

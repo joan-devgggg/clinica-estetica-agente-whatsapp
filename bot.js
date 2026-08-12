@@ -229,6 +229,9 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         _summarizing: false,
         isBlacklisted: false,
         blacklistNotified: false,
+        // Entrega del aviso de Telegram, aparte del bloqueo ya procesado. Ver la rama de
+        // lista negra en processMessageCore.
+        blacklistAlertEntregado: false,
         // San Remo specific
         bizumAsked: false,
         bizumPendiente: false,
@@ -721,6 +724,10 @@ function buildSessionExtra(session) {
         // conducta observable (su aviso dejaría de repetirse), y su lista negra es otra cosa
         // —una retención a la espera de que el admin decida—. Ver la rama de bot.js.
         blacklistNotified: !!session.blacklistNotified,
+        // Y la entrega, aparte: sin persistirla, un timeout de sesión la pondría a false y el
+        // siguiente mensaje mandaría OTRO aviso de un bloqueo ya avisado — justo lo que
+        // `blacklistNotified` vino a evitar. Viaja con ella y por el mismo motivo.
+        blacklistAlertEntregado: !!session.blacklistAlertEntregado,
     };
 }
 
@@ -743,6 +750,10 @@ function rearmarSiLaFichaNoLoRefleja(orgId, userPhone, session, contact) {
     if (!session.blacklistNotified) return;
     if (contact?.bot_mode === 'manual') return;
     session.blacklistNotified = false;
+    // También la entrega: si el bloqueo hay que volver a procesarlo entero, su aviso es un
+    // aviso NUEVO. Dejarla en true haría que el rearme pusiera manual y escalada sin que nadie
+    // se enterase por Telegram, que es la mitad que importa.
+    session.blacklistAlertEntregado = false;
     logger.info('blacklist_rearmada_ficha_no_lo_refleja', {
         orgId, telefono: userPhone, bot_mode: contact?.bot_mode || 'auto',
     });
@@ -3625,6 +3636,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession.pendingNameForBooking = ex.pendingNameForBooking || null;
                     newSession.preguntasCierre       = ex.preguntasCierre || 0;
                     newSession.blacklistNotified     = !!ex.blacklistNotified;
+                    newSession.blacklistAlertEntregado = !!ex.blacklistAlertEntregado;
 
                     const assistantTurns = newSession.history.filter(m => m.role === 'assistant').length;
                     const extraIncoherente =
@@ -3860,6 +3872,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         // → el contacto quedaba mudo para siempre en esta sesión.
                         session.isBlacklisted = false;
                         session.blacklistNotified = false;
+                        session.blacklistAlertEntregado = false;
                         logger.info('session_blacklist_cleared_reconcile', { orgId, telefono: userPhone, source: 'db_no_blacklist' });
                     }
                 }
@@ -3878,8 +3891,18 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     await setLeadBotMode(orgId, session.partialData.telefono, 'manual');
                     await setEscalationReason(orgId, session.partialData.telefono, 'lista_negra');
                     const contact = await findByPhone(orgId, session.partialData.telefono);
-                    // Notify antes del INSERT: ver escalateToHuman.
-                    notifyBlacklistAlert(orgId, { nombre: contact?.nombre || session.partialData.nombre, telefono: session.partialData.telefono, blacklist_reason: contact?.blacklist_reason }).catch(() => {});
+                    // Notify antes del INSERT: ver escalateToHuman. Se ESPERA, y su resultado
+                    // manda: `blacklistAlertEntregado` solo se pone a true si Telegram lo
+                    // confirmó (patrón de alertOnce). Si no, la rama de reintento de abajo lo
+                    // vuelve a intentar en el siguiente mensaje.
+                    session.blacklistAlertEntregado = await notifyBlacklistAlert(orgId, {
+                        nombre: contact?.nombre || session.partialData.nombre,
+                        telefono: session.partialData.telefono,
+                        blacklist_reason: contact?.blacklist_reason,
+                    }).catch(() => false);
+                    if (!session.blacklistAlertEntregado) {
+                        logger.error('blacklist_aviso_no_entregado', { orgId, telefono: userPhone });
+                    }
                     await createPendingAction(orgId, {
                         type: 'escalation',
                         contactId: contact?.id || session.leadId,
@@ -3903,11 +3926,41 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     await _send('Gracias por tu mensaje 🙏 En breve te atenderá nuestro equipo.');
                 }
                 persistSession(orgId, userPhone, session);
+            } else if (!session.blacklistAlertEntregado) {
+                // REINTENTO SOLO DEL AVISO. Las dos banderas dicen cosas distintas a propósito:
+                // `blacklistNotified` = el bloqueo ya está procesado en la FICHA (manual,
+                // escalada, fila en pending_actions) y eso no se repite; `blacklistAlertEntregado`
+                // = Telegram lo confirmó. Con una sola bandera no había forma de reintentar el
+                // aviso sin repetir también el INSERT de `pending_actions`, que no es idempotente:
+                // con Telegram caído se abriría una fila por cada mensaje que escriba.
+                //
+                // El reintento es el «siguiente tic» que a este aviso le faltaba. alertOnce lo
+                // tiene gratis porque sus dueños son workers que repasan cada 5 min; aquí el
+                // único reloj es que la persona vuelva a escribir, que es exactamente cuando
+                // vuelve a importar.
+                try {
+                    const contact = await findByPhone(orgId, session.partialData.telefono);
+                    session.blacklistAlertEntregado = await notifyBlacklistAlert(orgId, {
+                        nombre: contact?.nombre || session.partialData.nombre,
+                        telefono: session.partialData.telefono,
+                        blacklist_reason: contact?.blacklist_reason,
+                    }).catch(() => false);
+                    logger.info('blacklist_aviso_reintentado', {
+                        orgId, telefono: userPhone, entregado: !!session.blacklistAlertEntregado,
+                    });
+                    persistSession(orgId, userPhone, session);
+                } catch (e) {
+                    logger.error('error_blacklist_reintento', { orgId, telefono: userPhone, error: e.message });
+                }
             }
             // Log explícito ANTES del return: un contacto silenciado por lista negra
             // debe ser visible en logs. Sin esto, la ejecución terminaba tras
             // process_core_inicio sin rastro y parecía un "cuelgue silencioso".
-            logger.info('process_core_blacklist_return', { orgId, telefono: userPhone, blacklistNotified: session.blacklistNotified });
+            logger.info('process_core_blacklist_return', {
+                orgId, telefono: userPhone,
+                blacklistNotified: session.blacklistNotified,
+                avisoEntregado: !!session.blacklistAlertEntregado,
+            });
             return;
         }
 

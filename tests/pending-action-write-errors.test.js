@@ -139,7 +139,7 @@ require.cache[telegramPath] = {
     exports: {
         startTelegramBot: () => {},
         notifyEscalation:     async (...args) => { tg.escalations.push(args); },
-        notifyBlacklistAlert: async (...args) => { tg.blacklist.push(args); },
+        notifyBlacklistAlert: async (...args) => { tg.blacklist.push(args); return true; },
         notifyBizumPending:   async (...args) => { tg.bizum.push(args); },
         notifyVipSuggestion:  async () => {},
         notifyOrgAdmin:       () => {},
