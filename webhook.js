@@ -946,10 +946,29 @@ app.put('/api/citas/:id', async (req, res) => {
         }
 
         if ((req.body.noShow === true || req.body.estado === 'no_show') && apt.contact_id) {
-            console.log('[DEBUG no-show] ejecutando setBlacklist', { orgId, contact_id: apt.contact_id, noShow: req.body.noShow, estado: req.body.estado });
-            const noShowContact = await db.findById(orgId, apt.contact_id);
-            await db.setBlacklist(orgId, apt.contact_id, 'No-show');
-            notifyBlacklistAlert(orgId, { nombre: noShowContact?.nombre, telefono: noShowContact?.telefono, blacklist_reason: 'No-show' }).catch(() => {});
+            // Aislado, por lo mismo que `stampBillingSnapshot` veinte líneas más abajo: el
+            // UPDATE de la cita YA tuvo éxito y el panel merece su 200. Sin este try, un
+            // `setBlacklist` fallido —lanza desde julio, verifica filas— devolvía 500 sobre
+            // un no-show que sí quedó escrito, y la pantalla decía que no se pudo.
+            //
+            // Pero no se queda en un log: el bloqueo es la mitad de lo que se pidió al marcar
+            // el no-show, y perderlo en silencio deja a alguien que no vino recibiendo
+            // campañas y recordatorios como si nada. Por eso avisa.
+            try {
+                const noShowContact = await db.findById(orgId, apt.contact_id);
+                await db.setBlacklist(orgId, apt.contact_id, 'No-show');
+                notifyBlacklistAlert(orgId, { nombre: noShowContact?.nombre, telefono: noShowContact?.telefono, blacklist_reason: 'No-show' }).catch(() => {});
+            } catch (e) {
+                logger.error('error_noshow_blacklist', { orgId, citaId: req.params.id, contactId: apt.contact_id, error: e.message });
+                await alertOnce(orgId, `noshow_blacklist|${apt.contact_id}`,
+                    '⚠️ <b>No-show sin bloquear</b>\n\n'
+                    + 'He marcado la cita como "no vino", pero no he podido añadir a esa clienta '
+                    + 'a la lista negra.\n\n'
+                    + 'La cita está bien. Lo que NO ha pasado es el bloqueo: le seguirán llegando '
+                    + 'campañas, recordatorios y peticiones de reseña. Puedes bloquearla a mano '
+                    + 'desde Lista negra.\n\n'
+                    + `Detalle técnico: ${e.message}`).catch(() => {});
+            }
         }
 
         if (req.body.estado === 'completed' && apt.contact_id && previo?.status !== 'completed') {

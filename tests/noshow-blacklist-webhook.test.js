@@ -17,6 +17,20 @@ require.cache[telegramPath] = {
     exports: { notifyBlacklistAlert: async () => {}, startTelegramBot: () => {}, notifyEscalation: async () => {} },
 };
 
+// admin-alerts GRABANDO: el aviso de "no-show sin bloquear" es la mitad del arreglo del
+// 12/08/2026 —el 200 dice la verdad sobre la cita, y el aviso dice lo que NO se hizo—, así que
+// hay que poder afirmarlo. Se intercepta antes de requerir webhook.js, que lo captura al cargar.
+const avisos = [];
+const alertsPath = require.resolve('../services/admin-alerts');
+require.cache[alertsPath] = {
+    id: alertsPath, filename: alertsPath, loaded: true,
+    exports: {
+        alertOnce: async (orgId, clave, mensaje) => { avisos.push({ orgId, clave, mensaje }); return true; },
+        clearAlert: () => true,
+        _resetThrottle: () => {},
+    },
+};
+
 const { app } = require('../webhook');
 const db = require('../services/db');
 
@@ -77,6 +91,38 @@ async function test(name, fn) {
             assert.strictEqual(res.status, 200, 'la ruta responde 200');
             assert.strictEqual(blacklistCalls.length, 1, 'setBlacklist se llama exactamente una vez');
             assert.deepStrictEqual(blacklistCalls[0], { orgId: 'org-sante', contactId: 'c1', reason: 'No-show' });
+        });
+
+        // Hasta el 12/08/2026 setBlacklist no iba aislado: como lanza (verifica filas), un
+        // fallo devolvía 500 sobre un PUT cuyo updateAppointment YA había escrito el no-show.
+        // La pantalla decía "no se pudo" y el no-show estaba puesto. Mismo criterio que
+        // stampBillingSnapshot: el 200 es del UPDATE, que sí ocurrió — pero el bloqueo perdido
+        // no se queda en un log, porque es la mitad de lo que se pidió al marcar el no-show.
+        await test('9 · si el bloqueo falla, el 200 se mantiene (la cita SÍ se guardó) y AVISA', async () => {
+            const real = db.setBlacklist;
+            db.setBlacklist = async () => { throw new Error('contacts: nada guardado'); };
+            try {
+                const res = await put(server, 'apt-1', { estado: 'no_show' });
+                assert.strictEqual(res.status, 200,
+                    'el UPDATE de la cita tuvo éxito: un 500 diría que no se guardó nada, y sí se guardó');
+                assert.ok(avisos.some(a => /no.?show/i.test(a.clave)),
+                    `el bloqueo perdido tiene que avisar; avisos: ${JSON.stringify(avisos)}`);
+                const texto = avisos.map(a => a.mensaje).join(' ');
+                assert.ok(/lista negra/i.test(texto), 'y decir qué es lo que NO ha pasado');
+                assert.ok(/campañas|recordatorio/i.test(texto),
+                    'con la consecuencia: le seguirán llegando envíos');
+            } finally {
+                db.setBlacklist = real;
+            }
+        });
+
+        await test('9 · CONTROL: cuando el bloqueo va bien, NO se avisa de nada', async () => {
+            avisos.length = 0;
+            blacklistCalls = [];
+            const res = await put(server, 'apt-1', { estado: 'no_show' });
+            assert.strictEqual(res.status, 200);
+            assert.strictEqual(blacklistCalls.length, 1, 'se bloqueó');
+            assert.strictEqual(avisos.length, 0, 'y no hay aviso: sin esto el bloque de arriba no prueba nada');
         });
 
         await test('9 · CONTROL: PUT estado confirmed NO dispara setBlacklist', async () => {
