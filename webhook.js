@@ -909,7 +909,6 @@ app.post('/api/appointments', async (req, res) => {
 app.put('/api/citas/:id', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
-        console.log('[DEBUG PUT /api/citas/:id] llegó petición', { id: req.params.id, orgId, body: req.body });
         // Solo cuando se MUEVE la cita: es la única rama que recalcula ends_at. Un PUT
         // que solo cambia estado/notas no tiene por qué traer duración.
         if (req.body?.fecha !== undefined && req.body?.hora !== undefined) {
@@ -924,7 +923,6 @@ app.put('/api/citas/:id', async (req, res) => {
         const apt = await db.updateAppointment(orgId, req.params.id, {
             ...req.body, actor: `panel:${req.authUserId || 'desconocido'}`,
         });
-        console.log('[DEBUG apt]', apt);
         if (!apt) return res.status(404).json({ error: 'No encontrada' });
 
         // La ficha del contacto es la que lee reminder.js (no `appointments`), así que mover una
