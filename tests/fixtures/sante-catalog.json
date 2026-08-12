@@ -378,19 +378,19 @@
     "duracion": 40
   },
   {
-    "nombre": "Relax 45min",
+    "nombre": "Spa Hair Relax",
     "categoria": "Spa Hair",
     "precio": 85,
     "duracion": 45
   },
   {
-    "nombre": "Detox 60min",
+    "nombre": "Spa Hair Detox",
     "categoria": "Spa Hair",
     "precio": 115,
     "duracion": 60
   },
   {
-    "nombre": "Spa Hidratación 60min",
+    "nombre": "Spa Hair Hidratación",
     "categoria": "Spa Hair",
     "precio": 110,
     "duracion": 60

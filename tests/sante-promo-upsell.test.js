@@ -44,7 +44,7 @@ const CATALOG = [
     { nombre: 'Mechas Contouring', precio: 160, duracion: 200, categoria: 'Mechas Contouring' },
     { nombre: 'Reconstrucción', precio: 35, duracion: 60, categoria: 'Reconstrucción' },
     { nombre: 'Manicura + gel', precio: 35, duracion: 120, categoria: 'Manicura/Pedicura' },
-    { nombre: 'Relax 45min', precio: 85, duracion: 45, categoria: 'Spa Hair' },
+    { nombre: 'Spa Hair Relax', precio: 85, duracion: 45, categoria: 'Spa Hair' },
     { nombre: 'Deportivo', precio: 65, duracion: 60, categoria: 'Masajes y SPA' },
 ];
 
@@ -120,7 +120,11 @@ test('4 · isSpaPromoCategory solo cubre Spa Hair y Masajes y SPA', () => {
 
 test('4 · hasPreviousSpaOrMassage detecta el historial por nombre de variante', () => {
     // appointments.service guarda el nombre de la variante, no la categoría.
-    assert.strictEqual(hasPreviousSpaOrMassage(['Relax 45min'], CATALOG), true);
+    // OJO con cuál de las dos afirma qué: desde la 040 los tres nombres de Spa Hair
+    // llevan su propia categoría dentro ("Spa Hair Relax"), así que ese casa por la rama
+    // de CATEGORÍA. El que sigue ejercitando la rama de nombres del catálogo —la que
+    // existe porque appointments.service no guarda la categoría— es 'Deportivo'.
+    assert.strictEqual(hasPreviousSpaOrMassage(['Spa Hair Relax'], CATALOG), true);
     assert.strictEqual(hasPreviousSpaOrMassage(['Deportivo'], CATALOG), true);
     // También si vino fusionado con un upsell.
     assert.strictEqual(hasPreviousSpaOrMassage(['Corte mujer y secado + Deportivo'], CATALOG), true);

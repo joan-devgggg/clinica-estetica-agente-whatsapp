@@ -93,3 +93,93 @@ Escalada registrada correctamente a las 11:29:09 UTC: `bot_mode: manual`,
 `escalation_reason: consulta_dato_no_disponible`, `pending_actions` en `pending`. La clienta
 mandó «Vale» a las 11:43 y **está esperando a una persona**. La maquinaria de escalada
 funcionó; lo que falta es que alguien la atienda.
+
+---
+
+## 12/08/2026 · El fallback difuso de `computeServiceBilling` remapea a otro precio
+
+Salió al escribir la red del renombrado de Spa Hair (migración 040). **No es un hallazgo de
+conversación: es dinero mal calculado en Facturación hoy**, y por eso está aquí y no en
+CLAUDE.md como trampa resuelta.
+
+### Qué pasa
+
+`computeServiceBilling` (`services/helpers.js:3449`) resuelve cada segmento así:
+
+```js
+const entry = exactas[0] || extractServiceFromText(name, catalog) || null;
+if (!entry) return { name, precio: null, status: 'unmatched' };
+```
+
+Cuando el nombre guardado en `appointments.service` **no** casa exacto contra el catálogo, cae
+a `extractServiceFromText`. Y esa función no está hecha para esto: está hecha para entender lo
+que ESCRIBE una clienta y para resolver etiquetas de upselling (`Reconstrucción molecular K18 o
+Pro-Miracle`), que por eso es tolerante. Aplicada a un nombre de cita, un nombre que ya no
+existe no vuelve como `unmatched` —que es visible, sale en «sin poder calcular»— sino como un
+servicio VECINO **con status `ok`** y otro precio. La cifra se presenta como buena.
+
+### Cuánto, medido contra el catálogo REAL de producción (81 entradas, 12/08/2026)
+
+Barrido: para cada entrada, quitarla del catálogo (equivale a renombrarla o borrarla) y
+preguntar por su propio nombre. **21 de las 81** devuelven otro precio con status `ok`; **8**
+se van además a otra CATEGORÍA:
+
+| servicio | su precio | resuelve a | precio que sale |
+|---|---|---|---|
+| Matiz (Matiz mujer) | 40 € | Matiz plus (Matiz mujer) | 65 € |
+| Matiz plus (Matiz mujer) | 65 € | Matiz (Matiz mujer) | 40 € |
+| Reconstrucción K18 (Reconstrucción) | 35 € | Reconstrucción K18 + lavar y peinar | 60 € |
+| Green Purity Detox (Tratamiento Orgánico) | 35 € | Detox 60min (Spa Hair) | 115 € |
+| Botanical Glow Pure Blond (Trat. Orgánico) | 45 € | Brillo intensivo (Brillo Glow) | 120 € |
+| Fresh Hidratación (Tratamiento Orgánico) | 45 € | Orising hidratación intensa | 85 € |
+| Mechas Airtouch XL | 260 € | XL (Deco Total Blond) | 175 € |
+| Deco Total Blond XL | 175 € | XL (Mechas Airtouch) | 260 € |
+| Drenaje linfático piernas (Masajes y SPA) | 45 € | Drenaje corporal (Masajes y SPA) | 75 € |
+| Drenaje corporal (Masajes y SPA) | 75 € | Drenaje linfático piernas | 45 € |
+| Relajante completo (Masajes y SPA) | 70 € | Holistic relajante Premium | 95 € |
+| Holistic relajante Premium (Masajes y SPA) | 95 € | Relajante completo | 70 € |
+| Relax 45min (Spa Hair) | 85 € | Aromaterapia relax (Masajes y SPA) | 75 € |
+| Aromaterapia relax (Masajes y SPA) | 75 € | Relax 45min (Spa Hair) | 85 € |
+| Corte mujer y secado (Cortes) | 40 € | Mujer y peinado Dyson (Cortes) | 50 € |
+| Corte mujer y peinado Dyson (Cortes) | 50 € | Mujer y secado (Cortes) | 40 € |
+| Difuminado de raíz (Color Premium) | 40 € | Color raíz (Color Premium) | 75 € |
+| Extensión uñas (Manicura/Pedicura) | 45 € | Corrección uñas ext | 40 € |
+| Corrección uñas ext (Manicura/Pedicura) | 40 € | Extensión uñas | 45 € |
+| Dermapen Hair Loss | 75 € | Consulta tricológica con Yulia (Diagnóstico Capilar) | 85 € |
+| Miracle Elixir (Tratamiento Orgánico) | 59 € | Reconstrucción Pro Miracle (Reconstrucción) | 60 € |
+
+Los pares simétricos son los que más asustan: `Matiz` ⇄ `Matiz plus` se intercambian 25 €, y
+`Mechas Airtouch XL` ⇄ `Deco Total Blond XL` se intercambian **85 €** en las dos direcciones.
+
+### Por qué importa aunque hoy no haya citas rotas
+
+Hoy ninguna cita de producción está en ese estado (todas casan exacto), así que **no hay
+dinero mal cobrado ahora mismo**. Lo que hay es un campo de minas para lo siguiente que se
+haga con el catálogo:
+
+- **Renombrar** una entrada. Ya casi pasó: la 040 renombró `Relax 45min` y había dos citas
+  confirmadas del 13/08 sin sellar. Con el catálogo renombrado y las filas intactas se
+  habrían facturado a 75 € en vez de 85, y `stampBillingSnapshot` (`db.js:1612`) lo habría
+  **congelado** al pasar a `completed` — sin que `isBillingServiceDiverged` avisara, porque
+  `servicio_facturado` y `service` habrían dicho lo mismo. Se evitó renombrando las citas en
+  la misma transacción.
+- **Borrar** una entrada. CLAUDE.md ya dice «`activo: false`, nunca borrar», y su razón
+  declarada es que la cita cae a `unmatched`. Esta medición dice que en 21 de 81 casos NO cae
+  a `unmatched`: cae a otro precio, que es peor porque no se ve.
+- **Editar** el `service` de una cita desde el panel con una errata.
+
+### Por qué no se arregla aquí
+
+Estrechar el fallback es un trabajo de diseño, no una línea: `extractServiceFromText` tiene
+tres consumidores con necesidades opuestas —el detector de la conversación (quiere ser
+tolerante), la resolución de etiquetas de upselling (`resolveServiceDurationMin`, que la
+necesita difusa a propósito) y la facturación (que no debería serlo)— y CLAUDE.md ya avisa de
+que *«el filtro va en el CALL SITE, jamás dentro de un helper»*. La forma que pinta bien es
+que la facturación pida resolución ESTRICTA (exacto, o `unmatched`) y deje el difuso para los
+otros dos, pero eso hay que medirlo contra las 62 citas reales antes de tocarlo: hay que saber
+a cuántas les cambia el estado hoy.
+
+Medición reproducible: es el barrido de `tests/renombrar-servicio-no-mueve-dinero.test.js`,
+cuya propiedad sobre las 81 entradas se quedó a propósito en «cada servicio factura su propio
+precio» — la versión fuerte («ninguna remapea») sale en rojo por estas 21 y no se puede meter
+en `npm test` sin arreglar antes lo de arriba.

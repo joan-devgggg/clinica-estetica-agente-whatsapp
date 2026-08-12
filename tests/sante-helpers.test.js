@@ -219,9 +219,11 @@ test('catálogo real: cada servicio se resuelve a sí mismo (ida y vuelta, 81 en
 // 110 € sin preguntarle. Había TRES servicios con esa palabra (45 / 85 / 110 €) y el
 // desempate por prefijo de la pasada de último recurso elegía el que EMPIEZA por ella.
 // O sea: el orden de las palabras dentro del nombre decidía el precio, siempre hacia
-// arriba. Renombrarlo a "Spa Hidratación 60min" NO lo arregla —"spa" tiene 3 letras y el
-// filtro de tokens distintivos exige 5, así que "hidratacion" sigue encabezando—; el
-// arreglo es no aplicar el desempate cuando el empate cruza categorías.
+// arriba. El arreglo es no aplicar el desempate cuando el empate cruza categorías, y
+// NINGÚN renombrado lo sustituye: ni el de la 028 ("Hidratación 60min" → "Spa Hidratación
+// 60min") ni el de la 040 ("Spa Hidratación 60min" → "Spa Hair Hidratación"), porque "spa"
+// y "hair" tienen 3 y 4 letras y el filtro de tokens distintivos exige 5 — el token que
+// decide sigue siendo "hidratacion". Por eso este test se sostiene con los tres nombres.
 test('catálogo real: una palabra que varias CATEGORÍAS comparten no resuelve sola', () => {
     for (const [frase, servicios] of [['hidratacion', '45/85/110 €'], ['detox', '35/115 €']]) {
         assert.strictEqual(extractServiceFromText(frase, CATALOGO_REAL), null,
@@ -234,9 +236,9 @@ test('catálogo real: con un discriminador, la misma palabra sí resuelve', () =
     const casos = [
         ['fresh hidratacion', 'Fresh Hidratación', 45],
         ['orising hidratacion intensa', 'Orising hidratación intensa', 85],
-        ['spa hidratacion 60min', 'Spa Hidratación 60min', 110],
+        ['spa hair hidratacion', 'Spa Hair Hidratación', 110],
         ['green purity detox', 'Green Purity Detox', 35],
-        ['detox 60min', 'Detox 60min', 115],
+        ['spa hair detox', 'Spa Hair Detox', 115],
     ];
     for (const [frase, nombre, precio] of casos) {
         const got = extractServiceFromText(frase, CATALOGO_REAL);

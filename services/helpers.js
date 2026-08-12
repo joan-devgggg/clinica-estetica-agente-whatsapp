@@ -2373,9 +2373,14 @@ function isSpaPromoCategory(categoria) {
 
 // ¿La clienta ya ha estado en Spa Hair o Masajes? Si sí, no es su primera visita y
 // la promo no aplica. Hay que resolverlo contra el catálogo porque
-// appointments.service guarda el nombre de la VARIANTE ("Relax 45min"), no la
+// appointments.service guarda el nombre de la VARIANTE ("Deportivo"), no la
 // categoría. `serviciosPasados` son los strings de appointments.service de citas
 // anteriores (pueden venir fusionados con upsells: "Corte + K18").
+//
+// Que se lea contra el catálogo VIVO tiene un filo: si se renombra una entrada y no se
+// renombran las citas que la nombraban, esas clientas dejan de reconocerse y se les
+// vuelve a ofrecer un descuento de PRIMERA visita. Por eso la 040 renombró las dos citas
+// de 'Relax 45min' en la misma transacción que el catálogo.
 function hasPreviousSpaOrMassage(serviciosPasados, catalog) {
     if (!Array.isArray(serviciosPasados) || !serviciosPasados.length) return false;
     const promoNames = (Array.isArray(catalog) ? catalog : [])
