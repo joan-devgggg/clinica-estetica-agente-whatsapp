@@ -2540,16 +2540,32 @@ async function getPendingActions(orgId, type) {
     return data || [];
 }
 
+// Cerrar una acción pendiente. Devuelve la fila cerrada, o null si no había ninguna que cerrar.
+//
+// Se tragaba el `error` y devolvía null, que nadie miraba. El sitio donde duele es el primer
+// paso del desbloqueo (`PUT /api/leads/:id/bot-mode` con mode:'auto'): la escalada se quedaba
+// abierta y el panel cantaba «Eliminado de la lista negra» encima. Ahora un fallo de
+// infraestructura LANZA, el endpoint da 500, el panel no encadena el DELETE y el contacto se
+// queda BLOQUEADO — el lado recuperable, que es el orden fijado el 10/08/2026.
+//
+// `.select()` en forma de LISTA y no `.single()`: con `.single()`, cero filas es un `error`
+// (PGRST116) y un assertWrite lo confundiría con una caída de la BD. Y cero filas aquí no es
+// un fallo: significa que esa acción ya la había cerrado otro (el panel y Telegram cierran las
+// mismas). Se devuelve null y quien llama decide, igual que `anularCobro`.
+//
+// CUIDADO al añadir call sites: esto LANZA. Los tres de webhook.js van dentro de su try; el de
+// Telegram (`resolveBizumAction`/`resolveVipAction`) cuelga de un `bot.on('message')` sin
+// try/catch y por eso `tryResolvePendingReply` es hoy un envoltorio con red.
 async function resolvePendingAction(orgId, id, resolution) {
     const oid = resolveOrg(orgId);
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from('pending_actions')
         .update({ status: 'resolved', resolution, resolved_at: now() })
         .eq('id', id)
         .eq('organization_id', oid)
-        .select()
-        .single();
-    return data || null;
+        .select();
+    assertWrite(error, 'pending_actions', 'resolvePendingAction');
+    return data?.[0] || null;
 }
 
 // ─── Stats dashboard ──────────────────────────────────────────────────────────

@@ -314,7 +314,32 @@ async function resolveVipAction(orgId, pendingAction, accept, bot, chatId) {
         { parse_mode: 'HTML' });
 }
 
+/**
+ * `tryResolvePendingReply` con red debajo, y es la que se llama.
+ *
+ * Todo lo de dentro puede lanzar: `getPendingActions` desde el 12/08/2026, y `resolvePendingAction`
+ * y `setVip` porque verifican lo que escriben. Cuelga de `bot.on('message')`, que no tiene
+ * try/catch, así que cualquiera de esos throws sale como rechazo sin manejar y tumba el
+ * proceso — el bot de las DOS orgs.
+ *
+ * Devuelve `true` (mensaje consumido) y no `false`: dejarlo caer al intérprete del LLM con un
+ * «sí» suelto lo leería fuera de contexto y podría ejecutar una acción de configuración. Y el
+ * texto dice que NO se hizo nada, que es lo contrario de lo que decía el fallo: con la lectura
+ * caída se contestaba como si no hubiera nada pendiente.
+ */
 async function tryResolvePendingReply(orgId, bot, chatId, userId, texto) {
+    try {
+        return await tryResolvePendingReplyInterno(orgId, bot, chatId, userId, texto);
+    } catch (e) {
+        logger.error('telegram_pendientes_error', { orgId, error: e.message });
+        bot.sendMessage(chatId,
+            '⚠️ No he podido completar eso ahora mismo, así que <b>no he tocado nada</b>. '
+            + 'Vuelve a intentarlo en un momento.', { parse_mode: 'HTML' });
+        return true;
+    }
+}
+
+async function tryResolvePendingReplyInterno(orgId, bot, chatId, userId, texto) {
     const t = texto.toLowerCase().trim();
     const session = telegramSessions.get(userId);
 
@@ -335,26 +360,10 @@ async function tryResolvePendingReply(orgId, bot, chatId, userId, texto) {
     const esRechazar = ['rechazar', 'rechazo', 'rechaza', 'no'].includes(t);
     if (!esConfirmar && !esRechazar) return false;
 
-    // `getPendingActions` LANZA desde el 12/08/2026 (antes se tragaba el error y devolvía []),
-    // y este camino cuelga de `bot.on('message')`, que no tiene try/catch: sin esto, una
-    // lectura caída saldría como rechazo sin manejar y en Node moderno eso tumba el proceso,
-    // o sea el bot de las DOS orgs. Misma trampa que `setBotActivo` (06/08/2026).
-    //
-    // Y se responde `true` —no `false`—: devolver false dejaría caer un «sí» suelto al
-    // intérprete del LLM, que lo leería fuera de contexto y podría ejecutar una acción de
-    // configuración. Pararse y decirlo es peor experiencia y mucho mejor conducta. Lo que NO
-    // se puede decir es «no hay nada pendiente»: es justo lo que no se ha podido comprobar.
-    let bizums, vips;
-    try {
-        bizums = await getPendingActions(orgId, 'bizum_review');
-        vips = await getPendingActions(orgId, 'vip_suggestion');
-    } catch (e) {
-        logger.error('telegram_pendientes_lectura_error', { orgId, error: e.message });
-        bot.sendMessage(chatId,
-            '⚠️ No he podido consultar las acciones pendientes ahora mismo, así que no he '
-            + 'tocado nada. Vuelve a intentarlo en un momento.');
-        return true;
-    }
+    // Las dos LANZAN si la lectura falla. Lo que no se puede decir es «no hay nada pendiente»,
+    // que es justo lo que no se ha podido comprobar; de eso se encarga el envoltorio de arriba.
+    const bizums = await getPendingActions(orgId, 'bizum_review');
+    const vips = await getPendingActions(orgId, 'vip_suggestion');
 
     if (bizums.length > 0) {
         if (bizums.length === 1) {

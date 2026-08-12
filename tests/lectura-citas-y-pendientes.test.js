@@ -29,17 +29,32 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ||
 const assert = require('assert');
 
 // ─── Supabase falso: falla o responde según la tabla ────────────────────────────────────
-const control = { failTables: new Set(), rows: {} };
+//
+// `errorAlEscribir` es aparte de `failTables` a propósito: hace falta llegar al camino de
+// ESCRITURA con la tabla en pie. Con `failTables` la lectura de arriba falla primero y nunca
+// se llega a escribir, así que el escenario «la consulta va, el UPDATE lo rechazan» —que es el
+// que deja al admin leyendo «confirmada» sobre una fila sin cerrar— no se podría montar.
+const control = { failTables: new Set(), rows: {}, errorAlEscribir: new Set() };
 
 function makeBuilder(tabla) {
-    const run = () => (control.failTables.has(tabla)
-        ? { data: null, error: { code: 'PGRST301', message: `simulated failure on ${tabla}` } }
-        : { data: control.rows[tabla] ?? [], error: null });
+    let esEscritura = false;
+    const run = () => {
+        if (control.failTables.has(tabla)) {
+            return { data: null, error: { code: 'PGRST301', message: `simulated failure on ${tabla}` } };
+        }
+        if (esEscritura && control.errorAlEscribir.has(tabla)) {
+            return { data: null, error: { code: 'PGRST301', message: `simulated write failure on ${tabla}` } };
+        }
+        return { data: control.rows[tabla] ?? [], error: null };
+    };
     const b = new Proxy({}, {
         get(_t, prop) {
             if (prop === 'then') return (onF, onR) => Promise.resolve(run()).then(onF, onR);
             if (prop === 'maybeSingle' || prop === 'single') {
                 return () => ({ then: (onF, onR) => Promise.resolve(run()).then(onF, onR) });
+            }
+            if (prop === 'update' || prop === 'insert' || prop === 'upsert' || prop === 'delete') {
+                esEscritura = true;
             }
             return () => b;   // select/eq/gte/lte/in/not/order… encadenan
         },
@@ -161,6 +176,55 @@ process.on('unhandledRejection', (r) => { rechazosSinManejar.push(r); });
         const manejado = await telegram._tryResolvePendingReply(ORG, bot, 111, 222, 'sí');
         assert.strictEqual(manejado, false, 'sin pendientes tiene que dejar pasar el mensaje');
         assert.strictEqual(bot.enviados.length, 0, 'y no decir nada');
+    });
+
+    // ─── 3b. resolvePendingAction: cerrar una acción sin poder cerrarla ──────────────────
+    await test('resolvePendingAction: un error de Supabase LANZA, no devuelve null callando', async () => {
+        control.failTables = new Set(['pending_actions']);
+        await lanza(() => db.resolvePendingAction(ORG, 'pa-1', 'resuelto_panel'), 'resolvePendingAction');
+    });
+
+    await test('resolvePendingAction: cero filas devuelve null y NO lanza (ya la cerró otro)', async () => {
+        // Es el motivo de que use `.select()` en lista y no `.single()`: con single, cero filas
+        // es un error PGRST116 y assertWrite lo confundiría con una BD caída. Y no lo es: el
+        // panel y Telegram cierran las mismas acciones, así que perder la carrera es normal y
+        // el resultado —la fila cerrada— es el mismo. Lo que no puede pasar por normal es un
+        // error de infraestructura, que es el bloque de arriba.
+        control.failTables = new Set();
+        control.rows.pending_actions = [];
+        assert.strictEqual(await db.resolvePendingAction(ORG, 'pa-1', 'resuelto_panel'), null);
+    });
+
+    await test('resolvePendingAction: con fila devuelve la fila cerrada', async () => {
+        control.rows.pending_actions = [{ id: 'pa-1', type: 'escalation', status: 'resolved' }];
+        const r = await db.resolvePendingAction(ORG, 'pa-1', 'resuelto_panel');
+        assert(r && r.id === 'pa-1', 'quien llama tiene que poder ver que se cerró');
+    });
+
+    await test('Telegram: un «sí» cuyo cierre falla NO tumba el proceso ni dice "confirmada"', async () => {
+        // El caso real: hay un bizum pendiente, el admin contesta «sí», la consulta va bien y
+        // el UPDATE que cierra la acción lo rechaza la BD. Antes se tragaba el error y el
+        // admin leía «Reserva confirmada» sobre una cola que seguía con su fila abierta.
+        control.failTables = new Set();
+        control.rows.pending_actions = [{
+            id: 'pa-9', type: 'bizum_review', contact_id: 'c-1', status: 'pending',
+            payload: { nombre: 'Quien Sea' }, contacts: { full_name: 'Quien Sea' },
+        }];
+        control.errorAlEscribir = new Set(['pending_actions']);
+        const bot = botFalso();
+        let manejado;
+        try {
+            manejado = await telegram._tryResolvePendingReply(ORG, bot, 111, 444, 'sí');
+        } catch (e) {
+            throw new Error(`propagó y tumbaría el proceso: ${e.message}`);
+        } finally {
+            control.errorAlEscribir = new Set();
+            control.rows.pending_actions = [];
+        }
+        assert.strictEqual(manejado, true, 'el mensaje queda consumido, no cae al intérprete');
+        const todo = bot.enviados.join(' | ');
+        assert(!/confirmada/i.test(todo), `no puede decir que quedó confirmada: ${todo}`);
+        assert(/no he podido/i.test(todo), `y tiene que decir que no se hizo: ${todo}`);
     });
 
     await test('Telegram: un texto que no es sí/no ni siquiera llega a leer la BD', async () => {
