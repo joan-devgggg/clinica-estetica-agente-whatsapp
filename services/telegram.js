@@ -540,6 +540,30 @@ async function ejecutarAccion(orgId, accion, datos, bot, chatId) {
     }
 }
 
+/**
+ * `ejecutarAccion` con red debajo. Es la que llama el handler, y no es opcional.
+ *
+ * `bot.on('message')` NO tiene try/catch, así que cualquier cosa que lance aquí dentro sale
+ * como rechazo sin manejar y en Node moderno eso tumba el proceso: el bot de las DOS orgs, por
+ * un comando de admin. Y lanzar es lo NORMAL en esta capa desde julio —`setBlacklist`,
+ * `setVip` y `setConfigValue` verifican filas afectadas y lanzan si no tocaron ninguna, y
+ * `getBlacklist` lanza desde el 12/08/2026—, o sea que el agujero ya estaba abierto: un
+ * bloqueo fallido desde Telegram se llevaba el proceso por delante.
+ *
+ * El mensaje dice que NO se hizo, y esa es la mitad importante. Lo que no puede pasar es lo
+ * que pasaba con `list_blacklist`: un error de lectura contestando «La lista negra está
+ * vacía», que es exactamente la afirmación contraria a la verdad.
+ */
+async function ejecutarAccionSegura(orgId, accion, datos, bot, chatId) {
+    try {
+        return await ejecutarAccion(orgId, accion, datos, bot, chatId);
+    } catch (e) {
+        logger.error('telegram_accion_error', { orgId, accion, error: e.message });
+        return '⚠️ No he podido completar esa acción, así que <b>no he tocado nada</b>. '
+             + 'Vuelve a intentarlo en un momento.';
+    }
+}
+
 // ─── Inicialización ─────────────────────────────────────────────────────────
 
 function startTelegramBot(options = {}) {
@@ -596,7 +620,7 @@ function startTelegramBot(options = {}) {
         const session = telegramSessions.get(userId);
         if (session?.pendingAction) {
             if (['si', 'sí', 'confirmo', 'ok', 'vale'].includes(texto.toLowerCase().trim())) {
-                const resultado = await ejecutarAccion(orgId, session.pendingAction.accion, session.pendingAction.datos, bot, chatId);
+                const resultado = await ejecutarAccionSegura(orgId, session.pendingAction.accion, session.pendingAction.datos, bot, chatId);
                 telegramSessions.delete(userId);
                 bot.sendMessage(chatId, resultado || '✅ Hecho.', { parse_mode: 'HTML' });
             } else {
@@ -632,7 +656,7 @@ function startTelegramBot(options = {}) {
             return;
         }
 
-        const resultado = await ejecutarAccion(orgId, interpretacion.accion, interpretacion.datos || {}, bot, chatId);
+        const resultado = await ejecutarAccionSegura(orgId, interpretacion.accion, interpretacion.datos || {}, bot, chatId);
         bot.sendMessage(chatId, resultado || interpretacion.respuesta, { parse_mode: 'HTML' });
     });
 
@@ -710,7 +734,7 @@ module.exports = {
     // Expuesto para tests: el handler de acciones del admin, sin polling ni red. Lo usa
     // tests/config-escritura-verificada.test.js para afirmar que pause_bot/resume_bot no
     // anuncian un guardado que no ocurrió.
-    _ejecutarAccion: ejecutarAccion,
+    _ejecutarAccion: ejecutarAccionSegura,
     // Expuesto para tests: el desbloqueo real, sin polling ni Telegram. Lo usa
     // tests/blacklist-no-promete.test.js para afirmar el orden de las dos escrituras y que
     // NO se le manda ningún mensaje al contacto.

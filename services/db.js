@@ -2241,14 +2241,24 @@ async function incrementVisitCount(orgId, contactId) {
     return data == null ? null : Number(data);
 }
 
+// El `[]` de esta lectura no es un hueco mudo: la pantalla lo pinta como «Lista negra vacía ·
+// Los no-shows y rechazos de Bizum se añaden aquí automáticamente», o sea una afirmación de
+// que el mecanismo funciona y no ha atrapado a nadie. Y Telegram contesta «La lista negra está
+// vacía». Un fallo de lectura no puede decir ninguna de las dos cosas: es la capacidad que se
+// abre el día del acosador (10/08/2026), y ese día llegar a creer que no hay nadie bloqueado
+// es peor que no poder mirar.
+//
+// CUIDADO al añadir call sites: esto LANZA. El de Telegram (`list_blacklist`) cuelga de un
+// `bot.on('message')` sin try/catch y por eso `ejecutarAccionSegura` lo envuelve.
 async function getBlacklist(orgId) {
     const oid = resolveOrg(orgId);
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from('contacts')
         .select('*')
         .eq('organization_id', oid)
         .eq('is_blacklisted', true)
         .order('updated_at', { ascending: false });
+    assertRead(error, 'contacts');
     return (data || []).map(rowToPublic);
 }
 

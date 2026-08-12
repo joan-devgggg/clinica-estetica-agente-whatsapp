@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Cliente } from "@/lib/types";
-import { API, apiHeaders, apiMutate } from "@/lib/api";
+import { API, apiHeaders, apiMutate, mensajeDeFallo, mensajeDeError } from "@/lib/api";
 import { useOrg } from "@/lib/org-context";
 
 function getInitials(nombre: string) {
@@ -37,6 +37,12 @@ export default function ListaNegraPage() {
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<Cliente[]>([]);
   const [searching, setSearching] = useState(false);
+  // Un fallo de lectura NO se pinta como lista vacía. Hasta el 12/08/2026 el catch hacía
+  // `setItems([])` y la pantalla contestaba «Lista negra vacía · Los no-shows y rechazos de
+  // Bizum se añaden aquí automáticamente»: no un hueco mudo, sino la afirmación de que el
+  // mecanismo funciona y no ha atrapado a nadie. Es la pantalla que se abre el día del
+  // acosador, y ese día creer que no hay nadie bloqueado es peor que no poder mirar.
+  const [error, setError] = useState<string | null>(null);
   const supabase = createClient();
   const { orgId } = useOrg();
 
@@ -44,10 +50,11 @@ export default function ListaNegraPage() {
     setLoading(true);
     try {
       const res = await fetch(`${API}/api/lista-negra`, { headers: await apiHeaders(orgId) });
-      if (!res.ok) throw new Error("API no disponible");
+      if (!res.ok) throw new Error(mensajeDeFallo(res.status));
       setItems(await res.json());
-    } catch {
-      setItems([]);
+      setError(null);
+    } catch (e) {
+      setError(mensajeDeError(e));
     } finally {
       setLoading(false);
     }
@@ -74,8 +81,12 @@ export default function ListaNegraPage() {
       if (!res.ok) throw new Error("API no disponible");
       const data: Cliente[] = await res.json();
       setResults(data.filter((c) => !c.is_blacklisted));
-    } catch {
+    } catch (e) {
+      // Cero resultados y «no se pudo buscar» se veían igual, y no significan lo mismo: aquí
+      // se está buscando a alguien PARA bloquearlo, así que leer «no está en el sistema»
+      // cuando lo que pasó es que falló la consulta se acaba en irse sin bloquear.
       setResults([]);
+      toast.error(mensajeDeError(e));
     } finally {
       setSearching(false);
     }
@@ -161,12 +172,21 @@ export default function ListaNegraPage() {
             </CardContent>
           </Card>
 
-          {/* Listado */}
+          {error && (
+            <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-[13px] text-destructive">
+              No se ha podido cargar la lista negra. {error}
+            </div>
+          )}
+
+          {/* Listado. Con error NO se pinta el estado vacío: «Lista negra vacía» junto al aviso
+              rojo dejaría al lector decidiendo si no hay nadie bloqueado o si no se ha podido
+              mirar, y eso es justo lo que no puede quedar a interpretación. Mismo criterio que
+              /caja. */}
           {loading ? (
             <div className="space-y-3">
               {[...Array(3)].map((_, i) => <Skeleton key={i} className="h-16 w-full rounded-lg" />)}
             </div>
-          ) : items.length === 0 ? (
+          ) : error ? null : items.length === 0 ? (
             <div className="flex flex-col items-center gap-3 py-16 text-center">
               <Ban size={36} strokeWidth={1.25} className="text-muted-foreground/40" />
               <p className="font-heading text-[16px] font-semibold text-foreground/60">
