@@ -1,9 +1,38 @@
 # Auditoría «afirmar sin verificar» — Caja, cierres, PIN, cobros y lista negra
 
-**Fecha:** 12/08/2026 · **Alcance:** SOLO informe, nada arreglado en esta pasada.
+**Fecha:** 12/08/2026 · **Alcance original:** solo informe.
 **Motivo:** es el código escrito entre el 05 y el 11/08/2026 y no ha pasado por ninguna
 auditoría de la familia (las dos anteriores son del 29-30/07 y del 05-06/08, y las dos son
 anteriores a las migraciones 035-039).
+
+**Estado a 12/08/2026, madrugada: los seis arreglados**, más el hallazgo de fuera de alcance
+que salió por el camino. Cada uno con su test visto fallar antes.
+
+| | Hallazgo | Commit |
+|---|---|---|
+| 🔴 1+2 | `getBlacklist` y la pantalla, que decían «lista negra vacía» | `859a818` |
+| 🟠 3 | El aviso marcado antes de que Telegram entregue | `ce7375c` |
+| 🟠 4 | `getPendingActions` · `resolvePendingAction` mudas | `41f22d6` · `48d0425` |
+| 🟡 5 | `clearStylistPin` sin comprobar filas | `dc17678` |
+| 🟡 6 | El no-show del panel sin aislar `setBlacklist` | `1185015` |
+| — | Los `console.log('[DEBUG…')` | `cbf5276` |
+| ⚠️ fuera de alcance | `getBroadcastAudience`, antes de la tanda 2 | `64251da` |
+
+Tres cosas que aparecieron al arreglar, y que no estaban en el informe:
+
+- **`ejecutarAccion` (Telegram) nunca tuvo try/catch**, y `setBlacklist`/`setVip`/
+  `setConfigValue` lanzan desde julio: un bloqueo fallido desde Telegram ya tumbaba el
+  proceso —el bot de las DOS orgs— antes de esta auditoría. Cerrado en `859a818`.
+- **El hallazgo 3 necesitaba DOS banderas**, no una. Ver el commit: con una sola no se puede
+  reintentar el aviso sin repetir el INSERT de `pending_actions`, que no es idempotente.
+- **`resolvePendingAction` con CERO filas no es un fallo** y estuve a punto de tratarlo como
+  tal: el bizum ya se confirmó antes (`resolveBizumResult`) y solo se perdió la carrera de
+  cerrar la fila. Lo que sí es mentira es decirlo cuando la BD rechaza el UPDATE.
+
+**Queda uno vivo, deliberadamente**: `getVipList` (`db.js`) tiene el mismo agujero que
+`getBlacklist` y no se ha tocado por no ampliar el encargo. Consecuencia menor —una lista VIP
+vacía no promete nada operativo, y su `list_vip` de Telegram ya está cubierto por
+`ejecutarAccionSegura`—, pero es la línea de al lado y el mismo patrón.
 
 Superficie recorrida, entera y línea a línea:
 
@@ -207,11 +236,22 @@ una campaña que informa de cero destinatarios **y cero excluidos** — que es e
 forma que tiene esa función de decir «no hay nadie a quien escribir», sin ningún excluido que
 haga sospechar. Con una campaña por tandas en curso, conviene mirarlo antes de la tanda 2.
 
-## Orden que se propone
+## Orden que se siguió
 
-1. Hallazgos 1 y 2 juntos: son la misma pantalla y ninguno de los dos arreglos basta solo.
-2. Hallazgo 4 (`getPendingActions` + `resolvePendingAction`): toca el camino del desbloqueo, y
-   `getPendingActions` tiene además otros cuatro call sites.
-3. Hallazgo 3: es el que más piensa que cuesta (¿`alertOnce`, o que `notifyBlacklistAlert`
-   devuelva si entregó, o ampliar el desempate del rearme?). No es una línea.
-4. Hallazgos 5 y 6, de paso, con su test cada uno.
+El propuesto, y se sostuvo: 1+2 juntos (misma pantalla, ninguno basta solo) → 3 → 4 → 5 y 6.
+La previsión de que el 3 sería «el que más piensa que cuesta» se cumplió: no salió por
+`alertOnce` —el aviso lleva botones y `notifyOrgAdmin` no los pasa— sino haciendo que
+`notifyBlacklistAlert` devuelva si entregó y separando la bandera en dos.
+
+## La lección, que es la misma tres veces
+
+**Hacer lanzar una función obliga a mirar todos sus call sites, y en este repo hay dos que no
+perdonan**: `bot.on('message')` y `bot.on('callback_query')` de `telegram.js` no tienen
+try/catch, así que cualquier throw sale como rechazo sin manejar y en Node moderno se lleva el
+proceso —el bot de las dos orgs— por delante. Pasó con `getPendingActions`, con `getBlacklist`
+y con `resolvePendingAction`, las tres en la misma sesión.
+
+De ahí los dos envoltorios que ahora existen y que hay que usar: `ejecutarAccionSegura` y
+`tryResolvePendingReply` (que envuelve a `…Interno`). **Si se añade un camino nuevo a Telegram,
+va por uno de los dos.** Es la lección de `setConfigValue`/`setBotActivo` del 06/08, y ha vuelto
+tres veces en un día.
