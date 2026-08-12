@@ -172,6 +172,41 @@ Las cinco protecciones probadas por mutación.
 
 **La resolución de proveedor saliente es única**: `services/outbound.js` → `resolveOutboundClient(orgId, fallback)`, que enruta por `getOrgChannel` (registry), no por `SANTE_360_API_KEY`. La usan el panel (`webhook.js` → `getOutboundClient`) y los dos workers.
 
+## El texto de un hueco va en el idioma de la clienta (`formatSlotTexto`)
+
+Causa 3 de la auditoría del 11/08/2026 (`9253b81`). Hasta entonces `addSlot` fabricaba
+`slot.texto` con un `toLocaleDateString('es-ES')` a secas, y Nora Benedikte (10/08, ficha en
+inglés y `'observed'`) recibió cinco veces «El jueves, 13 de agosto a las 10:00 con Irina» en
+una conversación entera en inglés — justo en el momento en que se decide si se reserva.
+
+Las dos trampas que no hay que reabrir:
+
+- **El texto se fabrica UNA vez, en el origen, y lo recitan DOS caminos**: el prompt del
+  modelo —cuya REGLA DÍA DE SEMANA le prohíbe recalcularlo *y traducirlo*— y los mensajes
+  deterministas de `bot.js` (`salonOfferSlotsMsg` y la alternativa de «ese día no tengo
+  hueco»). Traducirlo en el punto de salida arreglaría uno y dejaría al otro copiando
+  castellano. Por eso el idioma viaja como `lang` hasta `getAvailableSlots`
+  (`session.language || null`, también en `reloadSlotsForConfirmation`) y el sustantivo
+  («hueco» / «availability») lo pone la frase que envuelve, nunca el hueco.
+- **La tabla de días es la de `formatReminderWhen`, y no se duplica jamás.**
+  `formatSlotTexto` solo añade dos palabras propias: el prefijo de la hora y el conector de
+  la estilista. El recordatorio y la oferta de huecos le dicen el día a la MISMA clienta; con
+  dos tablas se separarían en el primer retoque y el mismo miércoles saldría de dos formas
+  sin que nadie se enterase. Es el motivo por el que `formatReminderWhen` es una función
+  (acusativo ruso/ucraniano), heredado entero.
+
+El resto, ya decidido: el nombre de la estilista va TAL CUAL está en la BD (declinarlo, «с
+Ириной», sería inventarle grafía a un dato que edita la dueña); idioma nulo o desconocido cae
+a castellano con el MISMO criterio que `formatReminderWhen`; y una fecha ilegible devuelve
+`null`, con `addSlot` degradando al texto castellano de siempre en vez de dejar el hueco mudo
+(regla 3).
+
+Red: `tests/slot-texto-idioma.test.js` — la contención contra `formatReminderWhen` los siete
+días × cuatro idiomas, los 28 literales a mano, y `addSlot` de verdad vía `_internals`.
+Probado con dos mutaciones: quitarle a `addSlot` la llamada tumba 2 bloques, y darle a
+`formatSlotTexto` una tabla de días propia tumba 12 — lo segundo es lo que demuestra que
+protege la contención, no el vocabulario.
+
 ## Campaña por tandas: el allowlist se recalcula, la exclusión se guarda
 
 Una campaña que va por tandas (`campaignKey` fija, `limit` por tanda) y que deja fuera a un
@@ -489,6 +524,27 @@ Y el resto en corto:
   sesión muerto en la ruta real (`flushBuffer` pasa `messageKey = null`; toda la protección
   es `buffer.seenKeys`); y `sinServicioStreak` no viaja en `buildSessionExtra` (el nivel
   «ofrecer una persona» es inalcanzable si la conversación cruza un timeout).
+
+## Los typos de un servicio van ENUMERADOS, nunca con corrector difuso
+
+Causa 5 de la misma auditoría (`016b4d9`). La errata más común del servicio más vendido
+devolvía null: Nora escribió «bayalage» tres veces el 10/08 —«im thinking bayalage», «I want a
+bayalage», «blonde bayalage»— y el servicio no aterrizó ninguna. Tres turnos de fricción con
+la clienta repitiendo lo que quería; lo peor lo evitó la guarda de Michal
+(`proposesTimingWithoutService`): sin servicio resuelto el bot no llegó a inventar horas.
+`largoKeywords` (`detectLargoCategory`, helpers.js) lleva ahora `balayage`, `balaiage`,
+`valayage` (escenario 3) y `bayalage`, `baleage`, `balyage`.
+
+**El criterio de admisión es que cada typo lo haya escrito alguien de verdad**, y la trampa
+que no hay que reabrir es sustituir la lista por un corrector difuso. Parece la generalización
+obvia y es lo contrario: `largoKeywords` no es un diccionario de servicios, es una lista con
+criterio —**que nadie la diga de pasada**—, y un fuzzy no sabe distinguir una errata de una
+palabra vecina dicha al pasar. Justo eso deja fuera a `blonde` a secas («I'm blonde and I want
+a haircut» es una descripción, no un servicio), con su test de falso positivo: un umbral
+difuso lo readmitiría sin que ningún test de erratas se enterase. La lección de siempre, otra
+vez: una red demasiado ancha no sobra un mensaje, pierde el bueno.
+
+Red: `tests/balayage-resuelve.test.js`, con el primer mensaje literal de Nora.
 
 ## Bloquear agenda: `schedule_blocks`, nunca una cita con clienta inventada
 
