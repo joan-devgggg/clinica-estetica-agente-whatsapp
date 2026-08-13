@@ -30,6 +30,7 @@ const supabase = require('../services/supabase');
 const { deleteClient } = require('../services/memory');
 const { SANTE_ORG_ID: ORG } = require('../services/org-registry');
 const { TEST_PHONE_PREFIX } = require('../services/helpers');
+const helpers = require('../services/helpers');
 const { Convo: BaseConvo, sleep } = require('./lib/convo');
 
 bot.setBotActivo(ORG, true, false);
@@ -673,6 +674,53 @@ async function turno(c, texto) {
         await turno(c, 'hola');
         const r = await turno(c, 'cuanto cuesta alquilar un piso en alicante');
         rec(r.vacio ? 'SILENCIO' : (r.generico ? 'DEGRADADO' : 'OK'), r.txt.slice(0, 80));
+    });
+
+    // ─── 24 · «Somos dos» (Mariola Mira Lopez, 12/08/2026) ────────────────────────────
+    // Pidió cita «para mí y una amiga», lo repitió tres veces, y el bot lo leyó como DOS
+    // SERVICIOS para una sola persona hasta preguntarle «¿cuál queréis primero?».
+    //
+    // Se afirma el ESTADO, y aquí eso vale doble: el gate es determinista y pre-LLM, así que
+    // lo que este escenario prueba de verdad —y que ningún test unitario puede probar— es
+    // que está CABLEADO dentro del handleIncomingMessage real, no solo que la función existe.
+    await escenario('Cita para dos personas ("para mí y una amiga")', async (c, rec) => {
+        await turno(c, 'hola');
+        const r = await turno(c, 'quiero saber si teneis citas disponibles para mi y una amiga');
+        if (r.vacio) return rec('SILENCIO', 'se calló al decir que son dos');
+        const s = bot._internals.getSession(ORG, c.phone) || {};
+        if (!s.variasPersonas) return rec('DEGRADADO', `no marcó variasPersonas · "${r.txt.slice(0, 60)}"`);
+        if (!s.pendingEscalation) return rec('DEGRADADO', 'marcó las dos personas pero no ofreció una persona');
+        rec('OK', `variasPersonas + traspaso ofrecido · "${r.txt.slice(0, 55)}"`);
+    });
+
+    // ─── 25 · El precio que dice la clienta ───────────────────────────────────────────
+    // «El masaje capilar el de 60 euros» → «Perfecto, el Spa Hair Detox de 60 minutos» (su
+    // cifra, con otra unidad) y un turno después «cuesta 115€», sin decirle nunca que a 60 €
+    // no hay ningún masaje.
+    //
+    // EXCEPCIÓN DELIBERADA: este check mide el TEXTO, igual que el de avería. No es una
+    // medida de redacción — es de qué NÚMEROS salen. Si el mensaje afirma un precio, tiene
+    // que aparecer también el que ella dijo; si no, la clienta se está llevando una cifra
+    // que no es la suya sin que nadie se lo señale, que es exactamente el daño. La prosa que
+    // envuelva esos números da igual y no se mira.
+    //
+    // ES UN VIGÍA, NO UNA PRUEBA, y por eso clasifica DEGRADADO y no BUG. Medido el
+    // 13/08/2026: con la red de precio APAGADA este escenario salió igualmente en verde
+    // —el modelo nombró los 60 € él solo esa corrida—, así que no cumple la regla del BUG
+    // («tiene que fallar SIN el arreglo y pasar CON él»). El invariante que mide es real y
+    // vale la pena vigilarlo entre corridas, pero quien PRUEBA la red es
+    // tests/precio-sin-respaldo.test.js, que es determinista y sí se cae con sus dos
+    // mutaciones. Aquí el fallo de Mariola era intermitente, y un vigía intermitente no se
+    // puede disfrazar de demostración.
+    await escenario('Precio que la clienta dice y no existe ("el de 60 euros")', async (c, rec) => {
+        await turno(c, 'hola');
+        const r = await turno(c, 'El masaje capilar el de 60 euros');
+        if (r.vacio) return rec('SILENCIO', 'se calló al mencionar el precio');
+        const dichos = helpers.extractPrecioMencionado(r.txt);
+        if (dichos.length && !dichos.includes(60)) {
+            return rec('DEGRADADO', `afirma ${dichos.join('/')} € y no menciona los 60 € que pidió · "${r.txt.slice(0, 70)}"`);
+        }
+        rec('OK', dichos.length ? `nombra los 60 € (${dichos.join('/')})` : 'no afirma ningún precio');
     });
 
     restore();
