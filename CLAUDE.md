@@ -80,13 +80,29 @@ castellano, y el worker de reseñas mandó cuatro con la versión antigua.* Y un
 lo mismo sin comitear: *`7f53ecf` (04/08) arregla un `npm test` que fallaba en un clon limpio
 porque la heurística de idioma solo existía en la working copy de quien la escribió.*
 
-**10. Todo lo que el dueño va a copiar va en UN solo bloque de código, y sin texto fuera.**
-Planes, resúmenes, informes, listas de pasos, mensajes para otra herramienta: un único bloque
-markdown, con todo dentro —encabezados y viñetas incluidos— y ni una línea de prosa antes o
-después. *El destino es el móvil: allí un bloque de código se copia de un toque, mientras que
-seleccionar a mano tres trozos de texto suelto cuesta más que el trabajo que se está pasando.*
-Si el contenido lleva a su vez bloques de código, el de fuera se abre con más backticks
-(````) para que los de dentro no lo cierren.
+**10. TODA respuesta va en UN solo bloque de código, y sin una línea de texto fuera.**
+No solo los planes, resúmenes, informes, listas de pasos o mensajes para otra herramienta:
+**cualquier** respuesta —un aviso, una pregunta, un «hecho», dos frases sueltas— va dentro de
+un único bloque markdown, con todo dentro (encabezados y viñetas incluidos) y ni una línea de
+prosa antes o después. *El destino es el móvil: allí un bloque de código se copia de un toque,
+mientras que seleccionar a mano tres trozos de texto suelto cuesta más que el trabajo que se
+está pasando.* Si el contenido lleva a su vez bloques de código, el de fuera se abre con más
+backticks (````) para que los de dentro no lo cierren.
+
+**Y las TABLAS, que es por donde se colaba.** La app del móvil renderiza una tabla markdown
+como elemento APARTE, con su propio botón de copiar: aunque el resto de la respuesta vaya en
+un bloque, la tabla hay que copiarla por separado. O sea que una tabla fuera del bloque rompe
+la regla igual que un párrafo suelto, aunque «visualmente» parezca que está dentro de la
+respuesta. *Pasó con el brief del enlace.*
+
+- **NUNCA una tabla markdown fuera del bloque. Ninguna.**
+- Si hace falta una tabla, va **DENTRO** del bloque, en **texto plano alineado con espacios**
+  — nada de `|---|---|`.
+- Lo mismo para cualquier otra cosa que la app renderice aparte: bloques de código sueltos,
+  citas (`>`), listas de tareas. Todo dentro del único bloque.
+
+**La regla en una frase: si al mirar la pantalla del móvil se ve más de un botón de copiar,
+está mal.**
 
 ## Organizaciones activas
 
