@@ -1556,11 +1556,88 @@ function detectGuestBooking(text) {
         'para mi hermana', 'para mi hermano', 'para mi pareja', 'para mi marido',
         'para mi mujer', 'para mi novia', 'para mi novio', 'para mi prima', 'para mi primo',
         'para otra persona', 'para una persona', 'es para otra', 'no es para mi',
+        // La conjunción, que costó la conversación de Mariola (12/08/2026): la lista tenía
+        // 'para mi amiga' y 'para una amiga', y ella escribió «para mí Y una amiga» — se
+        // escapaba por UNA palabra. Mismo criterio de admisión (nadie lo dice de pasada).
+        'para mi y una amiga', 'para mi y un amigo', 'para mi y mi',
+        'mi amiga y yo', 'una amiga y yo', 'mi amigo y yo',
         'for a friend', 'for my friend', 'for my mother', 'for my sister', 'for my daughter',
-        'for someone', 'for another person',
+        'for someone', 'for another person', 'me and a friend', 'my friend and i',
         'для друга', 'для подруги', 'для мамы', 'для сестры',
     ];
     return markers.some(p => t.includes(normalizeText(p)));
+}
+
+// ─── «Somos dos»: la cita es para MÁS DE UNA persona ─────────────────────────
+//
+// Distinto de detectGuestBooking, y esa diferencia es todo el motivo de que sea otra
+// función: guestBooking dice «esta cita es para OTRA» (la clienta ya tiene la suya y pide
+// una más), y esto dice «somos DOS» desde el principio. No son el mismo hecho y no se
+// resuelven igual.
+//
+// Nace de la conversación de Mariola Mira Lopez (12/08/2026): pidió cita «para mí y una
+// amiga», lo repitió tres veces, y el bot lo leyó como DOS SERVICIOS para una sola persona
+// hasta preguntarle «¿cuál queréis primero, el Spa Hair Detox o la Reconstrucción Pro
+// Miracle?». El LLM sí lo había entendido —lo dijo dos veces con sus palabras—, pero no
+// había dónde guardarlo: el esquema `datos` del salón no tiene campo para personas, así que
+// la comprensión se evaporaba cada turno. Y detectGuestBooking fallaba por partida doble:
+// (a) no casa «para mí Y una amiga», que se le escapa por una palabra, y (b) solo se
+// consulta con una cita YA confirmada (bot.js), o sea nunca en el primer mensaje.
+//
+// CRITERIO DE ADMISIÓN, el mismo que largoKeywords: que nadie lo diga de pasada. Nada de
+// corrector difuso — es la lección de `bayalage`: una lista con criterio no se sustituye por
+// un umbral, porque un umbral no sabe distinguir una forma de decir «somos dos» de una
+// palabra vecina dicha al pasar.
+//
+// ⚠️ «LAS DOS» ES UNA HORA, y por eso no está aquí en NINGUNA de sus formas.
+// «a las dos», «las dos y media», «¿puedes para las dos?» son las 14:00. Ni siquiera «para
+// las dos» se salva: en castellano vale igual para dos personas que para las dos en punto y
+// no hay forma de deducir cuál — Mariola lo usó con el primer sentido, pero media clientela
+// lo usa con el segundo. Se deja FUERA a propósito, con el mismo criterio que el sujetador
+// en extractLargoPelo: en la raya no se adivina. Aquí preguntar es gratis, mientras que leer
+// una hora como dos personas manda un traspaso al salón por una cita perfectamente normal.
+// Mariola queda cubierta igual por su PRIMER mensaje, que sí es inequívoco, y la marca es
+// pegajosa en la sesión: basta con acertar una vez.
+const VARIAS_PERSONAS_FRASES = [
+    // es — la cantidad, dicha de frente
+    'somos dos', 'somos 2', 'seriamos dos', 'seremos dos', 'somos dos personas',
+    'venimos dos', 'vendriamos dos', 'iriamos dos', 'iremos dos',
+    'para dos personas', 'para 2 personas', 'cita para dos', 'citas para dos',
+    'una para cada una', 'una cita para cada una', 'cita para cada una',
+    // es — la pareja, nombrada
+    'las dos juntas', 'venimos las dos', 'vamos las dos', 'iriamos las dos',
+    'vendriamos las dos', 'para mi y para',
+    // en
+    'we are two', 'we are 2', 'there are two of us', 'for two people',
+    'for both of us', 'both of us', 'me and a friend', 'me and my friend',
+    'my friend and i', 'a friend and i', 'two appointments',
+];
+// ru/uk por buildCyrillicRe: \b es ASCII y normalizeText descompone й/ё/ї, así que un
+// patrón cirílico escrito a mano no casaría nunca. Y las dos lenguas van con entradas
+// SEPARADAS aunque se parezcan a la vista — «на двоих» (ru, и) y «на двох» (uk, х) son
+// palabras distintas, la lección de «до талии» / «до талії».
+const VARIAS_PERSONAS_RE_CIRILICO = buildCyrillicRe([
+    // ru
+    'нас двое', 'для двоих', 'на двоих', 'мы вдвоем', 'вдвоем', 'я и подруга',
+    'я с подругой', 'две записи',
+    // uk
+    'нас двоє', 'для двох', 'на двох', 'ми вдвох', 'вдвох', 'я і подруга',
+    'я з подругою', 'два записи',
+]);
+// «para mí y una amiga», «para mí y mi madre»: la conjunción que se le escapa a
+// detectGuestBooking, que solo tiene la forma sin ella.
+const VARIAS_PERSONAS_RE_CONMIGO = /para mi y (?:una?|mi|el|la)\s/;
+// La misma pareja dicha al revés: «mi amiga y yo», «una amiga y yo».
+const VARIAS_PERSONAS_RE_Y_YO = /\b(?:mi|una?)\s+\p{L}+\s+y\s+yo\b/u;
+
+function detectVariasPersonas(text) {
+    const t = normalizeText(text);
+    if (!t) return false;
+    if (VARIAS_PERSONAS_FRASES.some(p => t.includes(normalizeText(p)))) return true;
+    if (VARIAS_PERSONAS_RE_CIRILICO.test(t)) return true;
+    if (VARIAS_PERSONAS_RE_CONMIGO.test(t)) return true;
+    if (VARIAS_PERSONAS_RE_Y_YO.test(t)) return true;
+    return false;
 }
 
 // La clienta pide OTRA cita. Solo debe consultarse cuando ya hay una confirmada en sesión.
@@ -4411,6 +4488,7 @@ module.exports = {
     wantsAnotherBooking,
     wantsRestart,
     detectGuestBooking,
+    detectVariasPersonas,
     extractGuestName,
     matchUpsellSuggestion,
     matchUpsellRule,

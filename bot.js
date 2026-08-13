@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, detectHoraFueraDeHorario, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, detectHoraFueraDeHorario, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -271,6 +271,9 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         // Segunda reserva en la misma conversación (para un acompañante)
         guestBooking: false,
         guestName: null,
+        // «Somos dos»: la petición es para más de una persona, y si ya se dijo.
+        variasPersonas: false,
+        variasPersonasAvisado: false,
         // Segunda reserva: categoría pedida sin resolver aún y ancla temporal respecto a
         // la cita ya reservada ("un masaje ANTES de la pedicura").
         pendingServiceCategory: null,
@@ -698,6 +701,10 @@ function buildSessionExtra(session) {
         lastUpsellSuggestion: session._lastUpsellSuggestion || null,
         pendingEscalation: !!session.pendingEscalation,
         pendingEscalationService: session.pendingEscalationService || null,
+        // «Somos dos»: la marca y su aviso. Sin viajar aquí, una conversación que cruce un
+        // timeout vuelve a leerse como de una sola persona y el párrafo se repite.
+        variasPersonas:    !!session.variasPersonas,
+        variasPersonasAvisado: !!session.variasPersonasAvisado,
         proposedSlots: Array.isArray(session.proposedSlots) ? session.proposedSlots : [],
         spaPromoOffered:   !!session.spaPromoOffered,
         spaPromoNote:      session.spaPromoNote || null,
@@ -1883,6 +1890,57 @@ function salonOfferHumanMsg(session) {
             + 'Хотите, я свяжу Вас с одной из наших специалисток?',
         uk: 'Вибачте, я ніяк не можу Вас зрозуміти і не хочу забирати Ваш час 🙏 '
             + 'Хочете, я з\'єднаю Вас з однією з наших спеціалісток?',
+    };
+    return porTrato(session, msgs, msgsFormal);
+}
+
+// «Somos dos». Lo que el sistema NO sabe hacer, dicho sin rodeos y con la pregunta de la
+// espera contestada. Conversación de Mariola Mira Lopez (12/08/2026): el bot le dijo
+// «podemos agendar para las dos», montó una elección falsa («¿cuál queréis primero?») y
+// dejó sin contestar dos veces la única pregunta que ella hizo — si una espera fuera
+// mientras la otra termina.
+//
+// Tres decisiones que son el mensaje, no un detalle de redacción:
+//
+//  1) **Una cita por persona, dicho antes que nada.** Es el hecho estructural: el motor
+//     guarda UNA cita por turno y `db.saveAppointment` rechaza dos del mismo contacto a la
+//     misma hora. Prometer otra cosa es la mentira que costó esta conversación.
+//  2) **NO se promete el horario.** «A la vez o una detrás de otra» es cierto y es lo único
+//     afirmable: depende del servicio y de cuántas estilistas tengan esa skill (el motor,
+//     además, ni siquiera puede ver si hay dos libres a la misma hora — el dedupe por
+//     fecha-hora las tira). Quien lo sabe es el salón. Regla 3: lo que no se resuelve no se
+//     inventa, se dice y se pasa.
+//  3) **OFRECE y espera el «sí»**, con `pendingEscalation` armado a mano igual que
+//     `salonOfferHumanMsg` y por el mismo motivo: `offersHumanHandover` solo reconoce el
+//     castellano, y para una clienta rusa la oferta se quedaría colgando.
+function salonVariasPersonasMsg(session) {
+    session.pendingEscalation = true;
+    session.pendingEscalationService = 'varias_personas';
+    const msgs = {
+        es: 'Para dos personas hace falta una cita por cada una 😊 Y según el servicio os '
+            + 'puede tocar a la vez o una detrás de otra: eso te lo confirma el salón. '
+            + '¿Quieres que te ponga en contacto con una de nuestras especialistas para cuadrároslas?',
+        en: 'For two people we need a separate appointment for each 😊 And depending on the '
+            + 'service you might be seen at the same time or one after the other — the salon '
+            + 'confirms that. Would you like me to put you in touch with one of our specialists '
+            + 'to arrange both?',
+        ru: 'На двоих нужна отдельная запись для каждой 😊 И в зависимости от услуги вас могут '
+            + 'принять одновременно или одну за другой — это подтверждает салон. Хочешь, я свяжу '
+            + 'тебя с одной из наших специалисток, чтобы всё согласовать?',
+        uk: 'На двох потрібен окремий запис для кожної 😊 І залежно від послуги вас можуть '
+            + 'прийняти одночасно або одну за одною — це підтверджує салон. Хочеш, я з\'єднаю '
+            + 'тебе з однією з наших спеціалісток, щоб усе узгодити?',
+    };
+    const msgsFormal = {
+        es: 'Para dos personas hace falta una cita por cada una 😊 Y según el servicio les '
+            + 'puede tocar a la vez o una detrás de otra: eso se lo confirma el salón. '
+            + '¿Quiere que le ponga en contacto con una de nuestras especialistas para cuadrárselas?',
+        ru: 'На двоих нужна отдельная запись для каждой 😊 И в зависимости от услуги вас могут '
+            + 'принять одновременно или одну за другой — это подтверждает салон. Хотите, я свяжу '
+            + 'Вас с одной из наших специалисток, чтобы всё согласовать?',
+        uk: 'На двох потрібен окремий запис для кожної 😊 І залежно від послуги вас можуть '
+            + 'прийняти одночасно або одну за одною — це підтверджує салон. Хочете, я з\'єднаю '
+            + 'Вас з однією з наших спеціалісток, щоб усе узгодити?',
     };
     return porTrato(session, msgs, msgsFormal);
 }
@@ -3682,6 +3740,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession._lastUpsellSuggestion = ex.lastUpsellSuggestion || null;
                     newSession.pendingEscalation     = !!ex.pendingEscalation;
                     newSession.pendingEscalationService = ex.pendingEscalationService || null;
+                    newSession.variasPersonas        = !!ex.variasPersonas;
+                    newSession.variasPersonasAvisado = !!ex.variasPersonasAvisado;
                     newSession.tratamiento           = ex.tratamiento || null;
                     newSession.proposedSlots         = Array.isArray(ex.proposedSlots) ? ex.proposedSlots : [];
                     newSession.spaPromoOffered       = !!ex.spaPromoOffered;
@@ -4419,6 +4479,33 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 persistSession(orgId, userPhone, session);
                 return;
             }
+        }
+
+        // ─── Salon: la cita es para MÁS DE UNA persona ───────────────────
+        // Mariola Mira Lopez (12/08/2026) lo dijo tres veces («para mí y una amiga»,
+        // «sería para las dos») y el bot lo leyó como DOS SERVICIOS para una sola persona.
+        //
+        // Determinista y ANTES del LLM, por el mismo motivo que detectHoraFueraDeHorario:
+        // es un hecho de la petición, no una opinión del modelo. Y sobre todo, **sin el gate
+        // de `reservaConfirmada`**: toda la maquinaria de acompañante que ya existe
+        // (detectGuestBooking, resetForSecondBooking) vive dentro de
+        // `if (session.reservaConfirmada)`, o sea que en el primer mensaje de una
+        // conversación no la mira nadie. Ese gate es justo lo que dejó este caso sin camino.
+        //
+        // La marca es PEGAJOSA y el aviso va UNA vez: acertar una sola vez basta, y repetir
+        // el párrafo en cada turno es el bucle que ya arrastró el menú de rescate de Olga.
+        // Las dos viajan en buildSessionExtra — sin eso se pierden en la primera
+        // rehidratación, que es la lección de session.tratamiento y de session.leadId.
+        if (orgType === 'salon' && !session.reservaConfirmada && !session.variasPersonasAvisado
+            && detectVariasPersonas(sanitized)) {
+            session.variasPersonas = true;
+            session.variasPersonasAvisado = true;
+            const msg = salonVariasPersonasMsg(session);
+            logger.info('varias_personas_detectado', { orgId, telefono: userPhone });
+            session.history.push({ role: 'assistant', content: msg, ts: Date.now() });
+            await _send(msg);
+            persistSession(orgId, userPhone, session);
+            return;
         }
 
         // ─── Salon: pide una hora a la que el salón no abre ──────────────
@@ -6572,7 +6659,7 @@ module.exports = {
     extractSentMessageId,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
-        respondsWithInventedSlots, respondsWithInventedDates, proposesTimingWithoutService, soloDeclaraHorarioDelSalon, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
+        respondsWithInventedSlots, respondsWithInventedDates, proposesTimingWithoutService, soloDeclaraHorarioDelSalon, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonVariasPersonasMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover, offersHumanHandover, ensureHandoverAcknowledged, HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, porTrato,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:
