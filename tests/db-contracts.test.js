@@ -36,6 +36,10 @@ function makeSupabaseMock() {
             gte(k, v) { state.filters.push(['gte', k, v]); return b; },
             lte(k, v) { state.filters.push(['lte', k, v]); return b; },
             order() { return b; },
+            // `.limit()` lo usa la guarda de duplicado de saveAppointment. Sin él aquí, esa
+            // cadena revienta con "limit is not a function" el día que un test la recorra —
+            // y hoy no la recorre ninguno, así que no lo avisaría nadie.
+            limit() { return b; },
             single() { return resolve(); },
             maybeSingle() { return resolve(); },
             then(onF, onR) { return resolve().then(onF, onR); },

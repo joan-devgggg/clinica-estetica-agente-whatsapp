@@ -1265,20 +1265,51 @@ async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duraci
     // (no cancelada) para este contacto a la MISMA hora de inicio, devolvemos la existente
     // en vez de insertar un duplicado. Backstop a nivel de datos contra cualquier reintento,
     // race o red de seguridad que intente reservar el mismo hueco más de una vez.
+    //
+    // OJO CON EL ALCANCE, que es más estrecho de lo que parece: la clave es
+    // (org, contact, starts_at) y NO mira estilista ni servicio, así que esto protege de un
+    // REINTENTO de la misma clienta y de nada más. Dos clientas distintas pidiendo la misma
+    // hora a la misma estilista pasan las dos. Y es un SELECT seguido de un INSERT, sin
+    // ningún UNIQUE detrás en la tabla (verificado el 13/08/2026 contra pg_indexes:
+    // appointments no tiene ni un índice único aparte de la PK), o sea que dos peticiones
+    // simultáneas leen las dos vacío e insertan las dos. La exclusión de verdad —el molde de
+    // broadcast_sends y seguimientos: índice único + INSERT como claim— está pendiente y
+    // necesita migración.
     {
-        const { data: existing, error: errExisting } = await supabase
+        // `.limit(1)` y no `.maybeSingle()`: si por cualquier vía anterior ya hay DOS filas
+        // activas con este (contacto, hora), maybeSingle devuelve error, assertRead lanza y
+        // ese hueco queda roto PARA SIEMPRE para esa clienta — recibe "no he podido fijar ese
+        // hueco" en cada intento. Con limit(1) se coge la que hay y se sigue: el duplicado
+        // preexistente es un problema de datos, no una razón para tirar la reserva.
+        const { data: existentes, error: errExisting } = await supabase
             .from('appointments')
             .select('*')
             .eq('organization_id', oid)
             .eq('contact_id', contactId)
             .eq('starts_at', startsAt.toISOString())
             .neq('status', 'cancelled')
-            .maybeSingle();
+            .order('created_at', { ascending: true })
+            .limit(1);
         // Si esta lectura falla en silencio damos por buena una agenda vacía y creamos el
         // duplicado que la guarda existe justamente para evitar. Mejor lanzar y reintentar.
         assertRead(errExisting, 'appointments');
+        const existing = existentes?.[0] || null;
         if (existing) {
-            console.warn('[saveAppointment] cita duplicada evitada (ya existe activa)', { contactId, startsAt: startsAt.toISOString() });
+            // Con `logger` y no `console.warn`: esto devuelve una cita VIEJA como si fuera
+            // nueva, y aguas arriba nadie lo distingue (bookAppointment solo mira `!apt`, y
+            // el bot apunta el id y sigue). El caso legítimo que hoy se traga es el de dos
+            // citas del mismo contacto a la misma hora con estilistas distintas — reservar
+            // para una acompañante. Sin traza estructurada eso no lo ve nadie.
+            logger.warn('cita_duplicada_evitada', {
+                orgId: oid, op: 'saveAppointment', contactId,
+                startsAt: startsAt.toISOString(),
+                servicioPedido: servicio || null,
+                servicioExistente: existing.service || null,
+                stylistPedido: stylistId || null,
+                stylistExistente: existing.stylist_id || null,
+                // true = no es un reintento, son dos reservas distintas colapsadas en una.
+                pareceOtraReserva: !!(stylistId && existing.stylist_id && stylistId !== existing.stylist_id),
+            });
             return existing;
         }
     }
