@@ -1,6 +1,38 @@
 # Agente WhatsApp — Multi-tenant (Antigravity)
 
-Bot de WhatsApp multi-organización que gestiona citas, reservas y seguimiento post-visita. Cada organización tiene su propio número de WhatsApp, flujo conversacional y panel CRM. Un solo proceso Node.js sirve a todas las orgs simultáneamente.
+## Antes de afirmar nada sobre este sistema
+
+Seis hechos que, si no se saben, no producen un bug: producen un INFORME FALSO. Si algo de lo
+que vas a escribir depende de uno de ellos, vuelve aquí primero.
+
+**1. `messages` NO es el registro de lo que pasó.** Las dueñas contestan desde el MÓVIL y ese
+saliente no se escribe (Coexistence); las plantillas de campaña tampoco (van a
+`broadcast_sends`). **Ausencia de saliente no es ausencia de atención**: es lo que dejó dormido
+al vigilante de esperas, cuyos dos casos estrella estaban atendidos.
+
+**2. Un cero no es una ausencia.** Puede ser una lectura rota —una consulta que falla devuelve
+vacío, y por eso existe `assertRead`: tres veces esta semana («no hay nadie bloqueado»,
+«audiencia vacía», la cola de pendientes)— o una consulta que mide otra cosa:
+`appointments.full_name` es **NOT NULL**, así que cuando falta es cadena vacía y un `IS NULL`
+no encuentra a nadie. Y al revés, una fila no dice de qué es: los cuatro bloqueos de agenda
+hechos como cita («Close TIME») se contaron como citas reales.
+
+**3. «Enviado» no es «entregado».** Fuera de la ventana de 24 h Meta responde **200** y no
+entrega. Un recuento de envíos de Sante es un recuento de aceptaciones de Meta, nunca de
+mensajes leídos por nadie.
+
+**4. Ningún catálogo del repo es el vivo.** Los tres ficheros de 81 entradas
+(`data/sante-catalogo-backup-*.json`, `tests/fixtures/sante-catalog.json`) son fotos de
+momentos distintos; el vivo es `agent_configs.services`. Lo mismo el resto de lo que edita la
+dueña: horarios, nombres y skills. De ahí salió el 13/08/2026 la conclusión falsa de que el
+bot se había inventado el nombre de un servicio.
+
+**5. En `appointments` no hay precio.** Toda cifra de dinero de un informe es un RECÁLCULO
+contra el catálogo de hoy; un nombre que no resuelve no suma 0 €, se cuenta aparte. Cambiar el
+catálogo mueve las cifras de meses ya cerrados.
+
+**6. Lo comiteado en local no está en producción.** `git push` lo lanza el dueño. Un síntoma
+que sigue apareciendo después de un arreglo casi siempre es esto, no un arreglo incompleto.
 
 ## Reglas de trabajo
 
@@ -33,10 +65,14 @@ falta `assertRowsAffected`. El 07/08/2026 apareció otro caso: `deleteLead` no m
 `error`, así que un borrado rechazado devolvía `{ok:true}` y el panel decía "borrado" sobre un
 contacto que seguía ahí.*
 
-**5. Lo que edita la dueña no se verifica contra constantes en git.** Horarios, nombres, skills
-y catálogo cambian desde el panel; un check contra una lista escrita en el fichero mide
-antigüedad, no corrección. Detalle y ejemplos en
-[Los datos que edita la dueña no se verifican contra constantes](#los-datos-que-edita-la-dueña-no-se-verifican-contra-constantes).
+**5. Lo que edita la dueña no se verifica contra constantes en git.** `stylist_schedules`,
+`stylists.name`, `stylists.skills`, `agent_configs.services` y `business_hours` cambian desde
+el panel; un check contra una lista escrita en el fichero mide antigüedad, no corrección:
+caduca en el primer cambio y deja un fallo permanente que no hay que arreglar, que es la
+forma más rápida de que nadie vuelva a leer el informe. *Ya pasó tres veces: los horarios de
+Tetiana/Natalia/Yulia-Tricóloga, «Consulta con exactamente 4 estilistas», y Olgha→Olga
+contándose como fallo del matcher.* Se verifica con invariantes que se sostienen con
+cualquier valor — los comandos, en [Comandos de desarrollo](#comandos-de-desarrollo).
 
 **6. Toda migración se enseña ANTES de aplicarla, y a Supabase no se escribe sin permiso
 explícito.** Leerla entera es la última oportunidad de ver lo que los tests no ven. *Revisar la
@@ -46,20 +82,13 @@ congelación. Cuando hay que probar contra la BD real, se hace en un bloque que 
 (`DO $$ … RAISE $$`) y se comprueba que no queda ni una fila.*
 
 **7. Antes de mutar código para comprobar que algo falla sin el arreglo, `cp` a un fichero
-aparte.** `git checkout` solo restaura lo COMITEADO, y lo que acabas de escribir no lo está.
-
-Esta regla ya se ha incumplido **dos veces**, las dos igual y las dos el 07/08/2026: mutar un
-fichero con cambios sin comitear y "restaurarlo" con `git checkout --`, que devuelve la versión
-del último commit y **borra el trabajo nuevo**. Pasó con `caja-session.ts` (se perdieron
-`estilistaPorDefecto` y `saldraSinPin` recién escritos) y con `tests/caja-pendientes.test.js`
-(se perdieron los tests del no-show). Las dos veces se detectó al mirar si el arreglo seguía
-ahí, no en el momento.
-
-Lo que engaña es que git *parece* la copia de seguridad, y lo es — de lo comiteado. Si el
-experimento va sobre algo que aún no lo está, la copia hay que hacerla a mano:
-`cp fichero /tmp/…` antes de mutar, `cp` de vuelta después, y comprobar que el arreglo sigue en
-el fichero. `git stash push`/`pop` sí vale, y es lo que se usó bien la primera vez con
-`reservas/page.tsx`; lo que no vale nunca es `git checkout --`.
+aparte.** `cp fichero /tmp/…` antes de mutar, `cp` de vuelta después, y comprobar que el
+arreglo sigue ahí. `git stash push`/`pop` también vale; **`git checkout --` no vale nunca**:
+restaura la versión del último commit y borra el trabajo nuevo. *Incumplida dos veces, las dos
+el 07/08/2026 y las dos igual: se perdieron `estilistaPorDefecto` y `saldraSinPin` en
+`caja-session.ts`, y los tests del no-show en `tests/caja-pendientes.test.js`. Las dos veces se
+detectó al mirar si el arreglo seguía ahí, no en el momento.* Texto completo:
+[`docs/incidentes-cerrados.md#reglas-recortadas`](docs/incidentes-cerrados.md#reglas-recortadas).
 
 **8. Parar y preguntar si algo cambia el diseño o se sale del alcance.** No ampliarlo por
 iniciativa propia ni recortarlo en silencio. *Antes de escribir la 035 se pararon tres
@@ -81,28 +110,39 @@ lo mismo sin comitear: *`7f53ecf` (04/08) arregla un `npm test` que fallaba en u
 porque la heurística de idioma solo existía en la working copy de quien la escribió.*
 
 **10. TODA respuesta va en UN solo bloque de código, y sin una línea de texto fuera.**
-No solo los planes, resúmenes, informes, listas de pasos o mensajes para otra herramienta:
-**cualquier** respuesta —un aviso, una pregunta, un «hecho», dos frases sueltas— va dentro de
-un único bloque markdown, con todo dentro (encabezados y viñetas incluidos) y ni una línea de
-prosa antes o después. *El destino es el móvil: allí un bloque de código se copia de un toque,
-mientras que seleccionar a mano tres trozos de texto suelto cuesta más que el trabajo que se
-está pasando.* Si el contenido lleva a su vez bloques de código, el de fuera se abre con más
-backticks (````) para que los de dentro no lo cierren.
+Cualquiera: un plan, un informe, un aviso, una pregunta, dos frases sueltas. Todo dentro
+—encabezados y viñetas incluidos— y ni una línea de prosa antes o después; si el contenido
+lleva a su vez bloques de código, el de fuera se abre con más backticks (````). *El destino es
+el móvil, donde un bloque se copia de un toque.* **Y las TABLAS, que es por donde se colaba**:
+la app del móvil renderiza una tabla markdown como elemento APARTE, con su propio botón de
+copiar, así que una tabla fuera del bloque rompe la regla igual que un párrafo suelto. Si hace
+falta, va DENTRO y en **texto plano alineado con espacios** —nada de `|---|---|`—, y lo mismo
+cualquier otra cosa que la app renderice aparte: bloques de código sueltos, citas (`>`),
+listas de tareas. **En una frase: si en la pantalla del móvil se ve más de un botón de copiar,
+está mal.** Texto completo:
+[`docs/incidentes-cerrados.md#reglas-recortadas`](docs/incidentes-cerrados.md#reglas-recortadas).
 
-**Y las TABLAS, que es por donde se colaba.** La app del móvil renderiza una tabla markdown
-como elemento APARTE, con su propio botón de copiar: aunque el resto de la respuesta vaya en
-un bloque, la tabla hay que copiarla por separado. O sea que una tabla fuera del bloque rompe
-la regla igual que un párrafo suelto, aunque «visualmente» parezca que está dentro de la
-respuesta. *Pasó con el brief del enlace.*
+**11. Hacer lanzar una función obliga a mirar TODOS sus call sites.** Meter un `assertRead` /
+`assertWrite` dentro cambia el contrato de quien la llama: donde había un vacío ahora hay una
+excepción, y quien no la espera se lleva por delante lo que tenga encima. *`tryResolvePendingReply`
+y `ejecutarAccion` (`telegram.js`) cuelgan de un `bot.on(...)` que NO tiene try/catch: una
+lectura rota habría tumbado el proceso — el de LAS DOS orgs, que comparten proceso. Y
+`setBotActivo` es síncrona y no puede esperar la promesa de `setConfigValue`, así que el
+rechazo sale por `unhandledRejection`.* A veces la respuesta correcta es que la función NO
+lance y devuelva el fallo; lo que no vale es no mirarlo. Fijado en
+`tests/lectura-citas-y-pendientes.test.js`, `tests/lista-negra-no-dice-vacia.test.js` y
+`tests/config-escritura-verificada.test.js`.
 
-- **NUNCA una tabla markdown fuera del bloque. Ninguna.**
-- Si hace falta una tabla, va **DENTRO** del bloque, en **texto plano alineado con espacios**
-  — nada de `|---|---|`.
-- Lo mismo para cualquier otra cosa que la app renderice aparte: bloques de código sueltos,
-  citas (`>`), listas de tareas. Todo dentro del único bloque.
-
-**La regla en una frase: si al mirar la pantalla del móvil se ve más de un botón de copiar,
-está mal.**
+**12. Una red que SUSTITUYE un mensaje puede comerse el correcto: di cuál ANTES de añadirla.**
+Las redes anti-mentira del salón no filtran, reemplazan la respuesta del modelo por una fija.
+Antes de añadir una —o de ensanchar la de al lado— hay que escribir qué respuesta BUENA deja
+de salir. *Ha salido caro tres veces: el horario de Olga (todo `HH:MM` sin huecos se marcaba
+inventado, y el horario del salón SON dos `HH:MM`, así que mataba la única respuesta correcta);
+`подойдёт` dentro de `BOOKING_APPROVAL_QUESTIONS`, que exoneraba de más; y «¿te lo reservo?»
+de Mariola, que activó la red anti-afirmación sobre una PREGUNTA en 6 de cada 10 turnos.* Dos
+consecuencias que ya son doctrina: la exención va donde no se pierde nada (en el `else` sin
+hueco, **nunca en el gate**) y se comprueba en los cuatro idiomas. **Una red demasiado ancha no
+sobra un mensaje: pierde el bueno.**
 
 ## Organizaciones activas
 
@@ -112,6 +152,8 @@ está mal.**
 | Sante Healthy Hair Salon | salon | +34641029104 | 360dialog (Cloud API) | `b2c3d4e5-f6a7-8901-bcde-f12345678901` |
 
 ## Arquitectura
+
+Bot de WhatsApp multi-organización que gestiona citas, reservas y seguimiento post-visita. Cada organización tiene su propio número de WhatsApp, flujo conversacional y panel CRM. Un solo proceso Node.js sirve a todas las orgs simultáneamente.
 
 Monolito modular Node.js con PM2. Un proceso corre N clientes WhatsApp (uno por org). Supabase (Postgres) con RLS. Dashboard Next.js en `dashboard-app/`.
 

@@ -705,3 +705,53 @@ Las dos redes, y por qué son dos:
 Están separadas a propósito: la primera protege lo que hace el sistema y la segunda que el
 panel siga contando lo mismo. Cuando cambie una conducta de la tabla de arriba, la segunda es
 la que avisa de que la confirmación se ha vuelto mentira.
+
+## Reglas de trabajo — el texto largo que se recortó {#reglas-recortadas}
+
+Recortado en CLAUDE.md el **14/08/2026**, al añadir la cabecera de seis hechos y las reglas 11
+y 12. Las reglas siguen vigentes tal cual están arriba; aquí queda su redacción larga, que es
+donde estaban los ejemplos completos.
+
+### Regla 7 — `cp` antes de mutar (texto completo)
+
+**7. Antes de mutar código para comprobar que algo falla sin el arreglo, `cp` a un fichero
+aparte.** `git checkout` solo restaura lo COMITEADO, y lo que acabas de escribir no lo está.
+
+Esta regla ya se ha incumplido **dos veces**, las dos igual y las dos el 07/08/2026: mutar un
+fichero con cambios sin comitear y "restaurarlo" con `git checkout --`, que devuelve la versión
+del último commit y **borra el trabajo nuevo**. Pasó con `caja-session.ts` (se perdieron
+`estilistaPorDefecto` y `saldraSinPin` recién escritos) y con `tests/caja-pendientes.test.js`
+(se perdieron los tests del no-show). Las dos veces se detectó al mirar si el arreglo seguía
+ahí, no en el momento.
+
+Lo que engaña es que git *parece* la copia de seguridad, y lo es — de lo comiteado. Si el
+experimento va sobre algo que aún no lo está, la copia hay que hacerla a mano:
+`cp fichero /tmp/…` antes de mutar, `cp` de vuelta después, y comprobar que el arreglo sigue en
+el fichero. `git stash push`/`pop` sí vale, y es lo que se usó bien la primera vez con
+`reservas/page.tsx`; lo que no vale nunca es `git checkout --`.
+
+### Regla 10 — un solo bloque de código (texto completo)
+
+**10. TODA respuesta va en UN solo bloque de código, y sin una línea de texto fuera.**
+No solo los planes, resúmenes, informes, listas de pasos o mensajes para otra herramienta:
+**cualquier** respuesta —un aviso, una pregunta, un «hecho», dos frases sueltas— va dentro de
+un único bloque markdown, con todo dentro (encabezados y viñetas incluidos) y ni una línea de
+prosa antes o después. *El destino es el móvil: allí un bloque de código se copia de un toque,
+mientras que seleccionar a mano tres trozos de texto suelto cuesta más que el trabajo que se
+está pasando.* Si el contenido lleva a su vez bloques de código, el de fuera se abre con más
+backticks para que los de dentro no lo cierren.
+
+**Y las TABLAS, que es por donde se colaba.** La app del móvil renderiza una tabla markdown
+como elemento APARTE, con su propio botón de copiar: aunque el resto de la respuesta vaya en
+un bloque, la tabla hay que copiarla por separado. O sea que una tabla fuera del bloque rompe
+la regla igual que un párrafo suelto, aunque «visualmente» parezca que está dentro de la
+respuesta. *Pasó con el brief del enlace.*
+
+- **NUNCA una tabla markdown fuera del bloque. Ninguna.**
+- Si hace falta una tabla, va **DENTRO** del bloque, en **texto plano alineado con espacios**
+  — nada de `|---|---|`.
+- Lo mismo para cualquier otra cosa que la app renderice aparte: bloques de código sueltos,
+  citas (`>`), listas de tareas. Todo dentro del único bloque.
+
+**La regla en una frase: si al mirar la pantalla del móvil se ve más de un botón de copiar,
+está mal.**
