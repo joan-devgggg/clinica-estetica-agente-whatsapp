@@ -4181,46 +4181,13 @@ function resolveSeguimientoRegla(regla, catalog) {
         };
     }
 
-    // ── Destino ───────────────────────────────────────────────────────────────
-    if (!regla.destino) {
-        const opciones = opcionesDeSeguimiento(regla.sugerencia, catalog);
-        return {
-            ...base,
-            motivo: 'sin_destino',
-            opciones,
-            mensaje: opciones.length
-                ? `Falta elegir qué servicio se ofrece después de «${regla.origen}». Hay ${opciones.length} que encajan y cuestan distinto: `
-                  + opciones.map(o => `${o.nombre} (${formatPrecioEur(o.precio)})`).join(', ') + '.'
-                : `Falta elegir qué servicio se ofrece después de «${regla.origen}».`,
-        };
-    }
-
-    const entrada = findCatalogEntryByKey(regla.destino, catalog);
-    if (!entrada) {
-        return {
-            ...base,
-            motivo: 'destino_no_existe',
-            opciones: opcionesDeSeguimiento(regla.sugerencia, catalog),
-            mensaje: `El servicio que esta regla quiere ofrecer ya no está en el catálogo (puede que se haya renombrado). Hay que volver a elegirlo.`,
-        };
-    }
-    if (!isServiceActive(entrada)) {
-        return {
-            ...base,
-            motivo: 'destino_inactivo',
-            mensaje: `«${buildFullServiceName(entrada, catalog)}» está dado de baja, así que no se puede ofrecer.`,
-        };
-    }
-    const precio = Number(entrada.precio);
-    if (entrada.precio == null || !Number.isFinite(precio)) {
-        return {
-            ...base,
-            motivo: 'destino_sin_precio',
-            mensaje: `«${buildFullServiceName(entrada, catalog)}» no tiene precio en el catálogo, y el mensaje tiene que decir cuánto cuesta.`,
-        };
-    }
-
     // ── Cuándo y cuánto ───────────────────────────────────────────────────────
+    //
+    // Va ANTES del destino a propósito, aunque el destino sea lo que más falla. El motivo es
+    // el preview: una regla a la que solo le falta elegir el servicio tiene que poder decir
+    // TAMBIÉN a cuánta gente le llegaría cuando se elija, y para contar esa gente hace falta
+    // su `dias`. Validándolo después, una regla sin destino no podía informar de nada y la
+    // dueña elegía entre 45 € y 110 € sin saber si eso iba a una clienta o a treinta.
     const dias = Number(regla.dias);
     if (typeof regla.dias !== 'number' || !Number.isFinite(dias)
         || dias < SEGUIMIENTO_DIAS_MIN || dias > SEGUIMIENTO_DIAS_MAX) {
@@ -4239,9 +4206,52 @@ function resolveSeguimientoRegla(regla, catalog) {
         };
     }
 
+    // A partir de aquí, `origen` y `dias` son de fiar aunque la regla no llegue a resolver.
+    // El preview los usa para contar a quién le está esperando.
+    const parcial = { ...base, origen: regla.origen, dias };
+
+    // ── Destino ───────────────────────────────────────────────────────────────
+    if (!regla.destino) {
+        const opciones = opcionesDeSeguimiento(regla.sugerencia, catalog);
+        return {
+            ...parcial,
+            motivo: 'sin_destino',
+            opciones,
+            mensaje: opciones.length
+                ? `Falta elegir qué servicio se ofrece después de «${regla.origen}». Hay ${opciones.length} que encajan y cuestan distinto: `
+                  + opciones.map(o => `${o.nombre} (${formatPrecioEur(o.precio)})`).join(', ') + '.'
+                : `Falta elegir qué servicio se ofrece después de «${regla.origen}».`,
+        };
+    }
+
+    const entrada = findCatalogEntryByKey(regla.destino, catalog);
+    if (!entrada) {
+        return {
+            ...parcial,
+            motivo: 'destino_no_existe',
+            opciones: opcionesDeSeguimiento(regla.sugerencia, catalog),
+            mensaje: `El servicio que esta regla quiere ofrecer ya no está en el catálogo (puede que se haya renombrado). Hay que volver a elegirlo.`,
+        };
+    }
+    if (!isServiceActive(entrada)) {
+        return {
+            ...parcial,
+            motivo: 'destino_inactivo',
+            mensaje: `«${buildFullServiceName(entrada, catalog)}» está dado de baja, así que no se puede ofrecer.`,
+        };
+    }
+    const precio = Number(entrada.precio);
+    if (entrada.precio == null || !Number.isFinite(precio)) {
+        return {
+            ...parcial,
+            motivo: 'destino_sin_precio',
+            mensaje: `«${buildFullServiceName(entrada, catalog)}» no tiene precio en el catálogo, y el mensaje tiene que decir cuánto cuesta.`,
+        };
+    }
+
     const precioFinal = precioConDescuento(precio, pct);
     if (precioFinal == null) {
-        return { ...base, motivo: 'destino_sin_precio', mensaje: 'No se puede calcular el precio con descuento.' };
+        return { ...parcial, motivo: 'destino_sin_precio', mensaje: 'No se puede calcular el precio con descuento.' };
     }
 
     return {

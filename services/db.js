@@ -3271,6 +3271,75 @@ async function authenticateToken(accessToken) {
     return { userId: user.id, orgId: profile.organization_id };
 }
 
+// ─── Seguimiento post-visita ────────────────────────────────────────────────
+//
+// Las lecturas que necesita decidir a quién se le manda una propuesta semanas después de su
+// cita. Todas con assertRead: un vigilante ciego además tranquiliza, y aquí una lectura rota
+// que devolviera `[]` se leería como "hoy no le toca a nadie" — indistinguible de una tanda
+// vacía de verdad.
+
+// Las citas completadas que CAEN EN LA VENTANA de alguna regla.
+//
+// Acotada por fecha a propósito, y es la guarda que impide que encender el interruptor mande
+// un WhatsApp por cada cita del histórico. La ventana la calcula quien llama a partir de las
+// reglas (el día N más pequeño, el N+margen más grande): esta función no conoce las reglas.
+async function getCitasParaSeguimiento(orgId, { desdeIso, hastaIso }) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('appointments')
+        .select('id, contact_id, service, starts_at, ends_at, status, '
+            + 'contacts!contact_id(id, full_name, wa_phone, language, metadata, is_blacklisted, escalation_reason, bot_mode)')
+        .eq('organization_id', oid)
+        .eq('status', 'completed')
+        .gte('ends_at', desdeIso)
+        .lte('ends_at', hastaIso)
+        .order('ends_at', { ascending: true });
+    assertRead(error, 'appointments');
+    return data || [];
+}
+
+// TODAS las citas de esos contactos a partir de `desdeIso`. De aquí salen las dos formas de
+// "ya volvió": las futuras y las posteriores a la cita de origen.
+//
+// Se traen juntas y se separan en memoria porque son pocos contactos por tanda; dos consultas
+// que se solaparan en el tiempo darían dos fotos distintas de la misma agenda.
+//
+// El filtro de estado es una lista NEGRA, al revés que en la caja, y la inversión es
+// deliberada: allí la lista blanca protege de que un estado nuevo entre a cobrarse sin que
+// nadie lo haya pensado; aquí lo que hay que proteger es lo contrario — un estado nuevo que
+// no estuviera en la lista blanca haría que su cita NO contara como "ya volvió" y le
+// mandaríamos la oferta teniéndola. El lado seguro de cada consulta es el suyo.
+async function getCitasDeContactosDesde(orgId, contactIds, desdeIso) {
+    const oid = resolveOrg(orgId);
+    const ids = [...new Set((contactIds || []).filter(Boolean))];
+    if (!ids.length) return [];
+    const { data, error } = await supabase
+        .from('appointments')
+        .select('id, contact_id, service, starts_at, ends_at, status')
+        .eq('organization_id', oid)
+        .in('contact_id', ids)
+        .gte('starts_at', desdeIso)
+        .not('status', 'in', '("cancelled","no_show")')
+        .order('starts_at', { ascending: true });
+    assertRead(error, 'appointments');
+    return data || [];
+}
+
+// Los seguimientos que ya existen para esos contactos. Sirve para dos cosas distintas: saber
+// qué (cita, regla) ya salió, y cuándo fue el último envío a cada clienta.
+async function getSeguimientosDeContactos(orgId, contactIds) {
+    const oid = resolveOrg(orgId);
+    const ids = [...new Set((contactIds || []).filter(Boolean))];
+    if (!ids.length) return [];
+    const { data, error } = await supabase
+        .from('seguimientos')
+        .select('id, contact_id, appointment_origen_id, regla_key, estado, enviado_at, destino_key, caduca_at')
+        .eq('organization_id', oid)
+        .in('contact_id', ids);
+    assertRead(error, 'seguimientos');
+    return data || [];
+}
+
 module.exports = {
     sanitizePhone,
     phoneVariants,
@@ -3383,6 +3452,10 @@ module.exports = {
     // Review worker
     getCompletedAppointmentsForReview,
     autoCompleteAppointments,
+    // Seguimiento post-visita
+    getCitasParaSeguimiento,
+    getCitasDeContactosDesde,
+    getSeguimientosDeContactos,
     // Agent memory
     getLastCompletedAppointment,
     // Vigilante de esperas
