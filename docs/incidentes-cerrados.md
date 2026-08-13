@@ -827,3 +827,76 @@ vez: una red demasiado ancha no sobra un mensaje, pierde el bueno.
 
 Red: `tests/balayage-resuelve.test.js`, con el primer mensaje literal de Nora.
 
+## Mariola Mira Lopez (12/08/2026): «somos dos» y el precio que no leía nadie {#mariola}
+
+Pidió cita **«para mí y una amiga»**, lo repitió tres veces, y el bot lo entendió como DOS
+SERVICIOS para una sola persona hasta preguntarle «¿cuál queréis primero, el Spa Hair Detox o
+la Reconstrucción Pro Miracle?». Preguntó dos veces si una tendría que **esperar fuera** y no
+se le contestó ninguna. Las dos citas las acabó creando la dueña a mano —consecutivas, 13:00
+y 14:00, la misma estilista—, y la de la amiga quedó guardada **con el nombre de Mariola**.
+
+### «Somos dos»
+
+**El LLM no se confundió: lo dijo dos veces con sus palabras** («podemos agendar para las
+dos», «¿es para ti, para tu amiga o para las dos?»). Lo que faltaba era **dónde guardarlo** —
+el esquema `datos` del salón no tiene campo para personas, así que la comprensión se evapora
+cada turno. Y entonces la **Regla Dura 13** del prompt («el sistema solo puede guardar una
+cita por turno… confirma la primera y pregunta los detalles de la segunda por separado»)
+convierte dos servicios sobre la mesa en «¿cuál queréis primero?». El modelo obedeció.
+
+La maquinaria de acompañante que ya existía **no llegaba, por dos motivos independientes**:
+`detectGuestBooking` no casaba «para mí **Y** una amiga» (se le escapaba por una palabra) y
+solo se consulta dentro de `if (session.reservaConfirmada)` — o sea **nunca en el primer
+mensaje**. Ese gate es lo que dejó el caso sin ningún camino, y por eso
+`detectVariasPersonas` va **sin él** y **antes del LLM**, como `detectHoraFueraDeHorario`.
+
+- **«LAS DOS» ES UNA HORA y no está en la lista en ninguna de sus formas**, ni siquiera «para
+  las dos»: en castellano vale igual para dos personas que para las 14:00 y no se puede
+  deducir cuál. Mismo criterio que el sujetador en `extractLargoPelo` — en la raya no se
+  adivina. Mariola queda cubierta por su primer mensaje, que sí es inequívoco, y **la marca
+  es pegajosa**: basta con acertar una vez.
+- **No se promete el horario.** El mensaje dice «a la vez o una detrás de otra, eso lo
+  confirma el salón», que es lo único afirmable: el motor **ni siquiera puede ver** si hay
+  dos estilistas libres a la misma hora — el dedupe por `fecha-hora`
+  (`calendar-sante.js:293-306`) las tira sin log.
+- `variasPersonas` y `variasPersonasAvisado` viajan en `buildSessionExtra`.
+
+**Lo que NO se hizo, y es decisión, no olvido:** reservar de verdad para dos. Requiere ficha
+propia para la amiga, revisar la guarda de `db.js:1266-1284` (que rechaza dos citas del mismo
+contacto a la misma hora **y devuelve la primera como si fuera nueva**), y —para el caso
+simultáneo— cirugía en el dedupe del motor. Decidido el 13/08/2026 **no** acometerlo: la
+única señal es una tanda de dos citas hechas a mano, con una estilista fuera de sus skills.
+Misma decisión que la deuda del upselling.
+
+### El precio que dice la clienta
+
+Escribió «El masaje capilar el de 60 euros» y recibió **«el Spa Hair Detox de 60 minutos»** —
+su cifra devuelta con **otra unidad**, que es la forma más cara de la regla 3: un dato que no
+resolvió, reciclado con otro significado y con pinta de acuerdo. Un turno después, 115 €.
+Nunca se le dijo que a 60 € no hay ningún masaje. **Y probablemente ella tenía razón**: a 60 €
+está la Reconstrucción Pro Miracle, que es lo que nombró ella sola en el turno siguiente.
+
+Ese número **no lo leía nadie**: la única regla que lo miraba era `NO_ES_HORA_DETRAS`, y solo
+para tirarlo. Las diez redes anti-mentira cubrían huecos, fechas, horarios, cierres y
+afirmaciones de reserva; **el precio era el único dato duro del salón sin red**. El prompt ya
+mandaba lo correcto («NUNCA inventes precios»): era instrucción sin suelo.
+
+- **`MONEDA_SUFIJOS` es UNA lista** y la comparten los dos sitios que miran el mismo texto con
+  intenciones opuestas: `NO_ES_HORA_DETRAS` para descartar y `extractPrecioMencionado` para
+  capturar. Con dos, añadir un sufijo a una dejaría ciega a la otra en silencio.
+- **La exención va en la salida `'atendido'`, no en el gate**: si la respuesta nombra esa
+  cifra, se deja de vigilar — si no, la red dispararía en el turno siguiente contra la
+  respuesta BUENA, cuando la clienta ya ha elegido el servicio de 115 €.
+- **Resolver el servicio de la respuesta es orientativo y no decide solo.**
+  `extractServiceFromText` sobre prosa libre acierta a medias («el Detox limpia el cuero
+  cabelludo» resuelve contra Exfoliación cabeza, 10 €). El nombre solo se usa si el precio lo
+  corrobora; si no, el mensaje habla de la cifra y **se calla el nombre**.
+- **`precio != null` ANTES del `Number()`**: `Number(null)` es 0, no NaN, así que un servicio
+  con «precio a confirmar en el salón» pasaría por uno de 0 € y la red lo contradiría con una
+  cifra inventada. Es el fallo de `precio_facturado` otra vez.
+
+Red: `tests/varias-personas.test.js` y `tests/precio-sin-respaldo.test.js`, cada uno con dos
+mutaciones. **El escenario 25 del arnés LLM es un VIGÍA, no una prueba**: medido con la red
+apagada, salió igualmente en verde porque el modelo nombró los 60 € él solo esa corrida — el
+fallo de Mariola era intermitente. Quien prueba la red es el test determinista.
+
