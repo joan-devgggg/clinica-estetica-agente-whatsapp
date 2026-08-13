@@ -6,6 +6,8 @@
 
 const { getCompletedAppointmentsForReview, getConfigValue, getAgentConfig, updateAppointment } = require('./db');
 const { resolveOutboundClient, resolveAutomatedSend } = require('./outbound');
+const { getOrgType } = require('./org-registry');
+const { prepararOfertaTrasResena, confirmarOfertaTrasResena } = require('./seguimiento');
 const { noteSendResult } = require('./channel-health');
 const { alertOnce } = require('./admin-alerts');
 const logger = require('../lib/logger');
@@ -259,7 +261,36 @@ async function checkAndSendReviews() {
                         continue;
                     }
 
-                    const mensaje = buildReviewMessage(nombre, companyName, googleLink, language);
+                    let mensaje = buildReviewMessage(nombre, companyName, googleLink, language);
+
+                    // ── La oferta post-visita, ENGANCHADA a este mismo mensaje ──────
+                    //
+                    // Cero WhatsApps añadidos: el de la reseña ya salía. Se engancha SOLO si
+                    // el envío va por texto libre — una plantilla de Meta no admite un
+                    // párrafo de más, y a las 2 h de la cita lo normal es estar fuera de la
+                    // ventana de 24 h. A quien no le llegue por aquí le llega por el worker
+                    // del día N, que es justo para lo que está.
+                    //
+                    // Gateado por tipo de org: San Remo no pasa por aquí y su mensaje de
+                    // reseña sigue siendo byte por byte el de siempre.
+                    let oferta = null;
+                    if (getOrgType(orgId) === 'salon') {
+                        try {
+                            const decision = await resolveAutomatedSend(orgId, {
+                                telefono: phone, language, plantillaClave: 'plantilla_resena',
+                            });
+                            if (decision.mode === 'free_text') {
+                                oferta = await prepararOfertaTrasResena(orgId, apt, { nombre, language });
+                                if (oferta) mensaje = `${mensaje}\n\n${oferta.mensaje}`;
+                            }
+                        } catch (e) {
+                            // Que falle la oferta NO puede impedir la reseña: es lo accesorio
+                            // colgando de lo que ya funcionaba.
+                            logger.error('resena_oferta_error', { orgId, appointmentId: apt.id, error: e.message });
+                            oferta = null;
+                        }
+                    }
+
                     const resultado = await sendReviewMessage(orgId, { telefono: phone, language, waJid }, {
                         mensaje,
                         templateParams: [nombre || '', googleLink],
@@ -267,6 +298,7 @@ async function checkAndSendReviews() {
 
                     if (resultado === 'enviado') {
                         await marcarResenaEnviada(orgId, { id: apt.id, telefono: phone, nombre }, 'worker:review');
+                        if (oferta) await confirmarOfertaTrasResena(orgId, oferta.seguimientoId, mensaje);
                     }
                 } catch (e) {
                     logger.error('review_error_cita', { orgId, appointmentId: apt.id, error: e.message });

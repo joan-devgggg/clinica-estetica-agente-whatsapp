@@ -347,6 +347,105 @@ async function construirTanda(orgId, { ahora = new Date() } = {}) {
     return { reglas, enviables, excluidas, ventana };
 }
 
+// ─── Camino A: la oferta que viaja DENTRO del mensaje de reseña ─────────────
+//
+// La dueña lo pidió así —"junto con el enlace de reseña"— y tiene razón en lo que importa:
+// a las 2 h de salir del salón es cuando más dispuesta está, y el -10 % es lo que convierte
+// un "ya me lo pensaré" en una fecha. Además no cuesta un WhatsApp: el mensaje ya salía.
+//
+// Lo que NO puede ser es el único camino, y por una razón medida: la reseña sale 2 h después
+// de la cita, así que en Cloud API casi siempre está FUERA de la ventana de 24 h y se manda
+// por plantilla — y una plantilla de Meta no admite un párrafo de más. Por eso esto solo se
+// engancha cuando el envío va por texto libre, y quien rescata al resto es el worker del
+// día N.
+//
+// La `regla_key` lleva el sufijo `#resena` para que la del día N siga siendo suya: son dos
+// momentos distintos (uno siembra, otro rescata) y la clienta puede recibir los dos, con 18
+// días en medio. Si reserva por el primero, el segundo la excluye sola (`tiene_cita_futura`).
+
+const SUFIJO_RESENA = '#resena';
+
+/**
+ * Prepara la oferta para enganchar al mensaje de reseña, YA RESERVADA.
+ *
+ * Devuelve `{ seguimientoId, mensaje }` o null. Cuando devuelve algo, la fila ya está en
+ * 'pendiente': quien llama tiene que enviar y luego confirmar con
+ * `confirmarOfertaTrasResena`. Si el envío falla, la fila se queda reservada y el tic
+ * siguiente NO vuelve a ofrecer — la reseña sale sola y la oferta cae al camino del día N.
+ * Degradar así es deliberado: la alternativa es arriesgar un mensaje repetido.
+ */
+async function prepararOfertaTrasResena(orgId, cita, { nombre, language } = {}) {
+    const db = require('./db');
+    const logger = require('../lib/logger');
+
+    const agentConfig = await db.getAgentConfig(orgId);
+    const catalogo = Array.isArray(agentConfig?.services) ? agentConfig.services : [];
+    const crudas = await db.getConfigValue(orgId, 'seguimientos');
+    const listas = (Array.isArray(crudas) ? crudas : [])
+        .map(r => resolveSeguimientoRegla(r, catalogo))
+        .filter(r => r.ok);
+    if (!listas.length) return null;
+
+    const categorias = categoriasDeServicio(cita.service, catalogo);
+    // La PRIMERA regla que case. Con varias, ofrecer dos cosas en el mismo mensaje sería
+    // pedirle a la clienta que elija justo cuando lo que se busca es que diga que sí.
+    const regla = listas.find(r => categorias.includes(r.origen));
+    if (!regla) return null;
+
+    const contactId = cita.contacts?.id || cita.contact_id;
+    if (!contactId) return null;
+
+    // ¿Ya se le ofreció por esta cita? Cubre el reintento tras un envío fallido y el segundo
+    // tic del mismo minuto.
+    const previos = await db.getSeguimientosDeContactos(orgId, [contactId]);
+    const claveRegla = `${regla.key}${SUFIJO_RESENA}`;
+    if (previos.some(s => s.appointment_origen_id === cita.id && s.regla_key === claveRegla)) return null;
+
+    const mensaje = buildSeguimientoMensaje({
+        nombre, servicio: regla.destino.nombre,
+        precio: regla.destino.precio, precioFinal: regla.precioFinal, language,
+    });
+    if (!mensaje) return null;   // regla 3: sin las dos cifras no hay oferta
+
+    const seguimientoId = await db.claimSeguimiento(orgId, {
+        contactId,
+        citaId: cita.id,
+        servicioOrigen: cita.service,
+        categoriaOrigen: regla.origen,
+        citaOrigenAt: cita.ends_at || cita.starts_at,
+        reglaKey: claveRegla,
+        destinoKey: regla.destino.key,
+        destinoNombre: regla.destino.nombre,
+        destinoPrecio: regla.destino.precio,
+        descuentoPct: regla.descuentoPct,
+        precioConDescuento: regla.precioFinal,
+        via: 'resena_2h',
+        caducaAt: new Date(Date.now() + (regla.dias + 30) * 24 * 60 * 60 * 1000).toISOString(),
+    });
+    if (!seguimientoId) return null;
+
+    logger.info('seguimiento_oferta_tras_resena_reservada', {
+        orgId, citaId: cita.id, regla: regla.key, precio: regla.precioFinal,
+    });
+    return { seguimientoId, mensaje };
+}
+
+/** El mensaje de reseña con la oferta SALIÓ. Nunca lanza: la reseña ya está entregada. */
+async function confirmarOfertaTrasResena(orgId, seguimientoId, textoCompleto) {
+    const db = require('./db');
+    const logger = require('../lib/logger');
+    try {
+        await db.marcarSeguimientoEnviado(orgId, seguimientoId, { mensaje: textoCompleto });
+        return true;
+    } catch (e) {
+        // La fila se queda en 'pendiente', que es el lado bueno: bloquea el reintento y por
+        // tanto el mensaje repetido. Lo que se pierde es la constancia del descuento, y eso
+        // lo recoge el vigilante de claims atascados.
+        logger.error('seguimiento_oferta_sin_apuntar', { orgId, seguimientoId, error: e.message });
+        return false;
+    }
+}
+
 // ─── El worker ──────────────────────────────────────────────────────────────
 //
 // Apagado POR DEFECTO. `SEGUIMIENTOS=on` es lo único que lo enciende, y hasta entonces el
@@ -549,6 +648,9 @@ function startSeguimientoWorker(clients) {
 
 module.exports = {
     startSeguimientoWorker,
+    prepararOfertaTrasResena,
+    confirmarOfertaTrasResena,
+    SUFIJO_RESENA,
     procesarSeguimientos,
     setClients,
     seguimientosEncendidos,
