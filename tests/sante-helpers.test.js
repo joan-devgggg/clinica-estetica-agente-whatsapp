@@ -5,7 +5,10 @@ const assert = require('assert');
 const {
     extractServiceFromText, extractLargoPelo, extractQuickDataSante, buildFullServiceName,
 } = require('../services/helpers');
-const CATALOGO_REAL = require('./fixtures/sante-catalog.json');
+// Se llamaba CATALOGO_REAL y no lo es: es el FIXTURE, fijo a propósito. El nombre invitaba
+// a leer sus asserts como afirmaciones sobre el catálogo de producción, que no lo son —
+// aquí se prueban los detectores, y el catálogo solo aporta una forma realista.
+const CATALOGO = require('./fixtures/sante-catalog.json').services;
 
 function test(name, fn) {
     try {
@@ -197,16 +200,16 @@ test('extractServiceFromText: un token corto/no distintivo no basta para resolve
     assert.strictEqual(extractServiceFromText('me llamo Ana', catalog), null);
 });
 
-// ── Red de propiedad sobre el catálogo REAL completo ──────────────────────────
+// ── Red de propiedad sobre el FIXTURE completo ────────────────────────────────
 // Es la Fase 1 de `npm run verify:sante` pero offline, sobre el fixture: entra en
 // `npm test` y detecta cualquier regresión de la resolución sin credenciales de
 // Supabase. La añadió el incidente 02/08/2026: la pasada de especificidad toca la
 // función más delicada del salón, y "5 diffs medidos" sólo vale si algo lo vigila.
-test('catálogo real: cada servicio se resuelve a sí mismo (ida y vuelta, 81 entradas)', () => {
+test('catálogo completo: cada servicio se resuelve a sí mismo (ida y vuelta, 81 entradas)', () => {
     const desajustes = [];
-    for (const svc of CATALOGO_REAL) {
-        const full = buildFullServiceName(svc, CATALOGO_REAL);
-        const got = extractServiceFromText(full, CATALOGO_REAL);
+    for (const svc of CATALOGO) {
+        const full = buildFullServiceName(svc, CATALOGO);
+        const got = extractServiceFromText(full, CATALOGO);
         if (!got || got.nombre !== svc.nombre || got.categoria !== svc.categoria) {
             desajustes.push(`${full} → ${got ? `${got.categoria} / ${got.nombre}` : 'null'}`);
         }
@@ -224,15 +227,15 @@ test('catálogo real: cada servicio se resuelve a sí mismo (ida y vuelta, 81 en
 // 60min") ni el de la 040 ("Spa Hidratación 60min" → "Spa Hair Hidratación"), porque "spa"
 // y "hair" tienen 3 y 4 letras y el filtro de tokens distintivos exige 5 — el token que
 // decide sigue siendo "hidratacion". Por eso este test se sostiene con los tres nombres.
-test('catálogo real: una palabra que varias CATEGORÍAS comparten no resuelve sola', () => {
+test('catálogo completo: una palabra que varias CATEGORÍAS comparten no resuelve sola', () => {
     for (const [frase, servicios] of [['hidratacion', '45/85/110 €'], ['detox', '35/115 €']]) {
-        assert.strictEqual(extractServiceFromText(frase, CATALOGO_REAL), null,
+        assert.strictEqual(extractServiceFromText(frase, CATALOGO), null,
             `"${frase}" es ambigua (${servicios}): el bot debe preguntar, no elegir`);
     }
-    assert.strictEqual(extractServiceFromText('quiero una hidratación', CATALOGO_REAL), null);
+    assert.strictEqual(extractServiceFromText('quiero una hidratación', CATALOGO), null);
 });
 
-test('catálogo real: con un discriminador, la misma palabra sí resuelve', () => {
+test('catálogo completo: con un discriminador, la misma palabra sí resuelve', () => {
     const casos = [
         ['fresh hidratacion', 'Fresh Hidratación', 45],
         ['orising hidratacion intensa', 'Orising hidratación intensa', 85],
@@ -241,14 +244,14 @@ test('catálogo real: con un discriminador, la misma palabra sí resuelve', () =
         ['spa hair detox', 'Spa Hair Detox', 115],
     ];
     for (const [frase, nombre, precio] of casos) {
-        const got = extractServiceFromText(frase, CATALOGO_REAL);
+        const got = extractServiceFromText(frase, CATALOGO);
         assert.ok(got, `"${frase}" debe resolver`);
         assert.strictEqual(got.nombre, nombre, `"${frase}"`);
         assert.strictEqual(got.precio, precio, `"${frase}" al precio correcto`);
     }
 });
 
-test('catálogo real: el desempate por prefijo sigue vivo DENTRO de una categoría', () => {
+test('catálogo completo: el desempate por prefijo sigue vivo DENTRO de una categoría', () => {
     // Es el caso que la pasada de último recurso existe para rescatar. Solo se anula
     // cuando el empate cruza categorías, que es cuando cambia el precio de verdad.
     const casos = [
@@ -258,13 +261,13 @@ test('catálogo real: el desempate por prefijo sigue vivo DENTRO de una categor�
         ['pro miracle', 'Reconstrucción Pro Miracle'],
     ];
     for (const [frase, nombre] of casos) {
-        const got = extractServiceFromText(frase, CATALOGO_REAL);
+        const got = extractServiceFromText(frase, CATALOGO);
         assert.ok(got, `"${frase}" NO debe devolver null: un null aquí se paga en repreguntas`);
         assert.strictEqual(got.nombre, nombre, `"${frase}"`);
     }
 });
 
-test('catálogo real: los pares prefijo no se resuelven a ciegas', () => {
+test('catálogo completo: los pares prefijo no se resuelven a ciegas', () => {
     // Los únicos pares donde un nombre es prefijo de otro. La regla de especificidad
     // sólo debe promover el largo cuando el texto trae su discriminador.
     const casos = [
@@ -275,7 +278,7 @@ test('catálogo real: los pares prefijo no se resuelven a ciegas', () => {
         ['quiero un cambio importante', 'XL / cambio importante'],
     ];
     for (const [frase, esperado] of casos) {
-        const got = extractServiceFromText(frase, CATALOGO_REAL);
+        const got = extractServiceFromText(frase, CATALOGO);
         assert.ok(got, `"${frase}" debe resolver`);
         assert.strictEqual(got.nombre, esperado, `"${frase}"`);
     }

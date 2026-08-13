@@ -10,7 +10,7 @@
 process.env.TZ = 'Europe/Madrid';
 
 const assert = require('assert');
-const CATALOGO = require('./fixtures/sante-catalog.json');
+const CATALOGO = require('./fixtures/sante-catalog.json').services;
 
 const AHORA = new Date();
 const haceHoras = h => new Date(AHORA.getTime() - h * 36e5).toISOString();

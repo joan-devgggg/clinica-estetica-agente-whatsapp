@@ -28,7 +28,7 @@ const {
     DURACION_CITA_FALLBACK_MIN,
 } = require('../services/helpers');
 
-const CATALOG = require('./fixtures/sante-catalog.json');
+const CATALOG = require('./fixtures/sante-catalog.json').services;
 
 // ─── resolveAppointmentDurationMin ───────────────────────────────────────────
 

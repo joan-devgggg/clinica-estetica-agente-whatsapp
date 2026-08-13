@@ -8,7 +8,7 @@
 // como frases de marketing, de las que 7 no casan con ninguna entrada del catálogo. Un
 // seguimiento nace con el mismo riesgo y con una consecuencia peor —el upsell se ofrece
 // dentro de una conversación viva, esto sale solo a un teléfono— así que la atadura se
-// verifica contra el catálogo REAL de 81 entradas, no contra un ejemplo cómodo.
+// verifica contra el fixture COMPLETO de 81 entradas, no contra un ejemplo cómodo.
 process.env.TZ = 'Europe/Madrid';
 
 const assert = require('assert');
@@ -23,7 +23,7 @@ const {
     validateConfigValue,
 } = require('../services/helpers');
 
-const CATALOGO = require('./fixtures/sante-catalog.json');
+const CATALOGO = require('./fixtures/sante-catalog.json').services;
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }

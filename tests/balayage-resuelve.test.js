@@ -18,7 +18,7 @@ const {
     detectLargoCategory, extractLargoPelo, classifyLargoVariant, normalizeText,
 } = require('../services/helpers');
 
-const CATALOGO = require('./fixtures/sante-catalog.json');
+const CATALOGO = require('./fixtures/sante-catalog.json').services;
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }

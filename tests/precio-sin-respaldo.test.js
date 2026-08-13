@@ -24,11 +24,11 @@ const { extractPrecioMencionado, catalogEntriesAtPrice, extractMentionedHours } 
 const { _internals } = require('../bot');
 const { respondsWithUnbackedPrice, salonPrecioNoCasaMsg } = _internals;
 
-// El catálogo del repo, no el de Supabase (que la dueña edita). Lleva los nombres VIVOS de
-// Spa Hair — ojo, `data/sante-catalogo-backup-2026-08-12.json` NO: ese backup es de ayer y
-// ya llama a estas entradas «Detox 60min», así que un test escrito contra él afirmaría un
-// mapeo que la BD desmiente.
-const CATALOGO = require('./fixtures/sante-catalog.json');
+// El FIXTURE, no el catálogo de Supabase (que la dueña edita): aquí se prueba la red, y el
+// catálogo solo aporta una forma realista. Lo que se afirma abajo sobre «lo que hay a 60 €»
+// es una propiedad DE ESTE FIXTURE, elegida porque reproduce el caso de Mariola — no una
+// afirmación sobre lo que Yulia tenga hoy en el catálogo. Eso vive en verify:sante.
+const CATALOGO = require('./fixtures/sante-catalog.json').services;
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -64,7 +64,7 @@ test('CONTENCIÓN · el dinero y las horas comparten vocabulario y NO se pisan',
     assert.deepStrictEqual(extractMentionedHours('a las 5'), ['17:00']);
 });
 
-test('a 60 € el catálogo SÍ tiene cosas, y una es la que ella nombró después', () => {
+test('en el fixture, a 60 € hay cosas y una es la que ella nombró después', () => {
     const nombres = catalogEntriesAtPrice(CATALOGO, 60).map(s => s.nombre);
     assert.ok(nombres.includes('Reconstrucción Pro Miracle'), `no está: ${nombres.join(', ')}`);
     assert.ok(nombres.length >= 2);

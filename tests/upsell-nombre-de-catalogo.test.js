@@ -27,7 +27,7 @@ const {
     buildFullServiceName,
 } = require('../services/helpers');
 
-const CATALOGO = require('./fixtures/sante-catalog.json');
+const CATALOGO = require('./fixtures/sante-catalog.json').services;
 
 function test(name, fn) {
     try { fn(); console.log(`ok - ${name}`); }

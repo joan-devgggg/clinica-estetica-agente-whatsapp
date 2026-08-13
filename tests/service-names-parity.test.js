@@ -2,9 +2,20 @@
 // con SU propia copia de splitServiceNames (TypeScript). La facturación lo parte con la del
 // backend. Si divergen, la recepcionista ve unas líneas y se cobran otras.
 //
-// Este test compara las dos implementaciones sobre el catálogo REAL de Sante (el JSON que
-// sirve /api/service-catalog), con especial atención a los nombres que llevan " + " dentro
-// ("Pedicura + esmaltado"), que son los que rompen un split ingenuo.
+// Este test compara las dos implementaciones sobre el FIXTURE (`tests/fixtures/`), con
+// especial atención a los nombres que llevan " + " dentro ("Pedicura + esmaltado"), que son
+// los que rompen un split ingenuo.
+//
+// Decía «sobre el catálogo REAL de Sante (el JSON que sirve /api/service-catalog)» y era
+// mentira: usa el fixture, que está fijo a propósito y no se sincroniza. La diferencia no es
+// cosmética — si la dueña da de alta mañana un servicio con " + " en el nombre, este test
+// sigue verde **sin haberlo mirado nunca**, que es el modo de fallo silencioso de un fixture
+// que se hace pasar por la realidad.
+//
+// Lo que aquí se prueba es la PARIDAD de dos implementaciones, que es lógica determinista y
+// vive bien en `npm test`: hermético, sin red, sin Supabase. La otra mitad —que el catálogo
+// VIVO no tenga hoy un nombre que rompa el split— es una afirmación sobre el catálogo real y
+// está en la **Fase 9 de `verify:sante`**, que lee `agent_configs`. Esa es la raya.
 
 const assert = require('assert');
 const path = require('path');
@@ -16,7 +27,7 @@ const {
 const TS = path.join(__dirname, '..', 'dashboard-app', 'src', 'lib', 'service-names.ts');
 const { splitServiceNames: splitCliente, joinServiceNames } = require(TS);
 
-const CATALOGO = require('./fixtures/sante-catalog.json');
+const CATALOGO = require('./fixtures/sante-catalog.json').services;
 // Mismo shape que devuelve /api/service-catalog (webhook.js): fullName ya resuelto.
 const CATALOGO_CLIENTE = CATALOGO.map(svc => ({
     nombre: svc.nombre,
@@ -34,7 +45,7 @@ const ambas = s => ({
     cliente: splitCliente(s, CATALOGO_CLIENTE),
 });
 
-test('el catálogo real tiene servicios con " + " en el nombre (si no, el test no prueba nada)', () => {
+test('el fixture tiene servicios con " + " en el nombre (si no, el test no prueba nada)', () => {
     const conMas = CATALOGO.filter(s => String(s.nombre).includes(' + '));
     assert.ok(conMas.length > 0, 'ningún servicio con " + " en el catálogo de fixtures');
 });

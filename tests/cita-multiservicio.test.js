@@ -60,7 +60,7 @@ const { splitServiceNames, joinServiceNames, catalogDurationTotal } = require(
     path.join(__dirname, '..', 'dashboard-app', 'src', 'lib', 'service-names.ts')
 );
 
-const CATALOGO = require('./fixtures/sante-catalog.json');
+const CATALOGO = require('./fixtures/sante-catalog.json').services;
 // Mismo shape que sirve /api/service-catalog (webhook.js), incluida la duración: es la que
 // el formulario suma para derivar el campo "Duración".
 const CAT_CLIENTE = CATALOGO.map(s => ({
@@ -261,7 +261,7 @@ const callsTo = (table, op) => mock.calls.filter(c => c.table === table && c.op 
         // elegir una al azar daría un número plausible y equivocado. Sin el nombre completo
         // (buildFullServiceName) no hay suma, y el campo se deja editable.
         const ambiguos = CATALOGO.filter(s => String(s.nombre).trim().toLowerCase() === 'largo');
-        assert.ok(ambiguos.length > 1, 'el catálogo real debe tener "Largo" repetido');
+        assert.ok(ambiguos.length > 1, 'el catálogo debe tener "Largo" repetido');
         assert.ok(new Set(ambiguos.map(s => s.duracion)).size > 1, 'y con duraciones distintas');
         assert.strictEqual(catalogDurationTotal('Largo', CAT_CLIENTE), null);
     });

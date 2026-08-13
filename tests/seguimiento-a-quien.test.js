@@ -14,7 +14,7 @@ const assert = require('assert');
 const { decidirSeguimiento, VENTANA_MARGEN_DIAS, MIN_DIAS_ENTRE_ENVIOS } = require('../services/seguimiento');
 const { resolveSeguimientoRegla } = require('../services/helpers');
 
-const CATALOGO = require('./fixtures/sante-catalog.json');
+const CATALOGO = require('./fixtures/sante-catalog.json').services;
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }

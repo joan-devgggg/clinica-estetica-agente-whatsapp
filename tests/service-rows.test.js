@@ -13,7 +13,7 @@ const {
     serviceRows, addServiceRow, setServiceRow, removeServiceRow,
 } = require(path.join(__dirname, '..', 'dashboard-app', 'src', 'lib', 'service-names.ts'));
 
-const CATALOGO = require('./fixtures/sante-catalog.json');
+const CATALOGO = require('./fixtures/sante-catalog.json').services;
 const CAT = CATALOGO.map(s => ({ nombre: s.nombre, fullName: buildFullServiceName(s, CATALOGO) }));
 
 let fallos = 0;

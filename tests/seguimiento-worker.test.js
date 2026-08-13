@@ -8,7 +8,7 @@ process.env.SANTE_360_API_KEY = 'test-key-360';
 process.env.SANTE_360_PHONE_NUMBER_ID = '111222333';
 
 const assert = require('assert');
-const CATALOGO = require('./fixtures/sante-catalog.json');
+const CATALOGO = require('./fixtures/sante-catalog.json').services;
 
 const AHORA = new Date();
 const haceDias = n => new Date(AHORA.getTime() - n * 864e5).toISOString();

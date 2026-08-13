@@ -33,10 +33,10 @@ function test(name, fn) {
     catch (e) { console.error(`fail - ${name}`); console.error(e); process.exitCode = 1; }
 }
 
-// El catálogo REAL completo (81 entradas), no un recorte: el guard "¿ha nombrado un
+// El fixture COMPLETO (81 entradas), no un recorte: el guard "¿ha nombrado un
 // servicio?" recorre el catálogo entero, y con un recorte se dejarían de ver justo las
 // colisiones que este camino existe para evitar.
-const CATALOGO = require('./fixtures/sante-catalog.json');
+const CATALOGO = require('./fixtures/sante-catalog.json').services;
 
 // La condición exacta que evalúa bot.js antes de responder con el rango.
 const dispara = (frase) => {

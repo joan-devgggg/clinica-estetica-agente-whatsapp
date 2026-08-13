@@ -41,6 +41,7 @@ const {
     offerableCatalog,
     isServiceActive,
     findCatalogEntriesExact,
+    splitServiceNames,
 } = require('../services/helpers');
 const calendarSante = require('../services/calendar-sante');
 
@@ -512,6 +513,51 @@ const addDays = (dateStr, n) => {
     }
     if (inactivos.length === 0) {
         console.log('\n(Fase 8: no hay servicios dados de baja en el catálogo.)');
+    }
+
+    // ─── Fase 9: ningún nombre VIVO rompe el split del multi-servicio ──────────────────
+    //
+    // La otra mitad de `tests/service-names-parity.test.js`, y vive aquí por la raya: aquel
+    // prueba la PARIDAD de las dos implementaciones de `splitServiceNames` (la del backend y
+    // la copia TypeScript del panel), que es lógica determinista y se prueba contra el
+    // fixture; esto de aquí afirma algo del catálogo REAL —que hoy, con los nombres que la
+    // dueña tiene puestos, el split sigue devolviendo lo que debe— y por tanto tiene que
+    // leer `agent_configs`.
+    //
+    // El agujero que tapa es SILENCIOSO, y por eso hacía falta: el fixture está fijo a
+    // propósito, así que si la dueña da de alta mañana un servicio con " + " dentro del
+    // nombre (los que rompen un split ingenuo, como "Pedicura + esmaltado"), aquel test
+    // sigue verde **sin haberlo mirado nunca**. No hay rojo, hay ausencia de cobertura — y
+    // el síntoma sería que la recepcionista ve unas líneas en el formulario y se cobran
+    // otras.
+    //
+    // Se prueba sobre el catálogo COMPLETO (no el ofertable): un servicio de baja sigue
+    // apareciendo en `appointments.service` de las citas pasadas, que es justo lo que el
+    // panel reabre y la facturación parte.
+    const conMas = catalogoCompleto.filter(s => String(s.nombre).includes(' + '));
+    for (const svc of catalogoCompleto) {
+        const full = buildFullServiceName(svc, catalogoCompleto);
+        const partes = splitServiceNames(full, catalogoCompleto);
+        check('9-split-vivo', partes.length === 1 && partes[0] === full,
+            `"${full}": a solas se parte como UN servicio`,
+            `dio ${JSON.stringify(partes)}`);
+    }
+    // Las parejas contra un nombre que YA lleva " + ": es donde un split ingenuo se rompe.
+    for (const a of conMas) {
+        const fullA = buildFullServiceName(a, catalogoCompleto);
+        for (const b of catalogoCompleto) {
+            const fullB = buildFullServiceName(b, catalogoCompleto);
+            const combinado = `${fullA} + ${fullB}`;
+            const partes = splitServiceNames(combinado, catalogoCompleto);
+            check('9-split-vivo', partes.length === 2 && partes[0] === fullA && partes[1] === fullB,
+                `"${combinado}": se parte en 2`,
+                `dio ${JSON.stringify(partes)}`);
+        }
+    }
+    if (conMas.length === 0) {
+        // No es un fallo, pero sí algo que saber: sin ningún nombre con " + " el segundo
+        // bucle no prueba nada, exactamente igual que su gemelo del fixture.
+        warn('9-split-vivo', 'ningún servicio VIVO lleva " + " en el nombre: el caso difícil no se está ejercitando');
     }
 
     // ─── Reporte final ────────────────────────────────────────────────────────────────

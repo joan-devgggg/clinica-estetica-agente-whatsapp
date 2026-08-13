@@ -815,10 +815,16 @@ que es lo que hace que parezcan el mismo fichero, y **ninguno de los tres es el 
 
 La raya, que vale para cualquier fichero de catálogo del repo:
 
-| | Dónde va |
-|---|---|
-| lo que necesita ser **DETERMINISTA** (mapeos, splits, formatos) | fixture, fijo |
-| lo que afirma algo del **CATÁLOGO REAL** | `verify:sante`, contra `agent_configs` |
+| | Dónde va | Ejemplo |
+|---|---|---|
+| lo que necesita ser **DETERMINISTA** (mapeos, splits, formatos) | fixture, fijo, en `npm test` | `service-names-parity` (paridad de las dos `splitServiceNames`) |
+| lo que afirma algo del **CATÁLOGO REAL** | `verify:sante`, contra `agent_configs` | **Fase 9** (que ningún nombre VIVO rompa el split) |
+
+Los 16 tests que usan el fixture se corrieron el 13/08/2026 **también contra el catálogo
+vivo**: los 16 en verde. O sea que ninguno depende de en qué se diferencian — todos están ya
+del lado determinista. Lo que faltaba no era repartirlos, era la Fase 9: el fixture está fijo
+a propósito, así que un servicio nuevo con `" + "` en el nombre no lo mira nadie, y eso **no
+da rojo, da ausencia de cobertura**.
 
 Un check «fixture ≡ backup ≡ vivo» sería la regla 5 al revés: mediría antigüedad y viviría en
 rojo, porque un fixture está desfasado **por diseño**. Análisis de qué sí tendría sentido —y

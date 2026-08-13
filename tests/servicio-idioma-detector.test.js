@@ -21,7 +21,7 @@ process.env.TZ = 'Europe/Madrid';
 const assert = require('assert');
 const { detectLargoCategory } = require('../services/helpers');
 
-const CATALOGO = require('./fixtures/sante-catalog.json');
+const CATALOGO = require('./fixtures/sante-catalog.json').services;
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }

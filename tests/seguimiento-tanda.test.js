@@ -9,7 +9,7 @@
 process.env.TZ = 'Europe/Madrid';
 
 const assert = require('assert');
-const CATALOGO = require('./fixtures/sante-catalog.json');
+const CATALOGO = require('./fixtures/sante-catalog.json').services;
 
 const AHORA = new Date('2026-08-13T12:00:00+02:00');
 const haceDias = n => new Date(AHORA.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
