@@ -26,6 +26,13 @@ export interface Conversation {
   is_blacklisted?: boolean;
   escalation_reason?: string | null;
   auto_return?: AutoReturn | null;
+  /**
+   * `conversations.last_message_at`: cuándo habló alguien por última vez en este chat.
+   * Es la clave de orden del Monitor (como WhatsApp). `updated_at` es de la FICHA y se
+   * mueve con cualquier edición (idioma, VIP, corregir el nombre) — solo queda como
+   * fallback para filas sin ningún mensaje.
+   */
+  last_message_at?: string | null;
   updated_at: string;
   created_at: string;
 }
@@ -90,10 +97,17 @@ export async function getConversations(
     const items = data
       .filter((l) => ACTIVE_ESTADOS.includes(l.estado_cita))
       .sort((a, b) => {
+        // Lo escalado y en manual va SIEMPRE primero (es lo que acaba de poner un bloqueo
+        // o una escalada sin atender) — deliberado, documentado en CLAUDE.md (lista negra).
         const aEsc = a.bot_mode === "manual" && !!a.escalation_reason ? 1 : 0;
         const bEsc = b.bot_mode === "manual" && !!b.escalation_reason ? 1 : 0;
         if (aEsc !== bEsc) return bEsc - aEsc;
-        return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+        // Dentro de cada grupo, como WhatsApp: por el último mensaje, no por la última
+        // edición de la ficha (updated_at solo como fallback de filas sin mensajes).
+        return (
+          new Date(b.last_message_at ?? b.updated_at).getTime() -
+          new Date(a.last_message_at ?? a.updated_at).getTime()
+        );
       });
     return { items, hayMas: data.length >= limit };
   } catch {

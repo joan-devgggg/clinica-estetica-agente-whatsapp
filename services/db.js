@@ -282,19 +282,45 @@ async function getAllLeads(orgId, { limit = 200, offset = 0, estado, search, has
     }
 
     if (hasConversation) {
+        // El Monitor ordena como WhatsApp: por el último MENSAJE, no por la última edición
+        // de la ficha. contacts.updated_at se mueve con cualquier escritura del contacto
+        // (idioma, VIP, corregir un nombre desde el panel, resolver una escalada), así que
+        // ordenar por él subía arriba chats sin mensaje nuevo y hundía los que sí lo tenían
+        // (medido el 14/08/2026: un chat cuyo último mensaje era del día 7 aparecía 5º de 47
+        // por una edición de ficha). El corte offset/limit va DESPUÉS de ordenar: con el
+        // range de SQL sobre updated_at, la ventana podía dejar fuera justo la conversación
+        // con el mensaje más reciente.
         const { data: convRows } = await supabase
             .from('conversations')
-            .select('contact_id')
+            .select('contact_id, last_message_at')
             .eq('organization_id', oid);
-        const ids = [...new Set((convRows || []).map(c => c.contact_id))];
-        if (ids.length === 0) return [];
-        query = query.in('id', ids);
+        const lastByContact = new Map();
+        for (const c of (convRows || [])) {
+            const prev = lastByContact.get(c.contact_id);
+            const cur = c.last_message_at || null;
+            if (prev === undefined || (cur && (!prev || cur > prev))) lastByContact.set(c.contact_id, cur);
+        }
+        if (lastByContact.size === 0) return [];
+        const { data } = await query.in('id', [...lastByContact.keys()]);
+        const leads = (data || []).map(row => ({
+            ...rowToPublic(row),
+            last_message_at: lastByContact.get(row.id) || null,
+        }));
+        return ordenarPorUltimoMensaje(leads).slice(offset, offset + limit);
     }
 
     const { data } = await query
         .order('updated_at', { ascending: false })
         .range(offset, offset + limit - 1);
     return (data || []).map(rowToPublic);
+}
+
+// El orden del Monitor, puro y exportado para poder afirmarlo en test. Último mensaje
+// primero; una conversación sin ninguno (fila recién creada, aún sin last_message_at) cae a
+// updated_at para no flotar arriba ni desaparecer del orden.
+function ordenarPorUltimoMensaje(leads) {
+    return [...leads].sort((a, b) =>
+        new Date(b.last_message_at || b.updated_at || 0) - new Date(a.last_message_at || a.updated_at || 0));
 }
 
 async function getLeadsByDateRange(orgId, desde, hasta) {
@@ -3504,6 +3530,7 @@ module.exports = {
     getConfigEntry,
     setConfigValue,
     getAllLeads,
+    ordenarPorUltimoMensaje,
     getLeadsByDateRange,
     updateLeadById,
     deleteLead,

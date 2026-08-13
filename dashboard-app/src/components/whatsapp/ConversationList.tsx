@@ -204,7 +204,9 @@ export function ConversationList({
                       {conv.nombre || conv.telefono}
                     </span>
                     <span className="shrink-0 text-[10.5px] text-muted-foreground leading-none">
-                      {formatTimestamp(conv.updated_at)}
+                      {/* La hora del último MENSAJE, que es también la clave de orden de la
+                          lista. updated_at (edición de ficha) solo si no hay mensajes. */}
+                      {formatTimestamp(conv.last_message_at ?? conv.updated_at)}
                     </span>
                   </div>
 
