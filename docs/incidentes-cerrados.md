@@ -755,3 +755,75 @@ respuesta. *Pasó con el brief del enlace.*
 
 **La regla en una frase: si al mirar la pantalla del móvil se ve más de un botón de copiar,
 está mal.**
+
+## «¿Te lo reservo?» es una pregunta, y la red final se la comía {#te-lo-reservo}
+
+11/08/2026, conv `7a92ac2a`. Una clienta pregunta por el anti-encrespamiento, el bot le pide
+el largo del pelo, ella contesta **«Lo tengo por encima del pecho»** y recibe «Uy, no he
+podido fijar ese hueco 😕 ¿Cuál de los horarios disponibles te viene mejor?». Dos veces —
+12:04 y 12:40, las dos justo tras describir el largo— sin que se hubiera hablado de horarios
+en toda la conversación. Se fue sin cita, y 38 s después escribió «No puedo 160 € más
+productos»: **mapeó ella sola su largo al precio correcto**, que es justo lo que el bot iba a
+decirle y no dijo.
+
+**La causa es el texto del PROPIO bot, no nada que dijera ella.** Con el servicio ya resuelto
+el modelo cierra ofreciendo «¿Te lo reservo?», y `llmClaimsBooked` lo casa por su patrón de
+1ª persona (`te lo reservo` / `te la apunto`): la red final anti-mentira se activa **sobre una
+pregunta**. Como no hay hora ni fecha que casar, `pickChosenSlot` devuelve null y el `else`
+de `bot.js` pisaba la respuesta buena. Medido: **6 de cada 10** turnos reales en ese estado.
+
+Lo que se descartó con medición, porque las dos hipótesis naturales eran falsas: **no existe
+`accion: 'reservar'`** (el enum es `cancelar|cambiar|escalar_humano|null`) y
+**`cita_confirmada` vino `false` en 5 de 5** rejugadas del turno literal contra el LLM real —
+o sea que la rama del flag (`cita_sante_flag_sin_slot`) queda exonerada. Ningún detector
+determinista casa con ese texto, `isAffirmative` incluida. Y `pickChosenSlot` **no lee el
+mensaje de la clienta**: solo `HH:MM` + fecha de `aiResponse.datos`.
+
+**La exención va en el `else`, NUNCA en el gate.** Metida en el gate se saltaría la red
+también cuando SÍ hay hueco identificado («te la apunto el jueves a las 10:00, ¿te va bien?»),
+que es lo que debe seguir verificándose contra la agenda. En el `else` solo actúa cuando no
+hay nada que guardar, así que ninguna reserva cambia. Traza propia:
+`cita_sante_oferta_sin_slot`.
+
+**`asksForBookingApproval` tiene historia y por eso se comprobó en los cuatro idiomas**: el
+07/08 se QUITÓ de la exención de horario por exonerar de más (`подойдёт` está en
+`BOOKING_APPROVAL_QUESTIONS`). Aquí no reabre aquello — las seis afirmaciones reales
+(«te la he reservado», «queda confirmada», «you are all set», «записала тебя», «запис
+підтверджено») dan `asksForBookingApproval` **false** y mantienen la red activa. Está fijado
+fila por fila en `tests/oferta-no-es-afirmacion.test.js`, probado por mutación.
+
+Es la lección de Olga otra vez, y la de Michal: **una red demasiado ancha no sobra un mensaje,
+pierde el bueno.**
+
+**Debajo había una causa estructural, y esa ya está arreglada** (ver la sección siguiente):
+`extractLargoPelo` no entendía «por encima del pecho», así que el bloque determinista no
+resolvía y el turno quedaba entero en manos del modelo.
+
+**El otro síntoma de la misma conversación es la ventana del buffer** (causa 4 de la auditoría
+del 09/08, ya decidida como no-arreglar): a las 12:03 el bot preguntó el largo **dos veces
+seguidas con redacción distinta** porque los dos mensajes de ella iban a **7,197 s** y
+`BUFFER_DELAY_MS` son 5 000. El matiz que aquí duele más de lo que dice esa nota: el segundo
+mensaje era **«Al menos\*», la corrección de una errata** — se contestó dos veces a la misma
+frase.
+
+## Los typos de un servicio van ENUMERADOS, nunca con corrector difuso {#typos-enumerados}
+
+Causa 5 de la misma auditoría (`016b4d9`). La errata más común del servicio más vendido
+devolvía null: Nora escribió «bayalage» tres veces el 10/08 —«im thinking bayalage», «I want a
+bayalage», «blonde bayalage»— y el servicio no aterrizó ninguna. Tres turnos de fricción con
+la clienta repitiendo lo que quería; lo peor lo evitó la guarda de Michal
+(`proposesTimingWithoutService`): sin servicio resuelto el bot no llegó a inventar horas.
+`largoKeywords` (`detectLargoCategory`, helpers.js) lleva ahora `balayage`, `balaiage`,
+`valayage` (escenario 3) y `bayalage`, `baleage`, `balyage`.
+
+**El criterio de admisión es que cada typo lo haya escrito alguien de verdad**, y la trampa
+que no hay que reabrir es sustituir la lista por un corrector difuso. Parece la generalización
+obvia y es lo contrario: `largoKeywords` no es un diccionario de servicios, es una lista con
+criterio —**que nadie la diga de pasada**—, y un fuzzy no sabe distinguir una errata de una
+palabra vecina dicha al pasar. Justo eso deja fuera a `blonde` a secas («I'm blonde and I want
+a haircut» es una descripción, no un servicio), con su test de falso positivo: un umbral
+difuso lo readmitiría sin que ningún test de erratas se enterase. La lección de siempre, otra
+vez: una red demasiado ancha no sobra un mensaje, pierde el bueno.
+
+Red: `tests/balayage-resuelve.test.js`, con el primer mensaje literal de Nora.
+

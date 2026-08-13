@@ -474,115 +474,105 @@ Historia completa (autocontestadores, DarYsol, la clienta de EEUU):
   — sin esa segunda regla «Доброго дня» caía en `'ru'`. Los patrones cirílicos van SIEMPRE por
   `buildCyrillicRe` contra `normalizeText` (NFD descompone й/ё/ї, y `\b` es ASCII).
 
-## La conversación de Olga Yarmak (07/08/2026): cinco síntomas, cuatro causas
+## Las redes anti-mentira del salón: qué vigila cada una y qué NO puede comerse
 
-Cinco fallos en 17 minutos, tres de ellos el mismo bug. La lección que ordena esta sección y
-las dos siguientes: **una red demasiado ancha no sobra un mensaje, pierde el bueno.** Historia
-completa: [`docs/incidentes-cerrados.md#olga-yarmak`](docs/incidentes-cerrados.md#olga-yarmak).
+Sustituyen la respuesta del modelo por una fija, así que cada una se define por su EXENCIÓN:
+el mensaje CORRECTO que no debe tragarse (regla 12). Las conversaciones que las trajeron, con
+su historia entera: [Olga Yarmak](docs/incidentes-cerrados.md#olga-yarmak) ·
+[Michal y Esther](docs/incidentes-cerrados.md#michal-y-esther) ·
+[«¿te lo reservo?»](docs/incidentes-cerrados.md#te-lo-reservo).
 
-- **La raíz común**: `respondsWithInventedSlots` marcaba como inventado cualquier `HH:MM` con
-  `availableSlots` vacío — y el horario del salón *son* dos `HH:MM`, así que mataba «cerramos
-  a las 19:00», la única respuesta correcta. La exención exige **cuatro** cosas (las tres
-  últimas probadas por mutación): (1) toda hora es punta del horario o cae fuera de él;
-  (2) **dos** puntas distintas — una hora suelta es una oferta; (3) el texto se declara
-  horario (`statesOpeningHours`); (4) no da la reserva por hecha (`llmClaimsBooked`).
-  `asksForBookingApproval` **no** entra: exonera de más (`подойдёт` está en
-  `BOOKING_APPROVAL_QUESTIONS` y aparece en la respuesta correcta en ruso).
-- **Gate determinista antes del LLM**: `detectHoraFueraDeHorario` (helpers, puro), primer
-  consumidor de `agent_configs.business_hours`. Nada de constantes (regla 5); sin
-  `business_hours` utilizable **no se dice nada** (regla 3). El mensaje lleva apertura Y
-  cierre. Sin día concreto se usa el **SOBRE** de todos los días (apertura más temprana,
-  cierre más tardío), no la franja común: solo se declara fuera de horario lo que lo es
-  **todos** los días.
+| Red | Vigila | La exención: el mensaje bueno que no puede comerse |
+|---|---|---|
+| `respondsWithInventedSlots` | `HH:MM` sin huecos cargados | el HORARIO del propio salón (cuatro condiciones) |
+| `respondsWithInventedDates` | fechas sin respaldo | (1) la fecha de una cita que YA tiene; (2) negar hueco en UNA fecha |
+| `llmClaimsBooked` + `pickChosenSlot` | dar una reserva por hecha | «¿te lo reservo?» es una PREGUNTA |
+| `proposesTimingWithoutService` | día/franja/horas con `selectedService` a null | ninguna: ahí no hay mensaje bueno que perder |
+| `extractPrecioMencionado` | la cifra que dijo la clienta, sin respaldo | la respuesta que SÍ nombra esa cifra |
+| `ensureHandoverAcknowledged` | escalada muda | no sustituye: AÑADE el acuse |
 
-- **El menú de rescate tenía suelo, no techo**: `streak >= 2` devolvía el mismo párrafo
-  indefinidamente. Ahora al cuarto turno sin servicio se **ofrece** una persona y se espera el
-  «sí» (`pendingEscalation`, armado a mano y no vía `offersHumanHandover`, que solo reconoce
-  el castellano — para una clienta rusa la oferta quedaría colgando).
-- **Fechas inventadas** (Ludmila Zarahovich, 03/08: pidió el 28, le ofrecieron «27, 29 o 30»
-  y le negaron los tres): se vigilaban las horas y nadie las fechas.
-  `respondsWithInventedDates` con **dos exenciones, que son la parte que importa**: (1) la
-  fecha de una cita que la clienta YA tiene es legítima; (2) declarar que no hay hueco en
-  **UNA** fecha es negación honesta, no oferta — el límite de una es lo que separa eso del
-  mensaje de Ludmila. `extractMentionedDates`: cuatro idiomas, enumeración con coma **y**
-  conjunción (quedarse en la coma pierde el último), en inglés el día detrás del mes, límites
-  de palabra a mano (`\b` es ASCII: «mayo» casa dentro de «mayoría»), y un día suelto sin mes
-  se deja fuera — choca con elegir hueco por número.
+**La exención del horario exige CUATRO cosas** (las tres últimas probadas por mutación):
+(1) toda hora es punta del horario o cae fuera de él; (2) **dos** puntas distintas —una hora
+suelta es una oferta—; (3) el texto se declara horario (`statesOpeningHours`); (4) no da la
+reserva por hecha (`llmClaimsBooked`). `asksForBookingApproval` **no** entra, porque exonera de
+más: `подойдёт` está en `BOOKING_APPROVAL_QUESTIONS` y aparece en la respuesta correcta en
+ruso. Es la red que mataba «cerramos a las 19:00», que era la única respuesta correcta.
 
-- **Cancelar no lo ejecuta el modelo** (Celeste González, 06/08: el bot le canceló la cita
-  60 s después de crearla, sin preguntar). Había **dos caminos para la misma acción y solo uno
-  con guarda**; ahora el `accion` del modelo pasa por `cancelarConConfirmacion` y la guarda
-  vive **dentro de `handleAppointmentAction`** (el salón no cancela por ahí, punto), para que
-  un camino nuevo no pueda reabrirlo. San Remo intacto, con test. Y `detectCancelRequest` no
-  reconocía «Cancélala»: los enclíticos van ENUMERADOS (`-me/-la/-lo`), no con comodín —
-  «cancelada» es *nuestro* acuse y «cancelación» pregunta por la política; test de falso
-  positivo para esos dos, «cáncer» y «canela».
-- **Si se escala, se dice**: `ensureHandoverAcknowledged` **añade** el acuse cuando el LLM
-  escala de verdad (antes la clienta recibía una pregunta y luego silencio). La mala
-  clasificación del LLM no se persigue: con acuse, una escalada de más deja a una clienta
-  bien avisada. Límite conocido: `HANDOVER_TRASPASO`/`DESTINO` son castellano; un traspaso ya
-  anunciado en ruso recibe acuse redundante (las dos frases ciertas). Ampliarlos cambiaría a
-  quién auto-escala la red del 28/07.
+**La exención de «¿te lo reservo?» va en el `else`, NUNCA en el gate.** En el gate se saltaría
+la red también cuando SÍ hay hueco identificado («te la apunto el jueves a las 10:00, ¿te va
+bien?»), que es justo lo que debe seguir verificándose contra la agenda; en el `else` solo
+actúa cuando no hay nada que guardar, así que ninguna reserva cambia. Traza propia:
+`cita_sante_oferta_sin_slot`. Las seis afirmaciones reales («te la he reservado», «queda
+confirmada», «you are all set», «записала тебя», «запис підтверджено») siguen dando
+`asksForBookingApproval` **false** y mantienen la red activa, fila por fila en
+`tests/oferta-no-es-afirmacion.test.js`.
+
+**El precio era el único dato duro del salón sin red** hasta el 13/08/2026, y su exención va en
+la salida `'atendido'`: si la respuesta nombra esa cifra se deja de vigilar; puesta en el gate,
+la red dispararía en el turno siguiente contra la respuesta BUENA. `MONEDA_SUFIJOS` es UNA
+lista, compartida por los dos sitios que leen ese número con intenciones opuestas
+—`NO_ES_HORA_DETRAS` para descartarlo y `extractPrecioMencionado` para capturarlo—: con dos,
+añadir un sufijo a una dejaría ciega a la otra en silencio.
+
+**Antes de las redes hay un gate determinista**: `detectHoraFueraDeHorario` (helpers, puro),
+primer consumidor de `agent_configs.business_hours`. Nada de constantes (regla 5), y sin
+`business_hours` utilizable **no se dice nada** (regla 3). El mensaje lleva apertura Y cierre;
+sin día concreto se usa el **SOBRE** de todos los días (apertura más temprana, cierre más
+tardío), no la franja común: solo se declara fuera de horario lo que lo es **todos** los días.
+
+**Lo que leen las redes lo extraen tres funciones, y ahí están las trampas:**
+
+- `extractLooseClockHours` — las horas sin minutos («around 10, 11, or 12») eran invisibles
+  para `HORA_HHMM_SRC`, que exige los dos puntos. Exige **marcador temporal delante** (a las /
+  around / at / после / в…): **«Largo 2» no son las dos**, «35 €» no son las nueve y
+  «August 10» es una fecha. Enumeración con coma **y** conjunción, y la misma regla de 12 h que
+  `normalizeHora`.
+- `extractMentionedDates` — cuatro idiomas, enumeración con coma **y** conjunción (quedarse en
+  la coma pierde el último), en inglés el día detrás del mes, límites de palabra a mano (`\b`
+  es ASCII: «mayo» casa dentro de «mayoría»), y un día suelto sin mes se deja fuera.
+- `largoKeywords` (`detectLargoCategory`) — los typos van **ENUMERADOS**, jamás un corrector
+  difuso, y el criterio de admisión es doble: que lo haya escrito alguien de verdad y **que
+  nadie la diga de pasada**. `blonde` a secas queda fuera («I'm blonde and I want a haircut» es
+  una descripción) con test de falso positivo; un umbral difuso lo readmitiría sin que ningún
+  test de erratas se enterase. Historia:
+  [typos](docs/incidentes-cerrados.md#typos-enumerados).
+
+Red: `tests/oferta-no-es-afirmacion.test.js`, `tests/precio-sin-respaldo.test.js` y
+`tests/balayage-resuelve.test.js`, los tres probados por mutación.
+
+## Lo que salió de esas conversaciones y no es una red
+
+- **Cancelar no lo ejecuta el modelo.** El `accion` del LLM pasa por `cancelarConConfirmacion`,
+  y la guarda vive **dentro de `handleAppointmentAction`** (el salón no cancela por ahí, punto)
+  para que un camino nuevo no pueda reabrirlo. San Remo intacto, con test. Los enclíticos de
+  `detectCancelRequest` van ENUMERADOS (`-me/-la/-lo`), no con comodín: «cancelada» es
+  *nuestro* acuse y «cancelación» pregunta por la política, y los dos tienen test de falso
+  positivo.
+- **El menú de rescate tiene techo**: al cuarto turno sin servicio se **ofrece** una persona y
+  se espera el «sí» (`pendingEscalation` armado a mano, no vía `offersHumanHandover`, que solo
+  reconoce el castellano — para una clienta rusa la oferta quedaría colgando).
+- **Si se escala, se dice**: `ensureHandoverAcknowledged` **añade** el acuse. La mala
+  clasificación del LLM no se persigue: con acuse, una escalada de más deja a una clienta bien
+  avisada. Límite conocido: `HANDOVER_TRASPASO`/`DESTINO` son castellano, así que un traspaso
+  ya anunciado en ruso recibe acuse redundante (las dos frases ciertas).
 - **El trato de usted**: `detectTratamiento` → `session.tratamiento` →
-  `contacts.metadata.tratamiento` (jsonb, sin migración) + línea de prompt. Viaja en
-  `buildSessionExtra` — sin eso se pierde en cada rehidratación. TRAMPA cubierta: «на вы» es
-  subcadena de «на выходных» (fin de semana); hace falta el lookahead cirílico, `\b` no sirve.
-  DEUDA deliberada: solo tienen variante formal los textos fijos del camino de Olga; el resto
-  sigue tuteando hasta que haya señal de que molesta.
+  `contacts.metadata.tratamiento` (jsonb, sin migración) + línea de prompt, viajando en
+  `buildSessionExtra`. TRAMPA cubierta: «на вы» es subcadena de «на выходных» (fin de semana),
+  así que hace falta el lookahead cirílico. DEUDA deliberada: solo tienen variante formal los
+  textos fijos del camino de Olga.
 - **Fotos**: no hay **salida** de media (`image`/`video` solo de ENTRADA en
-  `threesixty-dialog.js`). `business_info.instagram`/`.web` son editables; si están, el prompt
-  manda pasarlos; si no, decir que no se pueden enviar y ofrecer la consulta — prohibido
-  «te las mando en un momento».
-
-## «¿Te lo reservo?» es una pregunta, y la red final se la comía
-
-11/08/2026, conv `7a92ac2a`. Una clienta pregunta por el anti-encrespamiento, el bot le pide
-el largo del pelo, ella contesta **«Lo tengo por encima del pecho»** y recibe «Uy, no he
-podido fijar ese hueco 😕 ¿Cuál de los horarios disponibles te viene mejor?». Dos veces —
-12:04 y 12:40, las dos justo tras describir el largo— sin que se hubiera hablado de horarios
-en toda la conversación. Se fue sin cita, y 38 s después escribió «No puedo 160 € más
-productos»: **mapeó ella sola su largo al precio correcto**, que es justo lo que el bot iba a
-decirle y no dijo.
-
-**La causa es el texto del PROPIO bot, no nada que dijera ella.** Con el servicio ya resuelto
-el modelo cierra ofreciendo «¿Te lo reservo?», y `llmClaimsBooked` lo casa por su patrón de
-1ª persona (`te lo reservo` / `te la apunto`): la red final anti-mentira se activa **sobre una
-pregunta**. Como no hay hora ni fecha que casar, `pickChosenSlot` devuelve null y el `else`
-de `bot.js` pisaba la respuesta buena. Medido: **6 de cada 10** turnos reales en ese estado.
-
-Lo que se descartó con medición, porque las dos hipótesis naturales eran falsas: **no existe
-`accion: 'reservar'`** (el enum es `cancelar|cambiar|escalar_humano|null`) y
-**`cita_confirmada` vino `false` en 5 de 5** rejugadas del turno literal contra el LLM real —
-o sea que la rama del flag (`cita_sante_flag_sin_slot`) queda exonerada. Ningún detector
-determinista casa con ese texto, `isAffirmative` incluida. Y `pickChosenSlot` **no lee el
-mensaje de la clienta**: solo `HH:MM` + fecha de `aiResponse.datos`.
-
-**La exención va en el `else`, NUNCA en el gate.** Metida en el gate se saltaría la red
-también cuando SÍ hay hueco identificado («te la apunto el jueves a las 10:00, ¿te va bien?»),
-que es lo que debe seguir verificándose contra la agenda. En el `else` solo actúa cuando no
-hay nada que guardar, así que ninguna reserva cambia. Traza propia:
-`cita_sante_oferta_sin_slot`.
-
-**`asksForBookingApproval` tiene historia y por eso se comprobó en los cuatro idiomas**: el
-07/08 se QUITÓ de la exención de horario por exonerar de más (`подойдёт` está en
-`BOOKING_APPROVAL_QUESTIONS`). Aquí no reabre aquello — las seis afirmaciones reales
-(«te la he reservado», «queda confirmada», «you are all set», «записала тебя», «запис
-підтверджено») dan `asksForBookingApproval` **false** y mantienen la red activa. Está fijado
-fila por fila en `tests/oferta-no-es-afirmacion.test.js`, probado por mutación.
-
-Es la lección de Olga otra vez, y la de Michal: **una red demasiado ancha no sobra un mensaje,
-pierde el bueno.**
-
-**Debajo había una causa estructural, y esa ya está arreglada** (ver la sección siguiente):
-`extractLargoPelo` no entendía «por encima del pecho», así que el bloque determinista no
-resolvía y el turno quedaba entero en manos del modelo.
-
-**El otro síntoma de la misma conversación es la ventana del buffer** (causa 4 de la auditoría
-del 09/08, ya decidida como no-arreglar): a las 12:03 el bot preguntó el largo **dos veces
-seguidas con redacción distinta** porque los dos mensajes de ella iban a **7,197 s** y
-`BUFFER_DELAY_MS` son 5 000. El matiz que aquí duele más de lo que dice esa nota: el segundo
-mensaje era **«Al menos\*», la corrección de una errata** — se contestó dos veces a la misma
-frase.
+  `threesixty-dialog.js`). Si `business_info.instagram`/`.web` están, el prompt manda pasarlos;
+  si no, decir que no se pueden enviar y ofrecer la consulta — prohibido «te las mando en un
+  momento». El idioma de una foto va en cascada (sesión → **el texto que espera en el buffer**
+  → la ficha solo si es `'observed'`), el turno se anota en `session.history`, y con texto suyo
+  en vuelo la foto **no se contesta aparte**.
+- **Un dato que el bot no tiene** → caso 7, `motivo_escalado: "dato_no_disponible"`, acotado a
+  lo CONCRETO y COMPROBABLE y explícitamente fuera para precios, servicios, horarios y
+  disponibilidad.
+- **Decidido NO arreglar** (anotado en el propio código): la ventana del buffer
+  (`BUFFER_DELAY_MS` 5000 vs mensajes a 7,9 s — es dimensionado, no dedupe); el dedupe de
+  sesión muerto en la ruta real (`flushBuffer` pasa `messageKey = null`, y toda la protección
+  es `buffer.seenKeys`); y `sinServicioStreak`, que no viaja en `buildSessionExtra`.
 
 ## El largo del pelo: el modificador manda, y se evalúa de 4 a 1
 
@@ -624,44 +614,6 @@ porque prueban cosas distintas: revertir la función tumba los 21 bloques nuevos
 el que protege es el orden, no las palabras. Y `verify:sante` (Fase 2-largo) llevaba el bug
 metido en su propio fixture: usaba `'por media espalda'` como texto de nivel 2, o sea que
 afirmaba el mapeo equivocado; ahora usa «por debajo de los hombros» y vigila el caso caro.
-
-## Michal Gradziel y Esther Cediloo: seis síntomas, cuatro causas
-
-Dos conversaciones del 07-08/08/2026, arregladas el 09/08: Michal pidió una decoloración
-completa **en inglés** y la cita la acabó cerrando una persona desde el panel; Esther pidió un
-dato que el bot no tenía. Historia completa:
-[`docs/incidentes-cerrados.md#michal-y-esther`](docs/incidentes-cerrados.md#michal-y-esther).
-
-- **`largoKeywords` va en los cuatro idiomas**, con criterio de admisión: **que nadie la diga
-  de pasada**. `blonde` a secas queda fuera («I'm blonde and I want a haircut» es una
-  descripción) y tiene test de falso positivo.
-- **Guarda sobre lo que el modelo DICE**: `proposesTimingWithoutService` sustituye por
-  `salonNoSlotsMsg` cuando el modelo propone día/franja/horas con `selectedService` a null.
-  Las guardas de código (`loadAvailableSlots`, `askDatePreferenceFirst`) estaban bien y no
-  fallaron; lo que no existía era esta.
-- **`extractLooseClockHours`**: las tres redes eran ciegas a horas sin minutos («around 10,
-  11, or 12») porque `HORA_HHMM_SRC` exige los dos puntos. Exige **marcador temporal delante**
-  (a las / around / at / после / в…): **«Largo 2» no son las dos**, «35 €» no son las nueve y
-  «August 10» es una fecha. Enumeración con coma **y** conjunción, y la misma regla de 12h que
-  `normalizeHora` — que en `bot.js` se conserva encima (convierte «5:30» en 17:30 para casar
-  con un hueco real).
-
-Y el resto en corto:
-
-- **Fotos (tres arreglos).** La rama de media hace `return` antes del buffer. El idioma
-  ahora cascada: sesión → **el texto que espera en el buffer** (evidencia del mismo turno) →
-  la ficha solo si es `'observed'` — un `'default'` o `'inferred'` no deciden. El turno de la
-  foto **se anota en `session.history`** y lo drena `processMessageCore` (el placeholder
-  `[image]` va a `messages`/panel, no al prompt). Y con texto suyo en vuelo la foto **no se
-  contesta aparte**; una foto sola sí, con test.
-- **Dato que el bot no tiene** → caso 7, `motivo_escalado: "dato_no_disponible"`, acotado a
-  lo CONCRETO y COMPROBABLE y explícitamente fuera para precios, servicios, horarios y
-  disponibilidad. Escenario 23 de `verify:robustez:llm`, que afirma el ESTADO.
-- **Decidido NO arreglar** (anotado en el propio código): la ventana del buffer
-  (`BUFFER_DELAY_MS` 5000 vs mensajes a 7,9 s — es dimensionado, no dedupe); el dedupe de
-  sesión muerto en la ruta real (`flushBuffer` pasa `messageKey = null`; toda la protección
-  es `buffer.seenKeys`); y `sinServicioStreak` no viaja en `buildSessionExtra` (el nivel
-  «ofrecer una persona» es inalcanzable si la conversación cruza un timeout).
 
 ## Mariola Mira Lopez (12/08/2026): «somos dos» no cabía en ningún sitio, y el precio no lo leía nadie
 
@@ -735,27 +687,6 @@ Red: `tests/varias-personas.test.js` y `tests/precio-sin-respaldo.test.js`, cada
 mutaciones. **El escenario 25 del arnés LLM es un VIGÍA, no una prueba**: medido con la red
 apagada, salió igualmente en verde porque el modelo nombró los 60 € él solo esa corrida — el
 fallo de Mariola era intermitente. Quien prueba la red es el test determinista.
-
-## Los typos de un servicio van ENUMERADOS, nunca con corrector difuso
-
-Causa 5 de la misma auditoría (`016b4d9`). La errata más común del servicio más vendido
-devolvía null: Nora escribió «bayalage» tres veces el 10/08 —«im thinking bayalage», «I want a
-bayalage», «blonde bayalage»— y el servicio no aterrizó ninguna. Tres turnos de fricción con
-la clienta repitiendo lo que quería; lo peor lo evitó la guarda de Michal
-(`proposesTimingWithoutService`): sin servicio resuelto el bot no llegó a inventar horas.
-`largoKeywords` (`detectLargoCategory`, helpers.js) lleva ahora `balayage`, `balaiage`,
-`valayage` (escenario 3) y `bayalage`, `baleage`, `balyage`.
-
-**El criterio de admisión es que cada typo lo haya escrito alguien de verdad**, y la trampa
-que no hay que reabrir es sustituir la lista por un corrector difuso. Parece la generalización
-obvia y es lo contrario: `largoKeywords` no es un diccionario de servicios, es una lista con
-criterio —**que nadie la diga de pasada**—, y un fuzzy no sabe distinguir una errata de una
-palabra vecina dicha al pasar. Justo eso deja fuera a `blonde` a secas («I'm blonde and I want
-a haircut» es una descripción, no un servicio), con su test de falso positivo: un umbral
-difuso lo readmitiría sin que ningún test de erratas se enterase. La lección de siempre, otra
-vez: una red demasiado ancha no sobra un mensaje, pierde el bueno.
-
-Red: `tests/balayage-resuelve.test.js`, con el primer mensaje literal de Nora.
 
 ## Bloquear agenda: `schedule_blocks`, nunca una cita con clienta inventada
 
