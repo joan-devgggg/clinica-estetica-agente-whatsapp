@@ -796,11 +796,17 @@ y `PATCH /api/agent-config` sigue reemplazando el array entero — copia antes d
 ⚠️ **Ese backup sirve para RESTAURAR, nunca para CONSULTAR qué hay en el catálogo**, y no
 porque esté mal hecho: `sante-catalogo-backup-2026-08-12.json` es la copia **deliberada
 previa a la migración 040**, que renombró los tres Spa Hair. Hace justo lo que debe. Lo que
-no tiene es ninguna señal de serlo — **su nombre solo lleva una fecha**, así que quien lo
-abre buscando «qué hay en el catálogo» se lleva el *antes* de un renombrado sin enterarse.
+no tenía era ninguna señal de serlo — **su nombre solo lleva una fecha**, así que quien lo
+abría buscando «qué hay en el catálogo» se llevaba el *antes* de un renombrado sin enterarse.
 Pasó el 13/08/2026 al diagnosticar la conversación de Mariola: el fichero dice `Detox 60min`
 donde `agent_configs.services` dice `Spa Hair Detox`, y de ahí salió la conclusión falsa de
 que el bot se había inventado el nombre.
+
+Por eso **los dos backups llevan ahora un `_meta` en la línea 2** (`tomado_el`, `antes_de`,
+`antes_de_migracion`, el diff con el estado siguiente, y qué comprobar antes de restaurar).
+El array pasa a colgar de `.services`: **se restaura pegando `.services`, no el objeto
+entero.** Ese paso de más es deliberado — obliga a abrir el fichero, que es donde está el
+aviso.
 
 Y hay un tercero: `tests/fixtures/sante-catalog.json`, que **no es el «antes» de nada** sino
 un fichero mantenido a mano que siguió unos cambios y no otros (tiene los nombres nuevos de
