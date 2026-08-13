@@ -162,8 +162,15 @@ ALTER TABLE seguimientos ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "seguimientos_service_role" ON seguimientos
   TO service_role USING (true) WITH CHECK (true);
 
+-- FOR SELECT, no FOR ALL. Todas las escrituras vienen del worker, que va por service_role
+-- (services/supabase.js se crea con SUPABASE_SERVICE_ROLE_KEY); el panel solo necesita LEER.
+-- Con FOR ALL, un usuario autenticado podría reescribir desde el navegador el precio que se
+-- le prometió a una clienta — una promesa de dinero es superficie que no hace falta abrir.
+-- Comprobado antes de cerrarlo: dashboard-app no toca esta tabla por ningún sitio, y sí usa
+-- el cliente de navegador para otras (reservas, lista-negra, resenas), así que la ausencia
+-- es real y no un descuido del grep.
 CREATE POLICY "seguimientos_authenticated_own" ON seguimientos
-  FOR ALL TO authenticated
+  FOR SELECT TO authenticated
   USING (organization_id = (
     SELECT organization_id FROM profiles WHERE id = auth.uid()
   ));
