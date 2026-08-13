@@ -900,3 +900,44 @@ mutaciones. **El escenario 25 del arnés LLM es un VIGÍA, no una prueba**: medi
 apagada, salió igualmente en verde porque el modelo nombró los 60 € él solo esa corrida — el
 fallo de Mariola era intermitente. Quien prueba la red es el test determinista.
 
+## Los tres ficheros de catálogo del repo, y por qué ninguno es el vivo {#tres-catalogos}
+
+⚠️ **Ese backup sirve para RESTAURAR, nunca para CONSULTAR qué hay en el catálogo**, y no
+porque esté mal hecho: `sante-catalogo-backup-2026-08-12.json` es la copia **deliberada
+previa a la migración 040**, que renombró los tres Spa Hair. Hace justo lo que debe. Lo que
+no tenía era ninguna señal de serlo — **su nombre solo lleva una fecha**, así que quien lo
+abría buscando «qué hay en el catálogo» se llevaba el *antes* de un renombrado sin enterarse.
+Pasó el 13/08/2026 al diagnosticar la conversación de Mariola: el fichero dice `Detox 60min`
+donde `agent_configs.services` dice `Spa Hair Detox`, y de ahí salió la conclusión falsa de
+que el bot se había inventado el nombre.
+
+Por eso **los dos backups llevan ahora un `_meta` en la línea 2** (`tomado_el`, `antes_de`,
+`antes_de_migracion`, el diff con el estado siguiente, y qué comprobar antes de restaurar).
+El array pasa a colgar de `.services`: **se restaura pegando `.services`, no el objeto
+entero.** Ese paso de más es deliberado — obliga a abrir el fichero, que es donde está el
+aviso.
+
+Y hay un tercero: `tests/fixtures/sante-catalog.json`, que **no es el «antes» de nada** sino
+un fichero mantenido a mano que siguió unos cambios y no otros (tiene los nombres nuevos de
+Spa Hair, le sobra `Japonesa` y le falta `Difuminado de raíz`). Los tres tienen 81 entradas,
+que es lo que hace que parezcan el mismo fichero, y **ninguno de los tres es el vivo**.
+
+La raya, que vale para cualquier fichero de catálogo del repo:
+
+| | Dónde va | Ejemplo |
+|---|---|---|
+| lo que necesita ser **DETERMINISTA** (mapeos, splits, formatos) | fixture, fijo, en `npm test` | `service-names-parity` (paridad de las dos `splitServiceNames`) |
+| lo que afirma algo del **CATÁLOGO REAL** | `verify:sante`, contra `agent_configs` | **Fase 9** (que ningún nombre VIVO rompa el split) |
+
+Los 16 tests que usan el fixture se corrieron el 13/08/2026 **también contra el catálogo
+vivo**: los 16 en verde. O sea que ninguno depende de en qué se diferencian — todos están ya
+del lado determinista. Lo que faltaba no era repartirlos, era la Fase 9: el fixture está fijo
+a propósito, así que un servicio nuevo con `" + "` en el nombre no lo mira nadie, y eso **no
+da rojo, da ausencia de cobertura**.
+
+Un check «fixture ≡ backup ≡ vivo» sería la regla 5 al revés: mediría antigüedad y viviría en
+rojo, porque un fixture está desfasado **por diseño**. Análisis de qué sí tendría sentido —y
+del riesgo real, que es que restaurar un backup viejo deja sin resolver las citas pasadas y
+mueve el dinero de meses cerrados— en
+[`docs/observaciones-para-proxima-auditoria.md`](docs/observaciones-para-proxima-auditoria.md).
+
