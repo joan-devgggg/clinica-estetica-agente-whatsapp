@@ -127,6 +127,12 @@ const CONFIG_NUMERICAS = {
  * @returns {{ok: true, valor: any}|{ok: false, motivo: string, mensaje: string}}
  */
 function validateConfigValue(clave, valor) {
+    // `seguimientos` no es un número: es la lista de reglas de la propuesta post-visita, y se
+    // valida por forma. Va ANTES del early-return de abajo, que deja pasar sin mirar todo lo
+    // que no esté en CONFIG_NUMERICAS — y por ese hueco entraría una regla con el destino
+    // escrito a mano, que es exactamente lo que no puede pasar.
+    if (clave === 'seguimientos') return validateSeguimientosConfig(valor);
+
     const regla = CONFIG_NUMERICAS[clave];
     if (!regla) return { ok: true, valor };
 
@@ -4014,6 +4020,329 @@ function buildStylistBillingReport(appointments, catalog, { ivaRate = 0.21 } = {
     };
 }
 
+// ─── Seguimiento post-visita ────────────────────────────────────────────────
+//
+// La propuesta que sale días o semanas después de una cita ("hidratación a las 2-3 semanas
+// de unas mechas", "matiz al mes"), con un descuento si reserva.
+//
+// TODO lo de esta sección existe para una sola cosa: que una regla se ate a una entrada REAL
+// del catálogo y no a una frase. El precedente es `business_info.upselling`, donde las 9
+// sugerencias están escritas como frases de marketing y 7 no casan con ninguna entrada — con
+// la consecuencia, ya anotada en CLAUDE.md, de que el bot puede ofrecer por upsell un
+// servicio dado de baja. Un upsell mal atado se dice dentro de una conversación viva y se
+// corrige hablando; un seguimiento mal atado sale solo a un teléfono con un precio escrito.
+//
+// De ahí que aquí no haya ni un solo camino difuso. Lo que no resuelve, no envía, y se dice.
+
+// La identidad de una entrada de catálogo: "categoria|nombre".
+//
+// No es un id porque el catálogo NO tiene ids — es un array JSONB en `agent_configs.services`
+// cuyas entradas son {nombre, precio, duracion, categoria}. Y `nombre` a secas no vale:
+// "Corto" existe 4 veces con 4 precios distintos. El par sí es único (medido sobre el
+// catálogo real: 81 claves para 81 entradas).
+//
+// Es EXACTAMENTE la clave que ya emite `GET /api/service-catalog` y a la que ya se atan los
+// desplegables del panel. Se comparte a propósito: el desplegable que elige la dueña y la
+// resolución que envía el WhatsApp tienen que hablar del mismo servicio, y la única forma
+// barata de garantizarlo es que sea literalmente la misma cadena.
+function serviceCatalogKey(svc) {
+    if (!svc || !svc.nombre) return null;
+    return `${svc.categoria || ''}|${svc.nombre || ''}`;
+}
+
+// La entrada que corresponde a una clave. ESTRICTA: o casa la cadena entera, o null.
+//
+// Sin difuso y sin normalizar acentos a propósito. Si la dueña renombra un servicio desde el
+// panel (pasa: la 023 renombró variantes y la 040 los tres Spa Hair), la clave deja de casar
+// y la regla queda desactivada CON AVISO — que es lo correcto. Un difuso se llevaría la
+// entrada de al lado y mandaría el precio de otro servicio: es el mismo fallo que facturó
+// 310 € donde eran 210 €.
+function findCatalogEntryByKey(key, catalog) {
+    if (!key || typeof key !== 'string' || !Array.isArray(catalog)) return null;
+    const target = key.trim();
+    if (!target.includes('|')) return null;
+    return catalog.find(svc => serviceCatalogKey(svc) === target) || null;
+}
+
+// Las CATEGORÍAS que toca una cita ya guardada. Es el puente entre `appointments.service` y
+// la regla, y la pieza que hace innecesaria cualquier búsqueda por frase.
+//
+// Por qué no se puede mirar el texto: `appointments.service` guarda lo que devuelve
+// buildFullServiceName, y para varias categorías ESE NOMBRE NO CONTIENE LA CATEGORÍA. Una
+// cita de Balayage se guarda como "Cabello corto" y una de Mechas clásicas como "Mechas 1":
+// un `includes('balayage')` fallaría en las 4 entradas de Balayage y en las 3 de clásicas.
+//
+// Un segmento AMBIGUO (el mismo nombre en varias categorías, como un "Corto" suelto) no
+// elige ninguna. Elegir la primera es el bug de "Largo 2", que cobraba hasta 115 € de más;
+// aquí no cobraría de más, dispararía la regla equivocada — que acaba en el mismo sitio, un
+// WhatsApp con un servicio que no toca.
+function categoriasDeServicio(serviceString, catalog) {
+    if (!serviceString || !Array.isArray(catalog) || !catalog.length) return [];
+    const out = [];
+    for (const name of splitServiceNames(serviceString, catalog)) {
+        const entradas = findCatalogEntriesExact(name, catalog);
+        if (!entradas.length) continue;
+        const cats = [...new Set(entradas.map(e => e.categoria).filter(Boolean))];
+        if (cats.length !== 1) continue;   // ambiguo: no se adivina
+        if (!out.includes(cats[0])) out.push(cats[0]);
+    }
+    return out;
+}
+
+const SEGUIMIENTO_DIAS_MIN = 1;
+const SEGUIMIENTO_DIAS_MAX = 365;
+
+// El precio con el descuento aplicado, redondeado al céntimo. Devuelve **null** —nunca 0—
+// cuando no se puede calcular.
+//
+// El 0 es la trampa de siempre: `precio_facturado` a null daba `Number(null) === 0` y una
+// cita se presentaba como calculada a 0,00 €. Aquí sería peor, porque ese 0 no se queda en
+// un informe: sale por WhatsApp diciéndole a una clienta que su tratamiento es gratis.
+// `Number()` no sirve como guarda y por eso existe esto: `Number(null)`, `Number('')` y
+// `Number(' ')` valen **0**, y `Number(true)` vale 1. Un `Number(x)` seguido de
+// `Number.isFinite` deja pasar los cuatro como si fueran cifras buenas. Es el mismo `Number()`
+// que convirtió un `precio_facturado` nulo en una cita facturada a 0,00 €; aquí ese 0 no se
+// quedaría en un informe, saldría por WhatsApp como "gratis".
+function _numeroONada(v) {
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+    if (typeof v === 'string' && v.trim() !== '') {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+    }
+    return null;
+}
+
+function precioConDescuento(precio, pct) {
+    const p = _numeroONada(precio);
+    const d = _numeroONada(pct);
+    if (p == null || p < 0) return null;
+    if (d == null || d < 0 || d > 100) return null;
+    return _round2(p * (1 - d / 100));
+}
+
+// Los euros tal como están escritos en la lista de precios del salón: "85 €", "76,50 €".
+//
+// Un solo formato para los cuatro idiomas, y es deliberado. El número que la clienta lee por
+// WhatsApp es el mismo que va a ver en el mostrador y en el ticket; dos grafías del mismo
+// importe son dos versiones de la misma cifra, y la discusión que eso abre cuesta más que la
+// comodidad de escribirlo "a la inglesa".
+function formatPrecioEur(n) {
+    const v = _numeroONada(n);
+    if (v == null) return null;
+    return Number.isInteger(v) ? `${v} €` : `${v.toFixed(2).replace('.', ',')} €`;
+}
+
+// Las entradas del catálogo que podrían ser el destino que la dueña tiene en la cabeza.
+//
+// SOLO para enseñárselas y que elija: esta función no decide nada. Es lo que convierte
+// "hidratación" (tres entradas, 45/85/110 €) en una lista con sus precios delante, que es
+// justo lo que hace falta para que la elección sea suya y no mía.
+function opcionesDeSeguimiento(sugerencia, catalog) {
+    if (!sugerencia || !Array.isArray(catalog)) return [];
+    const q = normalizeText(sugerencia);
+    if (!q) return [];
+    return catalog
+        .filter(isServiceActive)
+        .filter(svc => Number.isFinite(Number(svc?.precio)))
+        .filter(svc => normalizeText(svc.nombre).includes(q) || normalizeText(svc.categoria || '').includes(q))
+        .map(svc => ({
+            key: serviceCatalogKey(svc),
+            nombre: buildFullServiceName(svc, catalog),
+            categoria: svc.categoria || null,
+            precio: Number(svc.precio),
+        }));
+}
+
+// Resuelve UNA regla contra el catálogo. Devuelve `{ok:true, …}` o `{ok:false, motivo,
+// mensaje, opciones}`.
+//
+// `mensaje` está escrito para la DUEÑA, no para un log: es lo que imprime el preview y lo
+// que decide si una regla se queda muda para siempre o alguien la arregla. Sin jerga.
+function resolveSeguimientoRegla(regla, catalog) {
+    const key = regla?.key || null;
+    const base = { ok: false, key, opciones: [] };
+
+    if (!regla || typeof regla !== 'object') {
+        return { ...base, motivo: 'regla_invalida', mensaje: 'Esta regla está vacía.' };
+    }
+    if (regla.activa === false) {
+        return { ...base, motivo: 'apagada', mensaje: 'Esta regla está apagada.' };
+    }
+
+    // ── Origen: tiene que ser una categoría EXISTENTE, no un prefijo ──────────
+    // "Mechas" es prefijo de cuatro categorías (Airtouch, clásicas, Contouring, Balayage).
+    // Aceptarlo por parecido dispararía las cuatro sin que nadie lo hubiera pedido.
+    const categorias = [...new Set((catalog || []).map(s => s?.categoria).filter(Boolean))];
+    if (!regla.origen || !categorias.some(c => c === regla.origen)) {
+        return {
+            ...base,
+            motivo: 'origen_no_existe',
+            mensaje: `«${regla.origen || '(vacío)'}» no es una categoría del catálogo, así que esta regla no se dispara nunca.`,
+        };
+    }
+
+    // ── Destino ───────────────────────────────────────────────────────────────
+    if (!regla.destino) {
+        const opciones = opcionesDeSeguimiento(regla.sugerencia, catalog);
+        return {
+            ...base,
+            motivo: 'sin_destino',
+            opciones,
+            mensaje: opciones.length
+                ? `Falta elegir qué servicio se ofrece después de «${regla.origen}». Hay ${opciones.length} que encajan y cuestan distinto: `
+                  + opciones.map(o => `${o.nombre} (${formatPrecioEur(o.precio)})`).join(', ') + '.'
+                : `Falta elegir qué servicio se ofrece después de «${regla.origen}».`,
+        };
+    }
+
+    const entrada = findCatalogEntryByKey(regla.destino, catalog);
+    if (!entrada) {
+        return {
+            ...base,
+            motivo: 'destino_no_existe',
+            opciones: opcionesDeSeguimiento(regla.sugerencia, catalog),
+            mensaje: `El servicio que esta regla quiere ofrecer ya no está en el catálogo (puede que se haya renombrado). Hay que volver a elegirlo.`,
+        };
+    }
+    if (!isServiceActive(entrada)) {
+        return {
+            ...base,
+            motivo: 'destino_inactivo',
+            mensaje: `«${buildFullServiceName(entrada, catalog)}» está dado de baja, así que no se puede ofrecer.`,
+        };
+    }
+    const precio = Number(entrada.precio);
+    if (entrada.precio == null || !Number.isFinite(precio)) {
+        return {
+            ...base,
+            motivo: 'destino_sin_precio',
+            mensaje: `«${buildFullServiceName(entrada, catalog)}» no tiene precio en el catálogo, y el mensaje tiene que decir cuánto cuesta.`,
+        };
+    }
+
+    // ── Cuándo y cuánto ───────────────────────────────────────────────────────
+    const dias = Number(regla.dias);
+    if (typeof regla.dias !== 'number' || !Number.isFinite(dias)
+        || dias < SEGUIMIENTO_DIAS_MIN || dias > SEGUIMIENTO_DIAS_MAX) {
+        return {
+            ...base,
+            motivo: 'dias_invalidos',
+            mensaje: `Los días tienen que ser un número entre ${SEGUIMIENTO_DIAS_MIN} y ${SEGUIMIENTO_DIAS_MAX}.`,
+        };
+    }
+    const pct = Number(regla.descuentoPct);
+    if (typeof regla.descuentoPct !== 'number' || !Number.isFinite(pct) || pct <= 0 || pct >= 100) {
+        return {
+            ...base,
+            motivo: 'descuento_invalido',
+            mensaje: 'El descuento tiene que ser un número mayor que 0 y menor que 100.',
+        };
+    }
+
+    const precioFinal = precioConDescuento(precio, pct);
+    if (precioFinal == null) {
+        return { ...base, motivo: 'destino_sin_precio', mensaje: 'No se puede calcular el precio con descuento.' };
+    }
+
+    return {
+        ok: true,
+        key,
+        origen: regla.origen,
+        destino: { key: serviceCatalogKey(entrada), nombre: buildFullServiceName(entrada, catalog), precio },
+        dias,
+        descuentoPct: pct,
+        precioFinal,
+        opciones: [],
+    };
+}
+
+// El texto que recibe la clienta. Las DOS cifras van en euros y el porcentaje NO aparece.
+//
+// Es una decisión de la dueña y tiene motivo: "76,50 € en vez de 85 €" se entiende de un
+// vistazo, mientras que "un 10 % de descuento" obliga a echar cuentas — y esas cuentas se
+// vuelven a hacer en el mostrador, en voz alta, delante de otras clientas.
+//
+// El servicio va NOMBRADO siempre. Tres semanas después no queda sesión viva, así que si ella
+// contesta "sí" lo único que puede resolver el servicio es lo que diga este texto.
+const SEGUIMIENTO_TEXTOS = {
+    es: (n, s, final, antes) =>
+        `Hola${n ? ` ${n}` : ''} 😊 Es buen momento para tu ${s}. Si reservas ahora te lo dejamos en ${final} en vez de ${antes}. ¿Te busco hueco?`,
+    en: (n, s, final, antes) =>
+        `Hi${n ? ` ${n}` : ''} 😊 It's a good time for your ${s}. Book now and it's ${final} instead of ${antes}. Shall I find you a slot?`,
+    ru: (n, s, final, antes) =>
+        `Привет${n ? ` ${n}` : ''} 😊 Самое время для процедуры «${s}». Если запишешься сейчас — ${final} вместо ${antes}. Подобрать окошко?`,
+    uk: (n, s, final, antes) =>
+        `Привіт${n ? ` ${n}` : ''} 😊 Саме час для процедури «${s}». Якщо запишешся зараз — ${final} замість ${antes}. Підібрати віконце?`,
+};
+
+function buildSeguimientoMensaje({ nombre, servicio, precio, precioFinal, language } = {}) {
+    // Regla 3: sin las dos cifras no hay mensaje. Un seguimiento sin precio no es un
+    // seguimiento más pobre, es la mitad de una promesa.
+    const antes = formatPrecioEur(precio);
+    const final = formatPrecioEur(precioFinal);
+    if (!servicio || antes == null || final == null) return null;
+    const plantilla = SEGUIMIENTO_TEXTOS[language] || SEGUIMIENTO_TEXTOS.es;
+    return plantilla(String(nombre || '').trim(), servicio, final, antes);
+}
+
+// Valida la lista de reglas al ESCRIBIRLA en `config`, que es donde todavía hay alguien
+// mirando la pantalla. Lo que se comprueba aquí es la FORMA; que el destino exista de verdad
+// necesita el catálogo y lo comprueba `resolveSeguimientoRegla`.
+//
+// La línea que importa es la del formato del destino: exigir "categoria|nombre" es lo que
+// impide que entre una frase de marketing. Sin ella, esto nace siendo otro
+// `business_info.upselling`.
+function validateSeguimientosConfig(valor) {
+    if (!Array.isArray(valor)) {
+        return { ok: false, motivo: 'no_es_lista', mensaje: '«seguimientos» tiene que ser una lista de reglas.' };
+    }
+    const vistas = new Set();
+    for (const [i, r] of valor.entries()) {
+        const donde = `Regla ${i + 1}${r && r.key ? ` («${r.key}»)` : ''}`;
+        if (!r || typeof r !== 'object' || Array.isArray(r)) {
+            return { ok: false, motivo: 'regla_invalida', mensaje: `${donde}: no es una regla.` };
+        }
+        if (!r.key || typeof r.key !== 'string') {
+            return { ok: false, motivo: 'sin_key', mensaje: `${donde}: le falta un nombre interno (key).` };
+        }
+        if (vistas.has(r.key)) {
+            return { ok: false, motivo: 'key_repetida', mensaje: `Hay dos reglas con la misma key («${r.key}»); tienen que ser distintas.` };
+        }
+        vistas.add(r.key);
+        if (!r.origen || typeof r.origen !== 'string') {
+            return { ok: false, motivo: 'sin_origen', mensaje: `${donde}: falta la categoría después de la cual se ofrece.` };
+        }
+        // `destino: null` es LEGÍTIMO: es como nace una regla antes de que la dueña elija.
+        // Lo que no puede es enviar, y de eso se encarga resolveSeguimientoRegla.
+        if (r.destino != null) {
+            if (typeof r.destino !== 'string' || !r.destino.includes('|')) {
+                return {
+                    ok: false,
+                    motivo: 'destino_no_es_clave',
+                    mensaje: `${donde}: el destino tiene que elegirse del desplegable de servicios, no escribirse a mano.`,
+                };
+            }
+        }
+        const dias = Number(r.dias);
+        if (typeof r.dias !== 'number' || !Number.isFinite(dias) || dias < SEGUIMIENTO_DIAS_MIN || dias > SEGUIMIENTO_DIAS_MAX) {
+            return {
+                ok: false,
+                motivo: 'dias_invalidos',
+                mensaje: `${donde}: los días tienen que ser un número entre ${SEGUIMIENTO_DIAS_MIN} y ${SEGUIMIENTO_DIAS_MAX}.`,
+            };
+        }
+        const pct = Number(r.descuentoPct);
+        if (typeof r.descuentoPct !== 'number' || !Number.isFinite(pct) || pct <= 0 || pct >= 100) {
+            return {
+                ok: false,
+                motivo: 'descuento_invalido',
+                mensaje: `${donde}: el descuento tiene que ser un número mayor que 0 y menor que 100.`,
+            };
+        }
+    }
+    return { ok: true, valor };
+}
+
 module.exports = {
     normalizeText,
     detectLanguage,
@@ -4140,4 +4469,16 @@ module.exports = {
     filterAppointmentsByStylist,
     buildBillingStylistOptions,
     NO_STYLIST_KEY,
+    // Seguimiento post-visita
+    serviceCatalogKey,
+    findCatalogEntryByKey,
+    categoriasDeServicio,
+    precioConDescuento,
+    formatPrecioEur,
+    opcionesDeSeguimiento,
+    resolveSeguimientoRegla,
+    buildSeguimientoMensaje,
+    validateSeguimientosConfig,
+    SEGUIMIENTO_DIAS_MIN,
+    SEGUIMIENTO_DIAS_MAX,
 };
