@@ -10,6 +10,7 @@
     "verify:sante": "node tests/verify-sante-catalog.js",
     "verify:sante:agenda": "node tests/verify-sante-agenda.js",
     "informe:nombres": "node scripts/informe-contactos-sin-nombre.js",
+    "catalogo:revision": "node scripts/exportar-catalogo-para-revision.js",
     "verify:robustez": "node tests/verify-sante-robustez.js",
     "verify:robustez:llm": "node tests/verify-sante-robustez-llm.js",
     "create-user": "node scripts/create-dashboard-user.js",
