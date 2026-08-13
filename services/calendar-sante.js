@@ -213,24 +213,16 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
                     if (workStart >= 14 * 60) continue; // skip if starts after 14:00
                 }
 
-                // Existing appointments for this stylist on this date
-                const dayAppts = appointments.filter(a => {
-                    const aDate = toLocalDateStr(new Date(a.starts_at));
-                    return aDate === dateStr;
-                }).map(a => ({
-                    start: toMinutes(new Date(a.starts_at)),
-                    end: toMinutes(new Date(a.ends_at)),
-                }));
-
-                // Blocks on this date
-                const dayBlocks = blocks.filter(b => {
-                    const bStart = toLocalDateStr(new Date(b.starts_at));
-                    const bEnd = toLocalDateStr(new Date(b.ends_at));
-                    return bStart <= dateStr && bEnd >= dateStr;
-                }).map(b => ({
-                    start: toMinutes(new Date(b.starts_at)),
-                    end: toMinutes(new Date(b.ends_at)),
-                }));
+                // Citas y bloqueos de ESTE día, recortados al día (ver recortarAlDia).
+                // Las dos listas pasan por el mismo recorte a propósito: una cita y un
+                // bloqueo que cruzan la medianoche fallan igual, y con dos criterios
+                // distintos solo se arreglaría uno.
+                const dayAppts = appointments
+                    .map(a => recortarAlDia(a.starts_at, a.ends_at, dateStr))
+                    .filter(Boolean);
+                const dayBlocks = blocks
+                    .map(b => recortarAlDia(b.starts_at, b.ends_at, dateStr))
+                    .filter(Boolean);
 
                 // ASAP + hoy: saltar huecos que ya han pasado (buffer de 60 min).
                 const minStart = (pref.asap && dateStr === todayStr) ? nowMinutes + 60 : 0;
@@ -293,16 +285,46 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     // Deduplicar por fecha-hora (una estilista por hueco).
     // Cuando hay un día concreto CON huecos reales devolvemos TODOS los de ese día;
     // sin día concreto (o en fallback de día sin hueco), cap generoso para no saturar.
+    //
+    // El dedupe es una decisión de PRESENTACIÓN: en una conversación no se le sueltan a la
+    // clienta cuatro veces las mismas 10:00 con cuatro nombres distintos. Pero hasta el
+    // 13/08/2026 la fila que sobraba se TIRABA, y con ella el dato de que había más gente
+    // libre a esa hora. Dos efectos, los dos medidos:
+    //   1. `getStylistsByOrg` ordena por nombre, así que en cada empate ganaba SIEMPRE la
+    //      alfabéticamente primera: con las cuatro generalistas de Sante libres, Irina se
+    //      llevaba el 100 % de las ofertas y las otras tres eran invisibles.
+    //   2. bot.js contaba las estilistas distintas SOBRE ESTA LISTA para decidir si
+    //      saltarse la pregunta de preferencia ("solo hay una posible, p.ej. masajes →
+    //      Larisa"). Colapsadas a una, el bot fijaba a Irina sin preguntar nunca.
+    // Ahora la fila repetida se guarda como ALTERNATIVA del hueco que sobrevive. La lista
+    // devuelta no cambia —mismas horas, mismo orden, misma ganadora— y quien necesite saber
+    // quién más está libre (bot.js para contar, y el día de mañana un enlace público para
+    // reintentar con otra) lo tiene sin volver a la BD.
     const diaConcreto = !pedidoDiaSinHueco && !!(preferencia.fecha || Number.isInteger(preferencia.diaSemana));
     const MAX_TOTAL = diaConcreto ? Infinity : (preferencia.asap ? 5 : 20);
-    const seen = new Set();
+    const seen = new Map();
     const unique = [];
     for (const s of slots) {
         const key = `${s.fecha}-${s.hora}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        unique.push(s);
-        if (unique.length >= MAX_TOTAL) break;
+        const yaEsta = seen.get(key);
+        if (yaEsta) {
+            // Misma hora, otra estilista: capacidad, no ruido.
+            if (!yaEsta.alternativas.some(a => a.id === s.stylistId)) {
+                yaEsta.alternativas.push({ id: s.stylistId, name: s.stylistName });
+            }
+            continue;
+        }
+        // Al llegar al tope dejamos de aceptar horas NUEVAS. Aquí `break` daría hoy el
+        // mismo resultado —el sort agrupa las filas de una misma (fecha,hora), así que la
+        // última hora aceptada ya ha recogido sus alternativas antes de que aparezca una
+        // hora nueva—, pero eso es una propiedad del ORDEN, no de este bucle. Con
+        // `continue` la recogida de alternativas no depende de cómo esté ordenado.
+        // Comprobado por mutación: cambiarlo por `break` NO tumba ningún test, y por eso
+        // ningún test afirma que lo haga.
+        if (unique.length >= MAX_TOTAL) continue;
+        const conAlternativas = { ...s, alternativas: [{ id: s.stylistId, name: s.stylistName }] };
+        seen.set(key, conAlternativas);
+        unique.push(conAlternativas);
     }
 
     // Banderas para que el bot avise al LLM en vez de callarse:
@@ -379,6 +401,36 @@ function addSlot(slots, dateStr, minuteOfDay, diaNombre, stylist, serviceDuratio
         stylistName: stylist.name,
         texto,
     });
+}
+
+// Recorta un intervalo [startsAt, endsAt] al día de negocio `dateStr` y lo devuelve en
+// minutos-del-día, o null si no lo toca.
+//
+// Por qué existe: `toMinutes` da el minuto del día y TIRA la fecha. Aplicado a los dos
+// extremos de un intervalo que cruza la medianoche, el resultado no es el intervalo:
+//   · un bloqueo del 14 a las 18:00 hasta el 15 a las 13:00 daba {start:1080, end:780} —
+//     invertido. computeFreeSlots deja `cursor` sin avanzar y el día entero sigue libre:
+//     el bloqueo NO bloquea ni siquiera su propio día de inicio.
+//   · uno del 14 a las 12:00 hasta el 15 a las 16:00 daba {start:720, end:960} — no
+//     invertido, y por eso más engañoso: se aplica como "de 12:00 a 16:00" en LOS DOS
+//     días. El 14 se ofrece de 16:00 en adelante (la estilista no está) y el 15 se ofrece
+//     de 10:00 a 12:00 (tampoco).
+// Las dos formas están fijadas en tests/bloqueo-multidia.test.js.
+//
+// El recorte también es la red que impide que un intervalo invertido llegue a
+// computeFreeSlots por cualquier otra vía: si tras recortar `end <= start`, no ocupa nada
+// y se descarta, en vez de colarse y dejar el día abierto sin que nadie se entere.
+function recortarAlDia(startsAt, endsAt, dateStr) {
+    const ini = new Date(startsAt);
+    const fin = new Date(endsAt);
+    if (isNaN(ini.getTime()) || isNaN(fin.getTime())) return null;
+    const diaIni = toLocalDateStr(ini);
+    const diaFin = toLocalDateStr(fin);
+    if (diaIni > dateStr || diaFin < dateStr) return null;   // no toca este día
+    const start = diaIni < dateStr ? 0 : toMinutes(ini);      // venía de días anteriores
+    const end = diaFin > dateStr ? 24 * 60 : toMinutes(fin);  // sigue días después
+    if (end <= start) return null;
+    return { start, end };
 }
 
 // Cálculo puro de huecos: resta los intervalos `occupied` del horario [workStart,workEnd] y
@@ -499,4 +551,4 @@ async function rescheduleAppointment(orgId, appointmentId, slot, { servicio, dur
 module.exports = { getAvailableSlots, bookAppointment, cancelAppointment, rescheduleAppointment, formatSlotForMessage, CAUSAS_CERO };
 // Expuesto para tests de regresión (huecos + TZ-independencia + idioma del texto del
 // hueco), no para uso en producción.
-module.exports._internals = { computeFreeSlots, addSlot, toLocalDateStr, toMinutes, addDaysStr, mondayDow, resolveWeekdayToDate, BUSINESS_TZ };
+module.exports._internals = { computeFreeSlots, recortarAlDia, addSlot, toLocalDateStr, toMinutes, addDaysStr, mondayDow, resolveWeekdayToDate, BUSINESS_TZ };

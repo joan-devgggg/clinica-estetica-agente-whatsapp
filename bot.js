@@ -600,8 +600,16 @@ async function loadAvailableSlots(session) {
             // avanza directo a proponer huecos en vez de quedarse atascado pidiendo estilista.
             // La asignación pasa por la única autoridad (assignStylistIfAppropriate): con
             // anyStylists activo no colapsamos a una, respetando la búsqueda combinada.
+            // Las estilistas se cuentan sobre las ALTERNATIVAS de cada hueco, no sobre la
+            // lista deduplicada. El dedupe de calendar-sante deja una fila por (fecha,hora),
+            // así que cuatro estilistas libres a la misma hora se contaban como UNA y este
+            // bloque fijaba la primera alfabética —Irina, siempre— saltándose la pregunta de
+            // preferencia que la clienta nunca llegaba a ver. El `??` cubre las sesiones
+            // rehidratadas cuyos huecos se guardaron antes de que existiera `alternativas`.
             if (!session.selectedStylist && !session.anyStylists && slots.length > 0) {
-                const distinctStylists = [...new Set(slots.map(s => s.stylistId))];
+                const distinctStylists = [...new Set(
+                    slots.flatMap(s => (s.alternativas ?? [{ id: s.stylistId }]).map(a => a.id))
+                )];
                 if (distinctStylists.length === 1) {
                     assignStylistIfAppropriate(session, [{ id: slots[0].stylistId, name: slots[0].stylistName }]);
                 }
