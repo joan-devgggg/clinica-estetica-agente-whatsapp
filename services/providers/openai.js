@@ -3,7 +3,7 @@ require('dotenv').config();
 const config = require('../../config.json');
 const db = require('../db');
 const { getOrgType } = require('../org-registry');
-const { normalizeText, classifyLargoVariant, hasApellido, isReactiveOnlyCategory, offerableCatalog, IDIOMAS_SOPORTADOS } = require('../helpers');
+const { normalizeText, classifyLargoVariant, hasApellido, isReactiveOnlyCategory, offerableCatalog, IDIOMAS_SOPORTADOS, resolveDiasDeApertura, DIAS_SEMANA_ES, DIAS_SEMANA_ES_PLURAL, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX } = require('../helpers');
 // Observador de la salud del proveedor del modelo. No decide nada del flujo: solo cuenta.
 // summarizeHistory NO se instrumenta — no recibe orgId, y que falle un resumen no le llega
 // a ninguna clienta. El embudo que importa es este.
@@ -224,6 +224,45 @@ Usa "escalar_humano" si el cliente pide hablar con una persona o la situación s
 }
 
 // ─── Sante prompt (salón de belleza) ────────────────────────────────────────
+
+// ─── Los datos del salón NO se escriben en la prosa del prompt ──────────────
+//
+// Todo lo que la dueña edita desde el panel —precios, duraciones, horarios— llega al prompt
+// DERIVADO del catálogo o de `agent_configs`, nunca escrito a mano en el texto. Un número
+// tecleado aquí mide antigüedad y no corrección (regla 5), y encima lo hace de la peor
+// forma: el bloque CATÁLOGO diría el precio nuevo y la prosa de al lado el viejo, dentro
+// del mismo prompt y en el mismo mensaje. Hasta el 13/08/2026 había once cifras así
+// (mechas clásicas ×2 sitios, contouring, los cinco cortes, la consulta tricológica); todas
+// eran correctas, y todas iban a dejar de serlo el día que la dueña repreciara el catálogo.
+// La red que lo impide es `tests/prompt-sin-datos-a-mano.test.js`.
+
+const enumerarEs = (items) => (items.length <= 1
+    ? (items[0] || '')
+    : `${items.slice(0, -1).join(', ')} y ${items[items.length - 1]}`);
+
+// La cobertura de cada mechas clásica es lo ÚNICO que este bloque añade al catálogo: no está
+// en ninguna columna, y sin ella la clienta no puede elegir entre tres números. El precio y
+// la duración sí están, así que salen de allí.
+//
+// La clave es el nombre normalizado, y una entrada renombrada pierde su descripción pero
+// conserva su precio: preferimos una línea sin explicación a una explicación pegada al
+// servicio equivocado (regla 3). El bloque entero desaparece si la categoría no existe.
+const COBERTURA_MECHAS_CLASICAS = {
+    'mechas 1': 'solo delante, puntas y rostro',
+    'mechas 2': 'media cabeza',
+    'mechas 3': 'cabeza completa',
+};
+
+function mechasClasicasLineas(services) {
+    return (services || [])
+        .filter(s => normalizeText(s.categoria) === 'mechas clasicas')
+        .map(s => {
+            const desc = COBERTURA_MECHAS_CLASICAS[normalizeText(s.nombre)];
+            const precio = s.precio == null ? 'precio a confirmar en el salón' : `${s.precio}€`;
+            const duracion = s.duracion == null ? '' : `, ${s.duracion} min`;
+            return `  ${s.nombre} (${precio}${duracion})${desc ? ` = ${desc}` : ''}`;
+        });
+}
 
 function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg) {
     const info = agentCfg?.business_info || {};
@@ -511,7 +550,16 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
         if (partialData.__askLargoFirst) {
             const cat = partialData.__pendingLargoCategory || 'el servicio solicitado';
             if (normalizeText(cat) === 'mechas clasicas') {
-                return `La clienta quiere mechas clásicas. Hay 3 tipos según la zona de cobertura. Explícale la diferencia (en su idioma) ANTES de confirmar precio:\n- Mechas 1 (60€, 90 min) = solo delante, puntas y rostro\n- Mechas 2 (80€, 180 min) = media cabeza\n- Mechas 3 (100€, 180 min) = cabeza completa\nPregúntale cuál prefiere. NO propongas huecos todavía.`;
+                // La MISMA lista que la sección SERVICIOS CON INSTRUCCIONES ESPECIALES, y por
+                // eso sale de la misma función: son dos sitios del prompt que le describen los
+                // mismos tres servicios a la misma clienta, y escritos aparte se separaban en
+                // el primer retoque de precio. Es la lección de formatSlotTexto y su tabla de
+                // días. Sin entradas en la categoría no se inventa nada: se pregunta a secas.
+                const lineas = mechasClasicasLineas(services);
+                if (!lineas.length) {
+                    return 'La clienta quiere mechas clásicas. Pregúntale cuál de las del catálogo prefiere. NO propongas huecos todavía.';
+                }
+                return `La clienta quiere mechas clásicas. Hay ${lineas.length} tipos según la zona de cobertura. Explícale la diferencia (en su idioma) ANTES de confirmar precio:\n${lineas.join('\n')}\nPregúntale cuál prefiere. NO propongas huecos todavía.`;
             }
             // ¿La categoría pendiente tiene una 4ª variante? Usamos classifyLargoVariant
             // (misma clasificación que el catálogo) para cubrir tanto las categorías con
@@ -592,6 +640,38 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
     const contextoActual = `Intención detectada: ${intent}\n${lastStylistLine}\nDatos recogidos: ${JSON.stringify(partialData, null, 2)}`;
     const resumenAnterior = summary ? `RESUMEN DE CONVERSACIONES ANTERIORES:\n${summary}` : '';
 
+    // ── Bloques derivados de datos que edita la dueña ──────────────────────
+    const lineasMechas = mechasClasicasLineas(services);
+    const bloqueMechasClasicas = lineasMechas.length
+        ? `MECHAS CLÁSICAS:\nHay ${lineasMechas.length} tipos según la zona de cobertura (NO es por largo del pelo):\n${lineasMechas.join('\n')}\nSi la clienta pide "mechas clásicas" sin especificar tipo, explícale la diferencia y pregunta cuál prefiere ANTES de buscar huecos.\n\n`
+        : '';
+
+    // "No preguntes el largo" es una afirmación sobre la FORMA del catálogo, no sobre un
+    // número: vale mientras la categoría tenga UNA sola entrada. Si la dueña le añade
+    // variantes por largo, el bloque desaparece solo y el flujo normal del largo se ocupa.
+    // El precio no se repite aquí: está en el CATÁLOGO de arriba, que es de donde debe leerlo.
+    const contouring = services.filter(s => normalizeText(s.categoria) === 'mechas contouring');
+    const bloqueContouring = contouring.length === 1
+        ? `MECHAS CONTOURING:\nEl precio no depende del largo del pelo: es el mismo para todos los largos y está en el catálogo de arriba. NO preguntes el largo del pelo.\n\n`
+        : '';
+
+    // Los días que abre y cierra el salón salen de business_hours (día ausente = cerrado),
+    // que edita la dueña. La MISMA lista alimenta la red anti-cierre-falso de bot.js: con
+    // dos fuentes, el día que abriera un domingo el prompt diría la verdad y la red la
+    // bloquearía como mentira. Sin horario utilizable no se dice NADA del calendario
+    // semanal (regla 3) — las reglas de HUECOS DISPONIBLES sostienen igual la conversación.
+    const diasApertura = resolveDiasDeApertura(agentCfg?.business_hours);
+    const bloqueDiasApertura = (() => {
+        if (!diasApertura) return '';
+        const abre = enumerarEs(diasApertura.abiertos.map(i => DIAS_SEMANA_ES[i]));
+        if (!diasApertura.cerrados.length) {
+            return `El salón abre todos los días de la semana (${abre}). Nunca digas que está cerrado un día concreto: si un día no tiene huecos es porque esa estilista no trabaja o está completo.\n`;
+        }
+        const cierra = enumerarEs(diasApertura.cerrados.map(i => DIAS_SEMANA_ES_PLURAL[i]));
+        return `El salón abre estos días: ${abre}. Cierra los ${cierra}: si la clienta pide un día de cierre, propón el siguiente día disponible de la lista.\n`
+            + `REGLA CRÍTICA — NO CONFUNDAS "CERRADO" CON "SIN TURNO ESE DÍA": los ÚNICOS días que el salón cierra son los ${cierra}. Si un día en que el salón abre no tiene huecos, la causa NUNCA es que esté cerrado: es que esa estilista concreta (o ninguna con esa skill) no trabaja ese día, o que está completo. Jamás digas "el salón está cerrado" ni nada equivalente para un día de apertura. Di en su lugar qué estilista no trabaja ese día (o que está completo) y ofrece los días reales más cercanos.\n`;
+    })();
+
     return `# ── IDENTIDAD ──────────────────────────────────────────────────────────────
 
 Eres ${botName}, la recepcionista de ${salonName}, un salón de belleza y bienestar en Alicante.
@@ -650,8 +730,7 @@ Tú: "Mientras el color actúa, ¿te apetece aprovechar para una manicura?"
 
 Hoy es ${currentDateMadrid()}.
 NUNCA propongas una fecha que ya haya pasado. Cualquier fecha que menciones debe ser estrictamente posterior a hoy.
-El salón abre de lunes a sábado (los domingos está cerrado): si la clienta pide un domingo, propón el siguiente día disponible de la lista.
-REGLA CRÍTICA — NO CONFUNDAS "CERRADO" CON "SIN TURNO ESE DÍA": el salón solo cierra los domingos. Si un día de lunes a sábado no tiene huecos, la causa NUNCA es que el salón esté cerrado: es que esa estilista concreta (o ninguna con esa skill) no trabaja ese día, o que está completo. Jamás digas "el salón está cerrado" ni nada equivalente para un lunes-sábado. Di en su lugar qué estilista no trabaja ese día (o que está completo) y ofrece los días reales más cercanos.
+${bloqueDiasApertura}
 
 CALENDARIO DE REFERENCIA (próximos 14 días):
 ${buildCalendarReference()}
@@ -717,17 +796,7 @@ Si la clienta pregunta por productos para comprar (champú, mascarilla, tratamie
 
 # ── SERVICIOS CON INSTRUCCIONES ESPECIALES ────────────────────────────────
 
-MECHAS CLÁSICAS:
-Hay 3 tipos según la zona de cobertura (NO es por largo del pelo):
-  Mechas 1 (60€, 90 min) = solo delante, puntas y rostro
-  Mechas 2 (80€, 180 min) = media cabeza
-  Mechas 3 (100€, 180 min) = cabeza completa
-Si la clienta pide "mechas clásicas" sin especificar tipo, explícale la diferencia y pregunta cuál prefiere ANTES de buscar huecos.
-
-MECHAS CONTOURING:
-Precio fijo 160€ para todos los largos. NO preguntes el largo del pelo.
-
-PEINADO ESPECIAL:
+${bloqueMechasClasicas}${bloqueContouring}PEINADO ESPECIAL:
 Descríbelo como: "Incluye levantar la raíz, ondas grandes con fijación y mucha laca. Perfecto para ocasiones especiales."
 
 SI LA CLIENTA DICE SOLO "MECHAS" (sin especificar tipo):
@@ -758,9 +827,10 @@ SIGUIENTE PASO: ${proximoPaso}
    Si dice algo genérico como "un corte", "cortarme el pelo", "quiero cortarme" o similar SIN especificar tipo, sigue este árbol exacto:
    PASO A: Pregunta "¿El corte es para hombre, para niño o para mujer?"
    PASO B según respuesta:
-   - "hombre" → servicio "Corte hombre" (25€), sin más preguntas de tipo.
-   - "niño" → pregunta "¿Es el infantil hasta 8 años o el corte de niño normal?" → "infantil" → "Corte infantil hasta 8 años" (15€) / "normal" → "Corte niño" (25€).
-   - "mujer" / "para mí" / "soy yo" → pregunta "¿Prefieres corte con secado o con peinado Dyson?" → "secado" → "Corte mujer y secado" (40€) / "Dyson" → "Corte mujer y peinado Dyson" (50€). Al confirmar cualquier corte de mujer, menciona que incluye lavado ("incluye lavado y secado" o "incluye lavado y peinado Dyson").
+   - "hombre" → servicio "Corte hombre", sin más preguntas de tipo.
+   - "niño" → pregunta "¿Es el infantil hasta 8 años o el corte de niño normal?" → "infantil" → "Corte infantil hasta 8 años" / "normal" → "Corte niño".
+   - "mujer" / "para mí" / "soy yo" → pregunta "¿Prefieres corte con secado o con peinado Dyson?" → "secado" → "Corte mujer y secado" / "Dyson" → "Corte mujer y peinado Dyson". Al confirmar cualquier corte de mujer, menciona que incluye lavado ("incluye lavado y secado" o "incluye lavado y peinado Dyson").
+   El precio de cada uno está en el CATÁLOGO de arriba: léelo de ahí, este árbol solo decide CUÁL es el servicio.
    No saltes ningún paso del árbol aunque creas conocer el tipo.
 3. Si el servicio lo realizan varias estilistas: si la clienta tiene estilista de la última visita (last_stylist), pregunta si quiere reservar con ella o prefiere el hueco más cercano disponible. Si no tiene last_stylist, pregunta si tiene estilista de confianza o prefiere el hueco más cercano. Si solo una estilista puede hacerlo, asígnala directamente sin preguntar.
 4. Si el servicio varía según el largo del pelo (mechas, alisado, color, antifrizz, decoloración), pregunta el largo ANTES de confirmar precio. Si dice que no sabe: "No te preocupes, tu estilista te lo confirmará en el salón" y sigue adelante.
@@ -821,10 +891,11 @@ con ese servicio.
 - Este servicio NO aparece en el catálogo de arriba a propósito. NO lo menciones cuando te
   pregunten "¿qué servicios tenéis?" ni lo enumeres junto a otros: sólo existe como respuesta a
   que la clienta diga que no sabe qué quiere.
-- NUNCA lo mezcles con la "Consulta tricológica con Yulia" (categoría Diagnóstico Capilar, 85€,
-  60 min). Son DOS servicios distintos y no existe ningún híbrido entre ellos:
+- NUNCA lo mezcles con la "Consulta tricológica con Yulia" (categoría Diagnóstico Capilar).
+  Son DOS servicios distintos y no existe ningún híbrido entre ellos:
     · caída del pelo, cuero cabelludo, alopecia, diagnóstico capilar → Consulta tricológica con
-      Yulia (85€, 60 min, la hace Yulia-Tricóloga). Ésta SÍ está en el catálogo y tiene precio.
+      Yulia, que la hace Yulia-Tricóloga. Ésta SÍ está en el catálogo de arriba: su precio y su
+      duración los lees de ahí, no de aquí.
     · "no sé qué hacerme", quiere que la asesoren sobre qué servicio elegir → Consulta de
       valoración (20 min, precio a confirmar en el salón).
   Si dudas entre las dos, PREGUNTA cuál quiere. Nunca inventes un nombre que combine ambas ni
@@ -844,7 +915,7 @@ sin vida, puntas abiertas, encrespado…) y NO nombra ningún servicio, NO adivi
 tratamiento necesita ni le ofrezcas uno en particular. Responde así:
 - Dile que tenemos muchos tratamientos para el cabello (reconstrucción, hidratación, detox del
   cuero cabelludo, tratamientos orgánicos… por familia, sin dar nombres exactos del catálogo).
-- Di que van de 45€ a 115€ según lo que necesite su pelo. Ese rango y no otro.
+- Di que van de ${TRATAMIENTOS_PRECIO_MIN}€ a ${TRATAMIENTOS_PRECIO_MAX}€ según lo que necesite su pelo. Ese rango y no otro.
 - Recomiéndale la consulta: allí se le hace un diagnóstico y se elige el tratamiento adecuado
   para su caso. Pregúntale si se la reservas.
 

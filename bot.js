@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -1681,37 +1681,59 @@ async function blockPhantomBookingClaim(orgId, session, userPhone, aiResponse, s
     }
 }
 
-// El salón SOLO cierra los domingos (services/providers/openai.js, sección FECHA ACTUAL).
-// Cualquier "el salón está cerrado" para lunes-sábado es FALSO por definición — casi
+// Un "el salón está cerrado" dicho de un día en el que el salón ABRE es FALSO — casi
 // siempre el LLM confunde "esta estilista no trabaja ese día" con "el negocio no abre"
 // (bug real 30/07: pedicura con Olgha un sábado → "el salón está cerrado", cuando Olgha
 // solo trabaja martes/jueves/viernes y el salón sí abre los sábados). El prompt ya lo
 // prohíbe explícitamente, pero un modelo pequeño no lo respeta siempre — esta es la
 // última barrera antes de enviar, igual que respondsWithInventedSlots de arriba.
-// Las tres listas se comparan con .includes contra texto YA normalizado, así que los
-// literales tienen que estar normalizados también. 'выходной' y 'вихідний' ("día libre")
-// llevan й y no casaban nunca: la red dejaba pasar el cierre falso justo cuando el LLM lo
-// decía con la palabra más natural en ruso o ucraniano. Se mapean las tres —no solo la que
-// falla hoy— para que añadir mañana un día con й no vuelva a romperlas en silencio.
+//
+// QUÉ DÍA CIERRA SALE DE `business_hours`, NUNCA DE AQUÍ. Hasta el 13/08/2026 esta red
+// llevaba escrito "el salón solo cierra los domingos": eximía la palabra «domingo» y
+// disparaba con las otras seis. Era cierto —y sigue siéndolo hoy—, pero lo medía contra una
+// constante en git en vez de contra el dato que edita la dueña (regla 5). El día que
+// abriera un domingo, la red habría bloqueado la frase correcta; y si cerrase los lunes,
+// habría dejado pasar la mentira justo el día que existe. La MISMA lista alimenta ahora la
+// sección FECHA ACTUAL del prompt, que es la otra boca que dice este hecho.
+//
+// Sin `business_hours` utilizable NO se bloquea nada: sin saber qué días abre el salón no se
+// puede distinguir una mentira de la verdad, y una red que no sabe distinguirlas se come el
+// mensaje bueno (la lección de respondsWithInventedSlots matando «cerramos a las 19:00»).
+// Es el mismo criterio que detectHoraFueraDeHorario: preferimos callar a inventar horario.
+//
+// Las listas se comparan con .includes contra texto YA normalizado, así que los literales
+// tienen que estar normalizados también. 'выходной' y 'вихідний' ("día libre") llevan й y no
+// casaban nunca: la red dejaba pasar el cierre falso justo cuando el LLM lo decía con la
+// palabra más natural en ruso o ucraniano. Se mapean las tres —no solo la que falla hoy—
+// para que añadir mañana un día con й no vuelva a romperlas en silencio.
 const CLOSURE_CLAIM_WORDS = [
     'cerrado', 'cerrada', 'cerramos', 'no abrimos', 'no abre',
     'closed', 'dont open', "don't open", 'were closed', "we're closed",
     'закрыт', 'закрыто', 'не работаем', 'выходной',
     'закрито', 'не працюємо', 'вихідний',
 ].map(normalizeText);
-const SUNDAY_WORDS = ['domingo', 'sunday', 'воскресенье', 'неділя'].map(normalizeText);
-const NON_SUNDAY_DAY_WORDS = [
-    'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado',
-    'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday',
-    'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота',
-    'понеділок', 'вівторок', 'середа', 'четвер', "п'ятниця", 'субота',
-].map(normalizeText);
-function respondsWithFalseClosureClaim(respuesta) {
+// Indexado 0=Lunes…6=Domingo, la convención de resolveDiasDeApertura y stylist_schedules.
+const DIA_PALABRAS = [
+    ['lunes', 'monday', 'понедельник', 'понеділок'],
+    ['martes', 'tuesday', 'вторник', 'вівторок'],
+    ['miercoles', 'wednesday', 'среда', 'середа'],
+    ['jueves', 'thursday', 'четверг', 'четвер'],
+    ['viernes', 'friday', 'пятница', "п'ятниця"],
+    ['sabado', 'saturday', 'суббота', 'субота'],
+    ['domingo', 'sunday', 'воскресенье', 'неділя'],
+].map(dia => dia.map(normalizeText));
+function respondsWithFalseClosureClaim(respuesta, businessHours) {
     const t = normalizeText(respuesta);
     if (!t) return false;
     if (!CLOSURE_CLAIM_WORDS.some(w => t.includes(w))) return false;
-    if (SUNDAY_WORDS.some(w => t.includes(w))) return false; // domingo sí cierra: legítimo
-    return NON_SUNDAY_DAY_WORDS.some(w => t.includes(w));
+    const dias = resolveDiasDeApertura(businessHours);
+    if (!dias) return false;
+    const nombra = i => DIA_PALABRAS[i].some(w => t.includes(w));
+    // Nombrar un día que de verdad CIERRA hace la frase legítima, y se mira PRIMERO: en
+    // «los domingos cerramos, y el lunes está completo» las dos mitades son ciertas y la
+    // que manda es el cierre real. Es la exención que antes era la lista de domingos.
+    if (dias.cerrados.some(nombra)) return false;
+    return dias.abiertos.some(nombra);
 }
 
 // ─── Red anti-precio-sin-respaldo (Sante) ────────────────────────────────────
@@ -1891,13 +1913,10 @@ function salonPickServiceMenuMsg(session) {
 }
 
 // ─── Descripción del estado del cabello → rango + consulta (Yulia, 03/08/2026) ────
-// Rango pedido por Yulia. NO se deriva del catálogo a propósito: es su cifra comercial,
-// no el min/max real (los tratamientos van de 35 € —Green Purity Detox, Reconstrucción
-// K18— a 120 € —Brillo intensivo—, y Anti-encrespamiento llega a 180 €). Cambiarlo es
-// editar estas dos constantes.
-const TRATAMIENTOS_PRECIO_MIN = 45;
-const TRATAMIENTOS_PRECIO_MAX = 115;
-
+// El rango (TRATAMIENTOS_PRECIO_MIN/MAX) vive en helpers.js con su porqué: es la cifra
+// comercial de Yulia, no el min/max del catálogo, y la dicen dos bocas —este mensaje y el
+// prompt de Sante—, así que no puede estar escrita aquí.
+//
 // Los tratamientos se nombran por FAMILIA, nunca con el nombre exacto de una entrada del
 // catálogo: esos nombres cambian (K18 → "Reconstrucción K18" en la migración 026,
 // "Hidratación 60min" → "Spa Hidratación 60min" en la 028) y un texto acoplado a ellos se
@@ -6142,9 +6161,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // restaurante (San Remo intacto).
         // Las puntas del horario quedan EXENTAS: decir "abrimos de 10:00 a 19:00" no es
         // ofrecer un hueco, y bloquearlo dejaba a la clienta sin la única respuesta útil.
-        const horasHorario = orgType === 'salon'
-            ? horasLimiteHorario((await getAgentConfig(orgId))?.business_hours)
-            : [];
+        // UNA lectura para las dos redes que dependen del horario —las puntas de aquí y los
+        // días de la de cierres falsos—: es el mismo dato y no puede llegarles distinto.
+        const businessHoursTurno = orgType === 'salon'
+            ? (await getAgentConfig(orgId))?.business_hours
+            : null;
+        const horasHorario = orgType === 'salon' ? horasLimiteHorario(businessHoursTurno) : [];
         // Va ANTES de la red de huecos inventados: si aún no hay servicio, el mensaje
         // correcto es pedirlo, y sustituirlo aquí ahorra el turno que Michal perdió
         // eligiendo entre tres horas que no existían.
@@ -6198,7 +6220,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // ofrece los huecos reales más cercanos, en vez de dejar salir la mentira.
         if (orgType === 'salon' && !session.reservaConfirmada && !aiResponse._rectificadoPorRedFantasma
                 && (session.slotsRequestedDayUnavailable || session.slotsWeekPreferenceRelaxed)
-                && respondsWithFalseClosureClaim(aiResponse.respuesta)) {
+                && respondsWithFalseClosureClaim(aiResponse.respuesta, businessHoursTurno)) {
             logger.warn('cita_sante_cierre_falso_bloqueado', {
                 orgId, telefono: userPhone,
                 respuestaOriginal: aiResponse.respuesta,

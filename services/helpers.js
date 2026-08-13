@@ -2299,6 +2299,50 @@ function detectHoraFueraDeHorario(text, businessHours, { diaSemana = null } = {}
     return { hora: fuera, apertura: minToHHMM(apertura), cierre: minToHHMM(cierre) };
 }
 
+// Nombres de día para ESCRIBIR (con tilde). Las claves de `business_hours` van sin tilde y
+// son otra cosa: `DOW_A_CLAVE_HORARIO` indexa la columna, esta se lee en un mensaje. Mismo
+// orden (0=Lunes…6=Domingo) para que el índice sirva para las dos.
+const DIAS_SEMANA_ES = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+// Plural para hablar de un día RECURRENTE («cierra los domingos»). De lunes a viernes el
+// plural es igual que el singular en castellano; solo sábado y domingo cambian.
+const DIAS_SEMANA_ES_PLURAL = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados', 'domingos'];
+
+// ¿Qué días abre el salón y cuáles cierra, según `business_hours`?
+//
+// Un día AUSENTE significa cerrado — es la convención de la columna, la misma que ya usa
+// `detectHoraFueraDeHorario`, y hoy es lo que hace que Sante cierre los domingos.
+//
+// Existe porque ese hecho estaba escrito A MANO en dos sitios que hablan con la misma
+// clienta: la sección FECHA ACTUAL del prompt de Sante («El salón abre de lunes a sábado»)
+// y la red `respondsWithFalseClosureClaim` de bot.js, que eximía la palabra «domingo» y
+// disparaba con cualquier otro día. Con dos fuentes, el día que la dueña abriera un domingo
+// —o cerrara los lunes— el prompt diría una cosa, la red bloquearía la contraria, y las dos
+// estarían midiendo antigüedad en vez de corrección (regla 5).
+//
+// Devuelve ÍNDICES (0=Lunes…6=Domingo), no nombres: los dos consumidores necesitan cosas
+// distintas —el prompt escribe, la red compara contra palabras en cuatro idiomas— y un
+// índice es lo único que sirve para ambos sin traducir dos veces.
+//
+// Un día PRESENTE pero con horas ilegibles no entra en ninguna de las dos listas: no
+// sabemos su franja, así que no se puede afirmar que abra, y declararlo cerrado sería
+// inventarle un cierre al salón (regla 3). Sin ningún día utilizable devuelve null, y quien
+// llama no dice nada del calendario semanal — que es la única respuesta honesta.
+function resolveDiasDeApertura(businessHours) {
+    if (!businessHours || typeof businessHours !== 'object') return null;
+    const abiertos = [];
+    const cerrados = [];
+    DOW_A_CLAVE_HORARIO.forEach((clave, i) => {
+        const dia = businessHours[clave];
+        if (!dia || typeof dia !== 'object') { cerrados.push(i); return; }
+        const apertura = hhmmToMin(dia.apertura);
+        const cierre = hhmmToMin(dia.cierre);
+        if (apertura === null || cierre === null || apertura >= cierre) return;
+        abiertos.push(i);
+    });
+    if (!abiertos.length) return null;
+    return { abiertos, cerrados };
+}
+
 // ─── Trato de usted / de tú ──────────────────────────────────────────────────
 // Olga Yarmak pidió «Тогда давай на вы 🧐» (07/08/2026). El bot dijo que sí y volvió a
 // tutearla al turno siguiente: el trato no existía como dato en ninguna parte del código, y
@@ -3242,6 +3286,23 @@ function detectConsultaValoracion(text) {
     ];
     return patterns.some(re => re.test(t));
 }
+
+// ─── El rango de precios de los tratamientos: una cifra, dos bocas ──────────
+//
+// Es la CIFRA COMERCIAL que pidió Yulia (03/08/2026), NO el min/max del catálogo, y por eso
+// no se deriva: los tratamientos reales van de 35 € (Green Purity Detox, Reconstrucción K18)
+// a 120 € (Brillo intensivo), y Anti-encrespamiento llega a 180 €. Cambiarla es editar estas
+// dos constantes. `verify:robustez` compara este rango con el del catálogo y lo reporta: la
+// divergencia es deliberada, y está vigilada.
+//
+// Vive AQUÍ, y no en bot.js donde nació, porque la dicen DOS bocas a la misma clienta: el
+// mensaje determinista `salonHairTreatmentRangeMsg` (cuatro idiomas) y la instrucción del
+// prompt de Sante. Escrita dos veces se separan en el primer retoque comercial, y entonces
+// la clienta oye un rango u otro según por qué camino entrase su mensaje —el determinista o
+// el modelo—, que es la peor forma de estar mal: intermitente. Es la misma razón por la que
+// `formatSlotTexto` no tiene su propia tabla de días.
+const TRATAMIENTOS_PRECIO_MIN = 45;
+const TRATAMIENTOS_PRECIO_MAX = 115;
 
 // ─── Descripción del ESTADO del cabello (03/08/2026, petición de Yulia) ──────
 //
@@ -4538,6 +4599,9 @@ module.exports = {
     catalogEntriesAtPrice,
     hhmmToMin,
     detectHoraFueraDeHorario,
+    resolveDiasDeApertura,
+    DIAS_SEMANA_ES,
+    DIAS_SEMANA_ES_PLURAL,
     detectTratamiento,
     wantsAnotherBooking,
     wantsRestart,
@@ -4578,6 +4642,8 @@ module.exports = {
     detectConsultaService,
     detectConsultaValoracion,
     detectHairProblemDescription,
+    TRATAMIENTOS_PRECIO_MIN,
+    TRATAMIENTOS_PRECIO_MAX,
     namesConcreteService,
     // Todo patrón cirílico se compila con esto (ver su comentario): normaliza los literales
     // y no pone \b. Escribirlos a mano es el bug que ha reaparecido tres veces.

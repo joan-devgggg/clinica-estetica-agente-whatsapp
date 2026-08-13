@@ -152,14 +152,26 @@ test('6 · RU/UK: "¿te viene bien?" se reconoce como propuesta', () => {
 
 // ─── 7 · red anti-cierre-falso ────────────────────────────────────────────────
 
+// Desde el 13/08/2026 la red recibe el horario: qué día cierra el salón lo dice
+// `business_hours`, no una constante. Aquí se le pasa el de Sante (lunes-sábado, domingo
+// ausente = cerrado) para seguir midiendo lo que este fichero mide, que es el CIRÍLICO.
+const HORARIO_SANTE = {
+    lunes: { apertura: '10:00', cierre: '19:00' },
+    martes: { apertura: '10:00', cierre: '19:00' },
+    miercoles: { apertura: '10:00', cierre: '19:00' },
+    jueves: { apertura: '10:00', cierre: '19:00' },
+    viernes: { apertura: '10:00', cierre: '19:00' },
+    sabado: { apertura: '10:00', cierre: '19:00' },
+};
+
 test('7 · RU/UK: "выходной" cuenta como afirmación de cierre', () => {
-    assert.ok(respondsWithFalseClosureClaim('В понедельник у нас выходной'));
-    assert.ok(respondsWithFalseClosureClaim('У вівторок у нас вихідний'));
+    assert.ok(respondsWithFalseClosureClaim('В понедельник у нас выходной', HORARIO_SANTE));
+    assert.ok(respondsWithFalseClosureClaim('У вівторок у нас вихідний', HORARIO_SANTE));
     // Las que ya funcionaban.
-    assert.ok(respondsWithFalseClosureClaim('В понедельник закрыто'));
+    assert.ok(respondsWithFalseClosureClaim('В понедельник закрыто', HORARIO_SANTE));
     // El domingo SÍ cierra: no es un cierre falso.
-    assert.ok(!respondsWithFalseClosureClaim('В воскресенье у нас выходной'));
-    assert.ok(!respondsWithFalseClosureClaim('Записал тебя на понедельник'));
+    assert.ok(!respondsWithFalseClosureClaim('В воскресенье у нас выходной', HORARIO_SANTE));
+    assert.ok(!respondsWithFalseClosureClaim('Записал тебя на понедельник', HORARIO_SANTE));
 });
 
 // ─── 8 · el arreglo anterior sigue en pie ─────────────────────────────────────
