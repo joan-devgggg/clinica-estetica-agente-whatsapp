@@ -48,8 +48,13 @@ const ESTILISTA = { id: 'sty-1', name: 'Irina', active: true, skills: ['Cortes']
 const jornadaCompleta = () => [0, 1, 2, 3, 4, 5, 6].map(d => ({ day_of_week: d, start_time: '10:00', end_time: '19:00' }));
 
 // Fechas relativas: el motor solo mira de mañana en adelante.
+// El día se corta en hora de MADRID, que es donde vive el motor (BUSINESS_TZ) — no en UTC.
+// Con toISOString() (UTC), entre las 00:00 y las 02:00 de Madrid "mañana" salía HOY y los
+// tres bloques de bloqueo fallaban solo a esas horas (visto el 14/08/2026 a las ~00:30:
+// rojo con UTC, verde con Madrid, sin tocar nada más).
 const hoy = new Date();
-const dia = n => new Date(hoy.getTime() + n * 86400000).toISOString().slice(0, 10);
+const dia = n => new Date(hoy.getTime() + n * 86400000)
+    .toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
 const D1 = dia(1), D2 = dia(2);
 
 async function horasDe(bloque, fecha, { serviceDuration = 30 } = {}) {

@@ -54,7 +54,10 @@ const CUATRO = ['Irina', 'Natalia', 'Veronika', 'Yulia'].map((name, i) => ({
 }));
 
 const hoy = new Date();
-const dia = n => new Date(hoy.getTime() + n * 86400000).toISOString().slice(0, 10);
+// En hora de MADRID, no UTC: con toISOString(), entre las 00:00 y las 02:00 de Madrid
+// "mañana" salía HOY y el motor no lo miraba. Mismo arreglo que bloqueo-multidia.test.js.
+const dia = n => new Date(hoy.getTime() + n * 86400000)
+    .toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
 
 function conEstilistas(stylists, extra = {}) {
     FIXTURE = {
