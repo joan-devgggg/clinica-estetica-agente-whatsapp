@@ -793,15 +793,32 @@ resolviendo. No hay UI ni endpoint de edición: `activo:false` se pone a mano so
 y `PATCH /api/agent-config` sigue reemplazando el array entero — copia antes de tocarlo
 (`data/sante-catalogo-backup-*.json`).
 
-⚠️ **Ese backup sirve para RESTAURAR, nunca para CONSULTAR qué hay en el catálogo.** Envejece
-en cuestión de días y no avisa. Medido el 13/08/2026: `sante-catalogo-backup-2026-08-12.json`
-—de **un día antes**— ya llamaba `Detox 60min` a lo que en `agent_configs.services` es
-`Spa Hair Detox`, y a `tests/fixtures/sante-catalog.json` le sobraba `Japonesa` y le faltaba
-`Difuminado de raíz`. O sea que los tres ficheros describen tres catálogos distintos y
-**ninguno** es el vivo. Cualquier nombre, precio o duración que vaya a sostener una
-conclusión sale de `agent_configs.services`; los ficheros solo valen como copia de seguridad
-y como fixture FIJO de un test. Es la regla 5 en su forma más literal —el fichero mide
-antigüedad— y aquí la distancia fue de un día.
+⚠️ **Ese backup sirve para RESTAURAR, nunca para CONSULTAR qué hay en el catálogo**, y no
+porque esté mal hecho: `sante-catalogo-backup-2026-08-12.json` es la copia **deliberada
+previa a la migración 040**, que renombró los tres Spa Hair. Hace justo lo que debe. Lo que
+no tiene es ninguna señal de serlo — **su nombre solo lleva una fecha**, así que quien lo
+abre buscando «qué hay en el catálogo» se lleva el *antes* de un renombrado sin enterarse.
+Pasó el 13/08/2026 al diagnosticar la conversación de Mariola: el fichero dice `Detox 60min`
+donde `agent_configs.services` dice `Spa Hair Detox`, y de ahí salió la conclusión falsa de
+que el bot se había inventado el nombre.
+
+Y hay un tercero: `tests/fixtures/sante-catalog.json`, que **no es el «antes» de nada** sino
+un fichero mantenido a mano que siguió unos cambios y no otros (tiene los nombres nuevos de
+Spa Hair, le sobra `Japonesa` y le falta `Difuminado de raíz`). Los tres tienen 81 entradas,
+que es lo que hace que parezcan el mismo fichero, y **ninguno de los tres es el vivo**.
+
+La raya, que vale para cualquier fichero de catálogo del repo:
+
+| | Dónde va |
+|---|---|
+| lo que necesita ser **DETERMINISTA** (mapeos, splits, formatos) | fixture, fijo |
+| lo que afirma algo del **CATÁLOGO REAL** | `verify:sante`, contra `agent_configs` |
+
+Un check «fixture ≡ backup ≡ vivo» sería la regla 5 al revés: mediría antigüedad y viviría en
+rojo, porque un fixture está desfasado **por diseño**. Análisis de qué sí tendría sentido —y
+del riesgo real, que es que restaurar un backup viejo deja sin resolver las citas pasadas y
+mueve el dinero de meses cerrados— en
+[`docs/observaciones-para-proxima-auditoria.md`](docs/observaciones-para-proxima-auditoria.md).
 
 ## `session.leadId` puede venir vacío — usa `ensureLeadId`
 

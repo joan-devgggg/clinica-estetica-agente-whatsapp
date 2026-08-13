@@ -238,3 +238,138 @@ Mientras no conteste se conserva lo que resuelve el difuso —que es el comporta
 siempre— y cada caso avisa por Telegram con la etiqueta Y su destino con precio, para que
 contestarlo sea editar una línea. Aviso `upsell_etiqueta_por_parecido`, una clave de throttle
 por etiqueta.
+
+---
+
+## 13/08/2026 · Tres ficheros de catálogo, tres catálogos distintos, y ninguno es el vivo
+
+Salió al diagnosticar la conversación de Mariola Mira Lopez: para saber si existía un «masaje
+de 60 €» abrí `data/sante-catalogo-backup-2026-08-12.json` y concluí que el bot se había
+inventado el nombre «Spa Hair Detox», porque ahí esa entrada se llama `Detox 60min`. **Era
+falso.** El catálogo vivo sí tiene «Spa Hair Detox». La conclusión equivocada duró hasta que
+contrasté contra `agent_configs.services`.
+
+### El diff, medido
+
+| entrada | vivo (`agent_configs`) | `backup-2026-08-12` | `tests/fixtures/sante-catalog.json` |
+|---|---|---|---|
+| Spa Hair Relax / Detox / Hidratación | ✅ nombres nuevos | ❌ `Relax 45min`, `Detox 60min`, `Spa Hidratación 60min` | ✅ nombres nuevos |
+| `Manicura/Pedicura \| Japonesa` | ❌ no existe | ❌ no existe | ✅ **existe** |
+| `Color Premium \| Difuminado de raíz` | ✅ existe | ✅ existe | ❌ **falta** |
+
+Los tres tienen 81 entradas, que es justo lo que hace que parezcan el mismo fichero.
+
+### El matiz que cambia el diagnóstico
+
+**El backup no está desfasado por descuido: es la copia deliberada PREVIA a la migración
+040** (`040_renombrar_spa_hair.sql`), que renombró esas tres entradas el 12/08. Su propia
+cabecera lo dice. O sea que el fichero hace exactamente lo que debe — el problema es que
+**su nombre solo lleva una fecha**, y nada en él avisa a quien lo abre de que está leyendo el
+«antes» de un renombrado. Yo lo abrí buscando «qué hay en el catálogo» y me llevé la
+respuesta anterior a la migración, sin una sola señal.
+
+El fixture es otra cosa: **no es el «antes» de nada, es un fichero mantenido a mano que ha
+seguido unos cambios y no otros.** Siguió el renombrado de Spa Hair (040) pero no la baja de
+`Japonesa` ni el alta de `Difuminado de raíz`. Ese es el fichero peligroso de los tres,
+porque nadie sabe de qué fecha es.
+
+### Por qué importa, y a qué se parece
+
+- **El backup, restaurado, movería dinero.** `appointments.service` guarda un NOMBRE; volver
+  a poner `Detox 60min` en el JSONB haría que toda cita pasada con `service = 'Spa Hair
+  Detox'` dejara de resolver → `unmatched` → 0 € en Facturación. Es literalmente el motivo
+  por el que la 040 renombró también dos citas (las dos de Mariola). Un backup de catálogo
+  **no es un fichero inerte: es una migración inversa sin revisar.**
+- **El fixture pierde cobertura en silencio, no da rojo.** Lo usan **16 ficheros de test**.
+  `tests/service-names-parity.test.js` dice en su cabecera que compara «sobre el catálogo
+  REAL de Sante (el JSON que sirve `/api/service-catalog`)» — y usa el fixture. Esa frase ya
+  no es cierta: si la dueña añade mañana un servicio con « + » en el nombre (los que rompen
+  el split ingenuo, que es justo lo que ese test vigila), el test seguirá verde sin haberlo
+  mirado nunca.
+- Es el mismo daño que ya hizo el fixture de `verify:sante` en la Fase 2-largo, aunque por
+  otra vía: allí la expectativa escrita a mano (`'por media espalda'` como nivel 2) certificó
+  **el mapeo equivocado** durante semanas. En los dos casos, un fichero de git que hace de
+  sustituto de la realidad **certificó algo falso sin ponerse en rojo**.
+
+### Lo que NO hay que hacer con esto
+
+Un check «fixture ≡ backup ≡ vivo» sería un rojo permanente y **es exactamente la trampa de
+la regla 5**: mediría antigüedad, no corrección. Un fixture está desfasado *por diseño* —
+esa es su función, y es lo que hace que los tests sean deterministas cuando la dueña renombra
+algo. Y un backup está desfasado por definición. Un check así caducaría el primer día y
+dejaría un fallo que nadie tiene que arreglar, que es la forma más rápida de que todo el
+mundo deje de leer el informe (ya pasó tres veces: horarios de Tetiana/Natalia, «Consulta con
+exactamente 4 estilistas», Olgha→Olga).
+
+Análisis de qué SÍ tendría sentido: ver más abajo, sin construir.
+
+### ¿Tiene sentido un check que compare los tres? — análisis, sin construir
+
+**Respuesta corta: sí, pero no ese check.** «Avisar cuando diverjan» mide antigüedad. Lo que
+sí se puede medir es la **consecuencia** de cada fichero, que es distinta en cada uno y es
+verdad o mentira con independencia de cuánto haya editado la dueña.
+
+**C · Que el fichero no se pueda confundir con la verdad** — *casi gratis, y ataca el fallo
+que pasó de verdad*
+
+Ni check ni script: metadatos. Un `_meta` dentro del propio JSON (`{ tomado_el,
+antes_de_migracion, no_es_el_catalogo_vivo: true }`) o un hermano `.md` de dos líneas. El
+backup de la 040 es correcto y útil; lo único que le falta es decir de qué es el «antes».
+Cero mantenimiento, cero runtime, y mata exactamente lo que ocurrió: abrir el fichero y
+tomarlo por el catálogo. **Es lo primero que haría.**
+
+Para el fixture, lo mismo más una frase que hoy falta: *instantánea de tal fecha,
+deliberadamente fija, NO sincronizar*. Que esté desfasado no es el bug — el bug es que nadie
+sabe de cuándo es.
+
+**A · «Restaurar este backup movería dinero»** — *el que tiene dinero detrás*
+
+Un `informe:` de solo lectura, a mano y antes de restaurar, nunca en CI. Compara las claves
+`categoria|nombre` del backup contra el catálogo vivo **y contra los segmentos de
+`appointments.service` de las citas reales**, y responde una sola pregunta: *¿qué citas que
+hoy resuelven dejarían de resolver si restauro esto?* Con su cuenta y su importe.
+
+No es regla 5: no afirma que el backup deba parecerse al vivo — afirma una consecuencia
+medible. Un backup de catálogo **no es un fichero inerte, es una migración inversa sin
+revisar**, y hoy no hay nada que lo mire. Reutiliza `resolveServiceCatalogEntry` y
+`computeServiceBilling`, que ya existen. Severidad error y salida 1, pero como corre a
+demanda no deja rojo permanente.
+
+⚠️ **Límite que hay que decir en el propio informe**: el catálogo no tiene ids y la clave es
+`categoria|nombre`, así que un RENOMBRADO es indistinguible de un borrado más un alta. El
+informe puede decir «esta entrada ya no existe y N citas dependen de ella»; **no** puede
+decir «se llamaba X y ahora se llama Y». Por eso reporta consecuencia y no diff.
+
+**B · «Los servicios que los tests dan por sentados siguen existiendo»** — *seguramente no*
+
+Sería una lista DECLARADA de claves de catálogo de las que dependen tests concretos,
+comprobada contra el vivo en `verify:sante` (que ya lee el vivo), con la forma de la Fase 8.
+Avisaría de que un test se quedó certificando algo que ya no ocurre.
+
+**El argumento en contra es fuerte y creo que gana**: esa lista hay que mantenerla a mano, y
+mantener a mano un fichero que refleje el catálogo **es precisamente lo que falló con el
+fixture**. Se construiría un segundo fichero con el mismo modo de fallo que el primero, más
+la ilusión de estar cubierto.
+
+**D · Dejar de fingir que el fixture es el catálogo real** — *lo estructural, y no es un check*
+
+El fixture lo usan **16 ficheros de test**, y al menos uno miente en su cabecera:
+`service-names-parity.test.js` dice comparar «sobre el catálogo REAL de Sante (el JSON que
+sirve `/api/service-catalog`)» y usa el fixture. Ahí no falta un check: sobra una frase, o
+falta mover esa afirmación a `verify:sante`, que sí lee el catálogo vivo.
+
+La línea que ordena esto ya está escrita en CLAUDE.md para otra cosa y vale igual aquí:
+
+| | Dónde va |
+|---|---|
+| lo que necesita ser **DETERMINISTA** (mapeos, splits, formatos) | fixture, fijo, y que su cabecera lo diga |
+| lo que afirma algo del **CATÁLOGO REAL** | `verify:sante`, contra `agent_configs` |
+
+Repartir los 16 por esa raya es trabajo de una tarde y no añade ningún fichero nuevo que
+mantener. **Es lo que de verdad cierra el agujero**; A cubre el dinero, C cubre el despiste,
+y B sobra.
+
+**Frecuencia, para dimensionar**: el catálogo cambió el 05/08 (baja de `Japonesa`), el 12/08
+(renombrado de los tres Spa Hair) y tiene un alta sin fechar (`Difuminado de raíz`).
+Aproximadamente semanal — bastante para que A importe, y bastante para que cualquier check
+de «deben ser iguales» viviera en rojo.
