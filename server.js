@@ -16,6 +16,7 @@ const { startReviewWorker } = require('./services/review');
 const { startAutoReturnWorker } = require('./services/auto-return');
 const { startPauseWatchdog } = require('./services/bot-pause-alert');
 const { startEsperaWatchdog } = require('./services/espera-alert');
+const { startSeguimientoWorker } = require('./services/seguimiento');
 const { startTelegramBot } = require('./services/telegram');
 const { getAllOrgs, CHANNEL_WWEBJS } = require('./services/org-registry');
 const { build360Client } = require('./services/providers/threesixty-dialog');
@@ -211,6 +212,11 @@ function tryStartWorkers() {
     // escaló y nadie la atendió o porque el turno se cayó. Es lo que faltaba para que un
     // fallo se descubra el mismo día y no leyendo conversaciones tres semanas después.
     startEsperaWatchdog([...waClients.keys()]);
+    // La propuesta post-visita (hidratación tras unas mechas, matiz al mes). Es el ÚNICO
+    // worker que empieza conversaciones en vez de continuarlas, así que nace apagado:
+    // arranca, calcula la tanda y la deja en el log sin mandar nada. `SEGUIMIENTOS=on` es lo
+    // único que lo enciende, y `npm run informe:seguimientos` enseña antes lo que saldría.
+    startSeguimientoWorker(waClients);
 }
 
 for (const { client, channel } of waClients.values()) {

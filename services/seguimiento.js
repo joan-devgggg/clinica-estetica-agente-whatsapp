@@ -347,7 +347,212 @@ async function construirTanda(orgId, { ahora = new Date() } = {}) {
     return { reglas, enviables, excluidas, ventana };
 }
 
+// ─── El worker ──────────────────────────────────────────────────────────────
+//
+// Apagado POR DEFECTO. `SEGUIMIENTOS=on` es lo único que lo enciende, y hasta entonces el
+// tic corre, calcula y registra en el log lo que HABRÍA mandado — sin mandarlo. Es el mismo
+// interruptor que `VIGILANTE_ESPERAS`, y por el mismo motivo: la diferencia entre este worker
+// y todos los demás es que este empieza conversaciones, en vez de continuarlas.
+//
+// Que apague en vez de encender es deliberado: producción arranca con `pm2 start server.js`,
+// y un fallo al leer una variable de entorno tiene que dejar esto callado, no hablando.
+
+const CHECK_INTERVAL_MS = 30 * 60 * 1000;   // media hora: esto no corre contra reloj
+const PRIMER_BARRIDO_MS = 5 * 60 * 1000;
+const CLAIM_ANTIGUO_MS = 30 * 60 * 1000;
+
+// Tope de envíos por tic y por org. No lo impone Meta —de eso ya se encarga el tope de
+// broadcast—: lo impone que la primera tanda de verdad no pueda ser grande sin que alguien lo
+// haya decidido. `SEGUIMIENTOS_LIMITE=3` para estrenar.
+const LIMITE_POR_TIC_DEFECTO = 25;
+
+let waClients = null;
+
+function seguimientosEncendidos() {
+    return String(process.env.SEGUIMIENTOS || '').toLowerCase() === 'on';
+}
+
+function limitePorTic() {
+    const n = Number(process.env.SEGUIMIENTOS_LIMITE);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : LIMITE_POR_TIC_DEFECTO;
+}
+
+const MENSAJE_CLAIM_ATASCADO = n =>
+    '⚠️ <b>Seguimientos a medias</b>\n\n'
+    + `Hay ${n} seguimiento(s) reservados hace rato que no constan como enviados.\n\n`
+    + 'Puede que el mensaje saliera y no se apuntara, o que no saliera. <b>No los voy a '
+    + 'reintentar solos</b>: reintentar a ciegas puede mandarle el mismo mensaje dos veces a '
+    + 'la misma clienta.';
+
+async function procesarSeguimientos() {
+    if (!waClients) return;
+    const db = require('./db');
+    const { getOrgType } = require('./org-registry');
+    const { resolveOutboundClient, resolveAutomatedSend } = require('./outbound');
+    const { noteSendResult } = require('./channel-health');
+    const { alertOnce } = require('./admin-alerts');
+    const logger = require('../lib/logger');
+
+    const encendido = seguimientosEncendidos();
+    const limite = limitePorTic();
+
+    for (const [orgId, entry] of waClients) {
+        try {
+            // San Remo fuera, y estructuralmente en vez de por config vacía. Hoy no tiene
+            // reglas y no pasaría nada igualmente; el gate existe para que añadirle una por
+            // error no le cambie la conducta a la org que no se toca.
+            if (getOrgType(orgId) !== 'salon') continue;
+
+            await db.liberarSeguimientosFallidos(orgId);
+
+            const atascados = await db.getSeguimientosPendientesAntiguos(
+                orgId, new Date(Date.now() - CLAIM_ANTIGUO_MS).toISOString());
+            if (atascados.length) {
+                logger.error('seguimiento_claim_atascado', { orgId, n: atascados.length });
+                await alertOnce(orgId, `seguimiento_atascado|${atascados.length}`,
+                    MENSAJE_CLAIM_ATASCADO(atascados.length));
+            }
+
+            const tanda = await construirTanda(orgId, { ahora: new Date() });
+
+            for (const { cruda, resuelta } of tanda.reglas) {
+                if (resuelta.ok) continue;
+                // Una regla rota no se arregla sola y deja de enviar en silencio. Un aviso por
+                // asunto, que es lo que hace alertOnce.
+                logger.warn('seguimiento_regla_invalida', {
+                    orgId, regla: cruda?.key || null, motivo: resuelta.motivo,
+                });
+            }
+
+            if (!encendido) {
+                // El simulacro. Cuenta y no manda — y lo dice, para que "0 enviados" no se
+                // pueda confundir con "no había nadie".
+                logger.info('seguimiento_simulacro', {
+                    orgId, habria_enviado: tanda.enviables.length, excluidas: tanda.excluidas.length,
+                });
+                continue;
+            }
+
+            const client = resolveOutboundClient(orgId, entry?.client);
+            if (!client) {
+                logger.warn('seguimiento_wa_no_disponible', { orgId });
+                continue;
+            }
+
+            let enviados = 0;
+            for (const cand of tanda.enviables) {
+                if (enviados >= limite) {
+                    logger.info('seguimiento_limite_por_tic', { orgId, limite, restantes: tanda.enviables.length - enviados });
+                    break;
+                }
+                // El try va por CANDIDATA. Fuera del bucle, un fallo en una se llevaría por
+                // delante a todas las siguientes de esa org en ese tic — la lección de
+                // review.js, que lo tenía al nivel de la org.
+                try {
+                    // 1. RESERVAR. Antes de tocar la red: si el INSERT choca con el UNIQUE,
+                    //    otro proceso ya la tiene y aquí no se manda nada.
+                    const caducaAt = new Date(Date.now() + diasDeCaducidad(cand) * 24 * 60 * 60 * 1000).toISOString();
+                    const seguimientoId = await db.claimSeguimiento(orgId, {
+                        contactId: cand.contactId,
+                        citaId: cand.citaId,
+                        servicioOrigen: cand.servicioOrigen,
+                        categoriaOrigen: cand.categoriaOrigen,
+                        citaOrigenAt: cand.citaOrigenAt,
+                        reglaKey: cand.regla.key,
+                        destinoKey: cand.regla.destino.key,
+                        destinoNombre: cand.regla.destino.nombre,
+                        destinoPrecio: cand.regla.destino.precio,
+                        descuentoPct: cand.regla.descuentoPct,
+                        precioConDescuento: cand.regla.precioFinal,
+                        via: 'seguimiento_dias',
+                        caducaAt,
+                    });
+                    if (!seguimientoId) {
+                        logger.info('seguimiento_ya_reservado', { orgId, citaId: cand.citaId, regla: cand.regla.key });
+                        continue;
+                    }
+
+                    // 2. ENVIAR, por la vía que toque (ventana de 24 h o plantilla). La regla
+                    //    NO se reimplementa: es la misma resolveAutomatedSend de reminder y
+                    //    review.
+                    const decision = await resolveAutomatedSend(orgId, {
+                        telefono: cand.telefono,
+                        language: cand.language || 'es',
+                        plantillaClave: 'plantilla_seguimiento',
+                    });
+
+                    if (decision.mode === 'sin_plantilla') {
+                        // Fuera de ventana y sin plantilla aprobada: Meta no lo entregaría. Se
+                        // libera la reserva para que se reintente cuando la haya.
+                        await db.marcarSeguimientoFallido(orgId, seguimientoId, 'sin_plantilla_configurada');
+                        logger.warn('seguimiento_sin_plantilla_configurada', { orgId, telefono: cand.telefono, language: cand.language });
+                        continue;
+                    }
+
+                    const chatId = cand.waJid || `${String(cand.telefono).replace(/\D/g, '')}@c.us`;
+                    if (decision.mode === 'template') {
+                        await client.sendTemplate(chatId, {
+                            name: decision.template.name,
+                            language: decision.template.language,
+                            params: [cand.nombre || '', cand.mensaje],
+                        });
+                    } else {
+                        await client.sendMessage(chatId, cand.mensaje);
+                    }
+                    await noteSendResult(orgId, { ok: true });
+
+                    // 3. APUNTAR lo que salió, con el texto exacto.
+                    await db.marcarSeguimientoEnviado(orgId, seguimientoId, { mensaje: cand.mensaje });
+                    enviados++;
+                    logger.info('seguimiento_enviado', {
+                        orgId, telefono: cand.telefono, regla: cand.regla.key,
+                        destino: cand.regla.destino.nombre, precio: cand.regla.precioFinal,
+                    });
+                } catch (e) {
+                    // Aquí NO se marca fallido a ciegas: si el error saltó después del envío,
+                    // marcarlo fallido lo reintentaría y la clienta lo recibiría dos veces. La
+                    // fila se queda en 'pendiente', que bloquea el reintento, y el vigilante de
+                    // claims atascados lo saca a la luz.
+                    logger.error('seguimiento_error_candidata', {
+                        orgId, citaId: cand.citaId, regla: cand.regla?.key, error: e.message,
+                    });
+                    await noteSendResult(orgId, { ok: false, error: e, contexto: 'seguimiento post-visita' });
+                }
+            }
+        } catch (e) {
+            logger.error('seguimiento_error_org', { orgId, error: e.message });
+        }
+    }
+}
+
+// Cuánto dura la promesa. El plazo de la regla otra vez, más un mes de cortesía: si le
+// ofrecemos algo "a las tres semanas", tiene un margen holgado para venir a por ello. Sin
+// caducidad, un -10 % de hace ocho meses reaparece en el mostrador y nadie sabe si sigue en
+// pie.
+function diasDeCaducidad(cand) {
+    return (cand?.regla?.dias || 30) + 30;
+}
+
+function setClients(clients) { waClients = clients; }
+
+function startSeguimientoWorker(clients) {
+    setClients(clients);
+    const logger = require('../lib/logger');
+    logger.info('seguimiento_worker_iniciado', {
+        encendido: seguimientosEncendidos(), limite_por_tic: limitePorTic(),
+    });
+    // `.unref()` en los dos: importar este módulo no puede ser la razón de que un proceso
+    // siga vivo (ver CLAUDE.md, los timers de arranque).
+    setInterval(procesarSeguimientos, CHECK_INTERVAL_MS).unref();
+    setTimeout(procesarSeguimientos, PRIMER_BARRIDO_MS).unref();
+}
+
 module.exports = {
+    startSeguimientoWorker,
+    procesarSeguimientos,
+    setClients,
+    seguimientosEncendidos,
+    limitePorTic,
     construirTanda,
     interpretarBotActivo,
     decidirSeguimiento,

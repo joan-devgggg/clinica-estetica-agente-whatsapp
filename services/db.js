@@ -3340,6 +3340,121 @@ async function getSeguimientosDeContactos(orgId, contactIds) {
     return data || [];
 }
 
+/**
+ * RESERVA la fila ANTES de enviar. Devuelve el id, o null si otro proceso ya la tenía
+ * (violación del UNIQUE, código 23505).
+ *
+ * El SELECT previo de `getSeguimientosDeContactos` NO basta como exclusión: dos tics
+ * solapados lo pasan los dos. Quien decide es este INSERT, igual que en
+ * `claimBroadcastRecipient` — con la diferencia de que aquí lo que se duplica no es una fila
+ * de registro, es un WhatsApp a una clienta.
+ *
+ * Todo lo del destino se guarda CONGELADO, incluido el precio ya descontado: es la cifra que
+ * ella va a leer, y dentro de tres semanas el catálogo puede decir otra cosa.
+ */
+async function claimSeguimiento(orgId, datos) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('seguimientos')
+        .insert({
+            organization_id: oid,
+            contact_id: datos.contactId,
+            appointment_origen_id: datos.citaId,
+            servicio_origen: datos.servicioOrigen,
+            categoria_origen: datos.categoriaOrigen,
+            cita_origen_at: datos.citaOrigenAt,
+            regla_key: datos.reglaKey,
+            destino_key: datos.destinoKey,
+            destino_nombre: datos.destinoNombre,
+            destino_precio: datos.destinoPrecio,
+            descuento_pct: datos.descuentoPct,
+            precio_con_descuento: datos.precioConDescuento,
+            via: datos.via,
+            estado: 'pendiente',
+            caduca_at: datos.caducaAt,
+        })
+        .select('id')
+        .single();
+
+    // 23505 = otro proceso ganó la carrera. No es un error: es el UNIQUE haciendo su trabajo,
+    // y lo correcto es no enviar nada.
+    if (error && error.code === '23505') return null;
+    assertWrite(error, 'seguimientos', 'claim');
+    return data?.id || null;
+}
+
+/** El mensaje SALIÓ. Se guarda el texto exacto: es lo único que puede confirmar lo prometido. */
+async function marcarSeguimientoEnviado(orgId, id, { mensaje }) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('seguimientos')
+        .update({ estado: 'enviado', enviado_at: now(), mensaje_enviado: mensaje })
+        .eq('organization_id', oid)
+        .eq('id', id)
+        .select('id');
+    // assertRowsAffected incluye el assertWrite: un UPDATE cuyos .eq() no casan nada
+    // devuelve error=null, y ese es justo el caso que hay que ver.
+    assertRowsAffected(error, data, 'seguimientos', 'marcar enviado');
+    return true;
+}
+
+/**
+ * El mensaje NO salió. Se marca 'fallido' para que el tic siguiente pueda reintentarlo.
+ *
+ * Solo se llama cuando el envío LANZÓ, o sea cuando consta que no se entregó. Un envío del
+ * que no sabemos si salió NO se marca fallido: se queda en 'pendiente', que es el estado que
+ * bloquea el reintento. La asimetría es deliberada — perder un seguimiento se recupera al
+ * mes siguiente, mandarlo dos veces lo lee la clienta.
+ */
+async function marcarSeguimientoFallido(orgId, id, motivo) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('seguimientos')
+        .update({ estado: 'fallido', motivo_fallo: String(motivo || 'desconocido').slice(0, 200) })
+        .eq('organization_id', oid)
+        .eq('id', id)
+        .select('id');
+    // assertRowsAffected incluye el assertWrite: un UPDATE cuyos .eq() no casan nada
+    // devuelve error=null, y ese es justo el caso que hay que ver.
+    assertRowsAffected(error, data, 'seguimientos', 'marcar fallido');
+    return true;
+}
+
+/**
+ * Libera las reservas FALLIDAS para que se puedan reintentar. Sin esto el UNIQUE las
+ * bloquearía para siempre: `construirTanda` las daría por no enviadas y el claim chocaría en
+ * cada tic.
+ *
+ * NO libera las 'pendiente' abandonadas, y ahí se separa a propósito de
+ * `resetStaleBroadcastClaims`. Una 'pendiente' vieja es un proceso que murió entre reservar y
+ * enviar: puede que el mensaje saliera. Liberarla arriesga un WhatsApp duplicado para
+ * recuperar uno perdido, y ese cambio no compensa. Se avisa y lo mira una persona.
+ */
+async function liberarSeguimientosFallidos(orgId) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('seguimientos')
+        .delete()
+        .eq('organization_id', oid)
+        .eq('estado', 'fallido')
+        .select('id');
+    assertWrite(error, 'seguimientos', 'liberar fallidos');
+    return (data || []).length;
+}
+
+/** Reservas que llevan demasiado tiempo sin resolverse: hay que mirarlas a mano. */
+async function getSeguimientosPendientesAntiguos(orgId, antesDeIso) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('seguimientos')
+        .select('id, contact_id, regla_key, created_at')
+        .eq('organization_id', oid)
+        .eq('estado', 'pendiente')
+        .lt('created_at', antesDeIso);
+    assertRead(error, 'seguimientos');
+    return data || [];
+}
+
 module.exports = {
     sanitizePhone,
     phoneVariants,
@@ -3456,6 +3571,11 @@ module.exports = {
     getCitasParaSeguimiento,
     getCitasDeContactosDesde,
     getSeguimientosDeContactos,
+    claimSeguimiento,
+    marcarSeguimientoEnviado,
+    marcarSeguimientoFallido,
+    liberarSeguimientosFallidos,
+    getSeguimientosPendientesAntiguos,
     // Agent memory
     getLastCompletedAppointment,
     // Vigilante de esperas
