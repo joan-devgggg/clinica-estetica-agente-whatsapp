@@ -26,6 +26,15 @@ supabase/.temp/
 .windsurf/
 .claude/
 
+# Métricas internas: las reescribe el proceso en cada flush, así que versionarlas
+# solo ensucia el diff. Si falta, metrics.js arranca de cero (evento metrics_init).
+metrics.json
+
+# Hojas de revisión de nombres. OJO: esto NO se regenera solo — se arma a mano.
+# Si alguna llega a rellenarse y hay que conservar esa decisión, versiónala a
+# propósito (git add -f), como data/campana-verano-exclusiones.json.
+data/revision-nombres-*.csv
+
 # Logs
 *.log
 npm-debug.log*
