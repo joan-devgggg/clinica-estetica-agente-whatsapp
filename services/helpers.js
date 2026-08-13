@@ -2136,9 +2136,61 @@ const HORA_SUELTA_MARCADORES = [
 // últimos, y con un solo separador la lista se cortaba en el 11 — la tercera hora que
 // Michal llegó a leer se habría quedado fuera de la red.
 const HORA_LISTA_SEP = '(?:\\s*(?:,|;|y|o|and|or|или|чи|та)\\s*)+';
+// Los sufijos que convierten un número en DINERO. Viven aquí arriba, sueltos, porque los
+// comparten dos sitios que miran el mismo texto con intenciones opuestas: NO_ES_HORA_DETRAS,
+// que los usa para descartar («60 euros» no son las 60:00), y extractPrecioMencionado, que
+// los usa para capturar («60 euros» es un precio). Con dos listas, el día que alguien añada
+// 'eu' o '€uros' a una, la otra dejaría de verlo — y el fallo sería mudo por los dos lados.
+const MONEDA_SUFIJOS = ['€', 'euros', 'euro', 'eur'];
+const MONEDA_SUFIJOS_RE = MONEDA_SUFIJOS.map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
 // Lo que descarta un número que sí lleva marcador: 30 % de descuento, 20 €, 45 min.
-const NO_ES_HORA_DETRAS = '(?!\\s*(?:%|€|eur|euros|min|minutos|minutes|anos|years|dias|days))';
+const NO_ES_HORA_DETRAS = `(?!\\s*(?:%|${MONEDA_SUFIJOS_RE}|min|minutos|minutes|anos|years|dias|days))`;
 const NUM_HORA = `(\\d{1,2})(?![:.\\d])${NO_ES_HORA_DETRAS}`;
+
+// ─── El precio que dice la CLIENTA ───────────────────────────────────────────
+//
+// Mariola Mira Lopez (12/08/2026) escribió «El masaje capilar el de 60 euros» y el bot le
+// contestó «Perfecto, el Spa Hair Detox de 60 minutos» — le devolvió su propia cifra con
+// OTRA UNIDAD, que es la forma más cara de la regla 3: un dato que no resolvió, reciclado
+// con otro significado y con pinta de acuerdo. Un turno después el precio real era 115 €.
+// Nunca se le dijo que a 60 € no había ningún masaje. Y probablemente ella tenía razón: a
+// 60 € el catálogo tiene la Reconstrucción Pro Miracle, que es lo que nombró ella sola
+// después.
+//
+// Hasta hoy este número no lo leía NADIE. La única regla del código que lo miraba era
+// NO_ES_HORA_DETRAS, y solo para tirarlo (que «60 euros» no se lea como una hora). De ahí
+// que las diez redes anti-mentira —huecos, fechas, horarios, cierres, cita fantasma— no
+// pudieran cubrir el precio: no había qué comparar.
+//
+// Devuelve los importes en orden de aparición, sin duplicados. Acepta coma y punto decimal
+// («76,50 €»), y el símbolo delante o detrás. Una cifra SIN sufijo de dinero no entra: «el
+// de 60» puede ser el largo, los minutos o el número de la mecha.
+function extractPrecioMencionado(text) {
+    const t = normalizeText(text);
+    if (!t) return [];
+    const num = '(\\d{1,4}(?:[.,]\\d{1,2})?)';
+    const res = [
+        new RegExp(`${num}\\s*(?:${MONEDA_SUFIJOS_RE})(?![\\p{L}])`, 'giu'),
+        new RegExp(`€\\s*${num}`, 'giu'),
+    ];
+    const out = [];
+    for (const re of res) {
+        for (const m of t.matchAll(re)) {
+            const n = Number(String(m[1]).replace(',', '.'));
+            if (Number.isFinite(n) && n > 0 && !out.includes(n)) out.push(n);
+        }
+    }
+    return out;
+}
+
+// Las entradas del catálogo que cuestan EXACTAMENTE ese importe. Es la otra mitad de la
+// pregunta «¿existe algo a este precio?», y se responde contra el catálogo COMPLETO o el
+// ofertable según quien llame: aquí se recibe ya filtrado, porque esto alimenta una OFERTA
+// (el filtro va en el call site, jamás dentro del helper).
+function catalogEntriesAtPrice(catalog, precio) {
+    if (!Array.isArray(catalog) || !Number.isFinite(precio)) return [];
+    return catalog.filter(s => Number(s?.precio) === Number(precio));
+}
 
 function extractLooseClockHours(text) {
     const t = normalizeText(text);
@@ -4482,6 +4534,8 @@ module.exports = {
     extractMentionedHours,
     extractMentionedDates,
     declaraSinDisponibilidad,
+    extractPrecioMencionado,
+    catalogEntriesAtPrice,
     hhmmToMin,
     detectHoraFueraDeHorario,
     detectTratamiento,

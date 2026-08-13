@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, detectHoraFueraDeHorario, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -271,6 +271,8 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         // Segunda reserva en la misma conversación (para un acompañante)
         guestBooking: false,
         guestName: null,
+        // La cifra que la clienta afirmó como precio, hasta que se atienda.
+        precioPedido: null,
         // «Somos dos»: la petición es para más de una persona, y si ya se dijo.
         variasPersonas: false,
         variasPersonasAvisado: false,
@@ -703,6 +705,7 @@ function buildSessionExtra(session) {
         pendingEscalationService: session.pendingEscalationService || null,
         // «Somos dos»: la marca y su aviso. Sin viajar aquí, una conversación que cruce un
         // timeout vuelve a leerse como de una sola persona y el párrafo se repite.
+        precioPedido:      Number.isFinite(session.precioPedido) ? session.precioPedido : null,
         variasPersonas:    !!session.variasPersonas,
         variasPersonasAvisado: !!session.variasPersonasAvisado,
         proposedSlots: Array.isArray(session.proposedSlots) ? session.proposedSlots : [],
@@ -1701,6 +1704,113 @@ function respondsWithFalseClosureClaim(respuesta) {
     if (!CLOSURE_CLAIM_WORDS.some(w => t.includes(w))) return false;
     if (SUNDAY_WORDS.some(w => t.includes(w))) return false; // domingo sí cierra: legítimo
     return NON_SUNDAY_DAY_WORDS.some(w => t.includes(w));
+}
+
+// ─── Red anti-precio-sin-respaldo (Sante) ────────────────────────────────────
+//
+// La undécima, y la primera que mira el PRECIO. Las otras diez cubren huecos, fechas,
+// horarios, cierres y afirmaciones de reserva; el precio era el único dato duro del salón
+// sin red, y por eso Mariola Mira Lopez (12/08/2026) pidió «el masaje capilar el de 60
+// euros» y recibió «el Spa Hair Detox de 60 minutos» —su cifra, con OTRA UNIDAD— y un turno
+// después «cuesta 115€», sin que nadie le dijera nunca que a 60 € no había ningún masaje.
+// El prompt ya mandaba lo correcto («si NO consigues mapearlo, dile qué opciones parecidas
+// hay», «NUNCA inventes precios»); era instrucción sin suelo, y cuando el modelo no la
+// sigue no había nada debajo.
+//
+// Devuelve un veredicto con TRES salidas, y las tres importan:
+//
+//   'ninguna'    — no hay nada que hacer y la cifra sigue viva en la sesión.
+//   'atendido'   — la respuesta SÍ nombra esa cifra: el modelo está lidiando con ella
+//                  («a 60 € tengo X e Y»). No se toca el texto y la cifra se deja de
+//                  vigilar. **Esta es la exención, y va aquí y no en el gate**: sin ella,
+//                  la red volvería a disparar en el turno siguiente contra la respuesta
+//                  BUENA, cuando la clienta ya ha elegido el servicio de 115 €. Es la
+//                  lección de respondsWithInventedSlots matando «cerramos a las 19:00» —
+//                  una red demasiado ancha no sobra un mensaje, pierde el bueno.
+//   'rectificar' — la respuesta afirma un servicio cuyo precio de catálogo NO es el que
+//                  pidió, y no menciona el suyo. Se sustituye.
+//
+// Y lo que NO dispara es la mitad del diseño: una respuesta que no resuelve ningún servicio
+// (una pregunta, un saludo) se deja pasar — preguntar no es mentir—, y un servicio con
+// `precio: null` («se confirma en el salón», la Consulta de valoración) tampoco, porque ahí
+// no hay cifra que contradecir.
+function respondsWithUnbackedPrice(respuesta, precioPedido, catalog) {
+    if (!Number.isFinite(precioPedido) || !Array.isArray(catalog) || !catalog.length) {
+        return { accion: 'ninguna' };
+    }
+    const preciosDichos = extractPrecioMencionado(respuesta);
+    if (preciosDichos.includes(precioPedido)) return { accion: 'atendido' };
+    const rectificar = (precioServicio, servicio) => ({
+        accion: 'rectificar', precioPedido, precioServicio, servicio: servicio || null,
+        opciones: catalogEntriesAtPrice(catalog, precioPedido),
+    });
+    // Resolver el servicio del que habla la respuesta es ORIENTATIVO y nunca decide solo:
+    // extractServiceFromText sobre prosa libre acierta a medias («el Detox limpia el cuero
+    // cabelludo» resuelve contra Exfoliación cabeza, 10 €, por la palabra «cabelludo»). Por
+    // eso el nombre solo se usa cuando el PRECIO lo corrobora — si no, el mensaje habla de
+    // la cifra y se calla el nombre, en vez de rectificar nombrando el servicio equivocado.
+    const servicio = extractServiceFromText(respuesta, catalog);
+    const precioCatalogo = servicio && servicio.precio != null ? Number(servicio.precio) : null;
+    const servicioCorroborado = sv => (precioCatalogo != null && precioCatalogo === sv ? servicio : null);
+
+    // Disparador 1: la respuesta AFIRMA un precio, y no es el que ella dijo. No necesita
+    // resolver ningún servicio, así que es el camino robusto — y es el que cazó el segundo
+    // turno de Mariola («cuesta 115€»), donde ella ya no repetía su cifra.
+    if (preciosDichos.length) {
+        return rectificar(preciosDichos[0], servicioCorroborado(preciosDichos[0]));
+    }
+    // Disparador 2: no dice precio, pero nombra un servicio que en el catálogo cuesta otra
+    // cosa. Es el primer turno: «el Spa Hair Detox de 60 minutos», sin un solo €.
+    //
+    // `precio != null` ANTES del Number(), y no es un detalle de estilo: Number(null) es 0,
+    // no NaN, así que un servicio con «precio a confirmar en el salón» pasaría por un
+    // servicio de 0 € y la red lo contradiría con una cifra inventada. Es exactamente el
+    // fallo de `precio_facturado` leído como 0,00 €.
+    if (precioCatalogo == null) return { accion: 'ninguna' };
+    if (precioCatalogo === precioPedido) return { accion: 'atendido' };
+    return rectificar(precioCatalogo, servicio);
+}
+
+// El texto que sustituye. Dice las TRES cosas por las que esta conversación se torció: que
+// la cifra no cuadra, qué hay a esa cifra (o que no hay nada), y cuánto cuesta de verdad lo
+// que se estaba nombrando. Sin la tercera, la clienta se entera del desajuste pero no del
+// precio; sin la segunda, se queda sin la salida que probablemente buscaba —a 60 € el
+// catálogo tenía justo lo que ella nombró sola en el turno siguiente.
+function salonPrecioNoCasaMsg(session, { precioPedido, servicio, precioServicio, opciones }) {
+    const eur = n => (Number.isInteger(n) ? String(n) : String(n).replace('.', ','));
+    const nombres = (opciones || []).map(o => o.nombre);
+    // Enumeración con coma Y conjunción: cuatro entradas del catálogo pueden costar lo
+    // mismo (a 60 € hay cuatro), y un join(' y ') las encadenaría en una frase ilegible.
+    const enumerar = (xs, conj) => (xs.length <= 1 ? (xs[0] || '')
+        : `${xs.slice(0, -1).join(', ')} ${conj} ${xs[xs.length - 1]}`);
+    const lista = {
+        es: nombres.length ? `A ${eur(precioPedido)} € tengo ${enumerar(nombres, 'y')}.` : `No tengo nada a ${eur(precioPedido)} €.`,
+        en: nombres.length ? `At €${eur(precioPedido)} I have ${enumerar(nombres, 'and')}.` : `I don't have anything at €${eur(precioPedido)}.`,
+        ru: nombres.length ? `За ${eur(precioPedido)} € у меня есть ${enumerar(nombres, 'и')}.` : `За ${eur(precioPedido)} € у меня ничего нет.`,
+        uk: nombres.length ? `За ${eur(precioPedido)} € у мене є ${enumerar(nombres, 'і')}.` : `За ${eur(precioPedido)} € у мене нічого немає.`,
+    };
+    // El sujeto de «cuesta N €» solo se nombra si el servicio quedó CORROBORADO por su
+    // precio (ver respondsWithUnbackedPrice). Sin nombre se habla de «eso», que es cierto,
+    // en vez de atribuirle la cifra a un servicio que a lo mejor no es el que se nombró.
+    const q = servicio ? servicio.nombre : null;
+    const cuesta = {
+        es: q ? `${q} son ${eur(precioServicio)} €.` : `Lo que me dices son ${eur(precioServicio)} €.`,
+        en: q ? `${q} is €${eur(precioServicio)}.` : `What you're describing is €${eur(precioServicio)}.`,
+        ru: q ? `${q} стоит ${eur(precioServicio)} €.` : `То, о чём ты говоришь, стоит ${eur(precioServicio)} €.`,
+        uk: q ? `${q} коштує ${eur(precioServicio)} €.` : `Те, про що ти кажеш, коштує ${eur(precioServicio)} €.`,
+    };
+    const msgs = {
+        es: `Ojo, que el precio no me cuadra 😊 ${lista.es} ${cuesta.es} ¿Cuál buscabas?`,
+        en: `Careful, the price doesn't match 😊 ${lista.en} ${cuesta.en} Which one did you mean?`,
+        ru: `Внимание, цена не сходится 😊 ${lista.ru} ${cuesta.ru} Какую ты имела в виду?`,
+        uk: `Увага, ціна не збігається 😊 ${lista.uk} ${cuesta.uk} Яку ти мала на увазі?`,
+    };
+    const msgsFormal = {
+        es: `Ojo, que el precio no me cuadra 😊 ${lista.es} ${cuesta.es} ¿Cuál buscaba?`,
+        ru: `Внимание, цена не сходится 😊 ${lista.ru} ${cuesta.ru} Какую Вы имели в виду?`,
+        uk: `Увага, ціна не збігається 😊 ${lista.uk} ${cuesta.uk} Яку Ви мали на увазі?`,
+    };
+    return porTrato(session, msgs, msgsFormal);
 }
 
 // Mensaje de fallback cuando la red anti-invención bloquea una respuesta del LLM que
@@ -3740,6 +3850,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession._lastUpsellSuggestion = ex.lastUpsellSuggestion || null;
                     newSession.pendingEscalation     = !!ex.pendingEscalation;
                     newSession.pendingEscalationService = ex.pendingEscalationService || null;
+                    newSession.precioPedido          = Number.isFinite(ex.precioPedido) ? ex.precioPedido : null;
                     newSession.variasPersonas        = !!ex.variasPersonas;
                     newSession.variasPersonasAvisado = !!ex.variasPersonasAvisado;
                     newSession.tratamiento           = ex.tratamiento || null;
@@ -4478,6 +4589,24 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 await _send(msg);
                 persistSession(orgId, userPhone, session);
                 return;
+            }
+        }
+
+        // ─── Salon: la cifra que dice la clienta se APUNTA ───────────────
+        // Hasta hoy este número no lo leía nadie: la única regla que lo miraba era
+        // NO_ES_HORA_DETRAS, y solo para tirarlo. Se apunta aquí, antes del LLM, para que la
+        // red de precio del final del turno tenga contra qué comparar.
+        //
+        // Se queda con la PRIMERA de las cifras si dice varias: «entre 45 y 115 €» es un
+        // rango que ella no ha elegido, y quedarse con la última haría que la red midiera el
+        // techo de una horquilla como si fuera lo que pidió.
+        if (orgType === 'salon') {
+            const preciosDichos = extractPrecioMencionado(sanitized);
+            if (preciosDichos.length) {
+                session.precioPedido = preciosDichos[0];
+                logger.info('precio_mencionado_por_clienta', {
+                    orgId, telefono: userPhone, precio: session.precioPedido,
+                });
             }
         }
 
@@ -6073,6 +6202,36 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             aiResponse.reserva_confirmada = false;
         }
 
+        // ─── Red anti-precio-sin-respaldo (Sante) ─────────────────────────────
+        // La cifra viaja PEGAJOSA en la sesión y no se mira solo en el turno en que se dice:
+        // Mariola dijo «60 euros» una vez y el desajuste salió en los DOS turnos siguientes
+        // («de 60 minutos», y luego «cuesta 115€» contestando a «¿qué entra en ese?», donde
+        // ella ya no repetía la cifra). Vigilarla solo en su turno habría dejado pasar el
+        // segundo, que es el que dio el precio equivocado.
+        //
+        // Y deja de vigilarse en cuanto se ATIENDE —da igual si por la red o porque el
+        // modelo la nombró él solo—, que es lo que impide que la red se vuelva contra la
+        // respuesta buena del turno siguiente.
+        if (orgType === 'salon' && Number.isFinite(session.precioPedido)) {
+            // OFERTA: esto propone servicios, así que un servicio de baja no puede salir aquí.
+            const catPrecio = offerableCatalog((await getAgentConfig(orgId))?.services);
+            const veredicto = respondsWithUnbackedPrice(aiResponse.respuesta, session.precioPedido, catPrecio);
+            if (veredicto.accion === 'rectificar') {
+                logger.warn('cita_sante_precio_sin_respaldo_bloqueado', {
+                    orgId, telefono: userPhone,
+                    precioPedido: veredicto.precioPedido,
+                    servicio: veredicto.servicio ? veredicto.servicio.nombre : null,
+                    precioServicio: veredicto.precioServicio,
+                    opciones: veredicto.opciones.map(o => o.nombre),
+                });
+                aiResponse.respuesta = salonPrecioNoCasaMsg(session, veredicto);
+                aiResponse.reserva_confirmada = false;
+                session.precioPedido = null;
+            } else if (veredicto.accion === 'atendido') {
+                session.precioPedido = null;
+            }
+        }
+
         // Segunda pasada de la red anti-cita-fantasma: cubre el mensaje FINAL, incluido el
         // determinista de buildSanteConfirmationMessage y todo lo que las redes anteriores
         // hayan reescrito. La primera pasada corre antes del despacho de acciones (ver
@@ -6659,7 +6818,7 @@ module.exports = {
     extractSentMessageId,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
-        respondsWithInventedSlots, respondsWithInventedDates, proposesTimingWithoutService, soloDeclaraHorarioDelSalon, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonVariasPersonasMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
+        respondsWithInventedSlots, respondsWithInventedDates, proposesTimingWithoutService, soloDeclaraHorarioDelSalon, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonVariasPersonasMsg, respondsWithUnbackedPrice, salonPrecioNoCasaMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover, offersHumanHandover, ensureHandoverAcknowledged, HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, porTrato,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:

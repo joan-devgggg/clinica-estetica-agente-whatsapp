@@ -720,6 +720,16 @@ resolviendo. No hay UI ni endpoint de edición: `activo:false` se pone a mano so
 y `PATCH /api/agent-config` sigue reemplazando el array entero — copia antes de tocarlo
 (`data/sante-catalogo-backup-*.json`).
 
+⚠️ **Ese backup sirve para RESTAURAR, nunca para CONSULTAR qué hay en el catálogo.** Envejece
+en cuestión de días y no avisa. Medido el 13/08/2026: `sante-catalogo-backup-2026-08-12.json`
+—de **un día antes**— ya llamaba `Detox 60min` a lo que en `agent_configs.services` es
+`Spa Hair Detox`, y a `tests/fixtures/sante-catalog.json` le sobraba `Japonesa` y le faltaba
+`Difuminado de raíz`. O sea que los tres ficheros describen tres catálogos distintos y
+**ninguno** es el vivo. Cualquier nombre, precio o duración que vaya a sostener una
+conclusión sale de `agent_configs.services`; los ficheros solo valen como copia de seguridad
+y como fixture FIJO de un test. Es la regla 5 en su forma más literal —el fichero mide
+antigüedad— y aquí la distancia fue de un día.
+
 ## `session.leadId` puede venir vacío — usa `ensureLeadId`
 
 **Nunca leas `session.leadId` a pelo.** Se queda a null en dos situaciones normales: el
