@@ -80,6 +80,14 @@ castellano, y el worker de reseñas mandó cuatro con la versión antigua.* Y un
 lo mismo sin comitear: *`7f53ecf` (04/08) arregla un `npm test` que fallaba en un clon limpio
 porque la heurística de idioma solo existía en la working copy de quien la escribió.*
 
+**10. Todo lo que el dueño va a copiar va en UN solo bloque de código, y sin texto fuera.**
+Planes, resúmenes, informes, listas de pasos, mensajes para otra herramienta: un único bloque
+markdown, con todo dentro —encabezados y viñetas incluidos— y ni una línea de prosa antes o
+después. *El destino es el móvil: allí un bloque de código se copia de un toque, mientras que
+seleccionar a mano tres trozos de texto suelto cuesta más que el trabajo que se está pasando.*
+Si el contenido lleva a su vez bloques de código, el de fuera se abre con más backticks
+(````) para que los de dentro no lo cierren.
+
 ## Organizaciones activas
 
 | Org | Tipo | WhatsApp | Canal | UUID |
@@ -106,6 +114,7 @@ server.js              ← Punto de entrada: crea N clientes WA, arranca workers
     ├── review.js          ← Worker: reseña Google N horas tras cita completada
     ├── reminder.js        ← Worker: recordatorio 24h antes + auto-completar citas
     ├── auto-return.js     ← Worker: devuelve a 'auto' lo que lleva 7 días mudo en manual
+    ├── seguimiento.js     ← Worker: propuesta post-visita con -10% (APAGADO por defecto)
     ├── admin-alerts.js    ← alertOnce: un aviso por asunto, y SOLO si Telegram lo confirma
     ├── channel-health.js  ← Aviso de canal caído: 3 fallos de plataforma seguidos
     ├── llm-health.js      ← Aviso de proveedor del modelo caído (cuenta: 1 fallo · transitorio: 3)
@@ -230,6 +239,77 @@ conjeturas por nombre de pila, 19 de 20 sin ninguna cita).
 Para excluir NO se usa `is_blacklisted` (significa "clienta bloqueada" y se ve así en el
 panel) ni se siembran filas `'sent'` en `broadcast_sends` (escribiría "enviado" sobre
 mensajes que nunca salieron, en la tabla de la que sale luego el reparto por estado).
+
+## Seguimiento post-visita: la propuesta que sale semanas después (`services/seguimiento.js`)
+
+Hidratación a las 2-3 semanas de unas mechas, matiz al mes, con un **-10 %** si reserva. Es
+lo ÚNICO del sistema que empieza una conversación en vez de continuarla: cuando sale, ya no
+queda conversación viva donde corregirse. Por eso nace **apagado** (`SEGUIMIENTOS=on`, off por
+defecto, como `VIGILANTE_ESPERAS`) y con un simulacro que enseña la tanda entera antes:
+`npm run informe:seguimientos -- sante`, solo lectura.
+
+**La regla se ata al catálogo por `categoria|nombre`, jamás por una frase.** Es la misma clave
+que emite `GET /api/service-catalog` y a la que ya se atan los desplegables del panel; el
+catálogo no tiene ids y `nombre` a secas no vale ("Corto" existe 4 veces con 4 precios). El
+puente de vuelta desde una cita guardada es `categoriasDeServicio` (helpers), y **es la pieza
+que hace imposible la búsqueda por texto**: una cita de Balayage se guarda como «Cabello
+corto» y una de clásicas como «Mechas 1» — un `includes('balayage')` fallaría en las 4 entradas
+de Balayage y en las 3 de clásicas. Es el fallo de `business_info.upselling` (9 etiquetas de
+marketing, 7 sin casar con nada), y aquí sería peor: sale solo a un teléfono con un precio
+escrito.
+
+**Dos momentos, porque son dos trabajos:**
+
+| | Cuándo | Qué hace | Coste |
+|---|---|---|---|
+| **A** | 2 h, DENTRO del mensaje de reseña | siembra la oferta y fija el precio | **cero** WhatsApps |
+| **B** | día N (worker) | rescata a quien no reservó en A | uno |
+
+A solo se engancha si el envío va por **texto libre**: una plantilla de Meta no admite párrafo
+extra, y a las 2 h lo normal es estar FUERA de la ventana de 24 h — por eso A no puede ser el
+único camino. `regla_key` lleva sufijo `#resena` para que B siga siendo suyo.
+
+**El orden del worker es RESERVAR → ENVIAR → APUNTAR**, y es toda la protección contra el
+único fallo sin vuelta atrás: que la misma clienta reciba el mismo mensaje dos veces. El claim
+choca contra el UNIQUE `(org, appointment_origen_id, regla_key)`; el SELECT previo no basta,
+dos tics solapados lo pasan los dos.
+
+**Un envío que revienta NO se marca fallido.** Si el error saltó después de que Meta aceptara
+el mensaje, marcarlo fallido lo devolvería a la cola. La fila se queda en `'pendiente'` —que
+bloquea el reintento— y un vigilante avisa de los claims atascados. Por lo mismo,
+`liberarSeguimientosFallidos` **no** libera las `'pendiente'` viejas, al revés que
+`resetStaleBroadcastClaims`: allí se arriesga un duplicado para recuperar un envío perdido,
+aquí no compensa.
+
+**Las ocho exclusiones** (`decidirSeguimiento`, puro y testeable sin BD). Las tres primeras son
+las de `getCompletedAppointmentsForReview`, copiadas a propósito. Las que costaron:
+
+- **`ventana_pasada`** — sin tope, encender el interruptor manda un WhatsApp por cada cita del
+  histórico que cumpla la regla. Es la forma que tendría esto de repetir el incidente del
+  `horas_recordatorio` a NaN.
+- **`bot_apagado`** — excluye aquí y NO en la reseña: un enlace de reseña con el bot apagado
+  sigue sirviendo, una pregunta no.
+- **`demasiado_reciente`** — protege de la SUMA de las reglas, que ninguna regla ve por sí sola.
+- **`ya volvió`**, en sus dos formas: cita futura, o ya se hizo el destino (comparado por clave,
+  porque una cita con dos servicios se guarda como "A + B").
+
+**El precio va en EUROS y el porcentaje NO aparece**: «76,50 € en vez de 85 €» se entiende de
+un vistazo; «un 10 % de descuento» obliga a echar cuentas, y esas cuentas se rehacen en el
+mostrador. Las tres cifras se congelan en la fila (incluida la recalculable): es la cifra que
+LEYÓ la clienta, y recalcularla al cobrar reabre la discusión por un redondeo.
+
+**Un destino ambiguo BLOQUEA y se dice, con las opciones y sus precios.** «Hidratación intensa»
+resuelve contra tres entradas (45 / 85 / 110 €) y «Matiz» contra dos (40 / 65 €): las reglas
+nacen con `destino: null` y no envían hasta que la dueña elija. El preview lo imprime con esas
+palabras y cuenta a cuánta gente le llegaría en cuanto se elija — sin esa cuenta, la elección
+entre 45 € y 110 € se toma a ciegas.
+
+**Sin `plantilla_seguimiento` aprobada por Meta el camino B no entrega nada** (Meta responde 200
+igual). Log `seguimiento_sin_plantilla_configurada` y la reserva se libera para reintentar.
+
+San Remo fuera por `getOrgType`, estructuralmente y no por config vacía. Red:
+`tests/seguimiento-{post-visita,a-quien,tanda,worker,en-resena}.test.js`; probado con seis
+mutaciones (la del `includes` por frase suelta tumba 5 bloques).
 
 ## Avisos al admin: solo cuentan si llegan
 
@@ -755,6 +835,8 @@ SANTE_360_PHONE_NUMBER_ID     # 360dialog: phone number id de Sante
 WHATSAPP_360_BASE_URL         # Opcional (default: https://waba-v2.360dialog.io)
 WHATSAPP_WEBHOOK_TOKEN        # Token secreto de /webhook/360dialog/:token (única protección de esa ruta)
 SANTE_CHANNEL                 # Escape hatch: 'wwebjs' devuelve Sante a whatsapp-web.js
+SEGUIMIENTOS                  # 'on' enciende la propuesta post-visita. APAGADO por defecto
+SEGUIMIENTOS_LIMITE           # Tope de seguimientos por tic y org (default 25)
 ORGANIZATION_ID               # Fallback/default org
 DASHBOARD_API_SECRET          # Bearer token para API REST
 TELEGRAM_BOT_TOKEN            # Bot Telegram (compartido)
@@ -850,7 +932,15 @@ npm run verify:sante:agenda   # SOLO LECTURA: ¿las citas futuras siguen cabiend
 ```bash
 npm run informe:nombres            # SOLO LECTURA: ¿a quién no sabemos cómo llamar?
 npm run informe:nombres -- sante   # una sola org (sante | sanremo | slug | uuid)
+
+npm run informe:seguimientos -- sante   # SOLO LECTURA: la tanda post-visita, sin enviarla
 ```
+
+`informe:seguimientos` es el simulacro obligatorio antes de encender `SEGUIMIENTOS`. Dice qué
+reglas pueden enviar y cuáles no —con las opciones del catálogo y su precio, para que la dueña
+elija—, y a quién le llegaría con el texto EXACTO. Sale de `construirTanda`, la misma función
+que usa el worker: si fueran dos caminos, mirarlo antes no probaría nada. Código 1 solo si hay
+reglas configuradas que no pueden enviar.
 
 `informe:nombres` mira las **dos** columnas del nombre, que fallan distinto:
 `contacts.full_name` es NULLABLE y es la que bloquea el recordatorio de 24 h;
