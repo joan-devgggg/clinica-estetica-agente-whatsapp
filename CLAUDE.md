@@ -214,65 +214,53 @@ La ventana se calcula sobre `messages.direction = 'inbound'` — nunca sobre `co
 
 Plantillas aprobadas (Sante): `sante_recordatorio_cita` ({{1}}=nombre, {{2}}=**cuándo**) y `sante_solicitud_resena` ({{1}}=nombre, {{2}}=enlace). Los nombres viven en `config` (`plantilla_recordatorio`, `plantilla_resena`), no en el código. `sanitizeTemplateParam` limpia saltos de línea/tabuladores/espacios múltiples: Meta rechaza el mensaje entero (132000) si un parámetro los lleva.
 
-### El `{{2}}` del recordatorio dice la hora Y la fecha (`formatReminderWhen`)
-
-Historia completa: [`docs/incidentes-cerrados.md#recordatorio-con-fecha`](docs/incidentes-cerrados.md#recordatorio-con-fecha). Lo que hay que recordar al tocarlo:
-
-- La fecha va DETRÁS de la hora (el texto fijo aprobado la precede con «a las / at / в / о»)
-  y `{{2}}` es texto libre — **sin plantilla nueva**.
-- **La tabla de días a mano es TODO el motivo de que sea una función**: Intl da el día en
-  NOMINATIVO y detrás de la preposición el ruso/ucraniano piden ACUSATIVO («в среду»), y el
-  martes cambia la preposición («**во** вторник»). Misma decisión que `MESES_MULTI`.
-- **Fecha concreta, nunca «mañana»**: `horas_recordatorio` la edita la dueña y un retraso
-  convierte «mañana» en mentira.
-- **Un solo valor para los dos caminos** (texto libre y plantilla): `resolveCuando` se llama
-  UNA vez y alimenta a los dos.
-- **San Remo fuera**, gateado por `getOrgType(orgId) === 'salon'`; su recordatorio sigue byte
-  por byte igual, con test.
-- **Una fecha ilegible NO bloquea el envío** (sale la hora sola) pero avisa: log
-  `recordatorio_fecha_no_formateable` + Telegram con el valor crudo, throttle por clave Y
-  VALOR. No es motivo de `motivoNoEnviable` — no impide el envío. Pasa de verdad:
-  `minutosHastaCita` no descarta una `fecha_cita` malformada.
-
-Red: `tests/recordatorio-con-fecha.test.js` — los siete días × cuatro idiomas uno por uno.
-Las cinco protecciones probadas por mutación.
-
 **La resolución de proveedor saliente es única**: `services/outbound.js` → `resolveOutboundClient(orgId, fallback)`, que enruta por `getOrgChannel` (registry), no por `SANTE_360_API_KEY`. La usan el panel (`webhook.js` → `getOutboundClient`) y los dos workers.
 
-## El texto de un hueco va en el idioma de la clienta (`formatSlotTexto`)
+## El día de la semana se dice en UN solo sitio (`formatReminderWhen`)
 
-Causa 3 de la auditoría del 11/08/2026 (`9253b81`). Hasta entonces `addSlot` fabricaba
-`slot.texto` con un `toLocaleDateString('es-ES')` a secas, y Nora Benedikte (10/08, ficha en
-inglés y `'observed'`) recibió cinco veces «El jueves, 13 de agosto a las 10:00 con Irina» en
-una conversación entera en inglés — justo en el momento en que se decide si se reserva.
+Dos mensajes le dicen el día a la MISMA clienta —el recordatorio de 24 h y la oferta de
+huecos— y los dos salen de la misma tabla. **Con dos tablas se separarían en el primer retoque
+y el mismo miércoles saldría de dos formas sin que nadie se enterase**, así que `formatSlotTexto`
+usa la de `formatReminderWhen` y solo añade dos palabras propias: el prefijo de la hora y el
+conector de la estilista. Historia de cada uno:
+[`recordatorio`](docs/incidentes-cerrados.md#recordatorio-con-fecha) ·
+[`huecos`](docs/incidentes-cerrados.md#texto-del-hueco).
 
-Las dos trampas que no hay que reabrir:
+**Por qué es una función y no un `toLocaleDateString`:** Intl da el día en NOMINATIVO y detrás
+de la preposición el ruso y el ucraniano piden ACUSATIVO («в среду»), y el martes cambia además
+la preposición («**во** вторник»). Misma decisión que `MESES_MULTI`. Es TODO el motivo de que
+exista, y es lo que hace que duplicar la tabla sea el error caro.
 
-- **El texto se fabrica UNA vez, en el origen, y lo recitan DOS caminos**: el prompt del
-  modelo —cuya REGLA DÍA DE SEMANA le prohíbe recalcularlo *y traducirlo*— y los mensajes
-  deterministas de `bot.js` (`salonOfferSlotsMsg` y la alternativa de «ese día no tengo
-  hueco»). Traducirlo en el punto de salida arreglaría uno y dejaría al otro copiando
-  castellano. Por eso el idioma viaja como `lang` hasta `getAvailableSlots`
-  (`session.language || null`, también en `reloadSlotsForConfirmation`) y el sustantivo
-  («hueco» / «availability») lo pone la frase que envuelve, nunca el hueco.
-- **La tabla de días es la de `formatReminderWhen`, y no se duplica jamás.**
-  `formatSlotTexto` solo añade dos palabras propias: el prefijo de la hora y el conector de
-  la estilista. El recordatorio y la oferta de huecos le dicen el día a la MISMA clienta; con
-  dos tablas se separarían en el primer retoque y el mismo miércoles saldría de dos formas
-  sin que nadie se enterase. Es el motivo por el que `formatReminderWhen` es una función
-  (acusativo ruso/ucraniano), heredado entero.
+En el recordatorio (`{{2}}`, texto libre, **sin plantilla nueva**):
 
-El resto, ya decidido: el nombre de la estilista va TAL CUAL está en la BD (declinarlo, «с
-Ириной», sería inventarle grafía a un dato que edita la dueña); idioma nulo o desconocido cae
-a castellano con el MISMO criterio que `formatReminderWhen`; y una fecha ilegible devuelve
-`null`, con `addSlot` degradando al texto castellano de siempre en vez de dejar el hueco mudo
-(regla 3).
+- La fecha va **DETRÁS** de la hora: el texto fijo aprobado la precede con «a las / at / в / о».
+- **Fecha concreta, nunca «mañana»**: `horas_recordatorio` la edita la dueña y un retraso
+  convierte «mañana» en mentira.
+- **Un solo valor para los dos caminos** (texto libre y plantilla): `resolveCuando` se llama UNA
+  vez y alimenta a los dos.
+- **Una fecha ilegible NO bloquea el envío** —sale la hora sola— pero avisa: log
+  `recordatorio_fecha_no_formateable` + Telegram con el valor crudo, throttle por clave Y VALOR.
+  No es motivo de `motivoNoEnviable`, porque no impide el envío. Pasa de verdad:
+  `minutosHastaCita` no descarta una `fecha_cita` malformada.
+- **San Remo fuera**, gateado por `getOrgType(orgId) === 'salon'`; su recordatorio sigue byte por
+  byte igual, con test.
 
-Red: `tests/slot-texto-idioma.test.js` — la contención contra `formatReminderWhen` los siete
-días × cuatro idiomas, los 28 literales a mano, y `addSlot` de verdad vía `_internals`.
-Probado con dos mutaciones: quitarle a `addSlot` la llamada tumba 2 bloques, y darle a
-`formatSlotTexto` una tabla de días propia tumba 12 — lo segundo es lo que demuestra que
-protege la contención, no el vocabulario.
+En los huecos (`formatSlotTexto`), donde la trampa es otra:
+
+- **El texto se fabrica UNA vez, en el origen, y lo recitan DOS caminos**: el prompt del modelo
+  —cuya REGLA DÍA DE SEMANA le prohíbe recalcularlo *y traducirlo*— y los mensajes deterministas
+  de `bot.js`. Traducirlo en el punto de salida arreglaría uno y dejaría al otro copiando
+  castellano; por eso el idioma viaja como `lang` hasta `getAvailableSlots`
+  (`session.language || null`, también en `reloadSlotsForConfirmation`) y el sustantivo («hueco»
+  / «availability») lo pone la frase que envuelve.
+- El nombre de la estilista va **TAL CUAL** está en la BD: declinarlo («с Ириной») sería
+  inventarle grafía a un dato que edita la dueña. Idioma nulo o desconocido cae a castellano, y
+  una fecha ilegible devuelve `null` con `addSlot` degradando al texto castellano de siempre en
+  vez de dejar el hueco mudo (regla 3).
+
+Red: `tests/recordatorio-con-fecha.test.js` y `tests/slot-texto-idioma.test.js` — los siete días
+× cuatro idiomas uno por uno, y la contención entre las dos probada por mutación: darle a
+`formatSlotTexto` una tabla propia tumba 12 bloques.
 
 ## Campaña por tandas: el allowlist se recalcula, la exclusión se guarda
 

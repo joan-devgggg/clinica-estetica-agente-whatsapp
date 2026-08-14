@@ -1093,3 +1093,38 @@ las citas ya reservadas en ese hueco no se mueven ni avisan. Comprueba día labo
 código 1 solo con hallazgos de severidad `error`; `sin-skill` es aviso porque puede ser una
 decisión deliberada. La lógica pura vive en `tests/lib/agenda-audit.js` y sí corre en `npm test`.
 
+## El texto de un hueco va en el idioma de la clienta (`formatSlotTexto`) {#texto-del-hueco}
+
+Causa 3 de la auditoría del 11/08/2026 (`9253b81`). Hasta entonces `addSlot` fabricaba
+`slot.texto` con un `toLocaleDateString('es-ES')` a secas, y Nora Benedikte (10/08, ficha en
+inglés y `'observed'`) recibió cinco veces «El jueves, 13 de agosto a las 10:00 con Irina» en
+una conversación entera en inglés — justo en el momento en que se decide si se reserva.
+
+Las dos trampas que no hay que reabrir:
+
+- **El texto se fabrica UNA vez, en el origen, y lo recitan DOS caminos**: el prompt del
+  modelo —cuya REGLA DÍA DE SEMANA le prohíbe recalcularlo *y traducirlo*— y los mensajes
+  deterministas de `bot.js` (`salonOfferSlotsMsg` y la alternativa de «ese día no tengo
+  hueco»). Traducirlo en el punto de salida arreglaría uno y dejaría al otro copiando
+  castellano. Por eso el idioma viaja como `lang` hasta `getAvailableSlots`
+  (`session.language || null`, también en `reloadSlotsForConfirmation`) y el sustantivo
+  («hueco» / «availability») lo pone la frase que envuelve, nunca el hueco.
+- **La tabla de días es la de `formatReminderWhen`, y no se duplica jamás.**
+  `formatSlotTexto` solo añade dos palabras propias: el prefijo de la hora y el conector de
+  la estilista. El recordatorio y la oferta de huecos le dicen el día a la MISMA clienta; con
+  dos tablas se separarían en el primer retoque y el mismo miércoles saldría de dos formas
+  sin que nadie se enterase. Es el motivo por el que `formatReminderWhen` es una función
+  (acusativo ruso/ucraniano), heredado entero.
+
+El resto, ya decidido: el nombre de la estilista va TAL CUAL está en la BD (declinarlo, «с
+Ириной», sería inventarle grafía a un dato que edita la dueña); idioma nulo o desconocido cae
+a castellano con el MISMO criterio que `formatReminderWhen`; y una fecha ilegible devuelve
+`null`, con `addSlot` degradando al texto castellano de siempre en vez de dejar el hueco mudo
+(regla 3).
+
+Red: `tests/slot-texto-idioma.test.js` — la contención contra `formatReminderWhen` los siete
+días × cuatro idiomas, los 28 literales a mano, y `addSlot` de verdad vía `_internals`.
+Probado con dos mutaciones: quitarle a `addSlot` la llamada tumba 2 bloques, y darle a
+`formatSlotTexto` una tabla de días propia tumba 12 — lo segundo es lo que demuestra que
+protege la contención, no el vocabulario.
+
