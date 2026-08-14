@@ -278,6 +278,7 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         // Escalation confirmation (extensiones / permanente / eliminación del pigmento)
         pendingEscalation: false,
         pendingEscalationService: null,
+        pendingEscalationOfrecidaAt: null,
         // Trato que ha pedido la clienta ('formal' | 'informal'). null = no consta, y el bot
         // sigue con su registro por defecto: null NO significa "de tú".
         tratamiento: null,
@@ -724,6 +725,7 @@ function buildSessionExtra(session) {
         lastUpsellSuggestion: session._lastUpsellSuggestion || null,
         pendingEscalation: !!session.pendingEscalation,
         pendingEscalationService: session.pendingEscalationService || null,
+        pendingEscalationOfrecidaAt: session.pendingEscalationOfrecidaAt || null,
         // «Somos dos»: la marca y su aviso. Sin viajar aquí, una conversación que cruce un
         // timeout vuelve a leerse como de una sola persona y el párrafo se repite.
         precioPedido:      Number.isFinite(session.precioPedido) ? session.precioPedido : null,
@@ -2023,6 +2025,7 @@ function salonFueraDeHorarioMsg(session, { hora, apertura, cierre }) {
 function salonOfferHumanMsg(session) {
     session.pendingEscalation = true;
     session.pendingEscalationService = 'traspaso';
+    session.pendingEscalationOfrecidaAt = Date.now();
     const msgs = {
         es: 'Perdona, no consigo entenderte bien y no quiero hacerte perder más tiempo 🙏 '
             + '¿Quieres que te ponga en contacto con una de nuestras especialistas?',
@@ -2066,6 +2069,7 @@ function salonOfferHumanMsg(session) {
 function salonVariasPersonasMsg(session) {
     session.pendingEscalation = true;
     session.pendingEscalationService = 'varias_personas';
+    session.pendingEscalationOfrecidaAt = Date.now();
     const msgs = {
         es: 'Para dos personas hace falta una cita por cada una 😊 Y según el servicio os '
             + 'puede tocar a la vez o una detrás de otra: eso te lo confirma el salón. '
@@ -2304,16 +2308,50 @@ const HANDOVER_ACUSE_FORMAL = {
     ru: 'Передаю Ваше сообщение нашей команде, чтобы с Вами связались лично 🙏',
     uk: 'Передаю Ваше повідомлення нашій команді, щоб з Вами зв\'язалися особисто 🙏',
 };
-// El acuse de la escalada confirmada (pendingEscalation → «sí»). Era una const local del
-// flujo; subida a módulo SIN cambiar nombre ni valores para poder exportarla: es una
-// PROMESA de traspaso con texto fijo, y el barrido de promesas (barrido:promesas) la
-// reconoce desde aquí en vez de copiar los literales — los verbos de HANDOVER_TRASPASO
-// no casan «se pondrá», así que sin esta fuente el acuse sería invisible al barrido.
+// El acuse de la escalada confirmada (pendingEscalation → «sí»). Desde el 14/08/2026
+// afirma EL ACTO —tu mensaje queda pasado al equipo, la fila existe— y NUNCA un plazo:
+// con Coexistence el bot no sabe cuándo ni por dónde contestará una persona, así que
+// «en breve» era una promesa que nada respaldaba (clase C7 del contrato). El texto se
+// alinea con HANDOVER_ACUSE, que dice lo mismo en el camino de accion directa.
 const CONFIRM_YES = {
+    es: 'Perfecto 🙏 Le paso tu mensaje a nuestro equipo para que te atiendan personalmente.',
+    en: "Perfect 🙏 I'm passing your message to our team so they can help you personally.",
+    ru: 'Отлично 🙏 Передаю твоё сообщение нашей команде, чтобы с тобой связались лично.',
+    uk: 'Чудово 🙏 Передаю твоє повідомлення нашій команді, щоб з тобою зв\'язалися особисто.',
+};
+// LEGACY, SOLO para el barrido de promesas: el texto que este acuse tuvo hasta el
+// 14/08/2026 (el «En breve…» con plazo). Ya no se envía nunca, pero los salientes
+// históricos lo llevan —el de Mafe del 12/08, por ejemplo— y el barrido tiene que
+// seguir reconociéndolos como promesas de traspaso. No borrar mientras haya histórico.
+const CONFIRM_YES_LEGACY = {
     es: 'Perfecto 🙏 En breve una de nuestras especialistas se pondrá en contacto contigo.',
     en: 'Perfect 🙏 One of our specialists will contact you shortly.',
     ru: 'Отлично 🙏 Скоро одна из наших специалисток свяжется с тобой.',
     uk: 'Чудово 🙏 Незабаром одна з наших спеціалісток зв\'яжеться з тобою.',
+};
+
+// La oferta expiró y la clienta AFIRMA: ni se traga el sí (creería que la están pasando
+// con alguien) ni se escala a ciegas (un «sí» suelto a las 25 h puede ser de otra cosa,
+// y escalar mal no cuesta un Telegram: cuesta bot_mode=manual — el bot mudo — sobre una
+// clienta que quizá quería una cita). Se RE-PREGUNTA y se re-arma: la única salida que
+// no tiene ninguno de los dos lados caros, al precio de un turno de fricción.
+const OFERTA_TRASPASO_TTL_MS = 24 * 3600 * 1000;
+
+// La triple escritura FALLÓ tras un «sí»: ningún acuse (sería la promesa vacía otra
+// vez) y NO se reutiliza salonRetryMsg, que habla de huecos («no he podido fijar ese
+// hueco») — otro mensaje equivocado encima del fallo. Se dice lo que pasó, se pide
+// reintentar, y la bandera queda viva para que el siguiente «sí» reintente la triple.
+const TRASPASO_FALLO_MSGS = {
+    es: 'No he podido dejarlo registrado ahora mismo 😔 Dímelo otra vez en un momento y lo vuelvo a intentar.',
+    en: "I couldn't get that registered just now 😔 Tell me again in a moment and I'll retry.",
+    ru: 'Не получилось записать это прямо сейчас 😔 Напиши мне ещё раз через минутку, и я попробую снова.',
+    uk: 'Не вдалося записати це прямо зараз 😔 Напиши мені ще раз за хвилинку, і я спробую знову.',
+};
+const REOFERTA_TRASPASO = {
+    es: 'Ha pasado un tiempo desde que te lo ofrecí 😊 ¿Sigues queriendo que te ponga en contacto con nuestro equipo?',
+    en: "It's been a while since I offered 😊 Would you still like me to put you in touch with our team?",
+    ru: 'Прошло время с тех пор, как я это предлагала 😊 Всё ещё хочешь, чтобы я связала тебя с нашей командой?',
+    uk: 'Минув час відтоді, як я це пропонувала 😊 Все ще хочеш, щоб я зв\'язала тебе з нашою командою?',
 };
 function ensureHandoverAcknowledged(respuesta, language, tratamiento = null) {
     if (announcesHumanHandover(respuesta)) return respuesta;
@@ -3949,6 +3987,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession._lastUpsellSuggestion = ex.lastUpsellSuggestion || null;
                     newSession.pendingEscalation     = !!ex.pendingEscalation;
                     newSession.pendingEscalationService = ex.pendingEscalationService || null;
+                    newSession.pendingEscalationOfrecidaAt = ex.pendingEscalationOfrecidaAt || null;
                     newSession.precioPedido          = Number.isFinite(ex.precioPedido) ? ex.precioPedido : null;
                     newSession.variasPersonas        = !!ex.variasPersonas;
                     newSession.variasPersonasAvisado = !!ex.variasPersonasAvisado;
@@ -4630,32 +4669,49 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         }
 
         // ─── Salon: respuesta a confirmación de escalada pendiente ─────
+        // El «sí» ejecuta la TRIPLE escritura por la vía canónica (escalateToHuman, que
+        // devuelve true SOLO si quedó registrada) y ÚNICAMENTE entonces pronuncia el
+        // acuse. Antes la triple iba inline en un try/catch que se tragaba el fallo y el
+        // acuse salía igual: un «le paso tu mensaje al equipo» sobre cero filas — la
+        // mentira exacta que el contrato C7 cierra.
         if (orgType === 'salon' && session.pendingEscalation) {
             const pendingType = session.pendingEscalationService;
             if (isAffirmative(sanitized)) {
-                session.botActivo = false;
-                session.pendingEscalation = false;
-                session.pendingEscalationService = null;
-                const consultaReason = `consulta_${pendingType}`;
-                try {
-                    await setLeadBotMode(orgId, session.partialData.telefono, 'manual');
-                    await setEscalationReason(orgId, session.partialData.telefono, consultaReason);
-                    const contact = await findByPhone(orgId, session.partialData.telefono);
-                    // Notify antes del INSERT: ver escalateToHuman.
-                    notifyEscalation(orgId, { nombre: session.partialData.nombre, telefono: session.partialData.telefono }, sanitized, consultaReason).catch(() => {});
-                    await createPendingAction(orgId, {
-                        type: 'escalation',
-                        contactId: contact?.id || session.leadId,
-                        payload: { motivo: consultaReason, mensaje: sanitized },
-                    });
-                } catch (e) { logger.error('error_consulta_escalar', { orgId, telefono: userPhone, type: pendingType, error: e.message }); }
                 const lang = session.language || 'es';
-                await _send(CONFIRM_YES[lang] || CONFIRM_YES.es);
+                // Oferta EXPIRADA + afirmación: re-preguntar, jamás tragar ni escalar a
+                // ciegas (ver el comentario de OFERTA_TRASPASO_TTL_MS). Sin ofrecidaAt
+                // (sesiones armadas antes de este cambio) no hay reloj: se acepta.
+                if (session.pendingEscalationOfrecidaAt
+                        && Date.now() - session.pendingEscalationOfrecidaAt > OFERTA_TRASPASO_TTL_MS) {
+                    session.pendingEscalationOfrecidaAt = Date.now();
+                    logger.info('oferta_traspaso_expirada_reofrecida', { orgId, telefono: userPhone, type: pendingType });
+                    await _send(REOFERTA_TRASPASO[lang] || REOFERTA_TRASPASO.es);
+                    persistSession(orgId, userPhone, session);
+                    return;
+                }
+                const consultaReason = `consulta_${pendingType}`;
+                const registrada = await escalateToHuman(session, userPhone, consultaReason, sanitized);
+                if (registrada) {
+                    session.botActivo = false;
+                    session.pendingEscalation = false;
+                    session.pendingEscalationService = null;
+                    session.pendingEscalationOfrecidaAt = null;
+                    await _send(CONFIRM_YES[lang] || CONFIRM_YES.es);
+                    persistSession(orgId, userPhone, session);
+                    return;
+                }
+                // La escritura falló: NINGÚN acuse (sería la promesa vacía otra vez). Se
+                // le pide reintentar, la BANDERA SIGUE VIVA —el siguiente «sí» reintenta
+                // la triple— y el bot sigue hablando (botActivo intacto: sin escalada
+                // registrada no hay motivo para callarse encima del fallo).
+                logger.error('traspaso_aceptado_escritura_fallida', { orgId, telefono: userPhone, type: pendingType });
+                await _send(TRASPASO_FALLO_MSGS[lang] || TRASPASO_FALLO_MSGS.es);
                 persistSession(orgId, userPhone, session);
                 return;
             }
             session.pendingEscalation = false;
             session.pendingEscalationService = null;
+            session.pendingEscalationOfrecidaAt = null;
             persistSession(orgId, userPhone, session);
         }
 
@@ -4689,6 +4745,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 const msg = CONSULTA_ASK[consulta.type]?.[lang] || CONSULTA_ASK[consulta.type]?.es;
                 session.pendingEscalation = true;
                 session.pendingEscalationService = consulta.type;
+                session.pendingEscalationOfrecidaAt = Date.now();
                 await _send(msg);
                 persistSession(orgId, userPhone, session);
                 return;
@@ -5575,6 +5632,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             aiResponse.motivo_escalado = null;
             session.pendingEscalation = true;
             session.pendingEscalationService = 'dato_no_disponible';
+            session.pendingEscalationOfrecidaAt = Date.now();
         }
 
         if (orgType === 'salon' && aiResponse.accion === 'escalar_humano') {
@@ -6946,7 +7004,7 @@ module.exports = {
         detectaOfertaTraspaso, remisionAlEquipo,
         // Plantillas de promesa con texto fijo — las lee el barrido de promesas
         // (tests/lib/promesas-audit.js) para no copiar literales que luego divergen:
-        CANCEL_OK_MSGS, CONFIRM_YES,
+        CANCEL_OK_MSGS, CONFIRM_YES, CONFIRM_YES_LEGACY, REOFERTA_TRASPASO, TRASPASO_FALLO_MSGS,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:
         escalateToHuman,
         // El `accion:'cancelar'` del LLM, encauzado por la misma confirmación que el determinista.

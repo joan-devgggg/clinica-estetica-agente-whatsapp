@@ -24,7 +24,7 @@
 
 const {
     llmClaimsBooked, asksForBookingApproval, announcesHumanHandover, offersHumanHandover,
-    HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, CANCEL_OK_MSGS, CONFIRM_YES,
+    HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, CANCEL_OK_MSGS, CONFIRM_YES, CONFIRM_YES_LEGACY,
 } = require('../../bot')._internals;
 const {
     normalizeText, buildCancelFalloMsg, buildAmpliacionSolapaMsg,
@@ -112,6 +112,10 @@ function nucleosTraspaso() {
         ...Object.values(HANDOVER_ACUSE),
         ...Object.values(HANDOVER_ACUSE_FORMAL),
         ...Object.values(CONFIRM_YES),
+        // El «En breve…» que se envió hasta el 14/08/2026: ya no sale de ningún flujo,
+        // pero los salientes HISTÓRICOS lo llevan (el acuse de Mafe del 12/08) y sin esta
+        // fuente el barrido los dejaría de ver como promesas de traspaso.
+        ...Object.values(CONFIRM_YES_LEGACY),
         ...IDIOMAS_SOPORTADOS.map(l => buildCancelFalloMsg(l)),
         ...IDIOMAS_SOPORTADOS.map(l => buildAmpliacionSolapaMsg(l)),
     ];
