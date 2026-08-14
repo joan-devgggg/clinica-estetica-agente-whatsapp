@@ -3305,6 +3305,76 @@ async function getCitasParaInformeNombres(orgId) {
     return data || [];
 }
 
+// ─── Lectores del barrido de promesas (barrido:promesas) ─────────────────────
+//
+// Solo lectura, y los tres con assertRead: en un informe cuyo trabajo es decir «0
+// promesas sin respaldo», un `data || []` sin mirar `error` convertiría una lectura rota
+// exactamente en ese «0» (la trampa del informe falso). Miden REALIDAD y son inmunes a
+// Coexistence por construcción: los salientes se filtran a sender='bot' — lo que escribió
+// el bot está SIEMPRE entero en messages; lo que falta en messages son las respuestas del
+// móvil de las dueñas, y ningún criterio del barrido las necesita.
+
+// Todo lo que dijo el BOT (excluye sender='human': lo manual del panel no es promesa del
+// bot), con el contacto de su conversación para poder cruzar contra citas y escaladas.
+async function getSalientesBotBarrido(orgId) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('messages')
+        .select('id, conversation_id, content, created_at, conversations!inner(contact_id)')
+        .eq('organization_id', oid)
+        .eq('direction', 'outbound')
+        .eq('sender', 'bot')
+        .order('created_at', { ascending: true });
+    assertRead(error, 'messages');
+    return (data || []).map(m => ({
+        id: m.id,
+        contactId: m.conversations?.contact_id || null,
+        content: m.content,
+        createdAt: m.created_at,
+    }));
+}
+
+// TODOS los status, no solo 'pending': resolvePendingAction marca resolved y nunca se
+// borra ninguna fila, así que esta tabla ES el histórico completo de escaladas — el único
+// artefacto duradero de la triple escritura (bot_mode y escalation_reason son estado
+// actual y una escalada bien resuelta los limpia).
+async function getPendingActionsBarrido(orgId) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('pending_actions')
+        .select('id, type, contact_id, status, resolution, created_at, resolved_at')
+        .eq('organization_id', oid)
+        .order('created_at', { ascending: true });
+    assertRead(error, 'pending_actions');
+    return data || [];
+}
+
+// Los contactos, con lo justo: el teléfono y el nombre para que el informe sea legible,
+// y bot_mode/escalation_reason para el desenlace «parcial» (estado ACTUAL de la ficha —
+// solo significa algo para escaladas recientes, y así lo trata la lib).
+async function getContactosBarrido(orgId) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('contacts')
+        .select('id, full_name, wa_phone, bot_mode, escalation_reason')
+        .eq('organization_id', oid);
+    assertRead(error, 'contacts');
+    return data || [];
+}
+
+// Las citas con su procedencia: source ('bot' | 'manual', los dos únicos valores que
+// existen) dice quién la CREÓ; updated_by / last_change, quién la tocó por última vez.
+async function getCitasBarrido(orgId) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('appointments')
+        .select('id, contact_id, status, service, starts_at, created_at, updated_at, updated_by, source, last_change')
+        .eq('organization_id', oid)
+        .order('created_at', { ascending: true });
+    assertRead(error, 'appointments');
+    return data || [];
+}
+
 // ─── Review worker helpers ────────────────────────────────────────────────────
 
 // Citas que TOCA pedir reseña. Quién queda fuera y por qué:
@@ -3679,6 +3749,10 @@ module.exports = {
     setEscalationReason,
     getContactosParaInformeNombres,
     getCitasParaInformeNombres,
+    getSalientesBotBarrido,
+    getPendingActionsBarrido,
+    getCitasBarrido,
+    getContactosBarrido,
     getContactosEnManual,
     getContactIdsConAccionPendiente,
     devolverContactoAAuto,

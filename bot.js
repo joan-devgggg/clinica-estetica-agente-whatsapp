@@ -2256,6 +2256,17 @@ const HANDOVER_ACUSE_FORMAL = {
     ru: 'Передаю Ваше сообщение нашей команде, чтобы с Вами связались лично 🙏',
     uk: 'Передаю Ваше повідомлення нашій команді, щоб з Вами зв\'язалися особисто 🙏',
 };
+// El acuse de la escalada confirmada (pendingEscalation → «sí»). Era una const local del
+// flujo; subida a módulo SIN cambiar nombre ni valores para poder exportarla: es una
+// PROMESA de traspaso con texto fijo, y el barrido de promesas (barrido:promesas) la
+// reconoce desde aquí en vez de copiar los literales — los verbos de HANDOVER_TRASPASO
+// no casan «se pondrá», así que sin esta fuente el acuse sería invisible al barrido.
+const CONFIRM_YES = {
+    es: 'Perfecto 🙏 En breve una de nuestras especialistas se pondrá en contacto contigo.',
+    en: 'Perfect 🙏 One of our specialists will contact you shortly.',
+    ru: 'Отлично 🙏 Скоро одна из наших специалисток свяжется с тобой.',
+    uk: 'Чудово 🙏 Незабаром одна з наших спеціалісток зв\'яжеться з тобою.',
+};
 function ensureHandoverAcknowledged(respuesta, language, tratamiento = null) {
     if (announcesHumanHandover(respuesta)) return respuesta;
     const acuse = porTrato({ language, tratamiento }, HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL);
@@ -4590,12 +4601,6 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         payload: { motivo: consultaReason, mensaje: sanitized },
                     });
                 } catch (e) { logger.error('error_consulta_escalar', { orgId, telefono: userPhone, type: pendingType, error: e.message }); }
-                const CONFIRM_YES = {
-                    es: 'Perfecto 🙏 En breve una de nuestras especialistas se pondrá en contacto contigo.',
-                    en: 'Perfect 🙏 One of our specialists will contact you shortly.',
-                    ru: 'Отлично 🙏 Скоро одна из наших специалисток свяжется с тобой.',
-                    uk: 'Чудово 🙏 Незабаром одна з наших спеціалісток зв\'яжеться з тобою.',
-                };
                 const lang = session.language || 'es';
                 await _send(CONFIRM_YES[lang] || CONFIRM_YES.es);
                 persistSession(orgId, userPhone, session);
@@ -6884,6 +6889,9 @@ module.exports = {
         respondsWithInventedSlots, respondsWithInventedDates, proposesTimingWithoutService, soloDeclaraHorarioDelSalon, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonVariasPersonasMsg, respondsWithUnbackedPrice, salonPrecioNoCasaMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover, offersHumanHandover, ensureHandoverAcknowledged, HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, porTrato,
+        // Plantillas de promesa con texto fijo — las lee el barrido de promesas
+        // (tests/lib/promesas-audit.js) para no copiar literales que luego divergen:
+        CANCEL_OK_MSGS, CONFIRM_YES,
         // Escalada real (fila en pending_actions + Telegram), sin enviar mensaje al cliente:
         escalateToHuman,
         // El `accion:'cancelar'` del LLM, encauzado por la misma confirmación que el determinista.

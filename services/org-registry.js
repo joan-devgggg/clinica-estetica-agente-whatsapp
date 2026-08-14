@@ -80,6 +80,21 @@ function getOrgChannel(orgId) {
     return byOrgId.get(orgId)?.channel || CHANNEL_WWEBJS;
 }
 
+/**
+ * Resuelve el argumento de org de un script de informe («sante», el slug o el UUID) a la
+ * lista de orgs sobre las que correr; sin argumento, todas. Vivía duplicada palabra por
+ * palabra en scripts/informe-contactos-sin-nombre.js e informe-seguimientos.js; el tercer
+ * script (barrido-promesas) ya no la copia — los dos primeros se quedan como están hasta
+ * que se toquen. Con un argumento no reconocido devuelve null: quien llama imprime el uso
+ * y sale, en vez de correr «todas» en silencio por un typo.
+ */
+function resolverOrgArg(arg) {
+    if (!arg) return orgs;
+    const q = String(arg).toLowerCase();
+    const encontrada = orgs.find(o => o.orgId === arg || o.slug === q || o.sessionId === q);
+    return encontrada ? [encontrada] : null;
+}
+
 module.exports = {
     SANREMO_ORG_ID,
     SANTE_ORG_ID,
@@ -90,4 +105,5 @@ module.exports = {
     getAllOrgs,
     getOrgType,
     getOrgChannel,
+    resolverOrgArg,
 };
