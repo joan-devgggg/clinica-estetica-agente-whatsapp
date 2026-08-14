@@ -2,8 +2,14 @@
 /**
  * barrido:promesas — ¿Qué promesas del BOT no tienen ninguna fila detrás?
  *
- *   npm run barrido:promesas             (todas las orgs)
- *   npm run barrido:promesas -- sante    (una: alias, slug o UUID)
+ *   npm run barrido:promesas                        (todas las orgs, sin ventana)
+ *   npm run barrido:promesas -- sante               (una: alias, slug o UUID)
+ *   npm run barrido:promesas -- sante --desde 2     (CRON: solo alarma lo de ≤2 días)
+ *
+ * `--desde <días>` es la ventana de ALARMA, no de lectura: se imprime TODO igual, pero
+ * el exit code solo depende de los hallazgos cuyo saliente cae dentro. Sin ella, un
+ * hallazgo histórico gritaría exit 1 todas las noches para siempre y en dos semanas
+ * nadie miraría (caja_atribucion_desajustada). La corrida manual va sin ventana.
  *
  * SOLO LECTURA. Cruza los salientes del bot de clase C1 (cita hecha/cancelada) y C7
  * (traspaso a una persona) contra appointments y pending_actions. Inmune a Coexistence:
@@ -47,12 +53,38 @@ const fmtFecha = iso => {
         : d.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' });
 };
 
+// Args: un posible org (posicional) y un posible `--desde <días>`, en cualquier orden.
+// Un valor de --desde que no sea un número positivo es exit 2, no «sin ventana»: un typo
+// en el cron no puede degradar la alarma en silencio.
+function parseArgs(argv) {
+    let orgArg = null;
+    let desdeDias = null;
+    for (let i = 0; i < argv.length; i++) {
+        if (argv[i] === '--desde') {
+            desdeDias = Number(argv[i + 1]);
+            i++;
+            if (!Number.isFinite(desdeDias) || desdeDias <= 0) return { error: `--desde necesita un número de días positivo (recibí "${argv[i] ?? ''}")` };
+        } else if (!orgArg) {
+            orgArg = argv[i];
+        } else {
+            return { error: `argumento no reconocido: "${argv[i]}"` };
+        }
+    }
+    return { orgArg, desdeDias };
+}
+
 (async () => {
-    const orgs = resolverOrgArg(process.argv[2]);
-    if (!orgs) {
-        console.error(`❌ No conozco la organización "${process.argv[2]}". Prueba con: sante, sanremo, un slug o un UUID.`);
+    const { orgArg, desdeDias, error } = parseArgs(process.argv.slice(2));
+    if (error) {
+        console.error(`❌ ${error}\n   Uso: barrido:promesas [org] [--desde <días>]`);
         process.exit(2);
     }
+    const orgs = resolverOrgArg(orgArg);
+    if (!orgs) {
+        console.error(`❌ No conozco la organización "${orgArg}". Prueba con: sante, sanremo, un slug o un UUID.`);
+        process.exit(2);
+    }
+    const alarmaDesdeMs = desdeDias ? Date.now() - desdeDias * 24 * 3600 * 1000 : null;
 
     let hayMalTotal = false;
 
@@ -65,11 +97,15 @@ const fmtFecha = iso => {
         ]);
 
         const { hallazgos, resumen, cobertura, hayMal, clases } =
-            auditPromesas({ salientes, citas, pendingActions, contactos });
+            auditPromesas({ salientes, citas, pendingActions, contactos, alarmaDesdeMs });
         hayMalTotal = hayMalTotal || hayMal;
 
         console.log(`\n═══ ${org.sessionId.toUpperCase()} · barrido de promesas ═══`);
-        console.log(`${salientes.length} salientes del bot revisados\n`);
+        console.log(`${salientes.length} salientes del bot revisados`);
+        if (alarmaDesdeMs) {
+            console.log(`⏰ Ventana de alarma: últimos ${desdeDias} día(s). Lo anterior se imprime igual, marcado, y NO cambia el exit code.`);
+        }
+        console.log('');
 
         // Resumen por clase (incluye lo respaldado: el denominador importa para leer el 0).
         for (const [clase, porDesenlace] of Object.entries(resumen)) {
@@ -88,7 +124,8 @@ const fmtFecha = iso => {
                 console.log(`\n${DESENLACE_LABEL[desenlace] || desenlace} (${grupo.length}):`);
                 for (const h of grupo) {
                     const quien = h.nombre ? `${h.telefono} (${h.nombre})` : h.telefono;
-                    console.log(`  · ${quien} · ${fmtFecha(h.fecha)} · «${h.frase}…»`);
+                    const marca = h.enVentanaAlarma ? '' : ' [fuera de la ventana de alarma]';
+                    console.log(`  · ${quien} · ${fmtFecha(h.fecha)}${marca} · «${h.frase}…»`);
                     console.log(`      ${h.claseLabel} — ${h.detalle}`);
                 }
             }

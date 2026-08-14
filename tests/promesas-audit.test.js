@@ -229,6 +229,26 @@ test('0c · fila PENDIENTE con ficha aún escalada = respaldada (triple viva, el
         'una escalada viva y coherente no es un hallazgo');
 });
 
+test('0d · la ventana de alarma: lo viejo se imprime pero no grita (el cron no puede vivir en rojo)', () => {
+    // Estefania (03/08) y Celeste (06/08) son históricas: con ventana de 2 días desde
+    // AHORA (14/08), no alarma nada — pero los hallazgos siguen TODOS en el informe.
+    const conVentana = corre({ alarmaDesdeMs: AHORA - 2 * 24 * 3600 * 1000 });
+    assert.strictEqual(conVentana.hayMal, false, 'lo de hace 11 días no puede hacer gritar al cron cada noche');
+    assert.ok(conVentana.hallazgos.some(h => h.desenlace === 'sin_escalada_registrada' && !h.enVentanaAlarma),
+        'y aun así se imprimen, marcados como fuera de ventana');
+
+    // Un fallo DENTRO de la ventana sí alarma: la misma oferta de Celeste, fechada ayer.
+    const reciente = corre({
+        alarmaDesdeMs: AHORA - 2 * 24 * 3600 * 1000,
+        salientes: [{ id: 'm-ayer', contactId: 'ct-celeste', createdAt: '2026-08-13T18:00:00Z',
+            content: '¿Quieres que te ponga en contacto con una especialista para que valore tu caso?' }],
+    });
+    assert.strictEqual(reciente.hayMal, true, 'lo de ayer sí enciende el exit 1');
+
+    // Sin ventana (la corrida manual), todo alarma como siempre.
+    assert.strictEqual(corre().hayMal, true);
+});
+
 test('los teléfonos 999… (arnés de pruebas) quedan fuera del barrido', () => {
     const r = corre({
         contactos: [...CONTACTOS, { id: 'ct-test', full_name: 'Test', wa_phone: '9996001000', bot_mode: 'auto', escalation_reason: null }],

@@ -280,7 +280,15 @@ function evaluarC7Oferta(tMsg, pasContacto) {
 
 const DESENLACES_MAL = new Set(['rota', 'parcial', 'sin_escalada_registrada']);
 
-function auditPromesas({ salientes, citas, pendingActions, contactos, ahora = Date.now() }) {
+/**
+ * `alarmaDesdeMs` (0d): la ventana del CRON. Sin ella, un hallazgo histórico (Estefania,
+ * 03/08) haría gritar exit 1 todas las noches para siempre, y en dos semanas nadie mira
+ * la alarma — es lo que pasó con caja_atribucion_desajustada. Con ventana, TODO se sigue
+ * imprimiendo (el histórico no desaparece del informe), pero `hayMal` —y con él el exit
+ * code— solo depende de los hallazgos cuyo saliente cae dentro. Null = sin ventana
+ * (la corrida manual completa): todo alarma, como siempre.
+ */
+function auditPromesas({ salientes, citas, pendingActions, contactos, ahora = Date.now(), alarmaDesdeMs = null }) {
     const nucleos = {
         cancelacion: nucleosCancelacion(),
         confirmacion: nucleosConfirmacion(),
@@ -345,11 +353,12 @@ function auditPromesas({ salientes, citas, pendingActions, contactos, ahora = Da
                 nombre: contacto?.full_name || null,
                 fecha: msg.createdAt,
                 frase: String(msg.content || '').replace(/\s+/g, ' ').slice(0, 60),
+                enVentanaAlarma: alarmaDesdeMs == null || tMsg >= alarmaDesdeMs,
             });
         }
     }
 
-    const hayMal = hallazgos.some(h => DESENLACES_MAL.has(h.desenlace));
+    const hayMal = hallazgos.some(h => DESENLACES_MAL.has(h.desenlace) && h.enVentanaAlarma);
 
     // La cobertura se DECLARA siempre, y CON EL DENOMINADOR por idioma (0b): un «0
     // promesas en ruso» sin su N de salientes se leería como «no hay promesas rotas»
