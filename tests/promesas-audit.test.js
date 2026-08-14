@@ -210,6 +210,25 @@ test('escalada a medias: fila pendiente con la ficha ya limpia → PARCIAL', () 
     assert.strictEqual(h?.desenlace, 'parcial');
 });
 
+// 0c (14/08): comprobado contra producción sobre los CINCO C7 respaldados de la corrida
+// real — cuatro resueltas con ficha limpia (Tania, Mafe ×2, Nastya) y una viva coherente
+// (Pelin Long: pending + manual + pedir_persona). Estos dos bloques congelan esa regla.
+test('0c · fila RESUELTA con ficha limpia = respaldada, no parcial (la triple ocurrió y se deshizo al resolver)', () => {
+    const r = corre(); // los fixtures de Tania y Mafe son exactamente ese caso
+    assert.ok(!hallazgoDe(r, 'ct-tania', 'C7_AFIRMACION'));
+    assert.ok(!hallazgoDe(r, 'ct-mafe', 'C7_AFIRMACION'));
+});
+
+test('0c · fila PENDIENTE con ficha aún escalada = respaldada (triple viva, el caso de Pelin)', () => {
+    const r = corre({
+        pendingActions: [{ ...PENDING_ACTIONS[0], status: 'pending', resolution: null, resolved_at: null }],
+        contactos: CONTACTOS.map(c => c.id === 'ct-tania'
+            ? { ...c, bot_mode: 'manual', escalation_reason: 'pedir_persona' } : c),
+    });
+    assert.ok(!hallazgoDe(r, 'ct-tania', 'C7_AFIRMACION'),
+        'una escalada viva y coherente no es un hallazgo');
+});
+
 test('los teléfonos 999… (arnés de pruebas) quedan fuera del barrido', () => {
     const r = corre({
         contactos: [...CONTACTOS, { id: 'ct-test', full_name: 'Test', wa_phone: '9996001000', bot_mode: 'auto', escalation_reason: null }],
