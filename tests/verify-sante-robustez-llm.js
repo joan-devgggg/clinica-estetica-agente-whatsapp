@@ -17,12 +17,41 @@
  * reproducir con la agenda real: salón completamente lleno, estilista sin horario, etc.
  * El LLM y toda la lógica del bot son reales.
  *
- * Uso:  npm run verify:robustez:llm            (todos)
- *       npm run verify:robustez:llm -- 7       (solo el escenario 7)
+ * Uso:  npm run verify:robustez:llm                     (todos)
+ *       npm run verify:robustez:llm -- 7                (solo el escenario 7)
+ *       npm run verify:robustez:llm -- 5-12             (un rango)
+ *       npm run verify:robustez:llm -- familia:C        (una familia de causa)
+ *       npm run verify:robustez:llm -- idioma:ru        (un idioma de clienta)
+ *       npm run verify:robustez:llm -- shard:2/6        (porción 2 de 6 — paralelización
+ *                                                        por procesos, aún sin estrenar)
  *   Requiere OPENROUTER_API_KEY + Supabase. Consume tokens y tarda varios minutos.
+ *
+ *   Un DEGRADADO a la primera se REPITE solo antes de contarlo (la doctrina del degradado
+ *   que baila); tres escenarios seguidos con el fallback del modelo ABORTAN la corrida con
+ *   exit 2 (proveedor caído, no regresión). La parte pura de esas políticas vive en
+ *   tests/lib/robustez-llm-helpers.js, con su test determinista.
  */
 require('dotenv').config();
 process.env.TZ = process.env.TZ || 'Europe/Madrid';
+
+// ─── Telegram INERTE, por construcción ───────────────────────────────────────────────
+// Hoy ya lo era de facto: sin startTelegramBot, `_botInstance` es null y notifyOrgAdmin
+// avisa y devuelve false. Pero esa inercia era un accidente del orden de arranque, y una
+// tanda de 100 escenarios con 5-6 workers no puede depender de un accidente: si algún día
+// alguien llama a initSendOnlyBot en un require intermedio, cada escenario de escalada le
+// mandaría un Telegram DE VERDAD a Yulia. El stub lo hace imposible desde este proceso.
+// (Auditado el 14/08/2026: el arnés tampoco puede mandar WhatsApps — el cliente es un
+// sink, bot.js no usa resolveOutboundClient, y aquí no se arranca ningún worker.)
+const telegramPath = require.resolve('../services/telegram');
+require.cache[telegramPath] = {
+    id: telegramPath, filename: telegramPath, loaded: true,
+    exports: {
+        notifyBizumPending: async () => {}, notifyEscalation: async () => {},
+        notifyBlacklistAlert: async () => {}, notifyVipSuggestion: async () => {},
+        notifyOrgAdmin: async () => false, startTelegramBot: () => {},
+        initSendOnlyBot: async () => { throw new Error('telegram deshabilitado en el arnés'); },
+    },
+};
 
 const bot = require('../bot');
 const db = require('../services/db');
@@ -32,6 +61,10 @@ const { SANTE_ORG_ID: ORG } = require('../services/org-registry');
 const { TEST_PHONE_PREFIX } = require('../services/helpers');
 const helpers = require('../services/helpers');
 const { Convo: BaseConvo, sleep } = require('./lib/convo');
+const {
+    esFallbackLLM, CorteProveedor, CORTE_PROVEEDOR_UMBRAL, debeReintentar,
+    parseSeleccion, matchesSeleccion, resumenAgrupado,
+} = require('./lib/robustez-llm-helpers');
 
 bot.setBotActivo(ORG, true, false);
 
@@ -210,50 +243,102 @@ let seq = 0;
 // y un residuo se colaba en la audiencia de una campaña como una clienta más. `999` es un código
 // de país sin asignar en E.164 — no puede ser de nadie —, y db.getBroadcastRecipients excluye
 // ese prefijo de toda audiencia. Dos redes: aunque el residuo se quede, no le llega nada a nadie.
-const nextPhone = () => `${TEST_PHONE_PREFIX}600${String(1000 + (seq++)).slice(-4)}`;
+// El dígito central identifica el SHARD (0 = corrida entera): dos workers en paralelo no
+// pueden compartir teléfonos de prueba — el cleanup de uno borraría al contacto vivo del
+// otro en mitad de su conversación. Máximo 9 shards, que sobra para 5-6 workers.
+const shardDigit = () => seleccion?.shard?.i ?? 0;
+const nextPhone = () => `${TEST_PHONE_PREFIX}6${shardDigit()}0${String(1000 + (seq++)).slice(-4)}`;
 
-const only = process.argv[2] ? Number(process.argv[2]) : null;
+// Selección: número, rango (5-12), familia:C, idioma:ru, shard:i/n — combinables.
+// `shard:i/n` es la pieza de la PARALELIZACIÓN por procesos (i-ésimo de n, por número de
+// escenario módulo n): escrita el 14/08/2026 y aún sin conducir en paralelo contra nada
+// real. El día que se estrene: N procesos `node tests/verify-sante-robustez-llm.js
+// shard:i/N`, cada uno con su rango de teléfonos, y sumar los resúmenes.
+const seleccion = parseSeleccion(process.argv.slice(2));
+if (seleccion === null) {
+    console.error('Uso: verify:robustez:llm [n] [a-b] [familia:X] [idioma:xx] [shard:i/n]');
+    process.exit(1);
+}
 // Teléfonos que ha usado esta ejecución: al final se barren todos contra `citasSinNombre`.
 // Un escenario cualquiera puede acabar reservando aunque no vaya de eso, y una cita a nombre
 // de nadie es un fallo se llame como se llame el escenario que la provocó.
 const telefonosUsados = [];
 let idx = 0;
-async function escenario(nombre, fn) {
-    idx++;
-    const n = idx;
-    if (only && only !== n) return;
-    console.log(`\n▶ ${n}. ${nombre}`);
+
+// Un intento aislado del escenario: teléfono propio, Convo propia, veredicto propio.
+// Extraído de escenario() para poder REPETIR un DEGRADADO sin arrastrar estado.
+async function intento(fn) {
     const phone = nextPhone();
     telefonosUsados.push(phone);
     await cleanup(phone);
     const c = new Convo(phone);
 
-    // Cada escenario se clasifica UNA sola vez: la primera llamada gana, para que un
+    // Cada intento se clasifica UNA sola vez: la primera llamada gana, para que un
     // `return rec(...)` temprano no se vea pisado por la detección de bucle posterior.
-    let done = false;
-    const rec = (estado, nota) => {
-        if (done) return;
-        done = true;
-        results.push({ n, nombre, estado, nota: nota || '' });
-        console.log(`  ${ICON[estado]} ${estado}${nota ? ` — ${nota}` : ''}`);
-    };
+    let out = null;
+    const rec = (estado, nota) => { if (!out) out = { estado, nota: nota || '' }; };
 
     try {
         await fn(c, rec, phone);
         // Un bucle solo tiene sentido si el escenario no falló ya por otra vía.
         const bucle = detectaBucle(c);
-        if (bucle && !done) rec('BUCLE', bucle);
-        if (!done) rec('OK');
+        if (bucle && !out) rec('BUCLE', bucle);
+        if (!out) rec('OK');
     } catch (e) {
         // Un error de ejecución manda sobre cualquier veredicto ya emitido.
-        const prev = results.findIndex(r => r.n === n);
-        if (prev !== -1) results.splice(prev, 1);
-        done = false;
-        rec('ERROR', e.message);
+        out = { estado: 'ERROR', nota: e.message };
     } finally {
         await cleanup(phone);
         await sleep(500);
     }
+    // ¿Contestó el FALLBACK del modelo en algún turno? Es la señal del corte por
+    // proveedor caído — se mira aquí porque el texto vive en la conversación, no en la nota.
+    out.fallbackLLM = esFallbackLLM(c.allBotMsgs);
+    return out;
+}
+
+// Corte por proveedor caído: N escenarios seguidos contestando el fallback del modelo no
+// miden el salón. Hasta hoy era una instrucción de lectura («mirar si el degradado es
+// siempre la misma frase y esperar»); con ~100 escenarios tiene que ser código, porque
+// nadie va a leer 30 rojos idénticos para deducirlo.
+const corteProveedor = new CorteProveedor();
+function abortarPorProveedor() {
+    console.log('\n' + '═'.repeat(78));
+    console.log(`💥 CORRIDA ABORTADA: ${CORTE_PROVEEDOR_UMBRAL} escenarios seguidos con el fallback del modelo.`);
+    console.log('   Eso no es una regresión del salón: el proveedor está caído o limitando.');
+    console.log('   Espera y repite. Los veredictos impresos hasta aquí siguen siendo válidos.');
+    console.log('═'.repeat(78) + '\n');
+    process.exit(2);
+}
+
+// escenario('nombre', fn) — compat — o escenario('nombre', { familia, idioma }, fn).
+// familia ∈ {A,B,C,D,E,control} (las cinco causas de las auditorías); idioma = el de la
+// CLIENTA en el escenario. Salen en el resumen agrupado y sirven de selector.
+async function escenario(nombre, meta, fn) {
+    if (typeof meta === 'function') { fn = meta; meta = {}; }
+    idx++;
+    const n = idx;
+    const familia = meta.familia || null;
+    const idioma = meta.idioma || null;
+    if (!matchesSeleccion(seleccion, { n, familia, idioma })) return;
+    console.log(`\n▶ ${n}. ${nombre}`);
+
+    let r = await intento(fn);
+    // La doctrina del degradado que baila, automatizada: un DEGRADADO suelto se repite
+    // ANTES de contarlo — dos corridas con el mismo escenario degradado sí se persiguen.
+    // Solo DEGRADADO: la fila dura (BUG/SILENCIO/BUCLE/ERROR) no se reintenta jamás; un
+    // fallo intermitente de esa fila es un hallazgo, no ruido.
+    if (debeReintentar(r.estado)) {
+        console.log(`  🔁 DEGRADADO a la primera («${r.nota.slice(0, 60)}») — se repite antes de contarlo`);
+        const r2 = await intento(fn);
+        r = r2.estado === 'OK'
+            ? { ...r2, nota: `OK al repetir · la 1ª corrida degradó: ${r.nota}`.trim() }
+            : { ...r2, nota: `PERSISTE en 2 corridas · ${r2.nota}`.trim() };
+    }
+
+    results.push({ n, nombre, estado: r.estado, nota: r.nota, familia, idioma });
+    console.log(`  ${ICON[r.estado]} ${r.estado}${r.nota ? ` — ${r.nota}` : ''}`);
+    if (corteProveedor.registra(r.fallbackLLM && r.estado !== 'OK')) abortarPorProveedor();
 }
 
 // Envía y clasifica en un solo paso: comprueba silencio y genéricos.
@@ -275,7 +360,7 @@ async function turno(c, texto) {
     let restore = stubAgenda({ stylists });
 
     // ── 1-4 · Reconocimiento de servicio ────────────────────────────────────────────
-    await escenario('Servicio inexistente ("un piercing")', async (c, rec) => {
+    await escenario('Servicio inexistente ("un piercing")', { familia: 'C', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola');
         const r = await turno(c, 'quiero hacerme un piercing');
         if (r.vacio) return rec('SILENCIO');
@@ -285,7 +370,7 @@ async function turno(c, texto) {
         else rec('OK', r.txt.slice(0, 80));
     });
 
-    await escenario('Servicio ambiguo ("algo para el pelo")', async (c, rec) => {
+    await escenario('Servicio ambiguo ("algo para el pelo")', { familia: 'C', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'buenas');
         const r = await turno(c, 'quiero algo para el pelo pero no sé qué');
         if (r.vacio) return rec('SILENCIO');
@@ -303,7 +388,7 @@ async function turno(c, texto) {
     // de largo y, al contestarlo, el servicio queda RESUELTO en la sesión con la categoría del
     // catálogo — en vez de reconducir a "¿qué servicio quieres?", que es el fallo real que este
     // escenario busca. `selectedService` no depende de cómo redacte el modelo.
-    await escenario('Servicio con falta de ortografía ("valayage")', async (c, rec) => {
+    await escenario('Servicio con falta de ortografía ("valayage")', { familia: 'C', idioma: 'en' }, async (c, rec) => {
         // La categoría se saca del CATÁLOGO, no de una constante escrita aquí: si la dueña
         // renombra el servicio, el escenario deja de aplicar en vez de quedarse en rojo para
         // siempre (los datos que ella edita no se verifican contra listas fijas).
@@ -336,7 +421,7 @@ async function turno(c, texto) {
         rec('OK', `${svc.categoria} · ${svc.nombre}${svc.precio ? ` (${svc.precio} €)` : ''}`);
     });
 
-    await escenario('Cambio de opinión en mitad del flujo', async (c, rec) => {
+    await escenario('Cambio de opinión en mitad del flujo', { familia: 'C', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola, soy Ana');
         await turno(c, 'quiero un corte de mujer');
         const r = await turno(c, 'uy no, mejor unas mechas balayage');
@@ -345,7 +430,7 @@ async function turno(c, texto) {
     });
 
     // ── 5-8 · Estilista ──────────────────────────────────────────────────────────────
-    await escenario('Estilista mal escrita ("con Olga" → Olgha)', async (c, rec) => {
+    await escenario('Estilista mal escrita ("con Olga" → Olgha)', { familia: 'C', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola soy Marta');
         await turno(c, 'quiero una manicura');
         const r = await turno(c, 'con Olga por favor');
@@ -355,7 +440,7 @@ async function turno(c, texto) {
         else rec('DEGRADADO', `ignora la petición: "${r.txt.slice(0, 80)}"`);
     });
 
-    await escenario('Estilista inexistente ("con Carmen")', async (c, rec) => {
+    await escenario('Estilista inexistente ("con Carmen")', { familia: 'A', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola');
         await turno(c, 'quiero un corte de mujer');
         const r = await turno(c, 'con Carmen');
@@ -367,7 +452,7 @@ async function turno(c, texto) {
     // CONTROL de no regresión: el camino que SIEMPRE funcionó debe seguir igual. Si el
     // reconocimiento tolerante se pasara de laxo, aquí aparecería una "corrección" sobre
     // un nombre que ya estaba bien escrito, o una lista de alternativas que sobra.
-    await escenario('CONTROL · estilista correcta ("con Irina") sin corregir nada', async (c, rec) => {
+    await escenario('CONTROL · estilista correcta ("con Irina") sin corregir nada', { familia: 'control', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola soy Elena');
         await turno(c, 'quiero un corte de mujer');
         const r = await turno(c, 'con Irina');
@@ -378,14 +463,14 @@ async function turno(c, texto) {
         rec(/irina/i.test(r.txt) ? 'OK' : 'DEGRADADO', r.txt.slice(0, 90));
     });
 
-    await escenario('Estilista sin la skill ("mechas con Larisa")', async (c, rec) => {
+    await escenario('Estilista sin la skill ("mechas con Larisa")', { familia: 'A', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola soy Rosa');
         const r = await turno(c, 'quiero mechas balayage con Larisa');
         if (r.vacio) return rec('SILENCIO');
         rec(r.generico ? 'DEGRADADO' : 'OK', r.txt.slice(0, 90));
     });
 
-    await escenario('Estilista primero, servicio después (orden invertido)', async (c, rec) => {
+    await escenario('Estilista primero, servicio después (orden invertido)', { familia: 'C', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola');
         await turno(c, 'quiero pedir hora con Larisa');
         const r = await turno(c, 'para unas mechas');
@@ -394,7 +479,7 @@ async function turno(c, texto) {
     });
 
     // ── 9-12 · Fecha y hora ──────────────────────────────────────────────────────────
-    await escenario('"quiero cita hoy"', async (c, rec) => {
+    await escenario('"quiero cita hoy"', { familia: 'C', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola soy Lucía');
         await turno(c, 'un corte de mujer');
         const r = await turno(c, 'quiero cita hoy si puede ser');
@@ -402,7 +487,7 @@ async function turno(c, texto) {
         rec(r.generico ? 'DEGRADADO' : 'OK', r.txt.slice(0, 90));
     });
 
-    await escenario('"el finde"', async (c, rec) => {
+    await escenario('"el finde"', { familia: 'C', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola');
         await turno(c, 'un corte de mujer');
         const r = await turno(c, 'me viene bien el finde');
@@ -414,7 +499,7 @@ async function turno(c, texto) {
     // tres recibió "no te entiendo". Se afirma el HECHO —que se le dice el horario real—, no
     // la redacción: las horas se leen de business_hours (que edita la dueña), así que un
     // cambio de horario en el panel no deja este escenario en rojo permanente.
-    await escenario('Hora fuera del horario ("solo puedo después de las 23:00")', async (c, rec) => {
+    await escenario('Hora fuera del horario ("solo puedo después de las 23:00")', { familia: 'A', idioma: 'es' }, async (c, rec) => {
         const cfgH = (await db.getAgentConfig(ORG))?.business_hours || {};
         const dia = cfgH.lunes || Object.values(cfgH)[0];
         if (!dia?.apertura || !dia?.cierre) return rec('OK', 'sin business_hours: escenario no aplicable');
@@ -439,7 +524,7 @@ async function turno(c, texto) {
     //
     // Se afirma el ESTADO (la escalada ocurrió de verdad), no la redacción: es la lección de
     // los escenarios 3 y 15. La prosa solo va en la nota, para poder leer el rojo.
-    await escenario('Pregunta un dato que no tenemos ("¿cómo se llama la otra chica?")', async (c, rec) => {
+    await escenario('Pregunta un dato que no tenemos ("¿cómo se llama la otra chica?")', { familia: 'A', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola');
         const r = await turno(c, 'who was the other lady that washed my hair last time? I want to name her in my review');
         if (r.vacio) return rec('SILENCIO');
@@ -457,7 +542,7 @@ async function turno(c, texto) {
         rec('OK', `escalado (${ficha?.escalation_reason || 'bot_mode manual'})`);
     });
 
-    await escenario('Fecha imposible ("el 31 de febrero")', async (c, rec) => {
+    await escenario('Fecha imposible ("el 31 de febrero")', { familia: 'A', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola');
         await turno(c, 'un corte de mujer');
         const r = await turno(c, 'el 31 de febrero');
@@ -465,7 +550,7 @@ async function turno(c, texto) {
         rec(r.generico ? 'DEGRADADO' : 'OK', r.txt.slice(0, 90));
     });
 
-    await escenario('Hora concreta ya ocupada', async (c, rec) => {
+    await escenario('Hora concreta ya ocupada', { familia: 'A', idioma: 'es' }, async (c, rec) => {
         // Agenda con TODO libre salvo 16:00–17:00 dentro de 3 días.
         restore(); restore = stubAgenda({
             stylists,
@@ -501,7 +586,7 @@ async function turno(c, texto) {
     // decir que está completo, nunca anunciar una avería. Se conducen varios turnos —
     // rechazando upsells — porque el motor de huecos no se consulta hasta tener servicio
     // resuelto, y se mira TODA la conversación, no solo el último mensaje.
-    await escenario('AGENDA LLENA → ¿"completo" o "problema técnico"?', async (c, rec) => {
+    await escenario('AGENDA LLENA → ¿"completo" o "problema técnico"?', { familia: 'A', idioma: 'es' }, async (c, rec) => {
         restore(); restore = stubAgenda({ stylists, appointments: AGENDA_LLENA });
         await turno(c, 'hola soy Eva');
         await turno(c, 'quiero un corte de mujer');
@@ -541,7 +626,7 @@ async function turno(c, texto) {
     // Se mira el MÁXIMO visto a lo largo de la conversación, no el estado final: reservar o
     // reiniciar el flujo vacía `availableSlots`, y llegar a proponer huecos y luego pasar de
     // turno no puede leerse como no haberlos tenido nunca.
-    await escenario('REPRO sesión real de Eva (27/07)', async (c, rec) => {
+    await escenario('REPRO sesión real de Eva (27/07)', { familia: 'control', idioma: 'es' }, async (c, rec) => {
         const sesion = () => bot._internals.getSession(ORG, c.phone) || {};
         let maxHuecos = 0, servicio = null, causaCero = null, dbError = false;
         const observa = () => {
@@ -604,7 +689,7 @@ async function turno(c, texto) {
     // respuesta, así que cuando el modelo sí se salta el nombre lo caza siempre — se anuncie
     // la cita como se anuncie. Nunca da rojo falso: con la puerta puesta no se puede escribir
     // una fila sin nombre, así que un BUG aquí es un BUG de verdad.
-    await escenario('Abre por servicio, sin dar el nombre → lo pide antes de reservar', async (c, rec) => {
+    await escenario('Abre por servicio, sin dar el nombre → lo pide antes de reservar', { familia: 'C', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'Haces alisado?');
         await turno(c, 'Largo');
         await turno(c, 'La semana que viene');
@@ -642,7 +727,7 @@ async function turno(c, texto) {
         rec('DEGRADADO', 'ni pidió el nombre ni llegó a reservar: ' + r.txt.slice(0, 80));
     });
 
-    await escenario('Ráfaga: 2 mensajes separados 7 s (fuera del buffer)', async (c, rec) => {
+    await escenario('Ráfaga: 2 mensajes separados 7 s (fuera del buffer)', { familia: 'E', idioma: 'es' }, async (c, rec) => {
         const msgs = await c.sendBurst(['Quiero reservar cita', 'Quiero otra cita'], { gapMs: 7000 });
         if (msgs.length === 0) return rec('SILENCIO');
         const normed = msgs.map(norm).filter(m => m.length > 20);
@@ -651,26 +736,26 @@ async function turno(c, texto) {
     });
 
     // ── 16-18 · Input inesperado ─────────────────────────────────────────────────────
-    await escenario('Solo emoji', async (c, rec) => {
+    await escenario('Solo emoji', { familia: 'C', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola');
         const r = await turno(c, '💇‍♀️💅');
         rec(r.vacio ? 'SILENCIO' : (r.generico ? 'DEGRADADO' : 'OK'), r.txt.slice(0, 80));
     });
 
-    await escenario('Mensaje muy largo (800 chars)', async (c, rec) => {
+    await escenario('Mensaje muy largo (800 chars)', { familia: 'C', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola');
         const largo = 'quiero cambiar de look completamente y no sé por dónde empezar, ' .repeat(13);
         const r = await turno(c, largo.slice(0, 800));
         rec(r.vacio ? 'SILENCIO' : (r.generico ? 'DEGRADADO' : 'OK'), r.txt.slice(0, 80));
     });
 
-    await escenario('Ruso (idioma no español)', async (c, rec) => {
+    await escenario('Ruso (idioma no español)', { familia: 'D', idioma: 'ru' }, async (c, rec) => {
         const r = await turno(c, 'Здравствуйте, хочу записаться на стрижку');
         if (r.vacio) return rec('SILENCIO');
         rec(/[а-яё]/i.test(r.txt) ? 'OK' : 'DEGRADADO', 'responde en ' + (/[а-яё]/i.test(r.txt) ? 'ruso' : 'otro idioma'));
     });
 
-    await escenario('Mensaje sin relación ("cuánto cuesta un piso")', async (c, rec) => {
+    await escenario('Mensaje sin relación ("cuánto cuesta un piso")', { familia: 'C', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola');
         const r = await turno(c, 'cuanto cuesta alquilar un piso en alicante');
         rec(r.vacio ? 'SILENCIO' : (r.generico ? 'DEGRADADO' : 'OK'), r.txt.slice(0, 80));
@@ -683,7 +768,7 @@ async function turno(c, texto) {
     // Se afirma el ESTADO, y aquí eso vale doble: el gate es determinista y pre-LLM, así que
     // lo que este escenario prueba de verdad —y que ningún test unitario puede probar— es
     // que está CABLEADO dentro del handleIncomingMessage real, no solo que la función existe.
-    await escenario('Cita para dos personas ("para mí y una amiga")', async (c, rec) => {
+    await escenario('Cita para dos personas ("para mí y una amiga")', { familia: 'C', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola');
         const r = await turno(c, 'quiero saber si teneis citas disponibles para mi y una amiga');
         if (r.vacio) return rec('SILENCIO', 'se calló al decir que son dos');
@@ -712,7 +797,7 @@ async function turno(c, texto) {
     // tests/precio-sin-respaldo.test.js, que es determinista y sí se cae con sus dos
     // mutaciones. Aquí el fallo de Mariola era intermitente, y un vigía intermitente no se
     // puede disfrazar de demostración.
-    await escenario('Precio que la clienta dice y no existe ("el de 60 euros")', async (c, rec) => {
+    await escenario('Precio que la clienta dice y no existe ("el de 60 euros")', { familia: 'C', idioma: 'es' }, async (c, rec) => {
         await turno(c, 'hola');
         const r = await turno(c, 'El masaje capilar el de 60 euros');
         if (r.vacio) return rec('SILENCIO', 'se calló al mencionar el precio');
@@ -770,6 +855,17 @@ async function turno(c, texto) {
         // imprimía "undefined" justo en la línea del único fallo real.
         const icon = ICON[r.estado];
         console.log(`  ${icon} ${String(r.n).padStart(2)}. ${r.nombre.padEnd(46)} ${r.nota.slice(0, 60)}`);
+    }
+    // Con 25 escenarios la lista de arriba aún se lee; con ~100 lo que se busca es DÓNDE
+    // se concentra el rojo — por eso las vistas agrupadas, que es para lo que existen las
+    // etiquetas de familia e idioma.
+    const grupos = resumenAgrupado(results);
+    if (results.some(r => r.familia)) {
+        console.log('─'.repeat(78));
+        console.log('POR FAMILIA (A afirma-sin-respaldo · B red-ancha · C dato-sin-sitio · D idioma · E contexto-no-visto):');
+        for (const l of grupos.porFamilia) console.log(l);
+        console.log('POR IDIOMA (el de la clienta en el escenario):');
+        for (const l of grupos.porIdioma) console.log(l);
     }
     console.log('─'.repeat(78));
     console.log(`OK ${tally.OK} · DEGRADADO ${tally.DEGRADADO} · SILENCIO ${tally.SILENCIO} · BUCLE ${tally.BUCLE} · ERROR ${tally.ERROR} · BUG ${tally.BUG}`);
