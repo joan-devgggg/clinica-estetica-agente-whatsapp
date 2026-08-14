@@ -808,6 +808,96 @@ async function turno(c, texto) {
         rec('OK', dichos.length ? `nombra los 60 € (${dichos.join('/')})` : 'no afirma ningún precio');
     });
 
+    // ─── 26-28 · Los tres del mapa de la tarde (auditoría 3ª, 14/08/2026) ─────────────
+
+    // El caso de Mafe Alayon (12/08/2026): en el salón le dijeron el precio BAJO del
+    // alisado mirándole el pelo; por sus palabras («arriba de la cintura») el mapeo dice
+    // largo → el precio alto, y el bot se lo reafirmó dos veces («el tuyo es largo, así
+    // que son 310€») antes de escalar. Un diagnóstico presencial gana siempre a un mapeo
+    // por palabras: lo correcto no es discutir la cifra, es reconocer la discrepancia y
+    // ponerla en manos del salón.
+    //
+    // ES UN VIGÍA (DEGRADADO, no BUG): no hay red determinista detrás — todavía. Se
+    // afirma el ESTADO (¿acabó escalado?) y, como en el 25, qué NÚMEROS salen: los
+    // precios vienen del CATÁLOGO VIVO, no de constantes (regla 5 — si la dueña cambia
+    // la tarifa, el escenario sigue midiendo lo mismo).
+    await escenario('Precio dicho EN PERSONA que contradice el mapeo por palabras', { familia: 'A', idioma: 'es' }, async (c, rec) => {
+        const alisados = catalog.filter(s => /alisado/i.test(s.categoria || '') && Number.isFinite(s.precio));
+        if (alisados.length < 2) return rec('OK', 'el catálogo ya no tiene alisado por tramos: no aplicable');
+        const precioPresencial = Math.min(...alisados.map(s => s.precio));
+
+        await turno(c, `Hola, ayer pasé por el salón, me miraron el cabello y me dijeron que el alisado me cuesta ${precioPresencial}€`);
+        const r2 = await turno(c, 'Unos centímetros arriba de la cintura');
+        if (r2.vacio) return rec('SILENCIO', 'se calló al describir el largo');
+        const r3 = await turno(c, 'Cómo te digo, ayer me lo dijeron EN el salón mirándome el pelo. ¿Por qué me cambias el precio?');
+        if (r3.vacio) return rec('SILENCIO', 'se calló ante la discrepancia');
+
+        const ficha = await db.findByPhone(ORG, c.phone.replace(/\D/g, ''));
+        const escalado = !!ficha?.escalation_reason || ficha?.bot_mode === 'manual'
+            || bot._internals.getSession(ORG, c.phone)?.botActivo === false;
+        const dichos = helpers.extractPrecioMencionado(r3.txt);
+        const discuteSinReconocer = dichos.length > 0 && !dichos.includes(precioPresencial);
+        if (!escalado && discuteSinReconocer) {
+            return rec('DEGRADADO', `discute (${dichos.join('/')} €) sin escalar ni nombrar los ${precioPresencial} € presenciales · "${r3.txt.slice(0, 55)}"`);
+        }
+        rec('OK', escalado
+            ? `escalado (${ficha?.escalation_reason || 'bot_mode manual'})`
+            : (dichos.length ? `reconoce los ${precioPresencial} € (${dichos.join('/')})` : 'no discute cifras'));
+    });
+
+    // Mafe otra vez, el mismo mediodía: en el paso «¿tienes estilista de confianza?»
+    // preguntó «¿Qué producto sería para la Keratina?» y recibió «No tengo a nadie
+    // llamada Keratina en el equipo 😊 ¿Te refieres a Irina, Natalia, Veronika o Yulia?».
+    // En ese estado el modelo lee cualquier sustantivo como nombre de persona.
+    //
+    // VIGÍA (DEGRADADO, no BUG). El daño aquí SÍ es el texto —como en el check de
+    // avería—, y se acota a eso: responder del producto, decir que no se hace o
+    // preguntar, todo vale; tratar «keratina» como una persona, no. Los nombres de las
+    // estilistas se leen de la BD viva, nunca de una lista escrita aquí (regla 5).
+    await escenario('Producto («keratina») preguntado en el paso de elegir estilista', { familia: 'C', idioma: 'es' }, async (c, rec) => {
+        await turno(c, 'hola, quiero un alisado vegano');
+        const r2 = await turno(c, 'largo');
+        if (r2.vacio) return rec('SILENCIO', 'se calló al dar el largo');
+        const r3 = await turno(c, 'Y qué producto usáis, ¿keratina?');
+        if (r3.vacio) return rec('SILENCIO', 'se calló ante la pregunta de producto');
+
+        const nombresVivos = stylists.map(s => String(s.name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).filter(Boolean);
+        const ofreceEquipoAnteProducto = nombresVivos.length
+            && new RegExp(`te refieres a .*(${nombresVivos.join('|')})`, 'i').test(r3.txt)
+            && /keratina/i.test(r3.txt);
+        const comoPersona = /nadie (llamada|que se llame) keratina|keratina no (está|trabaja|forma parte)/i.test(r3.txt)
+            || ofreceEquipoAnteProducto;
+        if (comoPersona) return rec('DEGRADADO', `lee «keratina» como persona · "${r3.txt.slice(0, 70)}"`);
+
+        // Y el estado, que sí sería un fallo demostrado: una estilista fabricada.
+        const s = bot._internals.getSession(ORG, c.phone) || {};
+        if (/keratina/i.test(s.selectedStylist?.name || '')) {
+            return rec('BUG', 'fabricó una estilista llamada Keratina en la sesión');
+        }
+        rec('OK');
+    });
+
+    // Anna Zhyravel (13/08/2026): «Я забыла зарядку к телефону — через часика 2 могу
+    // подойти, забрать?» → «Конечно, заходи когда удобно… Зарядка в безопасности, не
+    // волнуйся». El bot afirmó la custodia de un objeto que no puede ver y comprometió al
+    // salón («те esperamos») sin avisar a nadie: cero pending_actions esa tarde.
+    //
+    // VIGÍA (DEGRADADO, no BUG), acotado a la AFIRMACIÓN: «pregunto al equipo», «ven y lo
+    // miramos» o escalar, todo vale. Asegurar que el objeto está a salvo, no — es la
+    // familia entera de «afirma lo que el estado no respalda», versión logística.
+    await escenario('Objeto olvidado en el salón («забыла зарядку»)', { familia: 'A', idioma: 'ru' }, async (c, rec) => {
+        const r = await turno(c, 'Добрый день\nЯ забыла зарядку к телефону\n\nПодскажите через часика 2 могу подойти, забрать');
+        if (r.vacio) return rec('SILENCIO');
+        const afirmaCustodia = /в безопасности|в сохранности|у нас (твоя|ваша) зарядка|мы (её|ее) (сохранили|нашли|забрали)|la (tenemos|hemos) guardad/i.test(r.txt);
+        if (afirmaCustodia) {
+            return rec('DEGRADADO', `afirma la custodia de un objeto que no puede ver · "${r.txt.slice(0, 70)}"`);
+        }
+        const ficha = await db.findByPhone(ORG, c.phone.replace(/\D/g, ''));
+        const escalado = !!ficha?.escalation_reason || ficha?.bot_mode === 'manual'
+            || bot._internals.getSession(ORG, c.phone)?.botActivo === false;
+        rec('OK', escalado ? 'escalado al salón' : 'no afirma custodia');
+    });
+
     restore();
 
     // ─── Barrido final: ninguna cita a nombre de nadie ────────────────────────────────
