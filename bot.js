@@ -151,13 +151,25 @@ class TTLMessageDedupe {
     add(key) {
         if (!key) return;
         this.seen.set(key, Date.now());
-        setTimeout(() => this.seen.delete(key), this.ttlMs);
+        // .unref(): este timer solo limpia memoria — no puede ser él quien mantenga vivo
+        // un proceso (la regla de los timers de arranque, aplicada a los de por-mensaje:
+        // un test que tocara el dedupe se quedaba 60 s colgado esperándolo).
+        const t = setTimeout(() => this.seen.delete(key), this.ttlMs);
+        if (typeof t?.unref === 'function') t.unref();
     }
     cleanup() {
         const now = Date.now();
         for (const [k, ts] of this.seen) if (now - ts > this.ttlMs) this.seen.delete(k);
     }
 }
+
+// Dedupe de MEDIA por wamid. La rama de media hace `return` antes del buffer, así que ni
+// `buffer.seenKeys` ni el dedupe de sesión (que en el primer mensaje de una conversación
+// ni existe) la protegen: una redelivery del webhook de Cloud API con el mismo wamid
+// volvía a contestar «No puedo ver fotos» mientras el INSERT duplicado moría en silencio
+// en el UNIQUE de wa_message_id. Medido el 13/08/2026 (34673441352): 2 fotos guardadas,
+// 3 avisos enviados en 400 ms. Map en RAM por proceso, como el resto de dedupes.
+const mediaMessageDedupe = new TTLMessageDedupe(DEDUPE_TTL_MS);
 
 // ─── LID resolution ─────────────────────────────────────────────────────────
 function isLidJid(jid) {
@@ -6606,6 +6618,16 @@ async function handleIncomingMessage(client, message, orgId) {
             // escrito la clienta: responderlo sería spam, ahí el silencio es lo correcto.
             const kind = classifyIncomingMedia(message);
             if (getOrgType(orgId) === 'salon' && kind !== 'system') {
+                // Redelivery del webhook (mismo wamid): todo lo legítimo ya pasó la primera
+                // vez — la fila [image] existe (o el UNIQUE la paró) y el aviso ya salió (o
+                // se anotó para el LLM). El guard va aquí, y no más abajo, porque `has`+`add`
+                // seguidos y síncronos cierran también la carrera de dos entregas casi
+                // simultáneas. Medido el 13/08/2026: 2 fotos guardadas, 3 avisos en 400 ms.
+                if (messageKey && mediaMessageDedupe.has(messageKey)) {
+                    logger.info('media_duplicada_ignorada', { orgId, telefono: userPhone, kind, messageKey });
+                    return;
+                }
+                mediaMessageDedupe.add(messageKey);
                 const language = await resolveMediaLanguage(orgId, sKey, dbPhone);
                 logger.info('media_no_soportada', { orgId, telefono: userPhone, kind });
                 // Dejamos rastro en el panel: antes estos mensajes no existían en el historial.
