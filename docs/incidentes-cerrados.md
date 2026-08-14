@@ -1128,3 +1128,20 @@ Probado con dos mutaciones: quitarle a `addSlot` la llamada tumba 2 bloques, y d
 `formatSlotTexto` una tabla de días propia tumba 12 — lo segundo es lo que demuestra que
 protege la contención, no el vocabulario.
 
+## La deuda del upselling: por qué se decidió NO arreglarla {#deuda-upselling}
+
+**DEUDA CONOCIDA — el upselling solo está medio cubierto.** Las reglas viven en
+`business_info.upselling`, que es una lista aparte: dar de baja un servicio no la toca. Hoy
+se descarta la sugerencia cuando su etiqueta RESUELVE contra una entrada de baja
+(`upsell_descartado_servicio_inactivo`), y ahí se acaba la cobertura: las etiquetas son
+frases de marketing, muchas no resuelven contra ninguna entrada, y de esas no se puede
+afirmar que estén de baja. O sea que el bot **puede seguir ofreciendo por upsell un servicio
+dado de baja** si su regla está redactada con una frase que no case con el catálogo.
+
+Arreglarlo de verdad es ligar cada regla a su entrada de catálogo (una referencia, no una
+frase), y eso es un trabajo aparte: toca el formato de `business_info.upselling`, las 8
+reglas actuales y el flujo de aceptación. **Decidido el 05/08/2026 no hacerlo**: no hay
+ninguna señal de que haga falta — cero servicios de baja en producción y cero reglas de
+upsell apuntando a uno. Se retoma si aparece la señal.
+
+

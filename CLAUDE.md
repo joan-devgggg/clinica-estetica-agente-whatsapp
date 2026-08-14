@@ -667,19 +667,14 @@ Tres trampas que ya están resueltas y conviene no reabrir:
   `resolveStylistMention` va completo — dar de baja un servicio no puede convertir su nombre
   en un nombre de persona plausible.
 
-**DEUDA CONOCIDA — el upselling solo está medio cubierto.** Las reglas viven en
-`business_info.upselling`, que es una lista aparte: dar de baja un servicio no la toca. Hoy
-se descarta la sugerencia cuando su etiqueta RESUELVE contra una entrada de baja
-(`upsell_descartado_servicio_inactivo`), y ahí se acaba la cobertura: las etiquetas son
-frases de marketing, muchas no resuelven contra ninguna entrada, y de esas no se puede
-afirmar que estén de baja. O sea que el bot **puede seguir ofreciendo por upsell un servicio
-dado de baja** si su regla está redactada con una frase que no case con el catálogo.
-
-Arreglarlo de verdad es ligar cada regla a su entrada de catálogo (una referencia, no una
-frase), y eso es un trabajo aparte: toca el formato de `business_info.upselling`, las 8
-reglas actuales y el flujo de aceptación. **Decidido el 05/08/2026 no hacerlo**: no hay
-ninguna señal de que haga falta — cero servicios de baja en producción y cero reglas de
-upsell apuntando a uno. Se retoma si aparece la señal.
+**DEUDA CONOCIDA — el upselling solo está medio cubierto.** Sus reglas viven en
+`business_info.upselling`, que es una lista aparte de frases de marketing: hoy se descarta la
+sugerencia cuando su etiqueta RESUELVE contra una entrada de baja
+(`upsell_descartado_servicio_inactivo`) y ahí acaba la cobertura, así que el bot **puede seguir
+ofreciendo por upsell un servicio dado de baja** si la regla está redactada con una frase que no
+case con el catálogo. **Decidido el 05/08/2026 no arreglarlo** por falta de señal (cero
+servicios de baja en producción, cero reglas apuntando a uno); qué costaría hacerlo, en
+[`docs/incidentes-cerrados.md#deuda-upselling`](docs/incidentes-cerrados.md#deuda-upselling).
 
 Red: `tests/servicio-desactivado.test.js` (en `npm test`; el primer bloque es la regresión de
 facturación) y la **Fase 8** de `verify:sante`, que le exige a cada servicio de baja que siga
@@ -742,22 +737,18 @@ getStylistsByOrg(orgId)
 getScheduleBlocks(orgId, stylistId, from, to)
 ```
 
-## Flujo: San Remo (restaurante)
+## Los dos flujos, en una línea cada paso
 
-1. Cliente → WhatsApp → bot pregunta nombre, personas, preferencia horaria
-2. Mock calendar genera slots → bot propone mesa
-3. Cliente acepta → bot pide Bizum → Alberto confirma/rechaza por Telegram
-4. Recordatorio 24h antes
+**San Remo (restaurante)**: pregunta nombre, personas y preferencia horaria → el mock calendar
+genera slots → el cliente acepta → Bizum → Alberto confirma o rechaza por Telegram →
+recordatorio 24 h antes.
 
-## Flujo: Sante (salón de belleza)
-
-1. Clienta → WhatsApp → bot detecta idioma (ES/EN/RU/UK), pregunta nombre
-2. Pregunta servicio → fuzzy match contra catálogo de 70+ servicios
-3. Upselling automático según reglas (Color raíz → manicura, Balayage → K18, etc.)
-4. Pregunta estilista preferida → si recurrente, sugiere su habitual
-5. `calendar-sante.js` consulta disponibilidad real: `stylist_schedules - appointments - schedule_blocks`
-6. Bot propone huecos con estilista asignada → clienta confirma
-7. Cita guardada directamente (sin Bizum) → recordatorio 24h → reseña Google 2h después
+**Sante (salón)**: detecta idioma (ES/EN/RU/UK) y pregunta nombre → servicio por fuzzy match
+contra el catálogo → upselling según reglas → estilista preferida (si es recurrente, sugiere su
+habitual) → `calendar-sante.js` calcula disponibilidad real
+(`stylist_schedules - appointments - schedule_blocks`) → propone huecos con estilista → la
+clienta confirma y
+la cita se guarda sin Bizum → recordatorio 24 h → reseña de Google 2 h después.
 
 ## Esquema Supabase
 
@@ -949,13 +940,10 @@ hay que recordar al tocar esto:
 - **Y ninguno le escribe al desbloquear.** En Telegram, `bl_ok` **pregunta** y `bl_do`
   ejecuta; `bl_ok` conserva el nombre A PROPÓSITO, para que un toque en un aviso viejo caiga
   en la confirmación y no desbloquee a la primera.
-- Dos formas de bloquear, ninguna atajo de la otra: `/lista-negra` (vista completa) y la
-  ficha de Clientes (solo salón, `isSalon`, con confirmación). Ambas por
-  `POST`/`DELETE /api/lista-negra/:id`.
-- Dos redes a propósito: `tests/blacklist-no-promete.test.js` (la CONDUCTA, hermético) y
-  `tests/lista-negra-panel.test.js` (el TEXTO de la confirmación del panel, cada línea
-  anclada al código que la hace cierta). Cuando cambie una conducta de la tabla, la segunda
-  avisa de que la confirmación se ha vuelto mentira.
+- Las **dos** formas de bloquear (`/lista-negra` y la ficha de Clientes) y las **dos** redes
+  que lo protegen —la conducta y el TEXTO de la confirmación del panel— están en el archivo:
+  la segunda es la que avisa de que la confirmación se ha vuelto mentira cuando cambia una
+  conducta de la tabla.
 
 ## Regla de oro
 
