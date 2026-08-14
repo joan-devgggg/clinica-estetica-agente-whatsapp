@@ -57,6 +57,11 @@ test('el orden es el del mensaje, de más nuevo a más viejo', () => {
     assert.deepStrictEqual(orden, ['Anna', 'Mariola', 'Daria']);
 });
 
+// Este bloque NO mide la clave de orden (pasa con updated_at y con last_message_at):
+// mide que la función es PURA. Saboteado el 14/08/2026 quitando el spread
+// ([...leads] → leads, sort in-place): falla SOLO este bloque; con la clave equivocada
+// fallan los tres de arriba y este no. Protege que un refactor no convierta a
+// getAllLeads en mutador de la lista que le pasen.
 test('no muta la lista que recibe', () => {
     const leads = [
         { nombre: 'B', last_message_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:00Z' },
