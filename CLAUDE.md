@@ -889,79 +889,48 @@ test, no del sistema: 3 horarios copiados de la migración y un plural — ver a
 
 ### `verify:robustez:llm` — línea base y cómo leer un DEGRADADO
 
-Llama al LLM de verdad: **no es determinista y su línea base es un rango**. Desde el
-13/08/2026 son **25 escenarios** (los dos nuevos son los de Mariola: dos personas y precio);
-línea base medida: **OK 25 · todo lo demás 0**. Historia
-completa (cómo se reescribieron los checks 3 y 15, qué destapó el 23):
-[`docs/incidentes-cerrados.md#verify-robustez-llm`](docs/incidentes-cerrados.md#verify-robustez-llm).
+Llama al LLM de verdad: **no es determinista y su línea base es un rango**. Desde el 13/08/2026
+son **25 escenarios**; línea base medida: **OK 25 · todo lo demás 0**.
 
-Cómo leerlo:
-
-- **La fila dura es `BUG` · `SILENCIO` · `BUCLE` · `ERROR` = 0**: cualquiera por encima de 0
-  es un hallazgo, siempre.
-- **Un DEGRADADO suelto que baila de escenario entre corridas es varianza del modelo** —
-  antes de tocar nada, repetir. Dos corridas con el MISMO escenario degradado sí se persigue:
-  así se cazó balayage
-  ([`docs/escenario-3-servicio-sin-resolver.md`](docs/escenario-3-servicio-sin-resolver.md),
-  red determinista `tests/balayage-resuelve.test.js`).
+- **La fila dura es `BUG` · `SILENCIO` · `BUCLE` · `ERROR` = 0**: cualquiera por encima de 0 es
+  un hallazgo, siempre.
+- **Un DEGRADADO suelto que baila de escenario entre corridas es varianza del modelo** — antes
+  de tocar nada, repetir. Dos corridas con el MISMO escenario degradado sí se persigue: así se
+  cazó balayage.
 - **Una TANDA de degradados con el texto `"Perdona, no he podido procesar tu mensaje"` no es
   una regresión: es el LLM caído o limitando** (es el fallback de bot.js; mide la red, no el
-  salón). Mirar si el degradado es siempre la misma frase y esperar.
-- **Los checks afirman ESTADO, no redacción**: el 3 exige `session.selectedService` resuelto
-  con la categoría **leída del catálogo** (renombrada por la dueña ⇒ no aplicable, no rojo);
-  el 15 exige que `session.availableSlots` llegó a tener huecos reales — se mira el MÁXIMO
-  visto, porque reservar lo vacía. Excepción a propósito: el check de avería (`problema
-  técnico`) mide TEXTO, porque ahí las palabras SON el daño.
-- **Esc. 3, ya investigado**: NO es de la familia de la cita fantasma — los tres puntos de
-  escritura de cita de Sante y los tres `loadAvailableSlots` están gateados por
-  `selectedService`; molesto, no peligroso. (El molde sí está montado: si una guarda se
-  relajara, `buildFullServiceName(null)` escribe `service: 'Reserva'`; no hay test que las
-  afirme.) SÍ es el mismo callejón que el bucle sin servicio de `4e7743c`, por otra puerta.
+  salón).
+- **Los checks afirman ESTADO, no redacción** (`session.selectedService` resuelto,
+  `session.availableSlots` con huecos reales), con una excepción a propósito: el de avería mide
+  TEXTO, porque ahí las palabras SON el daño.
 
-### Los datos que edita la dueña no se verifican contra constantes
+Cómo se reescribieron los checks 3 y 15, qué destapó el 23 y el análisis del escenario 3 —que
+NO es de la familia de la cita fantasma—:
+[`docs/incidentes-cerrados.md#verify-robustez-llm`](docs/incidentes-cerrados.md#verify-robustez-llm)
+y [`docs/incidentes-cerrados.md#informes-lectura`](docs/incidentes-cerrados.md#informes-lectura).
 
-`stylist_schedules`, `stylists.name`, `stylists.skills`, `agent_configs.services` y
-`business_hours` los cambia la dueña desde el panel. Un check que los compare contra una lista
-escrita en el fichero mide antigüedad, no corrección: caduca en el primer cambio y deja un
-fallo permanente que no hay que arreglar — que es la forma más rápida de que todo el mundo
-deje de leer el informe. Ya pasó tres veces (horarios de Tetiana/Natalia/Yulia-Tricóloga,
-"Consulta con exactamente 4 estilistas", y Olgha→Olga contándose como fallo del matcher).
-
-Se verifica con invariantes que se sostienen con cualquier valor:
+### Los invariantes de lo que edita la dueña (regla 5)
 
 ```bash
 npm run verify:sante          # catálogo + motor de huecos + Fase 7 (coherencia de horarios)
 npm run verify:sante:agenda   # SOLO LECTURA: ¿las citas futuras siguen cabiendo?
-```
-
-```bash
-npm run informe:nombres            # SOLO LECTURA: ¿a quién no sabemos cómo llamar?
-npm run informe:nombres -- sante   # una sola org (sante | sanremo | slug | uuid)
-
+npm run informe:nombres       # SOLO LECTURA: ¿a quién no sabemos cómo llamar?  (-- sante)
 npm run informe:seguimientos -- sante   # SOLO LECTURA: la tanda post-visita, sin enviarla
 ```
 
-`informe:seguimientos` es el simulacro obligatorio antes de encender `SEGUIMIENTOS`. Dice qué
-reglas pueden enviar y cuáles no —con las opciones del catálogo y su precio, para que la dueña
-elija—, y a quién le llegaría con el texto EXACTO. Sale de `construirTanda`, la misma función
-que usa el worker: si fueran dos caminos, mirarlo antes no probaría nada. Código 1 solo si hay
-reglas configuradas que no pueden enviar.
+- **`verify:sante:agenda`** es la red que faltaba: cuando la dueña quita un día o recorta una
+  franja, las citas ya reservadas en ese hueco no se mueven ni avisan. Día laborable, franja
+  (con `ends_at` incluido), `schedule_blocks`, skill por segmento y solapes. La lógica pura
+  vive en `tests/lib/agenda-audit.js` y sí corre en `npm test`.
+- **`informe:nombres`** cruza las **dos** columnas del nombre, que fallan distinto:
+  `contacts.full_name` es NULLABLE y bloquea el recordatorio de 24 h; `appointments.full_name`
+  es NOT NULL y cuando falta es cadena vacía (hecho 2 de la cabecera). No escribe nada:
+  rellenar un nombre lo decide una persona, porque el bot saludará con él.
+- **`informe:seguimientos`** es el simulacro obligatorio antes de encender `SEGUIMIENTOS`.
 
-`informe:nombres` mira las **dos** columnas del nombre, que fallan distinto:
-`contacts.full_name` es NULLABLE y es la que bloquea el recordatorio de 24 h;
-`appointments.full_name` es **NOT NULL**, así que cuando falta es **cadena vacía** —
-`saveAppointment` escribe `contact.nombre || ''`— y ningún `IS NULL` la encuentra. Cruza las
-dos: lo más común es que el nombre esté en una y no en la otra, y eso se arregla copiando.
-"Sin nombre" es `!isUsableName`, no `!full_name`: entra 'cliente' o '-', y no entra el
-cirílico. Sale con código 1 solo con `error` (hay una cita futura y su recordatorio no va a
-salir). No escribe nada: rellenar un nombre lo decide una persona, porque el bot saludará
-con él.
-
-`verify:sante:agenda` es la red que faltaba: cuando la dueña quita un día o recorta una franja,
-las citas ya reservadas en ese hueco no se mueven ni avisan. Comprueba día laborable, franja
-(con `ends_at` incluido), `schedule_blocks`, skill por segmento de servicio y solapes. Sale con
-código 1 solo con hallazgos de severidad `error`; `sin-skill` es aviso porque puede ser una
-decisión deliberada. La lógica pura vive en `tests/lib/agenda-audit.js` y sí corre en `npm test`.
+Ninguno de los cuatro compara contra listas escritas en git; todos afirman invariantes que se
+sostienen con cualquier valor. Detalle de qué significa cada código de salida:
+[`docs/incidentes-cerrados.md#informes-lectura`](docs/incidentes-cerrados.md#informes-lectura).
 
 ## El menú de Sante: `/resenas` fuera del menú, y NO es código muerto
 
