@@ -277,26 +277,21 @@ protege la contención, no el vocabulario.
 ## Campaña por tandas: el allowlist se recalcula, la exclusión se guarda
 
 Una campaña que va por tandas (`campaignKey` fija, `limit` por tanda) y que deja fuera a un
-grupo concreto **guarda la lista de EXCLUIDOS, nunca la de destinatarios**. El allowlist se
-recalcula antes de cada tanda restando las exclusiones de la audiencia del momento:
-`getBroadcastAudience({audience:'todos'})` menos el set de exclusiones → `phones`.
+grupo concreto **guarda la lista de EXCLUIDOS, nunca la de destinatarios**: el allowlist se
+recalcula antes de cada tanda restando las exclusiones de la audiencia del momento
+(`getBroadcastAudience({audience:'todos'})` menos el set de exclusiones → `phones`). Congelar
+los destinatarios parece equivalente y es una **foto** — la audiencia enviable de Sante pasó de
+718 a 723 en dos días, y una lista congelada deja fuera para siempre, y en silencio, a toda
+clienta creada después. Y el allowlist hay que pasarlo en **todas** las tandas: el dedupe de
+`campaignKey` impide repetir destinatarios pero **no recuerda a quién excluiste** (no hay fila
+en `broadcast_sends` para quien nunca entró), así que una tanda 2 sin allowlist se lo manda a
+los excluidos.
 
-Congelar los ~700 destinatarios parece equivalente y no lo es: es una **foto**. La audiencia
-enviable de Sante pasó de 718 a 723 en dos días, así que una lista congelada deja fuera para
-siempre a toda clienta creada después, y en silencio — para el motor no existían.
-
-Y el allowlist hay que pasarlo en **todas** las tandas: el dedupe de `campaignKey` impide
-repetir destinatarios, pero **no recuerda a quién excluiste** (no hay fila en
-`broadcast_sends` para quien nunca entró en la lista). Una tanda 2 sin allowlist se lo manda
-a los excluidos.
-
-Campaña de verano en curso: [`docs/campana-verano-tandas.md`](docs/campana-verano-tandas.md) ·
-lista en `data/campana-verano-exclusiones.json` (**`revisado_por_duena: false`** — son
-conjeturas por nombre de pila, 19 de 20 sin ninguna cita).
-
-Para excluir NO se usa `is_blacklisted` (significa "clienta bloqueada" y se ve así en el
-panel) ni se siembran filas `'sent'` en `broadcast_sends` (escribiría "enviado" sobre
-mensajes que nunca salieron, en la tabla de la que sale luego el reparto por estado).
+Para excluir NO se usa `is_blacklisted` (significa «clienta bloqueada» y se ve así en el panel)
+ni se siembran filas `'sent'` en `broadcast_sends` (escribiría «enviado» sobre mensajes que
+nunca salieron, en la tabla de la que sale el reparto por estado). Campaña de verano:
+[`docs/campana-verano-tandas.md`](docs/campana-verano-tandas.md) · lista en
+`data/campana-verano-exclusiones.json` (**`revisado_por_duena: false`**).
 
 ## Seguimiento post-visita: la propuesta que sale semanas después (`services/seguimiento.js`)
 
@@ -362,24 +357,14 @@ Historia completa (incidentes de OpenRouter y 360dialog):
 ## El vigilante de esperas está DORMIDO, y no por olvido (`services/espera-alert.js`)
 
 **No lo enciendas.** Escrito el 09/08/2026 y apagado el 10/08 —antes de correr nunca en
-producción— porque **mide otra cosa distinta de la que dice medir**: la dueña atiende desde el
-móvil sin cerrar la `pending_action` en el panel, así que la regla 1 mide «alguien cerró la
-fila en el panel» y la regla 2 mide «el bot no contestó», que no es «nadie contestó». Sus dos
-casos estrella (Olga Yarmak, 34656332064) estaban atendidos. Historia y diseño completo:
+producción— porque **mide otra cosa distinta de la que dice medir**: es el hecho 1 de la
+cabecera. La regla 1 mide «alguien cerró la fila en el panel» y la regla 2 mide «el bot no
+contestó», que no es «nadie contestó»; sus dos casos estrella estaban atendidos.
+**Requisito único para encenderlo: que los ECOS registren en `messages` las respuestas del
+móvil** — no es calibración, sin ecos no hay umbral que lo arregle. Interruptor
+`VIGILANTE_ESPERAS=on`, apagado por defecto, y el código se deja entero a propósito. Umbrales,
+diseño y lo que NO avisa (que es la mitad del diseño):
 [`docs/incidentes-cerrados.md#vigilante-de-esperas`](docs/incidentes-cerrados.md#vigilante-de-esperas).
-
-- **Requisito único para encenderlo: que los ECOS registren en `messages` las respuestas del
-  móvil.** No es calibración: sin ecos no hay umbral que lo arregle. Interruptor
-  `VIGILANTE_ESPERAS=on`, apagado **por defecto**.
-- El código se deja entero a propósito para el día que los ecos entren.
-- Umbral: **60 min de APERTURA**. La distribución no elige el número (dos poblaciones a
-  cuatro órdenes de magnitud: p95 13 s vs. horas/nunca); lo elige la jornada, que es dato
-  editable (`config.horario`). Un solo umbral para las dos reglas.
-- **Lo que NO avisa es la mitad del diseño**: bot pausado (lo dice `bot-pause-alert`),
-  escalada ya avisada (UN aviso), lista negra (silencio deliberado), y >7 días (conversación
-  muerta, el número de `auto-return`).
-- Las lecturas van con `assertRead` y **no** reutilizan `getPendingActions`, que se traga el
-  `error`: un vigilante ciego además tranquiliza.
 
 ## Retorno automático a `auto` tras silencio (`services/auto-return.js`)
 
@@ -806,46 +791,38 @@ getScheduleBlocks(orgId, stylistId, from, to)
 | `stylist_schedules` | Horario semanal por estilista (day_of_week, start_time, end_time) |
 | `schedule_blocks` | Bloqueos manuales (vacaciones, descansos) |
 
-### Estilistas de Sante (seeded)
+### Estilistas de Sante
 
-Los **días de esta tabla son los del seed, no la verdad**: la dueña edita horarios, nombres y
-skills desde el panel de Configuración, y `stylist_schedules` es la única fuente fiable. A
-04/08/2026, 6 de las 8 estilistas ya no coinciden con su migración. No copies estos días a
-ningún test — eso es exactamente lo que dejó `verify:sante` tres semanas en rojo.
+Índice de nombres y UUIDs, nada más. **Los horarios NO están aquí**: los edita la dueña y la
+única fuente fiable es `stylist_schedules` (hecho 4 de la cabecera). Esta tabla llegó a tener
+una columna de días del seed que a 04/08/2026 era falsa en 6 de las 8 filas — copiarla a un
+test es lo que dejó `verify:sante` tres semanas en rojo, y por eso ya no está.
 
-| Nombre | Rol | Días (seed) | UUID |
-|---|---|---|---|
-| Veronika | colorista/estilista | L-S | c3d4...0101 |
-| Irina | colorista/estilista | L-S | c3d4...0102 |
-| Yulia | colorista/estilista + diagnóstico | L-S | c3d4...0103 |
-| Olga (antes «Olgha») | manicura/pedicura | M-J-V | c3d4...0104 |
-| Larisa | masajes/spa | L-S | c3d4...0105 |
-| Tetiana | extensiones (agenda manual, nunca elegible) | — | c3d4...0106 |
-| Natalia | colorista/estilista | — | c3d4...0107 |
-| Yulia-Tricóloga | tricóloga (dueña) | — | c3d4...0108 |
+| Nombre | Rol | UUID |
+|---|---|---|
+| Veronika | colorista/estilista | c3d4...0101 |
+| Irina | colorista/estilista | c3d4...0102 |
+| Yulia | colorista/estilista + diagnóstico | c3d4...0103 |
+| Olga (antes «Olgha») | manicura/pedicura | c3d4...0104 |
+| Larisa | masajes/spa | c3d4...0105 |
+| Tetiana | extensiones (agenda manual, nunca elegible) | c3d4...0106 |
+| Natalia | colorista/estilista | c3d4...0107 |
+| Yulia-Tricóloga | tricóloga (dueña) | c3d4...0108 |
 
 ## Variables de entorno
 
+La lista completa, con sus valores de ejemplo, está en `.env.example` — con una salvedad:
+**ahí pone `OPENAI_API_KEY` y el código lee `OPENROUTER_API_KEY`** (`services/providers/openai.js:13`),
+así que ese fichero está desfasado justo en la clave del modelo. Las variables que **cambian la
+conducta del sistema**, y por eso se miran antes de diagnosticar nada:
+
 ```bash
-OPENROUTER_API_KEY             # Claude Haiku 3.5 via OpenRouter
-SUPABASE_URL                  # URL del proyecto Supabase
-SUPABASE_SERVICE_ROLE_KEY     # Service role key
-SANREMO_ORG_ID                # UUID San Remo
-SANTE_ORG_ID                  # UUID Sante
-SANREMO_WA_PHONE              # 34667474233
-SANTE_WA_PHONE                # 34641029104
-SANTE_360_API_KEY             # 360dialog: clave de envío de Sante (necesaria para ENVIAR como Sante)
-SANTE_360_PHONE_NUMBER_ID     # 360dialog: phone number id de Sante
-WHATSAPP_360_BASE_URL         # Opcional (default: https://waba-v2.360dialog.io)
-WHATSAPP_WEBHOOK_TOKEN        # Token secreto de /webhook/360dialog/:token (única protección de esa ruta)
-SANTE_CHANNEL                 # Escape hatch: 'wwebjs' devuelve Sante a whatsapp-web.js
-SEGUIMIENTOS                  # 'on' enciende la propuesta post-visita. APAGADO por defecto
-SEGUIMIENTOS_LIMITE           # Tope de seguimientos por tic y org (default 25)
-ORGANIZATION_ID               # Fallback/default org
-DASHBOARD_API_SECRET          # Bearer token para API REST
-TELEGRAM_BOT_TOKEN            # Bot Telegram (compartido)
-TELEGRAM_ALLOWED_USERS        # Fallback admin IDs
-PORT                          # Puerto Express (default: 3000)
+OPENROUTER_API_KEY  # sin ella el bot contesta siempre su fallback; avisa llm-health
+SANTE_CHANNEL     # escape hatch: 'wwebjs' devuelve Sante a whatsapp-web.js (el canal por
+                  # defecto lo dice el registry, NUNCA la presencia de SANTE_360_API_KEY)
+SEGUIMIENTOS      # 'on' enciende la propuesta post-visita. APAGADO por defecto
+SEGUIMIENTOS_LIMITE  # tope por tic y org (default 25)
+VIGILANTE_ESPERAS # 'on' enciende el vigilante de esperas. NO lo enciendas (ver su sección)
 ```
 
 ## Comandos de desarrollo
