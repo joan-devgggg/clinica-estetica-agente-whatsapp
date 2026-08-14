@@ -2228,6 +2228,54 @@ function offersHumanHandover(respuesta) {
         .some(frase => /[?¿]/.test(frase) && HANDOVER_TRASPASO.test(frase) && HANDOVER_DESTINO.test(frase));
 }
 
+// ─── detectaOfertaTraspaso: la FUENTE ÚNICA de «esto es una oferta de traspaso» ───────
+//
+// La importan DOS consumidores con el mismo código: el armado del bot (la oferta arma
+// pendingEscalation y espera el «sí») y el barrido de promesas (promesas-audit). Esa
+// unicidad es la demostración estructural del contrato: una oferta que el barrido VE es
+// una oferta que el bot ARMÓ — no pueden divergir porque son la misma función.
+//
+// Amplía a offersHumanHandover (que se conserva tal cual: su pareja announces comparte
+// las constantes y ensancharlas reabriría Olga) con lo que las auditorías midieron:
+//   · INGLÉS y RU/UK enumerados — criterio de admisión de siempre: formas que el bot ha
+//     dicho de verdad (las plantillas CONSULTA_ASK y la prosa observada), nunca un fuzzy.
+//     Cirílico por buildCyrillicRe y sin \b, que es ASCII.
+//   · PRONOMBRES como destino («¿te pongo en contacto con ellas?» — la oferta de Mafe
+//     del 12/08 que HANDOVER_DESTINO no casa). SOLO aquí: armar de más cuesta una
+//     pregunta esperando un sí; ensanchar la red de AFIRMACIÓN costaría mensajes buenos.
+//   · La REMISIÓN de Estefania Sanz (03/08: «te recomiendo que hables directamente con
+//     nuestro equipo — ellos podrán valorar») — el bot manda al equipo y promete que ahí
+//     la valoran, sin «¿?» y sin verbo de traspaso: ninguna red la veía y su «Claro ☺️»
+//     se evaporó. No exige pregunta, a diferencia del resto.
+const OFERTA_TRASPASO_EN = [
+    /would you like (?:me )?to (?:connect you|put you in touch)/,
+    /shall i (?:connect you|put you in touch)/,
+    /want me to (?:connect you|put you in touch)/,
+    /(?:connect|put) you in touch with (?:our|one of our|the) (?:team|specialists?)/,
+];
+const OFERTA_TRASPASO_CYR = buildCyrillicRe([
+    'связала тебя', 'связать тебя с', 'соединить тебя с', 'передам твой вопрос',
+    'хочешь, я свяжу', "зв'язала тебе", "зв'язати тебе з", "хочеш, я зв'яжу",
+]);
+const OFERTA_PRONOMBRE_DESTINO = /\b(?:con|a) ell[ao]s?\b/;
+const REMISION_EQUIPO_RE = /habl(?:a|as|es|ar|ad|en) (?:directamente )?con (?:nuestro|el) equipo/;
+
+function remisionAlEquipo(texto) {
+    return REMISION_EQUIPO_RE.test(normalizeText(texto));
+}
+
+function detectaOfertaTraspaso(texto) {
+    const t = normalizeText(texto);
+    if (!t) return false;
+    if (REMISION_EQUIPO_RE.test(t)) return true;
+    return t.split(/(?<=[.!?])\s+|\n+/).some(frase => {
+        if (!/[?¿]/.test(frase)) return false;
+        if (HANDOVER_TRASPASO.test(frase)
+            && (HANDOVER_DESTINO.test(frase) || OFERTA_PRONOMBRE_DESTINO.test(frase))) return true;
+        return OFERTA_TRASPASO_EN.some(re => re.test(frase)) || OFERTA_TRASPASO_CYR.test(frase);
+    });
+}
+
 // Si se ESCALA, se dice. Es la mitad que le faltaba a announcesHumanHandover, que solo
 // miraba el sentido contrario ("lo promete y no lo hace").
 //
@@ -6303,16 +6351,20 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             }
         }
 
-        // Traspaso OFRECIDO: se apunta la espera para que el "sí" del turno siguiente lo
-        // resuelva la capa determinista (el bloque de pendingEscalation, el mismo que usan
-        // extensiones y permanente) en vez de depender de que el LLM se acuerde de poner
-        // accion:escalar_humano. Se mira aquí, sobre el texto YA definitivo: las redes de
-        // más arriba pueden haber sustituido la respuesta entera.
+        // Traspaso OFRECIDO (o REMITIDO): se apunta la espera para que el "sí" del turno
+        // siguiente lo resuelva la capa determinista (el bloque de pendingEscalation, el
+        // mismo que usan extensiones y permanente) en vez de depender de que el LLM se
+        // acuerde de poner accion:escalar_humano. Se mira aquí, sobre el texto YA
+        // definitivo: las redes de más arriba pueden haber sustituido la respuesta entera.
         // Si ya se está escalando en este turno no hay nada que esperar.
+        //
+        // detectaOfertaTraspaso es la MISMA función que usa el barrido de promesas: una
+        // oferta que el barrido ve es una oferta que aquí se armó, por construcción.
         if (orgType === 'salon' && aiResponse.accion !== 'escalar_humano'
-                && !session.pendingEscalation && offersHumanHandover(aiResponse.respuesta)) {
+                && !session.pendingEscalation && detectaOfertaTraspaso(aiResponse.respuesta)) {
             session.pendingEscalation = true;
             session.pendingEscalationService = 'traspaso';
+            session.pendingEscalationOfrecidaAt = Date.now();
             logger.info('sante_traspaso_ofrecido_espera_confirmacion', { orgId, telefono: userPhone });
         }
 
@@ -6889,6 +6941,9 @@ module.exports = {
         respondsWithInventedSlots, respondsWithInventedDates, proposesTimingWithoutService, soloDeclaraHorarioDelSalon, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonVariasPersonasMsg, respondsWithUnbackedPrice, salonPrecioNoCasaMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover, offersHumanHandover, ensureHandoverAcknowledged, HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, porTrato,
+        // Fuente única de «esto es una oferta de traspaso»: la comparten el armado de
+        // pendingEscalation y el barrido de promesas — no pueden divergir.
+        detectaOfertaTraspaso, remisionAlEquipo,
         // Plantillas de promesa con texto fijo — las lee el barrido de promesas
         // (tests/lib/promesas-audit.js) para no copiar literales que luego divergen:
         CANCEL_OK_MSGS, CONFIRM_YES,
