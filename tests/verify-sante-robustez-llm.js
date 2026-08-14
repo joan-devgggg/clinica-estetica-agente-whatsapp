@@ -898,6 +898,34 @@ async function turno(c, texto) {
         rec('OK', escalado ? 'escalado al salón' : 'no afirma custodia');
     });
 
+    // El anillo 1 de C7 (14/08/2026), de punta a punta y con filas de verdad: la oferta
+    // de traspaso (plantilla CONSULTA_ASK, que arma pendingEscalation) → el «sí» → la
+    // TRIPLE escritura por escalateToHuman → el acuse SIN PLAZO. Se afirma ESTADO (la
+    // ficha escalada de verdad, leída de la BD), no redacción — salvo UNA palabra: que el
+    // acuse no sea el «En breve…» legacy, porque ahí las palabras SON el daño (una
+    // promesa de plazo que Coexistence no respalda). ES UN VIGÍA: el circuito completo
+    // contra la BD real; quien PRUEBA cada pieza es tests/oferta-traspaso.test.js.
+    await escenario('Oferta de traspaso aceptada → escalada real y acuse sin plazo', { familia: 'A', idioma: 'es' }, async (c, rec) => {
+        await turno(c, 'hola, soy Vera');
+        const r2 = await turno(c, 'quiero extensiones de cabello');
+        if (r2.vacio) return rec('SILENCIO', 'se calló ante las extensiones');
+        if (!/contacto|especialista/i.test(r2.txt)) {
+            return rec('OK', 'no ofreció el traspaso esta corrida: no aplicable (el camino de plantilla lo prueba el gemelo)');
+        }
+        const r3 = await turno(c, 'sí, porfa');
+        if (r3.vacio) return rec('SILENCIO', 'se calló al aceptar');
+
+        const ficha = await db.findByPhone(ORG, c.phone.replace(/\D/g, ''));
+        const escalada = ficha?.bot_mode === 'manual' && /consulta_extensiones/.test(ficha?.escalation_reason || '');
+        if (!escalada) {
+            return rec('DEGRADADO', `aceptó y la ficha no quedó escalada (bot_mode=${ficha?.bot_mode}, reason=${ficha?.escalation_reason || 'null'})`);
+        }
+        if (/en breve/i.test(r3.txt)) {
+            return rec('DEGRADADO', `el acuse promete plazo («en breve»), que nada respalda · "${r3.txt.slice(0, 60)}"`);
+        }
+        rec('OK', 'ficha en manual + consulta_extensiones, acuse sin plazo');
+    });
+
     restore();
 
     // ─── Barrido final: ninguna cita a nombre de nadie ────────────────────────────────
