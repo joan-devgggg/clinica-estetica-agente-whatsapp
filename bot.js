@@ -16,6 +16,7 @@ const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante,
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
+const { drainPendingOutboundTurns } = require('./services/pending-outbound');
 const { notePausedDrop, resetPauseAlert } = require('./services/bot-pause-alert');
 const { noteSendResult } = require('./services/channel-health');
 const { summarizeHistory } = require('./services/providers/openai');
@@ -4303,6 +4304,16 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             pendingCorteNinoTipo: session.pendingCorteNinoTipo,
             partialData:         JSON.parse(JSON.stringify(session.partialData)),
         };
+
+        // Los salientes AUTOMÁTICOS (recordatorio de 24 h) que salieron desde el último
+        // turno van ANTES del mensaje de la clienta: es el orden real, y sin ellos el bot
+        // contesta a ciegas a una respuesta a su propio recordatorio — Barbora Jalova,
+        // 13/08/2026: «Hola, si confirmado 😊» → «¿Qué día o semana te viene mejor?».
+        // El worker los anota en services/pending-outbound (no puede tocar la sesión
+        // directamente); aquí es donde la conversación por fin los ve.
+        const salientesAuto = drainPendingOutboundTurns(orgId, userPhone, SESSION_TIMEOUT);
+        for (const t of salientesAuto) session.history.push({ role: t.role, content: t.content, ts: t.ts });
+        if (salientesAuto.length) logger.info('salientes_automaticos_al_historial', { orgId, telefono: userPhone, turnos: salientesAuto.length });
 
         session.history.push({ role: 'user', content: sanitized, ts: Date.now() });
         // Las fotos que llegaron mientras esto se cocía van DESPUÉS de su texto, que es el

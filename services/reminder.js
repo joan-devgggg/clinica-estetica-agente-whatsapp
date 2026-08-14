@@ -4,7 +4,8 @@
  * y auto-completa citas cuya hora de fin ya pasó.
  */
 
-const { getAppointmentsPendientesRecordatorio, marcarRecordatorioSent, getConfigValue, getAgentConfig, autoCompleteAppointments } = require('./db');
+const { getAppointmentsPendientesRecordatorio, marcarRecordatorioSent, marcarRecordatorioCitaSent, getConfigValue, getAgentConfig, autoCompleteAppointments } = require('./db');
+const { notePendingOutboundTurn } = require('./pending-outbound');
 const { resolveOutboundClient, resolveAutomatedSend } = require('./outbound');
 const { isUsableName, resolveReminderWindowMin, formatReminderWhen } = require('./helpers');
 const { getOrgType } = require('./org-registry');
@@ -236,7 +237,11 @@ async function marcarRecordatorioConReintentos(orgId, record) {
     for (let intento = 0; intento < REINTENTOS_MARCADO; intento++) {
         if (intento > 0) await new Promise(r => setTimeout(r, 200 * intento));
         try {
-            await marcarRecordatorioSent(orgId, record.id);
+            // Los records del salón vienen de appointments (esCita) y su marca vive en la
+            // CITA; los de San Remo siguen marcando la ficha. record.id ya es el id de la
+            // tabla que toca en cada caso (lo puso construirPendientesDesdeCitas).
+            if (record.esCita) await marcarRecordatorioCitaSent(orgId, record.id);
+            else await marcarRecordatorioSent(orgId, record.id);
             enviadosSinMarcar.delete(clave);
             return true;
         } catch (e) {
@@ -256,6 +261,58 @@ async function marcarRecordatorioConReintentos(orgId, record) {
 
 /** Solo para tests: olvida lo entregado-sin-apuntar. */
 function _resetPendientesDeMarcar() { enviadosSinMarcar.clear(); }
+
+// Cuánto tiempo sigue explicando la conversación un recordatorio ya enviado, a efectos
+// del historial del prompt. 48 h cubre cualquier `horas_recordatorio` sensato (hoy 24);
+// pasada la cita, la nota caduca sola en el drenaje.
+const TTL_NOTA_RECORDATORIO_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * Deja constancia de un recordatorio YA ENVIADO en los dos sitios que hasta ahora no lo
+ * veían — causa de que el bot contestara a ciegas «¿Qué día o semana te viene mejor?» a un
+ * «Hola, si confirmado» (Barbora Jalova, 13/08/2026) y de que el Monitor enseñara esa
+ * respuesta como primer mensaje de la nada:
+ *
+ *   1. `messages` (panel, y con él `last_message_at`). La plantilla aprobada de Meta no
+ *      tiene texto local que copiar: se guarda `mensaje` — que lleva EL MISMO contenido
+ *      por diseño («un solo valor para los dos caminos»: nombre y cuándo salen de
+ *      resolveCuando) — prefijado con el nombre de la plantilla, para no afirmar bytes
+ *      que no vimos. Efecto lateral asumido y anotado: `saveMessage` refresca
+ *      `conversations.last_message_at`, que auto-return usa como «última actividad»; un
+ *      recordatorio nuestro retrasa hasta 24 h un retorno a auto de 7 días. La ventana de
+ *      24 h de Meta NO se toca (se calcula sobre entrantes, nunca sobre ese campo).
+ *   2. El historial de la conversación, vía pending-outbound: el prompt del LLM se
+ *      construye SOLO de session.history (bloque 1b del nocturno 14/08), así que
+ *      escribirlo en `messages` no cura la ceguera. bot.js lo drena al siguiente turno,
+ *      ANTES del mensaje de la clienta, que es el orden real.
+ *
+ * Solo salón, gateado por tipo de org: San Remo no ha pedido ver sus recordatorios en el
+ * panel ni en el prompt, y la regla de oro manda dejarlo byte por byte como está.
+ * Nunca lanza: el mensaje ya salió; no poder registrarlo se loguea y no bloquea nada.
+ */
+async function registrarRecordatorioEnviado(orgId, record, { mensaje, decision }) {
+    if (getOrgType(orgId) !== 'salon') return;
+    try {
+        // require perezoso: el destructure de arriba se congela al cargar el módulo, y los
+        // tests herméticos del worker reemplazan db entero en require.cache.
+        const { saveMessage } = require('./db');
+        if (typeof saveMessage === 'function') {
+            const contenido = decision?.mode === 'template'
+                ? `[plantilla ${decision.template?.name || 'recordatorio'}] ${mensaje}`
+                : mensaje;
+            await saveMessage(orgId, { telefono: record.telefono, contenido, direccion: 'saliente' });
+        }
+    } catch (e) {
+        logger.error('recordatorio_registro_mensaje_fallido', { orgId, telefono: record.telefono, error: e.message });
+    }
+    try {
+        // Al historial va `mensaje` a secas: es lo que la clienta leyó (la plantilla dice
+        // lo mismo con el texto fijo aprobado), y un prefijo técnico solo despistaría al modelo.
+        notePendingOutboundTurn(orgId, record.telefono, mensaje, { ttlMs: TTL_NOTA_RECORDATORIO_MS });
+    } catch (e) {
+        logger.error('recordatorio_registro_historial_fallido', { orgId, telefono: record.telefono, error: e.message });
+    }
+}
 
 /**
  * Envía el recordatorio por la vía que corresponda.
@@ -313,6 +370,10 @@ async function sendReminderMessage(orgId, record, { mensaje, templateParams }) {
         } else {
             await client.sendMessage(chatId, mensaje);
         }
+        // A partir de aquí el mensaje EXISTE: se deja constancia donde la conversación y
+        // el panel puedan verlo. Nunca lanza — un fallo del registro no puede deshacer un
+        // envío ya hecho ni impedir el marcado (que es lo que evita el reenvío).
+        await registrarRecordatorioEnviado(orgId, record, { mensaje, decision });
         // Salud del canal: este envío no pasa por waSendMessage, así que se reporta aquí.
         // 'sin_plantilla' no se reporta porque no llegó a intentarse ningún envío.
         // Se ESPERA: noteSendResult manda el aviso de canal caído (y el de recuperado) por

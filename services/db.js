@@ -5,7 +5,7 @@
 
 const supabase = require('./supabase');
 const logger = require('../lib/logger');
-const { NO_STYLIST_KEY, computeServiceBilling, IDIOMAS_SOPORTADOS, resolveLanguageSource, LANGUAGE_SOURCES, motivoNoEnviable } = require('./helpers');
+const { NO_STYLIST_KEY, computeServiceBilling, IDIOMAS_SOPORTADOS, resolveLanguageSource, LANGUAGE_SOURCES, motivoNoEnviable, isUsableName } = require('./helpers');
 // date-utils es PURO (solo Intl/Date) y no arrastra la capa de datos, así que se puede
 // requerir aquí sin ciclo. Aporta toLocalDateStr, que es lo único que debe decidir el día de
 // caja: BUSINESS_TZ = Europe/Madrid, nunca UTC.
@@ -598,6 +598,128 @@ async function getLeadsPendientesRecordatorio(orgId) {
         .not('fecha_cita', 'is', null)
         .or('is_blacklisted.is.null,is_blacklisted.eq.false');
     return (data || []).map(rowToPublic);
+}
+
+// ─── Recordatorio por CITA (salón) ───────────────────────────────────────────
+//
+// Hasta el 14/08/2026 el recordatorio del salón colgaba de contacts.estado='confirmado' +
+// contacts.recordatorio_enviado — dos campos de FICHA que la conversación y el panel pisan.
+// Medido esa noche sobre las 19 citas futuras confirmadas de Sante:
+//   · Dasha Kotenko (cita ese mismo día): creada desde el panel sin tocar la ficha, ficha
+//     en 'pendiente' → el recordatorio no salía NUNCA, sin síntoma.
+//   · Barbora Jalova: contestó al recordatorio, el turno del bot le regresó la ficha a
+//     'pendiente' (bot.js, saveLead de fin de turno con estado_cita en duro) — cualquier
+//     «gracias!» la víspera cuesta el recordatorio si aún no salió.
+//   · Nieves Armengol: ficha con fecha_cita=08/08 (vieja) y cita real el 29/08 → la
+//     ventana se calculaba con la fecha equivocada y no enviaba jamás.
+// La cita ES el dato: status='confirmed' + appointments.recordatorio_enviado (columna que
+// existía sin uso). San Remo sigue en el camino por ficha, byte por byte (gate por tipo de
+// org en getAppointmentsPendientesRecordatorio).
+
+// Mismo reloj que buildStartsAt: en producción el proceso corre con TZ=Europe/Madrid
+// (server.js línea 1), pero aquí se fija explícito para que un test o un shell en UTC
+// derive las mismas cadenas que escribe el panel.
+const RECORDATORIO_TZ = 'Europe/Madrid';
+
+// timestamptz → { fecha: 'YYYY-MM-DD', hora: 'HH:MM' } en hora de Madrid: exactamente la
+// convención de contacts.fecha_cita/hora_cita, que es lo que minutosHastaCita y
+// formatReminderWhen esperan recibir.
+function fechaHoraCitaLocal(startsAt) {
+    const d = new Date(startsAt);
+    if (Number.isNaN(d.getTime())) return { fecha: null, hora: null };
+    return {
+        fecha: d.toLocaleDateString('en-CA', { timeZone: RECORDATORIO_TZ }),
+        hora: d.toLocaleTimeString('en-GB', { timeZone: RECORDATORIO_TZ, hour: '2-digit', minute: '2-digit' }),
+    };
+}
+
+/**
+ * Puro y exportado para el test. Convierte filas de appointments + sus contactos en los
+ * records que consume el worker de recordatorios (misma forma que los de
+ * getLeadsPendientesRecordatorio, más `esCita` para que el marcado vaya a la cita).
+ *
+ * Decisiones con motivo:
+ *  - Bloqueada → fuera, en silencio deliberado: paridad exacta con el filtro de
+ *    getLeadsPendientesRecordatorio (una clienta bloqueada no recibe mensajes del negocio).
+ *  - Cita sin contacto → NO se tira: entra con el teléfono/nombre de la propia cita, y si
+ *    tampoco los hay cae en motivoNoEnviable, que avisa a una persona (regla 3: un hueco
+ *    de datos no se traga, se dice).
+ *  - GUARDA DE TRANSICIÓN: si la FICHA dice que el recordatorio de ese mismo día ya salió
+ *    (recordatorio_enviado=true y fecha_cita = el día de la cita), se excluye. Es lo que
+ *    hace seguro desplegar este código ANTES de aplicar la migración 041 (el backfill que
+ *    copia esas marcas a appointments): sin la guarda, el primer tic reenviaría el
+ *    recordatorio a quien lo recibió ayer (medido 14/08: 6 de las 19 citas futuras).
+ *    Con la marca en la ficha vieja o de OTRO día no aplica: esa clienta no ha recibido
+ *    el de ESTA cita.
+ *  - El nombre prefiere el primero USABLE de ficha/cita (informe:nombres: las dos
+ *    columnas fallan distinto — la de cita es NOT NULL y su vacío es '', que ningún
+ *    IS NULL encuentra); si ninguno sirve, motivoNoEnviable lo dirá.
+ */
+function construirPendientesDesdeCitas(citas, contactosPorId) {
+    const pendientes = [];
+    for (const cita of citas || []) {
+        const c = cita.contact_id ? (contactosPorId.get(cita.contact_id) || null) : null;
+        if (c?.is_blacklisted) continue;
+        const { fecha, hora } = fechaHoraCitaLocal(cita.starts_at);
+        if (c?.recordatorio_enviado && c.fecha_cita === fecha) continue;
+        const meta = (c?.metadata && typeof c.metadata === 'object') ? c.metadata : {};
+        pendientes.push({
+            id: cita.id,
+            esCita: true,
+            contactId: c?.id || null,
+            nombre: [c?.full_name, cita.full_name].find(isUsableName) || c?.full_name || cita.full_name || null,
+            telefono: c?.wa_phone || cita.phone || null,
+            wa_jid: typeof meta.wa_jid === 'string' ? meta.wa_jid : null,
+            language: c?.language || 'es',
+            fecha_cita: fecha,
+            hora_cita: hora,
+        });
+    }
+    return pendientes;
+}
+
+async function getCitasPendientesRecordatorio(orgId) {
+    const oid = resolveOrg(orgId);
+    // assertRead y no destructuring mudo: un fallo de lectura aquí tiene que llegar como
+    // excepción al try por-org del worker, no como "cero pendientes" indistinguible de una
+    // semana vacía (misma lección que las lecturas de disponibilidad, 28/07/2026).
+    const { data: citas, error } = await supabase
+        .from('appointments')
+        .select('id, contact_id, full_name, phone, starts_at')
+        .eq('organization_id', oid)
+        .eq('status', 'confirmed')
+        .eq('recordatorio_enviado', false)
+        .gt('starts_at', new Date().toISOString());
+    assertRead(error, 'appointments');
+    if (!citas?.length) return [];
+    const ids = [...new Set(citas.map(c => c.contact_id).filter(Boolean))];
+    let contactos = [];
+    if (ids.length) {
+        const res = await supabase
+            .from('contacts')
+            .select('*')
+            .eq('organization_id', oid)
+            .in('id', ids);
+        assertRead(res.error, 'contacts');
+        contactos = res.data || [];
+    }
+    return construirPendientesDesdeCitas(citas, new Map(contactos.map(c => [c.id, c])));
+}
+
+// Marca el flag EN LA CITA, que es el que lee getCitasPendientesRecordatorio. Gemelo de
+// marcarRecordatorioSent (contactos); updated_by va directo porque este UPDATE no pasa por
+// updateAppointment (migración 033: sin él, un recordatorio marcado por el worker y uno
+// marcado a mano en el panel serían indistinguibles).
+async function marcarRecordatorioCitaSent(orgId, appointmentId) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('appointments')
+        .update({ recordatorio_enviado: true, updated_by: 'worker:reminder' })
+        .eq('id', appointmentId)
+        .eq('organization_id', oid)
+        .select('id');
+    assertRowsAffected(error, data, 'appointments', 'marcar recordatorio_enviado=true (cita)');
+    return true;
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -1463,6 +1585,11 @@ async function updateAppointment(orgId, appointmentId, campos) {
         }
         updates.starts_at = startsAt.toISOString();
         updates.ends_at   = new Date(startsAt.getTime() + durMin * 60 * 1000).toISOString();
+        // Mover una cita es volver a deberle el recordatorio: el que salió (si salió)
+        // hablaba de otro momento. Solo si quien llama no fijó el flag explícitamente.
+        // San Remo no lee appointments.recordatorio_enviado (su recordatorio va por
+        // ficha), así que para él esta línea no cambia ninguna conducta.
+        if (campos.recordatorioEnviado === undefined) updates.recordatorio_enviado = false;
     }
     if (!Object.keys(updates).length) return null;
 
@@ -2236,6 +2363,13 @@ async function getAppointmentsByLead(orgId, contactId) {
 }
 
 async function getAppointmentsPendientesRecordatorio(orgId) {
+    // El SALÓN cuelga de la CITA (ver el bloque «Recordatorio por CITA» junto a
+    // getLeadsPendientesRecordatorio); San Remo sigue por ficha, byte por byte. El gate va
+    // por tipo de org, no por UUID, y vive AQUÍ y no en reminder.js a propósito: los tests
+    // herméticos del worker stubean db entero, así que enrutarlo dentro de db deja sus
+    // fixtures (state.pendientes) funcionando sin enterarse del cambio de fuente.
+    const { getOrgType } = require('./org-registry');
+    if (getOrgType(orgId) === 'salon') return getCitasPendientesRecordatorio(orgId);
     return getLeadsPendientesRecordatorio(orgId);
 }
 
@@ -3526,6 +3660,9 @@ module.exports = {
     marcarCitaCompletada,
     marcarRecordatorioSent,
     getLeadsPendientesRecordatorio,
+    getCitasPendientesRecordatorio,
+    construirPendientesDesdeCitas,
+    marcarRecordatorioCitaSent,
     getConfigValue,
     getConfigEntry,
     setConfigValue,
