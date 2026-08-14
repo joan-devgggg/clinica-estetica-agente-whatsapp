@@ -321,26 +321,26 @@ mutaciones (la del `includes` por frase suelta tumba 5 bloques).
 
 ## Avisos al admin: solo cuentan si llegan
 
-Historia completa (incidentes de OpenRouter y 360dialog):
-[`docs/incidentes-cerrados.md#avisos-al-admin`](docs/incidentes-cerrados.md#avisos-al-admin).
+`alertOnce` (`services/admin-alerts.js`) marca la clave **después** de que Telegram confirme; el
+único log que prueba entrega es `telegram_notify_ok`, y sin entrega la clave se libera y el
+siguiente tic reintenta (`clearAlert(orgId, clave)` la libera a mano). Los tres vigilantes y
+sus umbrales, que es lo que se toca:
 
-- `alertOnce` (`services/admin-alerts.js`) marca la clave **después** de que Telegram
-  confirme. El único log que prueba entrega es `telegram_notify_ok`; sin entrega la clave se
-  libera y el siguiente tic reintenta. `clearAlert(orgId, clave)` la libera a mano.
-- **Canal caído** (`channel-health.js`): 3 fallos consecutivos de PLATAFORMA (401/403, 429,
-  5xx, frame muerto) → aviso; primer envío bueno → «ha vuelto». Los fallos de DESTINATARIO
-  **no cuentan** (131047 fuera de ventana, 132000/1 plantilla): una campaña normal acumula
-  decenas. Instrumentados los 4 embudos —`waSendMessage`, reminder, review, broadcast—, nunca
-  los call sites; en `waSendMessage` el reporte va FUERA del bucle de reintentos.
-- **El modelo no responde** (`llm-health.js`): **cuenta (402/401/403) avisa al PRIMER fallo**
-  (un «sin saldo» es cierto desde el primero); **transitorio (429/5xx/red) espera a 3**. Dos
-  textos distintos. NO cuentan un 400 (nuestro payload) ni un JSON mal formado (eso mide la
-  calidad del modelo). Solo el intento DEFINITIVO de `getChatbotResponse`; `summarizeHistory`
-  queda fuera a propósito.
-- **Bot pausado demasiado tiempo** (`bot-pause-alert.js`): vigilante cada 10 min; umbral
-  **2 h de horario de APERTURA** (`config.horario`), no de reloj. Si abre con el bot ya
-  pausado, avisa al abrir. «Pausado desde» = `config.updated_at` de `bot_activo`. Una org sin
-  `horario` (hoy San Remo) cuenta reloj, y se dice.
+- **Canal caído** (`channel-health.js`): 3 fallos consecutivos de PLATAFORMA (401/403, 429, 5xx,
+  frame muerto) → aviso; primer envío bueno → «ha vuelto». Los fallos de DESTINATARIO **no
+  cuentan** (131047 fuera de ventana, 132000/1 plantilla): una campaña normal acumula decenas.
+  Instrumentados los 4 embudos, nunca los call sites, y en `waSendMessage` el reporte va FUERA
+  del bucle de reintentos.
+- **El modelo no responde** (`llm-health.js`): **cuenta (402/401/403) avisa al PRIMER fallo** —un
+  «sin saldo» es cierto desde el primero—; **transitorio (429/5xx/red) espera a 3**. Dos textos
+  distintos. NO cuentan un 400 (nuestro payload) ni un JSON mal formado (eso mide la calidad del
+  modelo). Solo el intento DEFINITIVO de `getChatbotResponse`.
+- **Bot pausado demasiado tiempo** (`bot-pause-alert.js`): cada 10 min, umbral **2 h de horario
+  de APERTURA** (`config.horario`) y no de reloj; si abre con el bot ya pausado, avisa al abrir.
+  Una org sin `horario` (hoy San Remo) cuenta reloj, y se dice.
+
+Por qué cada umbral es ese, y los incidentes de OpenRouter y 360dialog que los trajeron:
+[`docs/incidentes-cerrados.md#avisos-al-admin`](docs/incidentes-cerrados.md#avisos-al-admin).
 
 ## El vigilante de esperas está DORMIDO, y no por olvido (`services/espera-alert.js`)
 
@@ -390,18 +390,16 @@ Historia completa (autocontestadores, DarYsol, la clienta de EEUU):
   Segmentar con `metadata->>'language_source'`, no a ojo. Backfill: `034_language_source.sql`,
   con las MISMAS reglas que `resolveLanguageSource` (`helpers.js`) — si se separan, el
   backfill queda como una foto que la lógica desmiente.
-- **`'observed'` exige DOS mensajes que coincidan, y no lo escribe una centralita** (tanda 1,
-  07/08/2026: tres autocontestadores contestaron en 7-10 s y dos fichas quedaron en idioma
-  equivocado). **Capa 1 — `persistirIdiomaObservado` (bot.js)**, paso ÚNICO de los dos
-  detectores: a <**30 s** de un `broadcast_sends.sent_at` de ese teléfono no se escribe NADA
-  en la ficha. La fuente es `broadcast_sends` y **no `messages`** (la plantilla de campaña no
-  se escribe en `messages`; con `messages` la guarda no saltaría nunca). Umbral medido sobre
-  n=3, falla hacia el lado bueno. **Recalibrar con la tanda 2.**
-  **Capa 2 — corroboración (`updateContactLanguage`)**: `language` se escribe al primer
-  mensaje; la MARCA espera al segundo (`language_candidate`). Un `'observed'` no se degrada.
-  Trampa cubierta: en la rama sin promoción hay que **congelar la fuente explícitamente** si
-  la ficha no la tenía — si no, `resolveLanguageSource` la deduce de la columna ya cambiada y
-  una ficha sin corroborar se lee como observada.
+- **`'observed'` exige DOS mensajes que coincidan, y no lo escribe una centralita.**
+  **Capa 1 — `persistirIdiomaObservado` (bot.js)**, paso ÚNICO de los dos detectores: a
+  <**30 s** de un `broadcast_sends.sent_at` de ese teléfono no se escribe NADA en la ficha, y la
+  fuente es `broadcast_sends` y **no `messages`** (la plantilla de campaña no se escribe en
+  `messages`, así que con `messages` la guarda no saltaría nunca). Umbral medido sobre n=3,
+  falla hacia el lado bueno; **recalibrar con la tanda 2**. **Capa 2 — corroboración**
+  (`updateContactLanguage`): `language` se escribe al primer mensaje y la MARCA espera al
+  segundo (`language_candidate`); un `'observed'` no se degrada. Trampa cubierta: en la rama sin
+  promoción hay que **congelar la fuente explícitamente**, o `resolveLanguageSource` la deduce
+  de la columna ya cambiada y una ficha sin corroborar se lee como observada.
 - **DEUDA**: el envelope de Cloud API trae `value.contacts[].profile.name` (nombre comercial
   de las cuentas de empresa) y `process360Webhook` lo descarta. Sería la señal DIRECTA;
   aplazado el 07/08/2026, no descartado.
@@ -482,37 +480,33 @@ Red: `tests/oferta-no-es-afirmacion.test.js`, `tests/precio-sin-respaldo.test.js
 
 ## Lo que salió de esas conversaciones y no es una red
 
-- **Cancelar no lo ejecuta el modelo.** El `accion` del LLM pasa por `cancelarConConfirmacion`,
-  y la guarda vive **dentro de `handleAppointmentAction`** (el salón no cancela por ahí, punto)
-  para que un camino nuevo no pueda reabrirlo. San Remo intacto, con test. Los enclíticos de
-  `detectCancelRequest` van ENUMERADOS (`-me/-la/-lo`), no con comodín: «cancelada» es
-  *nuestro* acuse y «cancelación» pregunta por la política, y los dos tienen test de falso
-  positivo.
-- **El menú de rescate tiene techo**: al cuarto turno sin servicio se **ofrece** una persona y
-  se espera el «sí» (`pendingEscalation` armado a mano, no vía `offersHumanHandover`, que solo
-  reconoce el castellano — para una clienta rusa la oferta quedaría colgando).
-- **Si se escala, se dice**: `ensureHandoverAcknowledged` **añade** el acuse. La mala
-  clasificación del LLM no se persigue: con acuse, una escalada de más deja a una clienta bien
-  avisada. Límite conocido: `HANDOVER_TRASPASO`/`DESTINO` son castellano, así que un traspaso
-  ya anunciado en ruso recibe acuse redundante (las dos frases ciertas).
-- **El trato de usted**: `detectTratamiento` → `session.tratamiento` →
-  `contacts.metadata.tratamiento` (jsonb, sin migración) + línea de prompt, viajando en
-  `buildSessionExtra`. TRAMPA cubierta: «на вы» es subcadena de «на выходных» (fin de semana),
-  así que hace falta el lookahead cirílico. DEUDA deliberada: solo tienen variante formal los
-  textos fijos del camino de Olga.
-- **Fotos**: no hay **salida** de media (`image`/`video` solo de ENTRADA en
-  `threesixty-dialog.js`). Si `business_info.instagram`/`.web` están, el prompt manda pasarlos;
-  si no, decir que no se pueden enviar y ofrecer la consulta — prohibido «te las mando en un
-  momento». El idioma de una foto va en cascada (sesión → **el texto que espera en el buffer**
-  → la ficha solo si es `'observed'`), el turno se anota en `session.history`, y con texto suyo
-  en vuelo la foto **no se contesta aparte**.
-- **Un dato que el bot no tiene** → caso 7, `motivo_escalado: "dato_no_disponible"`, acotado a
-  lo CONCRETO y COMPROBABLE y explícitamente fuera para precios, servicios, horarios y
+Todo con historia completa en [Olga](docs/incidentes-cerrados.md#olga-yarmak) y
+[Michal y Esther](docs/incidentes-cerrados.md#michal-y-esther).
+
+- **Cancelar no lo ejecuta el modelo**: el `accion` del LLM pasa por `cancelarConConfirmacion` y
+  la guarda vive **dentro de `handleAppointmentAction`** (el salón no cancela por ahí, punto),
+  para que un camino nuevo no pueda reabrirlo. Los enclíticos de `detectCancelRequest` van
+  ENUMERADOS (`-me/-la/-lo`), nunca con comodín: «cancelada» es *nuestro* acuse y «cancelación»
+  pregunta por la política, con test de falso positivo para los dos.
+- **El menú de rescate tiene techo**: al cuarto turno sin servicio se **ofrece** una persona y se
+  espera el «sí» (`pendingEscalation` armado a mano, no vía `offersHumanHandover`, que solo
+  reconoce el castellano).
+- **El trato de usted** viaja en `buildSessionExtra` (`detectTratamiento` →
+  `session.tratamiento` → `contacts.metadata.tratamiento`). TRAMPA: «на вы» es subcadena de «на
+  выходных», hace falta el lookahead cirílico. Solo tienen variante formal los textos fijos del
+  camino de Olga, y es deuda deliberada.
+- **Fotos**: no hay **salida** de media (`image`/`video` solo de ENTRADA). El idioma va en
+  cascada —sesión → **el texto que espera en el buffer** → la ficha solo si es `'observed'`—, el
+  turno se anota en `session.history`, y con texto suyo en vuelo la foto **no se contesta
+  aparte**. Si `business_info.instagram`/`.web` están, el prompt manda pasarlos; prohibido «te
+  las mando en un momento».
+- **Un dato que el bot no tiene** → caso 7, `motivo_escalado: "dato_no_disponible"`, acotado a lo
+  CONCRETO y COMPROBABLE y explícitamente fuera para precios, servicios, horarios y
   disponibilidad.
-- **Decidido NO arreglar** (anotado en el propio código): la ventana del buffer
-  (`BUFFER_DELAY_MS` 5000 vs mensajes a 7,9 s — es dimensionado, no dedupe); el dedupe de
-  sesión muerto en la ruta real (`flushBuffer` pasa `messageKey = null`, y toda la protección
-  es `buffer.seenKeys`); y `sinServicioStreak`, que no viaja en `buildSessionExtra`.
+- **Decidido NO arreglar**, anotado en el propio código: la ventana del buffer (`BUFFER_DELAY_MS`
+  5000 vs mensajes a 7,9 s — es dimensionado, no dedupe); el dedupe de sesión muerto en la ruta
+  real (`flushBuffer` pasa `messageKey = null` y toda la protección es `buffer.seenKeys`); y
+  `sinServicioStreak`, que no viaja en `buildSessionExtra`.
 
 ## El largo del pelo: el modificador manda, y se evalúa de 4 a 1
 
@@ -564,27 +558,23 @@ creando la dueña a mano, y la de la amiga quedó guardada con el nombre de Mari
 completa: [`docs/incidentes-cerrados.md#mariola`](docs/incidentes-cerrados.md#mariola).
 
 - **El LLM no se confundió: no había DÓNDE guardarlo.** El esquema `datos` del salón no tiene
-  campo para personas, así que la comprensión se evapora cada turno — y entonces la **Regla
-  Dura 13** del prompt («el sistema solo puede guardar una cita por turno») convierte dos
-  servicios sobre la mesa en «¿cuál queréis primero?». El modelo obedeció.
-- **El gate era el problema.** `detectGuestBooking` no casaba «para mí **Y** una amiga» y solo
-  se consulta dentro de `if (session.reservaConfirmada)`, o sea **nunca en el primer mensaje**.
-  Por eso `detectVariasPersonas` va **sin gate** y **antes del LLM**, como
-  `detectHoraFueraDeHorario`.
-- **«LAS DOS» ES UNA HORA y no está en la lista en ninguna de sus formas**, ni siquiera «para
-  las dos»: en castellano vale igual para dos personas que para las 14:00 y no se puede deducir
-  cuál. Mismo criterio que el sujetador en `extractLargoPelo` — en la raya no se adivina.
-  Mariola queda cubierta por su primer mensaje, y **la marca es pegajosa**: basta con acertar
-  una vez.
-- **No se promete el horario.** «A la vez o una detrás de otra, eso lo confirma el salón» es lo
-  único afirmable: el motor **ni siquiera puede ver** si hay dos estilistas libres a la misma
-  hora — el dedupe por `fecha-hora` (`calendar-sante.js:293-306`) las tira sin log.
+  campo para personas, así que la comprensión se evapora cada turno — y la **Regla Dura 13** del
+  prompt («una cita por turno») convierte dos servicios sobre la mesa en «¿cuál queréis
+  primero?». El modelo obedeció.
+- **El gate era el problema**: `detectGuestBooking` no casaba «para mí **Y** una amiga» y solo se
+  consulta dentro de `if (session.reservaConfirmada)`, o sea **nunca en el primer mensaje**. Por
+  eso `detectVariasPersonas` va **sin gate** y **antes del LLM**, como `detectHoraFueraDeHorario`.
+- **«LAS DOS» ES UNA HORA y no está en la lista en ninguna de sus formas**: en castellano vale
+  igual para dos personas que para las 14:00. Mismo criterio que el sujetador de
+  `extractLargoPelo` — en la raya no se adivina. La marca es **pegajosa**: basta acertar una vez.
+- **No se promete el horario**: «a la vez o una detrás de otra, eso lo confirma el salón» es lo
+  único afirmable, porque el motor **ni siquiera puede ver** si hay dos estilistas libres a la
+  misma hora — el dedupe por `fecha-hora` (`calendar-sante.js:293-306`) las tira sin log.
   `variasPersonas` y `variasPersonasAvisado` viajan en `buildSessionExtra`.
-- **Lo que NO se hizo, y es decisión, no olvido:** reservar de verdad para dos. Requiere ficha
-  propia para la amiga, revisar la guarda de `db.js:1266-1284` (que rechaza dos citas del mismo
-  contacto a la misma hora **y devuelve la primera como si fuera nueva**) y cirugía en el
-  dedupe del motor. Decidido el 13/08/2026 **no** acometerlo: la única señal es una tanda de
-  dos citas hechas a mano. Misma decisión que la deuda del upselling.
+- **Lo que NO se hizo, y es decisión**: reservar de verdad para dos (ficha propia para la amiga,
+  la guarda de `db.js:1266-1284` —que rechaza dos citas del mismo contacto a la misma hora **y
+  devuelve la primera como si fuera nueva**— y cirugía en el dedupe del motor). Decidido el
+  13/08/2026 **no** acometerlo por falta de señal, como la deuda del upselling.
 
 El otro síntoma de esa conversación —«el masaje capilar el de 60 euros» contestado con «el Spa
 Hair Detox de 60 minutos», su cifra devuelta con otra unidad— es el que trajo la red de precio,
@@ -643,14 +633,13 @@ De ahí la línea que sostiene todo esto, y que es lo único que hay que recorda
 vez un detector (oferta) y el fallback de `computeServiceBilling` (facturación): meterle el
 filtro dentro apaga la factura de una cita pasada sin que ningún test de oferta se entere.
 
-Ofrecen (filtrado): el catálogo del prompt (`openai.js`, el 90 % del efecto), el bloque
+**Ofrecen** (filtrado): el catálogo del prompt (`openai.js`, el 90 % del efecto), el bloque
 determinista de `bot.js` (`catalogoOfertable`: cortes, detección libre, K18, categoría por
-largo, consulta, recuperación desde `partialData`), la selección que llega del LLM, la
-segunda reserva, y `GET /api/service-catalog` por defecto.
-
-Resuelven (completo): `computeServiceBilling`, `stampBillingSnapshot`, `buildFullServiceName`,
-`resolveServiceDurationMin` / `resolveAppointmentDurationMin`, y
-`GET /api/service-catalog?incluirInactivos=1` — que es el que necesita el formulario de
+largo, consulta y recuperación desde `partialData`), la selección que llega del LLM, la segunda
+reserva y `GET /api/service-catalog` por defecto. **Resuelven** (completo):
+`computeServiceBilling`, `stampBillingSnapshot`, `buildFullServiceName`,
+`resolveServiceDurationMin` / `resolveAppointmentDurationMin` y
+`GET /api/service-catalog?incluirInactivos=1` — este último es el que necesita el formulario de
 EDITAR una cita: si un servicio de baja desapareciera de esa lista, abrir una cita antigua
 mostraría el campo vacío y guardarla lo borraría.
 
@@ -830,14 +819,13 @@ pm2 start server.js --name antigravity-bot
 npm run verify:robustez     # sale solo, con exit code. Nada de script -q ni pkill.
 ```
 
-Importar `bot.js` registraba cuatro `setInterval` de módulo y el script nunca terminaba
-(y redirigido a fichero, cero salida era indistinguible de cero progreso — historia completa:
-[`docs/incidentes-cerrados.md#timers-unref`](docs/incidentes-cerrados.md#timers-unref)). Un
+Importar `bot.js` registraba cuatro `setInterval` de módulo y el script no terminaba nunca. Un
 timer con `.unref()` dispara EXACTAMENTE igual mientras el proceso siga vivo por otro motivo
 (en producción lo mantienen Express y los clientes WA); solo pierde la capacidad de ser él la
-razón de seguir vivo. `metrics.js` vacía en `beforeExit` para no perder el último flush.
+razón de seguir vivo, y `metrics.js` vacía en `beforeExit` para no perder el último flush.
 **Si alguien añade un `setInterval` de módulo, que lo pase por `unrefTimer()` (`bot.js`) o le
-ponga `.unref()`: si no, todo esto vuelve.**
+ponga `.unref()`: si no, todo esto vuelve** —
+[historia](docs/incidentes-cerrados.md#timers-unref).
 
 Línea base con la que comparar: **OK 84 · GAP 9 · BUG 0**. Los GAP son deficiencias medidas,
 no regresiones. `verify:sante` sale **entero en verde** (los 4 fallos que arrastraba eran del
