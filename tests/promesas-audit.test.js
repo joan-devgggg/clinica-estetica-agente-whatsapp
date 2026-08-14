@@ -168,6 +168,21 @@ test('la cobertura se declara siempre, con sus cegueras (prosa ru/uk/en de C7)',
         'la ceguera de C7 en prosa no castellana está DICHA, no implícita');
 });
 
+test('el denominador por idioma sale en la cobertura, y el «NO MEDIDO» lleva su N (0b)', () => {
+    const r = corre();
+    // Daria escribe en ruso: hay al menos 1 saliente cirílico en los fixtures.
+    assert.ok(r.idiomas.cirilico.salientes >= 1, 'el acuse ruso de Daria cuenta como cirílico');
+    assert.ok(r.idiomas.es.salientes >= 8);
+    assert.ok(r.cobertura.some(l => l.includes('Idiomas de los salientes')), 'el denominador se imprime');
+    const noMedido = r.cobertura.find(l => /C7 NO MEDIDO en ru\/uk/.test(l));
+    assert.ok(noMedido, 'con salientes cirílicos, la frase «C7 NO MEDIDO en ru/uk» es obligatoria');
+    assert.ok(noMedido.includes(String(r.idiomas.cirilico.salientes)), 'y lleva el N de verdad, no una vaguedad');
+
+    // Sin ningún saliente cirílico no hay nada que «no se esté midiendo»: la línea no sale.
+    const soloEs = corre({ salientes: SALIENTES.filter(m => m.id !== 'm-daria') });
+    assert.ok(!soloEs.cobertura.some(l => /C7 NO MEDIDO en ru\/uk/.test(l)));
+});
+
 // ─── Desenlaces con matices ──────────────────────────────────────────────────
 
 test('promesa de cita SIN ninguna fila, nunca → ROTA', () => {

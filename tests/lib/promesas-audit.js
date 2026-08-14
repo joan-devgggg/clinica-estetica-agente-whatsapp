@@ -28,7 +28,7 @@ const {
 } = require('../../bot')._internals;
 const {
     normalizeText, buildCancelFalloMsg, buildAmpliacionSolapaMsg,
-    buildSanteConfirmationMessage, IDIOMAS_SOPORTADOS, TEST_PHONE_PREFIX,
+    buildSanteConfirmationMessage, IDIOMAS_SOPORTADOS, TEST_PHONE_PREFIX, detectLanguage,
 } = require('../../services/helpers');
 
 // ─── Ventanas (calibradas el 14/08/2026 contra producción) ───────────────────
@@ -175,6 +175,19 @@ function clasificarSaliente(content, nucleos) {
     return clases;
 }
 
+// ─── El idioma de un saliente, para el denominador de la cobertura ───────────
+//
+// Un «0 promesas en ruso» puede significar dos cosas opuestas: que no las hay, o que el
+// detector no las ve (C7 en prosa es solo castellano). Sin el DENOMINADOR por idioma,
+// las dos se leen igual — y la segunda es justo el informe falso. Cirílico por rango
+// Unicode sobre el texto CRUDO (una letra basta: los salientes del bot no mezclan
+// alfabetos); el resto lo decide detectLanguage (helpers, el vocabulario que ya existe);
+// null cae a 'es', que es el idioma por defecto del bot.
+function grupoIdioma(texto) {
+    if (/[Ѐ-ӿ]/.test(String(texto || ''))) return 'cirilico';
+    return detectLanguage(texto) === 'en' ? 'en' : 'es';
+}
+
 // ─── Evaluación contra el estado ─────────────────────────────────────────────
 
 const enVentanaTurno = (tFila, tMsg) =>
@@ -292,6 +305,11 @@ function auditPromesas({ salientes, citas, pendingActions, contactos, ahora = Da
         resumen[clase] = resumen[clase] || {};
         resumen[clase][desenlace] = (resumen[clase][desenlace] || 0) + 1;
     };
+    const idiomas = {
+        es: { salientes: 0, conPromesa: 0 },
+        cirilico: { salientes: 0, conPromesa: 0 },
+        en: { salientes: 0, conPromesa: 0 },
+    };
 
     for (const msg of salientes || []) {
         const contacto = msg.contactId ? contactoPorId.get(msg.contactId) : null;
@@ -299,8 +317,12 @@ function auditPromesas({ salientes, citas, pendingActions, contactos, ahora = Da
         // no son de ninguna clienta y sus filas se limpian — fuera del barrido.
         if (contacto?.wa_phone && String(contacto.wa_phone).startsWith(TEST_PHONE_PREFIX)) continue;
 
+        const grupo = idiomas[grupoIdioma(msg.content)];
+        grupo.salientes++;
+
         const clases = clasificarSaliente(msg.content, nucleos);
         if (!clases.length) continue;
+        grupo.conPromesa++;
         const tMsg = Date.parse(msg.createdAt);
         const citasContacto = (msg.contactId && citasPorContacto.get(msg.contactId)) || [];
         const pasContacto = (msg.contactId && pasPorContacto.get(msg.contactId)) || [];
@@ -329,9 +351,19 @@ function auditPromesas({ salientes, citas, pendingActions, contactos, ahora = Da
 
     const hayMal = hallazgos.some(h => DESENLACES_MAL.has(h.desenlace));
 
-    // La cobertura se DECLARA siempre: un 0 sin esta caja se leería como «no hay
-    // promesas rotas» cuando lo cierto es «no las hay entre las que este barrido ve».
+    // La cobertura se DECLARA siempre, y CON EL DENOMINADOR por idioma (0b): un «0
+    // promesas en ruso» sin su N de salientes se leería como «no hay promesas rotas»
+    // cuando lo cierto puede ser «el detector no las ve». Las líneas de «NO MEDIDO»
+    // salen solo cuando ese grupo tiene salientes de verdad — con N=0 no hay nada que
+    // no se esté midiendo.
     const cobertura = [
+        `Idiomas de los salientes revisados: castellano ${idiomas.es.salientes} (con promesa: ${idiomas.es.conPromesa}) · cirílico ${idiomas.cirilico.salientes} (con promesa: ${idiomas.cirilico.conPromesa}) · inglés ${idiomas.en.salientes} (con promesa: ${idiomas.en.conPromesa}).`,
+        ...(idiomas.cirilico.salientes > 0 ? [
+            `⚠️ C7 NO MEDIDO en ru/uk sobre prosa: hay ${idiomas.cirilico.salientes} salientes cirílicos y la detección de traspaso en prosa es solo castellana — su ${idiomas.cirilico.conPromesa} de promesas detectadas (plantillas fijas) NO significa que no haya promesas rotas en ruso/ucraniano.`,
+        ] : []),
+        ...(idiomas.en.salientes > 0 ? [
+            `⚠️ C7 NO MEDIDO en inglés sobre prosa (C1 sí se mide): ${idiomas.en.salientes} salientes ingleses revisados solo con plantillas fijas para traspaso.`,
+        ] : []),
         'C1 afirmada: prosa en es/en/ru/uk (llmClaimsBooked, con la exención de oferta) + cabeceras fijas de confirmación de los 4 idiomas.',
         'C1 cancelada: SOLO los acuses de plantilla (4 idiomas + variante «reserva» de San Remo); una cancelación afirmada en prosa libre no se ve.',
         'C7 afirmado: prosa SOLO en castellano (announcesHumanHandover) + los acuses fijos de los 4 idiomas (HANDOVER_ACUSE, CONFIRM_YES, fallos de cancelación/ampliación). Prosa libre ru/uk/en: ciega.',
@@ -342,7 +374,7 @@ function auditPromesas({ salientes, citas, pendingActions, contactos, ahora = Da
         'Los teléfonos 999… (arnés de pruebas) quedan fuera.',
     ];
 
-    return { hallazgos, resumen, cobertura, hayMal, clases: CLASES };
+    return { hallazgos, resumen, cobertura, hayMal, idiomas, clases: CLASES };
 }
 
 module.exports = {
