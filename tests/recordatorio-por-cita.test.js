@@ -9,7 +9,7 @@
 //     calculada con la fecha equivocada.
 //
 // Aquí se fija: (1) el mapeo puro cita+contacto → record del worker, con la GUARDA DE
-// TRANSICIÓN que hace seguro desplegar el código antes que la migración 041 (nadie recibe
+// TRANSICIÓN que hace seguro desplegar el código antes que la migración 042 (nadie recibe
 // el recordatorio dos veces); (2) el enrutado por tipo de org (salón → appointments,
 // San Remo → ficha, byte por byte); (3) pending-outbound, el buzón por el que el bot ve
 // los salientes automáticos (H1).

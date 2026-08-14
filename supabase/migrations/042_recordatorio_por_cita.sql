@@ -1,4 +1,4 @@
--- 041_recordatorio_por_cita.sql
+-- 042_recordatorio_por_cita.sql
 --
 -- ⚠️ ESCRITA EN LA SESIÓN NOCTURNA DEL 14/08/2026 Y **NO APLICADA** (regla de la noche:
 -- ninguna migración se aplica sin permiso). Revisar entera antes de aplicar.

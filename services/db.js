@@ -646,7 +646,7 @@ function fechaHoraCitaLocal(startsAt) {
  *    de datos no se traga, se dice).
  *  - GUARDA DE TRANSICIÓN: si la FICHA dice que el recordatorio de ese mismo día ya salió
  *    (recordatorio_enviado=true y fecha_cita = el día de la cita), se excluye. Es lo que
- *    hace seguro desplegar este código ANTES de aplicar la migración 041 (el backfill que
+ *    hace seguro desplegar este código ANTES de aplicar la migración 042 (el backfill que
  *    copia esas marcas a appointments): sin la guarda, el primer tic reenviaría el
  *    recordatorio a quien lo recibió ayer (medido 14/08: 6 de las 19 citas futuras).
  *    Con la marca en la ficha vieja o de OTRO día no aplica: esa clienta no ha recibido
