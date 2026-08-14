@@ -25,10 +25,14 @@
 const {
     llmClaimsBooked, asksForBookingApproval, announcesHumanHandover, offersHumanHandover,
     HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, CANCEL_OK_MSGS, CONFIRM_YES, CONFIRM_YES_LEGACY,
+    // La FUENTE ÚNICA: el mismo detector que ARMA la oferta en el bot. Una oferta que
+    // este barrido ve es una oferta que el bot armó — no pueden divergir.
+    detectaOfertaTraspaso, remisionAlEquipo,
 } = require('../../bot')._internals;
 const {
     normalizeText, buildCancelFalloMsg, buildAmpliacionSolapaMsg,
     buildSanteConfirmationMessage, IDIOMAS_SOPORTADOS, TEST_PHONE_PREFIX, detectLanguage,
+    isAffirmative,
 } = require('../../services/helpers');
 
 // ─── Ventanas (calibradas el 14/08/2026 contra producción) ───────────────────
@@ -52,20 +56,6 @@ const VENTANA_OFERTA_MS = 24 * 3600 * 1000;
 // sentido para promesas recientes: la ficha es estado ACTUAL y una escalada bien
 // resuelta lo limpia. Más allá de 48 h no afirma nada sobre aquel turno.
 const VENTANA_PARCIAL_FICHA_MS = 48 * 3600 * 1000;
-
-// ─── Lo único nuevo: la remisión al equipo (Estefania Sanz, 03/08/2026) ──────
-//
-// «te recomiendo que hables directamente con nuestro equipo — ellos podrán valorar tu
-// situación»: no es «te paso con» (announcesHumanHandover no la ve: 'hablar' no es un
-// verbo de traspaso) ni una oferta con «¿?» (offersHumanHandover tampoco). Es una
-// REMISIÓN: el bot manda a la clienta al equipo y promete que allí la valoran — y ella
-// contestó «Claro ☺️» a una promesa detrás de la cual no se escribió nada.
-// Solo castellano, sobre texto normalizado (sin acentos). Sin cirílico: si algún día
-// lo lleva, por buildCyrillicRe (helpers), nunca a mano.
-const REMISION_RE = /habl(?:a|as|es|ar|ad|en) (?:directamente )?con (?:nuestro|el) equipo/;
-function remisionAlEquipo(texto) {
-    return REMISION_RE.test(normalizeText(texto));
-}
 
 // ─── Núcleos de plantilla, GENERADOS de sus fuentes ──────────────────────────
 
@@ -170,10 +160,10 @@ function clasificarSaliente(content, nucleos) {
 
     if (announcesHumanHandover(texto) || nucleos.traspaso.some(n => norm.includes(n))) {
         clases.push('C7_AFIRMACION');
-    } else if (offersHumanHandover(texto)) {
-        clases.push('C7_OFERTA');
     } else if (remisionAlEquipo(texto)) {
         clases.push('C7_REMISION');
+    } else if (detectaOfertaTraspaso(texto)) {
+        clases.push('C7_OFERTA');
     }
 
     return clases;
@@ -271,18 +261,34 @@ function evaluarC7Afirmacion(tMsg, pasContacto, contacto, ahora) {
     return { desenlace: 'rota', detalle: 'ninguna fila en pending_actions en el turno de la promesa' };
 }
 
-function evaluarC7Oferta(tMsg, pasContacto) {
+// El matiz que Celeste enseñó (06/08: su oferta ARMÓ y ella nunca contestó): una oferta
+// sin respuesta no es una promesa rota — no hay fila que deber. La que ALARMA es la
+// oferta ACEPTADA sin fila, que tras el anillo 1 solo puede producirla un bug: el mismo
+// detector arma la espera y el «sí» ejecuta la triple o dice que no pudo. La aceptación
+// se lee del ENTRANTE siguiente con isAffirmative — el mismo vocabulario que usa el bot,
+// y un dato COMPLETO (los entrantes no los pierde Coexistence).
+function evaluarC7Oferta(tMsg, pasContacto, entrantesContacto) {
     const atendida = pasContacto.some(pa =>
         pa.type === 'escalation'
         && Date.parse(pa.created_at) >= tMsg - VENTANA_TURNO_ANTES_MS
         && Date.parse(pa.created_at) <= tMsg + VENTANA_OFERTA_MS);
     if (atendida) return { desenlace: 'atendido' };
-    return { desenlace: 'sin_escalada_registrada', detalle: 'ninguna fila de escalada en las 24 h siguientes a la oferta' };
+
+    const respuesta = (entrantesContacto || []).find(m => {
+        const t = Date.parse(m.createdAt);
+        return t > tMsg && t <= tMsg + VENTANA_OFERTA_MS;
+    });
+    if (respuesta && isAffirmative(respuesta.content)) {
+        return { desenlace: 'aceptada_sin_escalada',
+            detalle: `la clienta aceptó («${String(respuesta.content).replace(/\s+/g, ' ').slice(0, 30)}») y no existe fila — tras el anillo 1 esto solo lo produce un bug` };
+    }
+    return { desenlace: 'oferta_sin_respuesta',
+        detalle: 'se ofreció y no hubo aceptación en 24 h; no hay fila que deber' };
 }
 
 // ─── El barrido entero ───────────────────────────────────────────────────────
 
-const DESENLACES_MAL = new Set(['rota', 'parcial', 'sin_escalada_registrada']);
+const DESENLACES_MAL = new Set(['rota', 'parcial', 'aceptada_sin_escalada']);
 
 /**
  * `alarmaDesdeMs` (0d): la ventana del CRON. Sin ella, un hallazgo histórico (Estefania,
@@ -292,7 +298,7 @@ const DESENLACES_MAL = new Set(['rota', 'parcial', 'sin_escalada_registrada']);
  * code— solo depende de los hallazgos cuyo saliente cae dentro. Null = sin ventana
  * (la corrida manual completa): todo alarma, como siempre.
  */
-function auditPromesas({ salientes, citas, pendingActions, contactos, ahora = Date.now(), alarmaDesdeMs = null }) {
+function auditPromesas({ salientes, citas, pendingActions, contactos, entrantes, ahora = Date.now(), alarmaDesdeMs = null }) {
     const nucleos = {
         cancelacion: nucleosCancelacion(),
         confirmacion: nucleosConfirmacion(),
@@ -310,6 +316,12 @@ function auditPromesas({ salientes, citas, pendingActions, contactos, ahora = Da
         (pasPorContacto.get(pa.contact_id) || pasPorContacto.set(pa.contact_id, []).get(pa.contact_id)).push(pa);
     }
     const contactoPorId = new Map((contactos || []).map(c => [c.id, c]));
+    const entrantesPorContacto = new Map();
+    for (const m of entrantes || []) {
+        if (!m.contactId) continue;
+        if (!entrantesPorContacto.has(m.contactId)) entrantesPorContacto.set(m.contactId, []);
+        entrantesPorContacto.get(m.contactId).push(m);
+    }
 
     const hallazgos = [];
     const resumen = {};
@@ -343,7 +355,7 @@ function auditPromesas({ salientes, citas, pendingActions, contactos, ahora = Da
             let r;
             if (clase === 'C1_HECHA' || clase === 'C1_CANCELADA') r = evaluarC1(clase, tMsg, citasContacto);
             else if (clase === 'C7_AFIRMACION') r = evaluarC7Afirmacion(tMsg, pasContacto, contacto, ahora);
-            else r = evaluarC7Oferta(tMsg, pasContacto);
+            else r = evaluarC7Oferta(tMsg, pasContacto, (msg.contactId && entrantesPorContacto.get(msg.contactId)) || []);
 
             anota(clase, r.desenlace);
             if (r.desenlace === 'respaldada' || r.desenlace === 'atendido') continue;
@@ -382,6 +394,7 @@ function auditPromesas({ salientes, citas, pendingActions, contactos, ahora = Da
         'C7 afirmado: prosa SOLO en castellano (announcesHumanHandover) + los acuses fijos de los 4 idiomas (HANDOVER_ACUSE, CONFIRM_YES, fallos de cancelación/ampliación). Prosa libre ru/uk/en: ciega.',
         'C7 ofrecido: preguntas de traspaso, castellano + «подойдёт/підійде» de la pareja verbo-destino; destinos tipo «con ellas» no casan.',
         'C7 remisión: solo castellano («habla con nuestro equipo»).',
+        '* «Inalcanzable por construcción» vale para aceptaciones que isAffirmative reconoce — y lee el ARRANQUE de la frase: un «vale, mejor llámame» SÍ cuenta como aceptación (en el bot escala, y la fila lleva ese matiz para quien la atienda); lo que cae en «oferta sin respuesta» es el silencio o una respuesta no afirmativa («mejor os llamo yo»).',
         'Negar una cita («no me consta ninguna cita reservada») no es una promesa y no se cuenta; la clase inversa —negar una cita que SÍ existe (Carolina, 09/08)— es del contrato y este barrido no la mide.',
         'Excluido a propósito: el mensaje del tope de sesión y la retención de lista negra de San Remo prometen atención POR DISEÑO y ningún detector los cuenta.',
         'Los teléfonos 999… (arnés de pruebas) quedan fuera.',

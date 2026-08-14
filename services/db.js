@@ -3349,6 +3349,27 @@ async function getPendingActionsBarrido(orgId) {
     return data || [];
 }
 
+// Los ENTRANTES, para el matiz «aceptada vs sin respuesta» de las ofertas de traspaso:
+// lo que escribe la clienta está SIEMPRE entero en messages (Coexistence solo pierde los
+// salientes del móvil de las dueñas), así que leer su respuesta a una oferta es un dato
+// completo, no una inferencia sobre un silencio.
+async function getEntrantesBarrido(orgId) {
+    const oid = resolveOrg(orgId);
+    const { data, error } = await supabase
+        .from('messages')
+        .select('id, content, created_at, conversations!inner(contact_id)')
+        .eq('organization_id', oid)
+        .eq('direction', 'inbound')
+        .order('created_at', { ascending: true });
+    assertRead(error, 'messages');
+    return (data || []).map(m => ({
+        id: m.id,
+        contactId: m.conversations?.contact_id || null,
+        content: m.content,
+        createdAt: m.created_at,
+    }));
+}
+
 // Los contactos, con lo justo: el teléfono y el nombre para que el informe sea legible,
 // y bot_mode/escalation_reason para el desenlace «parcial» (estado ACTUAL de la ficha —
 // solo significa algo para escaladas recientes, y así lo trata la lib).
@@ -3753,6 +3774,7 @@ module.exports = {
     getPendingActionsBarrido,
     getCitasBarrido,
     getContactosBarrido,
+    getEntrantesBarrido,
     getContactosEnManual,
     getContactIdsConAccionPendiente,
     devolverContactoAAuto,

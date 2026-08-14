@@ -18,7 +18,8 @@
  *
  * Códigos de salida:
  *   0  sin promesas sin respaldo (las «salvadas a mano» se imprimen pero tienen fila)
- *   1  ≥1 promesa ROTA, PARCIAL o sin escalada registrada
+ *   1  ≥1 promesa ROTA, PARCIAL o ACEPTADA SIN ESCALADA (la oferta sin respuesta
+ *      es INFO: no hay fila que deber)
  *   2  lectura rota o excepción — este resultado NO dice que haya 0 promesas
  *
  * Importa bot.js (por sus detectores, vía la lib): sus tres intervalos de módulo llevan
@@ -42,7 +43,8 @@ const { auditPromesas, DESENLACES_MAL } = require('../tests/lib/promesas-audit')
 const DESENLACE_LABEL = {
     rota: '❌ ROTA — promesa sin ninguna fila detrás',
     parcial: '⚠️  PARCIAL — la triple escritura quedó a medias',
-    sin_escalada_registrada: '❌ SIN ESCALADA REGISTRADA — se ofreció/remitió y no existe fila',
+    aceptada_sin_escalada: '❌ ACEPTADA SIN ESCALADA — la clienta dijo sí y no existe fila (tras el anillo 1, esto solo lo produce un bug)',
+    oferta_sin_respuesta: 'ℹ️  OFERTA SIN RESPUESTA — se ofreció y no hubo aceptación; no hay fila que deber',
     salvada_a_mano: '🖐  SALVADA A MANO — mentira en el momento; una persona la hizo verdad después',
     no_verificable: '❓ NO VERIFICABLE — la huella de aquel turno ya no existe',
 };
@@ -89,15 +91,16 @@ function parseArgs(argv) {
     let hayMalTotal = false;
 
     for (const org of orgs) {
-        const [salientes, citas, pendingActions, contactos] = await Promise.all([
+        const [salientes, citas, pendingActions, contactos, entrantes] = await Promise.all([
             db.getSalientesBotBarrido(org.orgId),
             db.getCitasBarrido(org.orgId),
             db.getPendingActionsBarrido(org.orgId),
             db.getContactosBarrido(org.orgId),
+            db.getEntrantesBarrido(org.orgId),
         ]);
 
         const { hallazgos, resumen, cobertura, hayMal, clases } =
-            auditPromesas({ salientes, citas, pendingActions, contactos, alarmaDesdeMs });
+            auditPromesas({ salientes, citas, pendingActions, contactos, entrantes, alarmaDesdeMs });
         hayMalTotal = hayMalTotal || hayMal;
 
         console.log(`\n═══ ${org.sessionId.toUpperCase()} · barrido de promesas ═══`);
@@ -117,7 +120,7 @@ function parseArgs(argv) {
             console.log('\n✅ Todas las promesas detectadas tienen su fila detrás.');
         } else {
             // Agrupado clase → desenlace, una línea por hallazgo.
-            const orden = ['rota', 'parcial', 'sin_escalada_registrada', 'salvada_a_mano', 'no_verificable'];
+            const orden = ['rota', 'parcial', 'aceptada_sin_escalada', 'salvada_a_mano', 'no_verificable', 'oferta_sin_respuesta'];
             for (const desenlace of orden) {
                 const grupo = hallazgos.filter(h => h.desenlace === desenlace);
                 if (!grupo.length) continue;

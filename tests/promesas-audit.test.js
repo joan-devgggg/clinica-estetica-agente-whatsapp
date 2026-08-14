@@ -76,6 +76,13 @@ const CITAS = [
         last_change: { a: { status: 'cancelled' }, at: '2026-08-12T10:49:20.286Z', by: 'bot', de: { status: 'confirmed' } } },
 ];
 
+// Entrantes de las clientas (siempre completos en messages): el matiz aceptada/sin-respuesta.
+const ENTRANTES = [
+    // Estefania ACEPTÓ la remisión — su «Claro ☺️» literal, 1 h 43 después.
+    { id: 'e-estefania', contactId: 'ct-estefania', createdAt: '2026-08-03T11:43:40.920Z', content: 'Claro ☺️' },
+    // Celeste nunca contestó a su oferta: no hay entrante suyo posterior.
+];
+
 const PENDING_ACTIONS = [
     // Tania: la escalada REAL, fila 1,7 s antes del acuse, resuelta en panel días después.
     { id: 'pa-tania', type: 'escalation', contact_id: 'ct-tania', status: 'resolved',
@@ -87,7 +94,7 @@ const PENDING_ACTIONS = [
 
 const corre = (extra = {}) => auditPromesas({
     salientes: SALIENTES, citas: CITAS, pendingActions: PENDING_ACTIONS,
-    contactos: CONTACTOS, ahora: AHORA, ...extra,
+    contactos: CONTACTOS, entrantes: ENTRANTES, ahora: AHORA, ...extra,
 });
 
 const hallazgoDe = (r, contactId, clase) =>
@@ -104,20 +111,23 @@ test('Tania: «te apunto» sin fila en el turno y cita del panel 18 h después �
     assert.ok(/persona \(panel\)/.test(h.detalle), `el detalle dice QUIÉN salvó: "${h.detalle}"`);
 });
 
-test('Estefania: la remisión al equipo sin ninguna escalada → SIN ESCALADA REGISTRADA', () => {
+test('Estefania: remisión ACEPTADA («Claro ☺️») sin fila → ACEPTADA SIN ESCALADA, y alarma', () => {
     const r = corre();
     const h = hallazgoDe(r, 'ct-estefania', 'C7_REMISION');
     assert.ok(h, 'la remisión de Estefania tiene que salir — es el caso que ningún detector veía');
-    assert.strictEqual(h.desenlace, 'sin_escalada_registrada');
+    assert.strictEqual(h.desenlace, 'aceptada_sin_escalada',
+        'ella dijo que sí: tras el anillo 1 este desenlace solo lo produce un bug');
+    assert.ok(h.detalle.includes('Claro'), 'el detalle enseña la aceptación literal');
     // Redacción Coexistence-limpia: afirma que no hay FILA, nunca que nadie atendió.
     assert.ok(!/nadie|sin atender|abandon/i.test(h.detalle), h.detalle);
 });
 
-test('Celeste: la oferta de traspaso colgada sin fila → SIN ESCALADA REGISTRADA', () => {
+test('Celeste: oferta sin respuesta → INFO, no alarma (no hay fila que deber)', () => {
     const r = corre();
     const h = hallazgoDe(r, 'ct-celeste', 'C7_OFERTA');
-    assert.ok(h, 'la oferta de Celeste tiene que salir');
-    assert.strictEqual(h.desenlace, 'sin_escalada_registrada');
+    assert.ok(h, 'la oferta de Celeste se sigue imprimiendo');
+    assert.strictEqual(h.desenlace, 'oferta_sin_respuesta',
+        'nunca contestó: una oferta declinada o ignorada no es una promesa rota del bot');
 });
 
 // ─── Los que NO tienen que salir ─────────────────────────────────────────────
@@ -149,12 +159,13 @@ test('Giovanna: cero promesas en sus cuatro salientes (control de falsos positiv
 
 // ─── El código de salida y la cobertura ──────────────────────────────────────
 
-test('hayMal se enciende por rota/parcial/sin-escalada, NO por salvada a mano', () => {
+test('hayMal se enciende por rota/parcial/ACEPTADA-sin-escalada, NO por salvada ni por oferta sin respuesta', () => {
     const r = corre();
-    assert.strictEqual(r.hayMal, true, 'Estefania y Celeste encienden el exit 1');
-    // Sin las dos C7 huérfanas, lo único que queda de Tania es la salvada: exit 0.
+    assert.strictEqual(r.hayMal, true, 'la aceptación de Estefania enciende el exit 1');
+    // Sin la remisión aceptada, quedan la salvada de Tania y la oferta sin respuesta de
+    // Celeste: ninguna alarma.
     const soloSalvada = corre({
-        salientes: SALIENTES.filter(m => !['m-estefania', 'm-celeste-oferta'].includes(m.id)),
+        salientes: SALIENTES.filter(m => !['m-estefania'].includes(m.id)),
     });
     assert.strictEqual(soloSalvada.hayMal, false,
         'una salvada a mano se imprime pero tiene fila: no es «promesa sin fila detrás»');
@@ -234,16 +245,17 @@ test('0d · la ventana de alarma: lo viejo se imprime pero no grita (el cron no 
     // AHORA (14/08), no alarma nada — pero los hallazgos siguen TODOS en el informe.
     const conVentana = corre({ alarmaDesdeMs: AHORA - 2 * 24 * 3600 * 1000 });
     assert.strictEqual(conVentana.hayMal, false, 'lo de hace 11 días no puede hacer gritar al cron cada noche');
-    assert.ok(conVentana.hallazgos.some(h => h.desenlace === 'sin_escalada_registrada' && !h.enVentanaAlarma),
+    assert.ok(conVentana.hallazgos.some(h => h.desenlace === 'aceptada_sin_escalada' && !h.enVentanaAlarma),
         'y aun así se imprimen, marcados como fuera de ventana');
 
-    // Un fallo DENTRO de la ventana sí alarma: la misma oferta de Celeste, fechada ayer.
+    // Un fallo DENTRO de la ventana sí alarma: una oferta de ayer ACEPTADA sin fila.
     const reciente = corre({
         alarmaDesdeMs: AHORA - 2 * 24 * 3600 * 1000,
         salientes: [{ id: 'm-ayer', contactId: 'ct-celeste', createdAt: '2026-08-13T18:00:00Z',
             content: '¿Quieres que te ponga en contacto con una especialista para que valore tu caso?' }],
+        entrantes: [{ id: 'e-ayer', contactId: 'ct-celeste', createdAt: '2026-08-13T18:05:00Z', content: 'sí' }],
     });
-    assert.strictEqual(reciente.hayMal, true, 'lo de ayer sí enciende el exit 1');
+    assert.strictEqual(reciente.hayMal, true, 'lo de ayer, aceptado y sin fila, sí enciende el exit 1');
 
     // Sin ventana (la corrida manual), todo alarma como siempre.
     assert.strictEqual(corre().hayMal, true);
