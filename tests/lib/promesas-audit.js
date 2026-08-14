@@ -134,18 +134,32 @@ const CLASES = {
 // informe como promesa rota o salvada, que es exactamente el falso positivo que hace que
 // se deje de leer. La clase inversa —negar una cita que SÍ existe, que fue el fallo real
 // de Carolina— es otra clase del contrato, no esta, y la cobertura lo declara.
+//
+// LA GUARDA VA POR FRASE, no por mensaje entero (0a, 14/08/2026): probada sobre el
+// mensaje completo se comía «No me consta ninguna cita. Pero hecho, te la he apuntado
+// para el lunes» — una promesa DE VERDAD con una negación delante, la forma del «yes»
+// dentro de «yesterday». Se descartan solo las frases negadas y el resto se clasifica;
+// el separador de frases es el MISMO de announcesHumanHandover, no uno propio.
 const NEGACION_CITA_RE = /no (?:me consta|te consta|encuentro|veo|hay|tienes|tenemos|tengo|aparece|figura)\b[^.!?\n]{0,40}\b(?:cita|reserva)/;
+const SEPARADOR_FRASES = /(?<=[.!?])\s+|\n+/;
+
+function sinFrasesNegadas(norm) {
+    if (!NEGACION_CITA_RE.test(norm)) return norm;
+    return norm.split(SEPARADOR_FRASES).filter(f => !NEGACION_CITA_RE.test(f)).join(' ');
+}
 
 function clasificarSaliente(content, nucleos) {
     const texto = String(content || '');
     const norm = normalizeText(texto);
     const clases = [];
 
-    if (nucleos.cancelacion.some(n => norm.includes(n))) {
+    // normalizeText es idempotente: pasarle a llmClaimsBooked el texto ya normalizado y
+    // sin las frases negadas clasifica igual que el original menos esas frases.
+    const afirmable = sinFrasesNegadas(norm);
+    if (nucleos.cancelacion.some(n => afirmable.includes(n))) {
         clases.push('C1_CANCELADA');
-    } else if (!NEGACION_CITA_RE.test(norm)
-        && ((llmClaimsBooked(texto) && !asksForBookingApproval(texto))
-            || nucleos.confirmacion.some(n => norm.includes(n)))) {
+    } else if ((llmClaimsBooked(afirmable) && !asksForBookingApproval(texto))
+        || nucleos.confirmacion.some(n => afirmable.includes(n))) {
         // La exención de Mariola: «¿te lo reservo?» es una pregunta, no una afirmación.
         clases.push('C1_HECHA');
     }

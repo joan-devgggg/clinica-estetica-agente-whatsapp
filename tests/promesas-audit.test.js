@@ -214,6 +214,27 @@ test('negar una cita no es prometerla: el literal de Carolina no clasifica (FP d
     assert.strictEqual(r.hallazgos.length, 0, 'una negación honesta no puede salir como promesa rota ni salvada');
 });
 
+test('la guarda de negación va por FRASE, no por mensaje: una promesa real con un «no» delante clasifica', () => {
+    // 0a (14/08): la forma del «yes» dentro de «yesterday». Probada sobre el mensaje
+    // entero, la guarda se comía la promesa compuesta; acotada a la frase negada, no.
+    const promesas = [
+        // Negación inocua delante de la promesa (el literal del encargo).
+        'No te preocupes, ya te la he apuntado para el lunes a las 10',
+        // Negación DE CITA en una frase y promesa real en la siguiente.
+        'No me consta ninguna cita reservada a tu nombre. Pero hecho, te la he apuntado para el lunes a las 10 😊',
+    ];
+    for (const content of promesas) {
+        const r = corre({ salientes: [{ id: 'm-x', contactId: 'ct-estefania', createdAt: '2026-08-09T17:44:06Z', content }] });
+        const h = r.hallazgos.find(x => x.clase === 'C1_HECHA');
+        assert.ok(h, `tiene que clasificar como promesa: "${content.slice(0, 50)}"`);
+        assert.strictEqual(h.desenlace, 'rota', 'y sin fila detrás, salir como rota');
+    }
+    // Y la negación en la MISMA frase sigue fuera.
+    const r = corre({ salientes: [{ id: 'm-y', contactId: 'ct-estefania', createdAt: '2026-08-09T17:44:06Z',
+        content: 'No veo tu cita reservada en el sistema' }] });
+    assert.strictEqual(r.hallazgos.length, 0);
+});
+
 test('remisionAlEquipo: positivos y negativos', () => {
     assert.ok(remisionAlEquipo('te recomiendo que hables directamente con nuestro equipo'));
     assert.ok(remisionAlEquipo('Lo mejor es que hables con el equipo del salón'));
