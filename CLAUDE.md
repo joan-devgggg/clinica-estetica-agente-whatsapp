@@ -489,6 +489,38 @@ tardío), no la franja común: solo se declara fuera de horario lo que lo es **t
 Red: `tests/oferta-no-es-afirmacion.test.js`, `tests/precio-sin-respaldo.test.js` y
 `tests/balayage-resuelve.test.js`, los tres probados por mutación.
 
+## La escalera (contrato, punto 4): las redes de AGENDA ya no solo borran
+
+Cuando `respondsWithInventedSlots` o `respondsWithInventedDates` condenan la respuesta del
+LLM, esta vuelve al modelo con el veredicto de la máquina y se pide reescritura — **UNA
+vez** (3º peldaño); si falla lo que sea (timeout de 15 s propio, error, fallback, la
+reescritura sigue violando, cita el veredicto o afirma reserva), se cae al 4º: sustituir
+con el mensaje de la causa (huecos reales si los hay). Un falso positivo pasa de costar el
+mensaje bueno a costar una llamada. `proposesTimingWithoutService` va directo al 4º a
+propósito (`REGEN_POLITICA`): pedir el servicio ya es la respuesta verdadera y esa red no
+tiene ni un falso positivo registrado. Lo que hay que saber al tocarla:
+
+- **El veredicto NO es citable, y la garantía no es el prompt**: `VEREDICTO_PIEZAS` redacta
+  el texto Y es la lista de marcadores del filtro (una sola fuente); la fuga TRADUCIDA
+  (la frase real de Michal en inglés) la para `REGEN_FRASES_MAQUINARIA`, enumerada en 4
+  idiomas. Ensanchar esa lista es barato: solo gatea la REESCRITURA, y su falso positivo
+  cae al 4º — nunca se come un original.
+- **Con texto de la clienta aparcado en el buffer no se regenera** (`pendientes_en_buffer`):
+  contestaría a una foto que ella ya dejó atrás. Decidido NO consumir `pendingTexts` en la
+  regeneración (regla 8).
+- **De la 2ª llamada se usa SOLO `.respuesta`**: acciones y datos del turno ya corrieron
+  sobre la primera. Las trazas de detección (`cita_sante_*_bloqueada/o`) no cambian: el
+  corpus las afirma por nombre.
+- **El número que hay que mirar**: `escaleraSustituida / escaleraIntervencion`
+  (`metrics.json`) — el % de derrotas del contrato, que tiene que bajar. Cada intervención
+  deja `escalera_intervencion` con la respuesta comida SIEMPRE (`respuestaOriginal`).
+- **Rollback sin deploy**: `ESCALERA_REGENERAR=off` apaga SOLO el peldaño 3.
+
+Red: `tests/escalera-agenda.test.js` (gemelo determinista, 4 sabotajes medidos en su
+cabecera; incluye el rescate A/B con el turno real de Ludmila) y la afirmación de
+`llmCalls` en los rejugados del corpus de oro — una regeneración sin declarar en un
+fixture sale en rojo con el número en pantalla.
+
 ## Lo que salió de esas conversaciones y no es una red
 
 Todo con historia completa en [Olga](docs/incidentes-cerrados.md#olga-yarmak) y
@@ -802,6 +834,8 @@ SANTE_CHANNEL     # escape hatch: 'wwebjs' devuelve Sante a whatsapp-web.js (el 
 SEGUIMIENTOS      # 'on' enciende la propuesta post-visita. APAGADO por defecto
 SEGUIMIENTOS_LIMITE  # tope por tic y org (default 25)
 VIGILANTE_ESPERAS # 'on' enciende el vigilante de esperas. NO lo enciendas (ver su sección)
+ESCALERA_REGENERAR # 'off' apaga SOLO el peldaño 3 de la escalera (todo cae al 4º con
+                   # causa). Encendido por defecto — es el rollback sin deploy
 ```
 
 ## Comandos de desarrollo
