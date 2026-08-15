@@ -240,6 +240,12 @@ test('la regeneración que FALLA cae al 4º y lo dice el log: error, fallback y 
     await turno(r.phone, sink, ENTRANTE);
     assert.strictEqual(ultimaIntervencion().motivo, 'regen_fallback:api_error:500');
     assert.ok(!/no he podido procesar/.test(sink[sink.length - 1]));
+    // El contador por motivo va SANEADO: el sufijo variable tras ':' no puede fabricar
+    // claves infinitas en metrics.json (Railway: los contadores son la única lectura).
+    assert.ok(contadores.escaleraSustituidaPor_regen_fallback >= 1,
+        'falta el contador saneado escaleraSustituidaPor_regen_fallback');
+    assert.ok(!Object.keys(contadores).some(k => k.includes(':')),
+        `una clave de metrics lleva ':' — el saneado del motivo se ha perdido: ${Object.keys(contadores).filter(k => k.includes(':'))}`);
 
     // timeout (presupuesto de test: 120 ms), el race con unref del que ya hay doctrina
     r = armarSesion(); sink = [];
@@ -264,6 +270,8 @@ test('con texto de la clienta APARCADO no se regenera: contestaría a una foto q
     assert.strictEqual(llmCalls - antes, 1, 'con pendientes NO hay segunda llamada');
     assert.strictEqual(ultimaIntervencion().motivo, 'pendientes_en_buffer');
     assert.strictEqual(ultimaIntervencion().peldano, 'sustituir');
+    assert.ok(contadores.escaleraSustituidaPor_pendientes_en_buffer >= 1,
+        'el contador por motivo de pendientes_en_buffer no se escribió — es EL número que se vigila en producción');
     const b = I.getBuffer(ORG, phone);
     if (b && b.timer) { clearTimeout(b.timer); b.timer = null; b.texts = []; b.pendingTexts = null; }
 });
@@ -295,6 +303,8 @@ test('timing-sin-servicio va DIRECTO al 4º (política): pedir el servicio ya es
     assert.strictEqual(ev.motivo, 'politica_directa_4');
     assert.ok(logs.some(l => l.evento === 'cita_sante_timing_sin_servicio_bloqueado'),
         'la traza de detección de siempre no puede desaparecer: el corpus la afirma por nombre');
+    assert.ok(contadores.escaleraSustituidaPor_politica_directa_4 >= 1,
+        'falta el contador por motivo de politica_directa_4');
 });
 
 test('CONTROL: un turno limpio no interviene, no regenera y sale tal cual', async () => {

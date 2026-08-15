@@ -2586,6 +2586,14 @@ async function aplicarEscaleraAgenda({ orgId, session, userPhone, aiResponse, re
     });
     incrementMetric('escaleraIntervencion');
     incrementMetric(peldano === 'regenerar' ? 'escaleraRegeneradaOk' : 'escaleraSustituida');
+    // Desglose del 4º por MOTIVO, persistido en metrics.json: producción corre en Railway
+    // y sus logs no son consultables a una semana vista, así que el reparto (cuánto es
+    // pendientes_en_buffer frente al resto) tiene que vivir en un contador. El sufijo
+    // tras ':' se recorta (regen_fallback:api_error:500 → regen_fallback): lo variable
+    // haría claves infinitas y el detalle ya queda en el log del evento.
+    if (peldano === 'sustituir') {
+        incrementMetric(`escaleraSustituidaPor_${String(motivo || 'desconocido').split(':')[0]}`);
+    }
 }
 
 // ─── Estado de servicio: fuente de verdad única ─────────────────────────────

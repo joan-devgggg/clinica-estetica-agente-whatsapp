@@ -513,7 +513,13 @@ tiene ni un falso positivo registrado. Lo que hay que saber al tocarla:
   corpus las afirma por nombre.
 - **El número que hay que mirar**: `escaleraSustituida / escaleraIntervencion`
   (`metrics.json`) — el % de derrotas del contrato, que tiene que bajar. Cada intervención
-  deja `escalera_intervencion` con la respuesta comida SIEMPRE (`respuestaOriginal`).
+  deja `escalera_intervencion` con la respuesta comida SIEMPRE (`respuestaOriginal`), y el
+  4º peldaño deja además su motivo en un contador `escaleraSustituidaPor_<motivo>` (sufijo
+  tras `:` recortado): si `escaleraSustituidaPor_pendientes_en_buffer` domina, la escalera
+  no está rescatando y lo que hay que mirar es el buffer. **Producción corre en RAILWAY**
+  (no PM2): la lectura es `railway ssh "cat metrics.json"` — y el disco del contenedor es
+  efímero, así que cada deploy o restart pone los contadores a cero; la ventana de medida
+  empieza en el último deploy.
 - **Rollback sin deploy**: `ESCALERA_REGENERAR=off` apaga SOLO el peldaño 3.
 
 Red: `tests/escalera-agenda.test.js` (gemelo determinista, 4 sabotajes medidos en su
