@@ -2492,7 +2492,14 @@ function hayTextoPendienteEnBuffer(orgId, userPhone) {
 }
 
 // La segunda llamada al modelo: history original + el borrador rechazado como turno
-// assistant + el veredicto como system (el patrón de inyección de escalationJustResolved).
+// assistant + el veredicto como turno USER — no como system, y no es estilo: OpenRouter
+// IZA los system del history al system prompt para los modelos de Anthropic, así que con
+// role:system la conversación terminaba en el turno assistant con su JSON ya cerrado =
+// PREFILL terminado → el modelo devolvía la completion VACÍA (no_json_in_response:empty,
+// medido el 15/08: 4 de 7 regeneraciones reales vacías con system, incluida la del
+// escenario 11 del arnés). Con el veredicto como último turno user, la conversación
+// termina donde un modelo de chat espera. El patrón system de escalationJustResolved no
+// sirve de precedente aquí: aquel va al PRINCIPIO del history, nunca al final.
 // Presupuesto PROPIO de 15 s con unref (doctrina de timers): los 45 s del race principal
 // ya vencieron a favor. De lo que devuelva se usa SOLO `.respuesta` — accion/datos/
 // reserva_confirmada del segundo intento se descartan, porque el despacho de acciones y
@@ -2502,7 +2509,7 @@ async function regenerarConVeredicto(orgId, session, llmHistory, partialDataWith
     const historyRegen = [
         ...llmHistory,
         { role: 'assistant', content: borrador },
-        { role: 'system', content: veredicto.paraModelo },
+        { role: 'user', content: veredicto.paraModelo },
     ];
     const promesa = getChatbotResponse(orgId, historyRegen, partialDataWithCtx, intent, session.reservaConfirmada, session.summary)
         .catch(e => {
