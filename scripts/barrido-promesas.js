@@ -45,6 +45,7 @@ const DESENLACE_LABEL = {
     parcial: '⚠️  PARCIAL — la triple escritura quedó a medias',
     aceptada_sin_escalada: '❌ ACEPTADA SIN ESCALADA — la clienta dijo sí y no existe fila (tras el anillo 1, esto solo lo produce un bug)',
     oferta_sin_respuesta: 'ℹ️  OFERTA SIN RESPUESTA — se ofreció y no hubo aceptación; no hay fila que deber',
+    remision_afirmativa_sin_respuesta: 'ℹ️  REMISIÓN AFIRMATIVA SIN RESPUESTA — la promesa se hizo en afirmativo y no hubo respuesta; sin fila (residuo en medición)',
     salvada_a_mano: '🖐  SALVADA A MANO — mentira en el momento; una persona la hizo verdad después',
     no_verificable: '❓ NO VERIFICABLE — la huella de aquel turno ya no existe',
 };
@@ -120,7 +121,7 @@ function parseArgs(argv) {
             console.log('\n✅ Todas las promesas detectadas tienen su fila detrás.');
         } else {
             // Agrupado clase → desenlace, una línea por hallazgo.
-            const orden = ['rota', 'parcial', 'aceptada_sin_escalada', 'salvada_a_mano', 'no_verificable', 'oferta_sin_respuesta'];
+            const orden = ['rota', 'parcial', 'aceptada_sin_escalada', 'salvada_a_mano', 'no_verificable', 'remision_afirmativa_sin_respuesta', 'oferta_sin_respuesta'];
             for (const desenlace of orden) {
                 const grupo = hallazgos.filter(h => h.desenlace === desenlace);
                 if (!grupo.length) continue;

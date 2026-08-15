@@ -27,7 +27,7 @@ const {
     HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, CANCEL_OK_MSGS, CONFIRM_YES, CONFIRM_YES_LEGACY,
     // La FUENTE ÚNICA: el mismo detector que ARMA la oferta en el bot. Una oferta que
     // este barrido ve es una oferta que el bot armó — no pueden divergir.
-    detectaOfertaTraspaso, remisionAlEquipo,
+    detectaOfertaTraspaso, remisionAlEquipo, ofertaTraspasoEnPregunta,
 } = require('../../bot')._internals;
 const {
     normalizeText, buildCancelFalloMsg, buildAmpliacionSolapaMsg,
@@ -136,6 +136,18 @@ const CLASES = {
 // el separador de frases es el MISMO de announcesHumanHandover, no uno propio.
 const NEGACION_CITA_RE = /no (?:me consta|te consta|encuentro|veo|hay|tienes|tenemos|tengo|aparece|figura)\b[^.!?\n]{0,40}\b(?:cita|reserva)/;
 const SEPARADOR_FRASES = /(?<=[.!?])\s+|\n+/;
+
+// La remisión AFIRMATIVA PURA (0b·remisión, 15/08/2026): la frase de remisión no lleva
+// «¿?» Y el mensaje no trae ninguna pregunta de oferta al lado. Estefania es el caso
+// (promesa en afirmativo, sin pregunta); la mixta de Mafe (remisión + «¿te pongo en
+// contacto con ellas?») y la remisión-pregunta («¿Quieres que hables…?») NO lo son.
+// Su «sin respuesta» se cuenta APARTE —sigue siendo INFO, sin alarma— para tener
+// frecuencia real antes de decidir si esa forma sube al peldaño «cumplir». Hoy: n=0.
+function esRemisionAfirmativaPura(texto) {
+    if (ofertaTraspasoEnPregunta(texto)) return false;
+    return normalizeText(texto).split(SEPARADOR_FRASES)
+        .some(f => remisionAlEquipo(f) && !/[?¿]/.test(f));
+}
 
 function sinFrasesNegadas(norm) {
     if (!NEGACION_CITA_RE.test(norm)) return norm;
@@ -267,7 +279,7 @@ function evaluarC7Afirmacion(tMsg, pasContacto, contacto, ahora) {
 // detector arma la espera y el «sí» ejecuta la triple o dice que no pudo. La aceptación
 // se lee del ENTRANTE siguiente con isAffirmative — el mismo vocabulario que usa el bot,
 // y un dato COMPLETO (los entrantes no los pierde Coexistence).
-function evaluarC7Oferta(tMsg, pasContacto, entrantesContacto) {
+function evaluarC7Oferta(tMsg, pasContacto, entrantesContacto, { remisionAfirmativa = false } = {}) {
     const atendida = pasContacto.some(pa =>
         pa.type === 'escalation'
         && Date.parse(pa.created_at) >= tMsg - VENTANA_TURNO_ANTES_MS
@@ -281,6 +293,14 @@ function evaluarC7Oferta(tMsg, pasContacto, entrantesContacto) {
     if (respuesta && isAffirmative(respuesta.content)) {
         return { desenlace: 'aceptada_sin_escalada',
             detalle: `la clienta aceptó («${String(respuesta.content).replace(/\s+/g, ' ').slice(0, 30)}») y no existe fila — tras el anillo 1 esto solo lo produce un bug` };
+    }
+    if (remisionAfirmativa) {
+        // Contado aparte a propósito: aquí la clienta RECIBIÓ la promesa en afirmativo
+        // («ellos podrán valorarlo») y no contestó — no hay fila que deber bajo la regla
+        // actual, pero es el residuo que se está midiendo antes de decidir si esta forma
+        // debe cumplirse sin esperar el «sí».
+        return { desenlace: 'remision_afirmativa_sin_respuesta',
+            detalle: 'remisión en AFIRMATIVO sin respuesta en 24 h; sin fila — residuo en medición' };
     }
     return { desenlace: 'oferta_sin_respuesta',
         detalle: 'se ofreció y no hubo aceptación en 24 h; no hay fila que deber' };
@@ -355,7 +375,9 @@ function auditPromesas({ salientes, citas, pendingActions, contactos, entrantes,
             let r;
             if (clase === 'C1_HECHA' || clase === 'C1_CANCELADA') r = evaluarC1(clase, tMsg, citasContacto);
             else if (clase === 'C7_AFIRMACION') r = evaluarC7Afirmacion(tMsg, pasContacto, contacto, ahora);
-            else r = evaluarC7Oferta(tMsg, pasContacto, (msg.contactId && entrantesPorContacto.get(msg.contactId)) || []);
+            else r = evaluarC7Oferta(tMsg, pasContacto,
+                (msg.contactId && entrantesPorContacto.get(msg.contactId)) || [],
+                { remisionAfirmativa: clase === 'C7_REMISION' && esRemisionAfirmativaPura(msg.content) });
 
             anota(clase, r.desenlace);
             if (r.desenlace === 'respaldada' || r.desenlace === 'atendido') continue;
@@ -393,7 +415,7 @@ function auditPromesas({ salientes, citas, pendingActions, contactos, entrantes,
         'C1 cancelada: SOLO los acuses de plantilla (4 idiomas + variante «reserva» de San Remo); una cancelación afirmada en prosa libre no se ve.',
         'C7 afirmado: prosa SOLO en castellano (announcesHumanHandover) + los acuses fijos de los 4 idiomas (HANDOVER_ACUSE, CONFIRM_YES, fallos de cancelación/ampliación). Prosa libre ru/uk/en: ciega.',
         'C7 ofrecido: preguntas de traspaso, castellano + «подойдёт/підійде» de la pareja verbo-destino; destinos tipo «con ellas» no casan.',
-        'C7 remisión: solo castellano («habla con nuestro equipo»).',
+        'C7 remisión: solo castellano («habla con nuestro equipo»). Su forma AFIRMATIVA pura sin respuesta se cuenta aparte (remision_afirmativa_sin_respuesta, INFO): frecuencia en medición antes de decidir si sube al peldaño «cumplir».',
         '* «Inalcanzable por construcción» vale para aceptaciones que isAffirmative reconoce — y lee el ARRANQUE de la frase: un «vale, mejor llámame» SÍ cuenta como aceptación (en el bot escala, y la fila lleva ese matiz para quien la atienda); lo que cae en «oferta sin respuesta» es el silencio o una respuesta no afirmativa («mejor os llamo yo»).',
         'Negar una cita («no me consta ninguna cita reservada») no es una promesa y no se cuenta; la clase inversa —negar una cita que SÍ existe (Carolina, 09/08)— es del contrato y este barrido no la mide.',
         'Excluido a propósito: el mensaje del tope de sesión y la retención de lista negra de San Remo prometen atención POR DISEÑO y ningún detector los cuenta.',
@@ -404,7 +426,7 @@ function auditPromesas({ salientes, citas, pendingActions, contactos, entrantes,
 }
 
 module.exports = {
-    auditPromesas, clasificarSaliente, remisionAlEquipo,
+    auditPromesas, clasificarSaliente, remisionAlEquipo, esRemisionAfirmativaPura,
     nucleosCancelacion, nucleosConfirmacion, nucleosTraspaso,
     VENTANA_TURNO_ANTES_MS, VENTANA_TURNO_DESPUES_MS, VENTANA_SALVADA_MS, VENTANA_OFERTA_MS,
     CLASES, DESENLACES_MAL,

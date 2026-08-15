@@ -2268,16 +2268,24 @@ function remisionAlEquipo(texto) {
     return REMISION_EQUIPO_RE.test(normalizeText(texto));
 }
 
-function detectaOfertaTraspaso(texto) {
+// La mitad INTERROGATIVA del detector, exportada aparte: el barrido la usa para
+// distinguir la remisión AFIRMATIVA pura (Estefania: promesa sin pregunta) de la mixta
+// (Mafe 11:27: remisión + «¿te pongo en contacto con ellas?» en el mismo mensaje) — el
+// desenlace «sin respuesta» de la primera se cuenta aparte para medir su frecuencia
+// real antes de decidir si sube al peldaño «cumplir». Extraída sin cambiar conducta.
+function ofertaTraspasoEnPregunta(texto) {
     const t = normalizeText(texto);
     if (!t) return false;
-    if (REMISION_EQUIPO_RE.test(t)) return true;
     return t.split(/(?<=[.!?])\s+|\n+/).some(frase => {
         if (!/[?¿]/.test(frase)) return false;
         if (HANDOVER_TRASPASO.test(frase)
             && (HANDOVER_DESTINO.test(frase) || OFERTA_PRONOMBRE_DESTINO.test(frase))) return true;
         return OFERTA_TRASPASO_EN.some(re => re.test(frase)) || OFERTA_TRASPASO_CYR.test(frase);
     });
+}
+
+function detectaOfertaTraspaso(texto) {
+    return remisionAlEquipo(texto) || ofertaTraspasoEnPregunta(texto);
 }
 
 // Si se ESCALA, se dice. Es la mitad que le faltaba a announcesHumanHandover, que solo
@@ -7001,7 +7009,7 @@ module.exports = {
         announcesHumanHandover, offersHumanHandover, ensureHandoverAcknowledged, HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, porTrato,
         // Fuente única de «esto es una oferta de traspaso»: la comparten el armado de
         // pendingEscalation y el barrido de promesas — no pueden divergir.
-        detectaOfertaTraspaso, remisionAlEquipo,
+        detectaOfertaTraspaso, remisionAlEquipo, ofertaTraspasoEnPregunta,
         // Plantillas de promesa con texto fijo — las lee el barrido de promesas
         // (tests/lib/promesas-audit.js) para no copiar literales que luego divergen:
         CANCEL_OK_MSGS, CONFIRM_YES, CONFIRM_YES_LEGACY, REOFERTA_TRASPASO, TRASPASO_FALLO_MSGS,

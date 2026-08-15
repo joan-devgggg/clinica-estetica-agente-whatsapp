@@ -261,6 +261,40 @@ test('0d · la ventana de alarma: lo viejo se imprime pero no grita (el cron no 
     assert.strictEqual(corre().hayMal, true);
 });
 
+test('remisión AFIRMATIVA sin respuesta → desenlace propio (INFO), separado de las preguntas', () => {
+    // (b) del 15/08: medir la frecuencia real de esta forma antes de decidir si sube al
+    // peldaño «cumplir». Sigue sin alarmar — el hueco es residuo declarado, no promesa rota.
+    // Estefania SIN su «Claro ☺️»: afirmativa pura, sin respuesta.
+    const sinRespuesta = corre({ entrantes: [] });
+    const h = hallazgoDe(sinRespuesta, 'ct-estefania', 'C7_REMISION');
+    assert.strictEqual(h?.desenlace, 'remision_afirmativa_sin_respuesta');
+    assert.strictEqual(sinRespuesta.hallazgos.filter(x => x.desenlace === 'remision_afirmativa_sin_respuesta').length, 1);
+
+    // La MIXTA de Mafe (remisión afirmativa + pregunta de oferta al lado), sin respuesta:
+    // NO es afirmativa pura — cae en el desenlace de las preguntas.
+    const mixta = corre({
+        entrantes: [],
+        pendingActions: [],
+        salientes: [{ id: 'm-mixta', contactId: 'ct-mafe', createdAt: '2026-08-12T11:27:33.683Z',
+            content: 'Lo mejor es que hables directamente con el equipo del salón para que te confirmen el precio exacto según lo que vieron ayer. ¿Quieres que te ponga en contacto con ellas para que te lo aclaren?' }],
+    });
+    assert.strictEqual(hallazgoDe(mixta, 'ct-mafe', 'C7_REMISION')?.desenlace, 'oferta_sin_respuesta');
+
+    // Y la remisión-PREGUNTA («¿Quieres que hables…?»), sin respuesta: también con las preguntas.
+    const pregunta = corre({
+        entrantes: [],
+        salientes: [{ id: 'm-preg', contactId: 'ct-celeste', createdAt: '2026-08-06T11:12:16.736Z',
+            content: '¿Quieres que hables con nuestro equipo?' }],
+    });
+    assert.strictEqual(hallazgoDe(pregunta, 'ct-celeste', 'C7_REMISION')?.desenlace, 'oferta_sin_respuesta');
+
+    // Nada de esto alarma: los tres sin-respuesta son INFO.
+    assert.strictEqual(mixta.hayMal, false);
+    assert.strictEqual(pregunta.hayMal, false);
+    // Y la Estefania REAL (con su «Claro ☺️») sigue siendo la que alarma.
+    assert.strictEqual(hallazgoDe(corre(), 'ct-estefania', 'C7_REMISION')?.desenlace, 'aceptada_sin_escalada');
+});
+
 test('los teléfonos 999… (arnés de pruebas) quedan fuera del barrido', () => {
     const r = corre({
         contactos: [...CONTACTOS, { id: 'ct-test', full_name: 'Test', wa_phone: '9996001000', bot_mode: 'auto', escalation_reason: null }],
