@@ -824,16 +824,33 @@ cd dashboard-app && npm run dev
 pm2 start server.js --name antigravity-bot
 ```
 
-### `npm test` se autoriza por el EXIT CODE, nunca por el log
+### `npm test` se autoriza por el EXIT CODE o por el MARCADOR, nunca por «no veo fallos»
 
-`npm test; echo $?` y punto. Los fallos salen por **stderr** (82 de los 129 ficheros imprimen
-`fail - …` con `console.error`, ninguno por stdout) y la cadena **no imprime resumen al
-terminar**, así que una corrida que muere en el fichero 13 deja un log de 323 líneas donde
-todas dicen `ok -` — indistinguible de una completa (2662) si no cuentas. Y un pipe se traga el
-código: `npm test 2>&1 | tail` devuelve 0. Los 129 ficheros SÍ propagan el fallo; el agujero
-está en cómo se lee. Ya hizo autorizar un push sobre un árbol rojo (15/08/2026):
-[historia y los cuatro arreglos pendientes](docs/incidentes-cerrados.md#npm-test-falso-verde),
-entre ellos que **10 `*.test.js` no están en la cadena** y no los corre nadie.
+`npm test; echo $?` y punto. Los fallos salen por **stderr** (82 ficheros imprimen `fail - …`
+con `console.error`, **ninguno** por stdout), así que una corrida que muere a la mitad deja un
+log donde todo dice `ok -`. Y un pipe se traga el código: `npm test 2>&1 | tail` devuelve 0.
+Ya hizo autorizar un push sobre un árbol rojo (15/08/2026):
+[historia](docs/incidentes-cerrados.md#npm-test-falso-verde).
+
+Desde entonces la cadena termina en `scripts/suite-completa.js`, que imprime por **stdout**:
+
+```
+SUITE COMPLETA · 137 ficheros · 3 fuera a propósito (ver scripts/suite-completa.js)
+```
+
+**Si esa línea no está, la corrida no terminó** — sirve incluso mirando solo stdout, que es
+por donde se coló el verde falso. El número lo CALCULA de la propia cadena: nunca hay que
+tocarlo al añadir un test.
+
+**Cómo se comprueba que un test nuevo está en la cadena: `npm run test:cobertura`.** Sale en
+rojo si hay algún `tests/*.test.js` que no corre nadie (y también si la cadena nombra un
+fichero que ya no existe). No depende de que nadie se acuerde: es el último eslabón de
+`npm test`, así que un test escrito y no enchufado tumba la suite con su nombre en pantalla.
+Un fichero puede quedarse fuera, pero entonces se declara con su motivo en `FUERA_A_PROPOSITO`
+(`scripts/suite-completa.js`) — hoy hay **3**, los tres en rojo por el TEST y no por el
+sistema. *Fuera y declarado es una decisión; fuera y en silencio es cómo `oferta-traspaso`
+—el gemelo del anillo 1— pasó semanas sin correr mientras el test viejo que lo contradecía
+seguía en la cadena en rojo.*
 
 ### Los timers de arranque van con `.unref()` — no los quites
 

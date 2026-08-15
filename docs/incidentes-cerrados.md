@@ -1246,3 +1246,69 @@ Qué cambiar para que no vuelva a pasar:
   `recordatorio-registro-conversacion`, `robustez-llm-arnes`. Entre ellos está justamente
   `oferta-traspaso`, el test NUEVO del anillo 1: se escribió, nunca se enchufó, y mientras
   tanto el test VIEJO que lo contradecía seguía en la cadena en rojo.
+
+### Lo que se arregló el 15/08/2026 y lo que se midió al hacerlo
+
+**Marcador final** (`scripts/suite-completa.js`, último eslabón de la cadena): imprime
+`SUITE COMPLETA · N ficheros` por STDOUT, con **N calculado de la propia cadena**. Y hace de
+guardián en las dos direcciones — un `tests/*.test.js` que no esté en la cadena, o una entrada
+de la cadena que no exista en disco, ponen la suite en rojo con el nombre en pantalla.
+Comprobación suelta: `npm run test:cobertura`.
+
+**Los 10 huérfanos, corridos UNO A UNO antes de enchufarlos** (esto es lo que no había que
+hacer a ciegas). Siete pasaban y están dentro; tres estaban en rojo y **no se han enchufado ni
+arreglado**, porque en los tres el rojo es del TEST y no del sistema:
+
+| Fichero | Estado | Qué pasa |
+|---|---|---|
+| `oferta-traspaso` | ✅ 9/9 | **Pasa tal cual.** El gemelo del anillo 1 nunca había corrido y el sistema le da la razón. Cuesta 62 s (ver abajo). |
+| `promesas-audit`, `media-dedupe`, `monitor-orden-ultimo-mensaje`, `recordatorio-por-cita`, `recordatorio-registro-conversacion`, `robustez-llm-arnes` | ✅ | Verdes y rápidos (<1 s cada uno). |
+| `helpers` | ❌ 3 bloques | LEGACY del embudo pre-multi-tenant (`getStepFromPartialData`, `responseMatchesStep`, «city and budget»). Ese flujo ya no existe. |
+| `blacklist-reconcile` | ❌ 3/3 | Anterior a la migración a 360dialog: manda ids de whatsapp-web.js y el guard de canal los descarta (`mensaje_ignorado_canal_inactivo`), así que la sesión no llega a crearse. |
+| `escalation-flow` | ❌ 5/6 | Igual que el anterior, y además **habla con la Supabase REAL** (carga `.env` por `bot.js:1` y no intercepta el cliente). No puede entrar sin volver la suite no-hermética. |
+
+Los tres están declarados en `FUERA_A_PROPOSITO` con su motivo. Arreglarlos es trabajo aparte
+y hay que decidir uno por uno si el test todavía describe algo que queremos.
+
+**Coste medido**: la suite pasa de **160 s a 224 s**. Los 64 s son casi todos de
+`oferta-traspaso`, y **no son suyos**: sus 9 bloques suman ~5 s y el resto es el proceso sin
+poder salir. Dos temporizadores no llevan `.unref()` y retienen el proceso hasta que vencen:
+
+- `bot.js:5475` — el `setTimeout` de 45 s que compite en el `Promise.race` del LLM. Cuando gana
+  el modelo, el perdedor sigue vivo.
+- `bot.js:6647` — la limpieza del buffer a los 60 s (`BUFFER_CLEANUP_TTL_MS`).
+
+En producción son inocuos (el proceso vive por Express y los clientes WA), pero hacen que
+**cualquier test que conduzca un turno real pague hasta 60 s de espera muerta**. Es
+exactamente lo que describe [#timers-unref](#timers-unref), que solo cubrió los `setInterval`
+de módulo. **No se ha tocado**: cambia la semántica de dos timers de producción y merece su
+propia decisión.
+
+### El borrado del panel ahora dice lo que destruye (15/08/2026)
+
+Antes no preguntaba **nada**: el botón «Eliminar» de la ficha de Clientes llamaba a
+`handleDelete` y la ficha desaparecía. Con ella, en silencio, la conversación entera.
+
+Lo que se cambió, siguiendo la regla que puso el dueño —**decirlo, no impedirlo**—:
+
+- **`db.contarImpactoBorrado`** (solo lectura, con `assertRead` en las cuatro lecturas) cuenta
+  lo que se lleva el CASCADE: mensajes, citas y escaladas abiertas. Con `assertRead` porque un
+  cero por lectura rota sería peor que no decir nada: **invita a borrar**. Misma doctrina que
+  `Number(null)` en la facturación.
+- **`GET /api/leads/:id/impacto-borrado`** — no condiciona el borrado. Si falla, el diálogo
+  sale igual diciendo «no se ha podido contar», y el botón sigue ahí.
+- **`dashboard-app/src/lib/borrado-contacto.ts`** — el texto, sin dependencias (como
+  `blacklist.ts`) para poder afirmarlo desde Node, con cada línea anclada a la FK que la hace
+  cierta.
+- **La alternativa, en el mismo diálogo**: «Bloquear en su lugar», que hace lo que casi siempre
+  se quería (ni bot, ni campañas, ni recordatorios, ni reseñas) y **se deshace**.
+
+Lo que NO se hizo, y es decisión explícita: no se bloquea el borrado, no hay doble
+confirmación y no hay que teclear el nombre. Sigue siendo un clic más. Quien borra suele tener
+un motivo bueno —el número cambió de manos, no es clienta—; lo que faltaba no era una barrera,
+era la frase.
+
+Red: `tests/borrado-contacto-panel.test.js`, con tres sabotajes vistos en rojo (la cifra real,
+el cero inventado y la alternativa) y dos bloques CONTROL que impiden que el arreglo se pase de
+ancho: que no se prometa que el borrado va a salir bien (un cobro en caja lo rechaza con 409) y
+que el confirmar siga siendo un solo clic.
