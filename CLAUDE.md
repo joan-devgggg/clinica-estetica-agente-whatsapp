@@ -34,6 +34,17 @@ catálogo mueve las cifras de meses ya cerrados.
 **6. Lo comiteado en local no está en producción.** `git push` lo lanza el dueño. Un síntoma
 que sigue apareciendo después de un arreglo casi siempre es esto, no un arreglo incompleto.
 
+**7. Borrar un contacto se lleva su conversación entera, en silencio.** `conversations` y
+`messages` cuelgan de `contacts` con **`ON DELETE CASCADE`** (también `appointments`,
+`pending_actions` y `seguimientos`), y no se emite ningún `DELETE` sobre ellas: no queda rastro
+salvo el log HTTP del edge, que caduca en días. Así desapareció la conversación de Olga Yarmak
+—30 mensajes, auditados enteros el 09/08— borrada desde el panel el **11/08/2026 a las
+06:37:11 UTC**; se detectó cuatro días después, y la ausencia ya se había visto sin preguntarse
+por qué. **Una ficha que falta no significa que nunca existiera.** Antes de borrar, exportar
+(`npm run exportar:conversacion`); si lo que se quiere es que no le llegue nada, eso es
+`is_blacklisted` y es reversible.
+[Historia](docs/incidentes-cerrados.md#olga-borrada).
+
 ## Reglas de trabajo
 
 Se aplican siempre; no hace falta repetirlas en cada petición. Cada una nació de algo que pasó
@@ -812,6 +823,17 @@ cd dashboard-app && npm run dev
 # Producción
 pm2 start server.js --name antigravity-bot
 ```
+
+### `npm test` se autoriza por el EXIT CODE, nunca por el log
+
+`npm test; echo $?` y punto. Los fallos salen por **stderr** (82 de los 129 ficheros imprimen
+`fail - …` con `console.error`, ninguno por stdout) y la cadena **no imprime resumen al
+terminar**, así que una corrida que muere en el fichero 13 deja un log de 323 líneas donde
+todas dicen `ok -` — indistinguible de una completa (2662) si no cuentas. Y un pipe se traga el
+código: `npm test 2>&1 | tail` devuelve 0. Los 129 ficheros SÍ propagan el fallo; el agujero
+está en cómo se lee. Ya hizo autorizar un push sobre un árbol rojo (15/08/2026):
+[historia y los cuatro arreglos pendientes](docs/incidentes-cerrados.md#npm-test-falso-verde),
+entre ellos que **10 `*.test.js` no están en la cadena** y no los corre nadie.
 
 ### Los timers de arranque van con `.unref()` — no los quites
 

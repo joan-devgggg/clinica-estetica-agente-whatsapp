@@ -1145,3 +1145,104 @@ ninguna señal de que haga falta — cero servicios de baja en producción y cer
 upsell apuntando a uno. Se retoma si aparece la señal.
 
 
+
+## La conversación de Olga Yarmak no se perdió: se borró (11/08/2026) {#olga-borrada}
+
+Investigado el 15/08/2026 al no encontrarla en `messages` para el corpus de oro. **Desapareció
+una conversación entera de producción**, y se puede fechar al segundo.
+
+**Que existía, probado por conteo.** La auditoría del 09/08 leyó **38 conversaciones · 392
+mensajes** entre el 31/07 y el 09/08, Olga entre ellas (fila «7 ago · Olga Yarmak»). Hoy esa
+misma ventana da **37 · 362**. La ventana está cerrada —`created_at` no cambia—, así que esos
+30 mensajes solo pueden haberse borrado. Cruzando nombre por nombre las 38 auditadas contra
+las 37 de hoy, la única ausente es ella.
+
+**Que se borró, probado por los edge logs de Supabase.**
+
+```
+DELETE | 204 | /rest/v1/contacts?id=eq.cc9007ce-4215-4d8a-865d-240f8c797181
+               &organization_id=eq.b2c3d4e5-…        2026-08-11T06:37:11.548Z  (08:37 Madrid)
+```
+
+El **orden de los parámetros identifica el camino**: `id` antes que `organization_id` es
+`db.deleteLead` (`.eq('id', id).eq('organization_id', oid)`), o sea `DELETE /api/leads/:id`,
+el botón de borrar contacto del panel. Ese mismo día, entre las 15:36 y las 16:35, se borraron
+**93 contactos más** con el patrón CONTRARIO (`organization_id` primero, precedido de un
+borrado de `appointments` y otro de `pending_actions`): es el `cleanup(phone)` del arnés
+`verify:robustez:llm` retirando sus propios contactos sintéticos. Separados por consulta: **1
+de panel · 93 de arnés**. El 10/08 no hubo ninguno.
+
+**Por qué no quedó rastro.** No se emitió ni un solo `DELETE` contra `conversations` ni contra
+`messages`: se fueron por **`ON DELETE CASCADE`** (`conversations.contact_id → contacts` y
+`messages.conversation_id → conversations`; igual `appointments`, `pending_actions` y
+`seguimientos`). Borrar un contacto destruye su historial entero en silencio, y lo único que
+lo data es el log HTTP del edge, que caduca en días. **No hay recuperación**: el log guarda la
+petición, no el contenido. Lo único que sobrevive de esa conversación es la narrativa de
+[#olga-yarmak](#olga-yarmak) y las frases congeladas en `tests/horario-fuera-de-rango.test.js`,
+`tests/tratamiento-formal.test.js`, `tests/escalada-acuse.test.js` y `menu-rescate-tope`.
+
+**La ausencia ya se había visto, y se leyó como inocua.** `docs/campana-verano-tandas.md`
+(commit `6ad973d`, 12/08 12:52) anota que `34674987146` «ya no tiene ficha en `contacts`» y
+concluye: «Inocuo — excluir un teléfono que no existe no quita a nadie». Para la campaña es
+cierto. Lo que no se preguntó nadie es **por qué** no estaba, y ahí lo inocuo era una
+conversación auditada de 30 mensajes.
+
+**Borrar la ficha probablemente fue correcto; perder la conversación no era visible como su
+consecuencia.** `data/campana-verano-exclusiones.json` dice de ese número: contestó a la tanda
+1 con «Я мужчина» y pidiendo «cambio de aceite y filtros, montaje y arranque del motor» — o el
+número cambió de manos o la ficha estaba mal, pero clienta del salón no era.
+
+Lo que hay que cambiar, y no está hecho:
+
+- **Borrar un contacto no es «que no me escriba más» ni «que no salga en campañas»**, y hoy la
+  confirmación del panel no dice que se lleva por delante la conversación, las citas y las
+  filas de `pending_actions`. Debería decirlo, con el número de mensajes que va a destruir.
+- **Antes de borrar, exportar**: `npm run exportar:conversacion -- sante <telefono>` deja el
+  hilo entero en un JSON. Es de lectura y cuesta un segundo.
+- Si lo que se quiere es que no le llegue nada, eso ya existe y es reversible:
+  `is_blacklisted` (la filtran campañas, recordatorio y reseña).
+
+## `npm test` puede dar VERDE estando en rojo — no es el runner, es cómo se lee {#npm-test-falso-verde}
+
+Dos sesiones corrieron `npm test` sobre `0a7e7c5` el 15/08 y reportaron cosas opuestas. La
+correcta es **ROJO**, reproducido en un worktree limpio sobre ese commit exacto:
+
+```
+EXIT = 1            para en el 13º de 129 ficheros (tests/sin-preferencia-vs-asap.test.js)
+stdout: 323 líneas · 234 «ok -» · CERO líneas de fallo
+stderr: la línea «fail - …» y el AssertionError
+corrida VERDE, para comparar: 2662 líneas de stdout
+```
+
+El fallo era real y **no es un flake**: la aserción es un `grep` sobre el texto de `bot.js`
+(esperaba `offersHumanHandover(aiResponse.respuesta)`, un call site que el anillo 1 sustituyó
+por `detectaOfertaTraspaso`). No puede pasar en ese commit a ninguna hora ni con ninguna
+variable de entorno. **Cualquier verde sobre 0a7e7c5 es un artefacto de lectura**, y hay tres
+formas de producirlo:
+
+1. **Los fallos salen por STDERR.** 82 de los 129 ficheros imprimen `fail - …` con
+   `console.error`; **ninguno** lo imprime por stdout. Un `npm test > log 2>/dev/null` deja un
+   log de 323 líneas donde todas dicen `ok -`. Y `grep -i fail log` da 3 aciertos, los tres
+   inocentes (nombres de test que llevan «fail» dentro), o sea que hasta el grep tranquiliza.
+2. **No hay línea de resumen.** La cadena no imprime nada al terminar, así que una corrida que
+   se para en el fichero 13 es indistinguible de una completa salvo por el número de líneas
+   (323 vs 2662) o por el exit code. No hay nada que buscar.
+3. **Un pipe se come el exit code.** `npm test 2>&1 | tail -5` devuelve **0** — el de `tail`.
+
+Lo que NO falla, comprobado: los 129 ficheros de la cadena propagan el fallo por exit code
+(115 con `process.exit`/`exitCode`, 14 con `node:test`, 0 sin forma de propagar), así que el
+`&&` corta donde debe. El agujero es de lectura, no de ejecución.
+
+Qué cambiar para que no vuelva a pasar:
+
+- **Un marcador final en la cadena**: `… && echo "SUITE COMPLETA · 129 ficheros"`. Si esa línea
+  no está en el log, la corrida no terminó — sirve incluso mirando solo stdout.
+- **Autorizar por exit code, nunca por el log.** `npm test; echo $?` y punto. Si se pipea, con
+  `set -o pipefail`.
+- **Nunca descartar stderr** en una corrida que se va a usar para decidir un despliegue.
+- **10 ficheros `*.test.js` no están en la cadena** y no los corre nadie:
+  `blacklist-reconcile`, `escalation-flow`, `helpers`, `media-dedupe`,
+  `monitor-orden-ultimo-mensaje`, `oferta-traspaso`, `promesas-audit`, `recordatorio-por-cita`,
+  `recordatorio-registro-conversacion`, `robustez-llm-arnes`. Entre ellos está justamente
+  `oferta-traspaso`, el test NUEVO del anillo 1: se escribió, nunca se enchufó, y mientras
+  tanto el test VIEJO que lo contradecía seguía en la cadena en rojo.
