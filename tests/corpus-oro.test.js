@@ -243,14 +243,23 @@ function cmp(real, esperado, msg) {
 function nuevoTelefono() {
     return `34600${String(Date.now()).slice(-6)}${Math.floor(Math.random() * 90 + 10)}@c.us`;
 }
-async function turnoReal(client, phone, texto, salienteLLM) {
+async function turnoReal(client, phone, texto, salienteLLM, regeneracionLLM) {
     if (salienteLLM) llmQueue.push(salienteLLM);
+    // La escalera (punto 4) puede pedir una SEGUNDA llamada en un turno intervenido: si un
+    // rejugado la necesita, el fixture la declara aquí. Sin declararla, la afirmación de
+    // llamadas de abajo se pone roja con el número en pantalla — una regeneración
+    // silenciosa en un rejugado nunca pasa desapercibida.
+    if (regeneracionLLM) llmQueue.push(regeneracionLLM);
+    const llmAntes = llmCalls;
     const s = I.getSession(SANTE_ORG, phone);
     if (s) s.lastMessageTime = 0;
     const sink = client.__sink;
     const before = sink.length;
     await bot.handleIncomingMessage(client, makeMessage(phone, texto), SANTE_ORG);
     await I.flushBuffer(SANTE_ORG, phone);
+    const esperadas = (salienteLLM ? 1 : 0) + (regeneracionLLM ? 1 : 0);
+    assert.strictEqual(llmCalls - llmAntes, esperadas,
+        `llamadas al LLM del rejugado: esperaba ${esperadas} y hubo ${llmCalls - llmAntes} — de más es una regeneración de la escalera sin declarar; de menos, una respuesta encolada sin consumir que contaminaría el turno siguiente`);
     return sink.slice(before).map(m => m.text).join('\n');
 }
 function clienteNuevo() {
