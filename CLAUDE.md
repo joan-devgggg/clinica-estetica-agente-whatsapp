@@ -866,6 +866,18 @@ razón de seguir vivo, y `metrics.js` vacía en `beforeExit` para no perder el �
 ponga `.unref()`: si no, todo esto vuelve** —
 [historia](docs/incidentes-cerrados.md#timers-unref).
 
+**Y no son solo los `setInterval`**: el 15/08/2026 se les unieron dos `setTimeout` de dentro
+del turno que retenían el proceso hasta vencer — el **perdedor del `Promise.race` del LLM**
+(45 s, vivo aunque gane el modelo) y la **limpieza del buffer** (60 s). No se nota en
+producción, pero hacía que cualquier test que condujera un turno real pagase la espera entera,
+y eran varios: `oferta-traspaso` 63 s → 3 s, `blacklist-aviso-entrega` 60 s → 0 s,
+`idioma-ucraniano-y-ficha` 60 s → 0 s. **La suite entera bajó de 224 s a 60 s.** **El timer que
+AGRUPA (`BUFFER_DELAY_MS`) sigue SIN unref a propósito**, y hay un test que lo vigila: ese
+tiene que disparar aunque no quede nada más vivo, porque dentro hay mensajes de una clienta
+sin contestar. Red: `tests/timers-unref-conducta.test.js`, que afirma la agrupación por
+CONDUCTA (tres mensajes → un turno, ventana que se reinicia con cada uno, y un CONTROL de que
+no agrupa de más).
+
 Línea base con la que comparar: **OK 84 · GAP 9 · BUG 0**. Los GAP son deficiencias medidas,
 no regresiones. `verify:sante` sale **entero en verde** (los 4 fallos que arrastraba eran del
 test, no del sistema: 3 horarios copiados de la migración y un plural — ver abajo).

@@ -1312,3 +1312,39 @@ Red: `tests/borrado-contacto-panel.test.js`, con tres sabotajes vistos en rojo (
 el cero inventado y la alternativa) y dos bloques CONTROL que impiden que el arreglo se pase de
 ancho: que no se prometa que el borrado va a salir bien (un cobro en caja lo rechaza con 409) y
 que el confirmar siga siendo un solo clic.
+
+### Los dos `setTimeout` que también retenían el proceso (15/08/2026)
+
+`#timers-unref` cubrió los `setInterval` de MÓDULO y dejó fuera dos `setTimeout` de dentro del
+turno, que hacían lo mismo un piso más abajo:
+
+- **El perdedor del `Promise.race` del LLM** (`bot.js`, 45 s). Cuando responde el modelo —o
+  sea casi siempre— el timer del timeout seguía vivo, con su `ref`, esperando a resolver una
+  promesa que ya nadie mira.
+- **La limpieza del buffer** (`bot.js`, `BUFFER_CLEANUP_TTL_MS`, 60 s), que borra la entrada
+  del Map cuando la conversación queda inactiva.
+
+**Lo que NO se tocó, y es la mitad de la decisión: el timer que AGRUPA.** `buffer.timer`
+(`BUFFER_DELAY_MS`, armado en `handleIncomingMessage` y re-armado tras un flush con
+pendientes) sigue **con `ref`** a propósito: ese tiene que disparar aunque no quede ninguna
+otra razón de seguir vivo, porque dentro hay mensajes de una clienta sin contestar. Un test lo
+vigila explícitamente, contando que solo hay DOS armados y que ninguno lleva unref.
+
+**Coste medido** (dos corridas idénticas, antes y después):
+
+```
+suite completa            224 s → 60 s
+oferta-traspaso            63 s →  3 s
+blacklist-aviso-entrega    60 s →  0 s
+idioma-ucraniano-y-ficha   60 s →  0 s
+```
+
+No era solo `oferta-traspaso`: **cada fichero que conducía un turno real pagaba su propia
+espera de 60 s**, y por eso la suite entera se llevaba 224 s.
+
+La red es `tests/timers-unref-conducta.test.js`, y afirma la AGRUPACIÓN por conducta, no por
+lectura del código: tres mensajes seguidos son un turno con el texto combinado en orden; la
+ventana se reinicia con cada mensaje (probado mandando el tercero DESPUÉS de que la ventana
+original habría vencido — con el log solo no se distinguía); y un bloque CONTROL comprueba que
+mensajes separados por más de la ventana siguen siendo dos turnos. Sabotaje que lo demuestra:
+cambiar el `setTimeout` de agrupación por un `flushBuffer` inmediato deja 1.1 y 1.2 en rojo.

@@ -5472,7 +5472,15 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             });
 
         const TIMED_OUT = {};
-        const timeout = new Promise(resolve => setTimeout(() => resolve(TIMED_OUT), LLM_TIMEOUT_MS));
+        // El PERDEDOR de esta carrera sobrevivía a la carrera. Cuando responde el modelo —o
+        // sea casi siempre— este timer se quedaba 45 s vivo sin que nadie fuera a mirar su
+        // promesa, y con el `ref` puesto: bastaba para que el proceso no pudiera terminar.
+        // No se nota en producción (Express y los clientes WA lo mantienen vivo igual), pero
+        // hacía que cualquier test que condujera un turno real pagase la espera entera.
+        // Con unref dispara EXACTAMENTE igual mientras el proceso viva; solo deja de ser él
+        // la razón de seguir vivo. Es la doctrina de los tres setInterval de módulo, que
+        // había dejado fuera a los setTimeout.
+        const timeout = new Promise(resolve => unrefTimer(setTimeout(() => resolve(TIMED_OUT), LLM_TIMEOUT_MS)));
         const result = await Promise.race([llmPromise, timeout]);
 
         if (result === TIMED_OUT) {
@@ -6644,12 +6652,18 @@ async function flushBuffer(sKey) {
         buffer.timer = setTimeout(() => flushBuffer(sKey), BUFFER_DELAY_MS);
     } else {
         buffer.state = 'idle';
-        setTimeout(() => {
+        // OJO: esto NO agrupa, solo libera memoria de una conversación ya inactiva — el que
+        // agrupa es `buffer.timer` (BUFFER_DELAY_MS), que se re-arma arriba y en
+        // handleIncomingMessage y sigue SIN unref a propósito: ese sí tiene que disparar
+        // aunque no quede nada más vivo, porque dentro hay mensajes de una clienta sin
+        // contestar. Este de 60 s solo borra la entrada del Map, así que con unref hace lo
+        // mismo mientras el proceso viva y deja de retenerlo cuando ya no hay nada que hacer.
+        unrefTimer(setTimeout(() => {
             const b = messageBuffers.get(sKey);
             if (b && b.state === 'idle' && b.texts.length === 0) {
                 messageBuffers.delete(sKey);
             }
-        }, BUFFER_CLEANUP_TTL_MS);
+        }, BUFFER_CLEANUP_TTL_MS));
     }
 }
 
