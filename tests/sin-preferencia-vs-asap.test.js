@@ -219,14 +219,18 @@ test('una respuesta normal no arma ninguna espera', () => {
 
 // El "sí" lo resuelve la MISMA maquinaria que ya usan extensiones/permanente, no una
 // segunda: por eso la oferta se apunta en pendingEscalation y no en un flag paralelo.
+// ACTUALIZADO 15/08/2026: el armado dejó de pasar por offersHumanHandover (solo
+// castellano) y pasa por detectaOfertaTraspaso — la MISMA función que usa el barrido de
+// promesas (anillo 1, commits 64c6291/21e0d45). Este grep se quedó mirando el call site
+// viejo y llevaba npm test en rojo desde ese refactor.
 test('la oferta se apunta en pendingEscalation, y el bloque que lo consume sigue ahí', () => {
     const BOT = require('fs').readFileSync(require('path').join(__dirname, '..', 'bot.js'), 'utf8');
-    assert.ok(/offersHumanHandover\(aiResponse\.respuesta\)/.test(BOT), 'se mira sobre el texto final');
+    assert.ok(/detectaOfertaTraspaso\(aiResponse\.respuesta\)/.test(BOT), 'se mira sobre el texto final');
     assert.ok(/session\.pendingEscalationService = 'traspaso'/.test(BOT));
     assert.ok(/if \(orgType === 'salon' && session\.pendingEscalation\)/.test(BOT),
         'el bloque determinista que resuelve el sí/no debe seguir existiendo');
     // Y no se arma si ya se está escalando en este turno.
-    assert.ok(/aiResponse\.accion !== 'escalar_humano'\s*\n\s*&& !session\.pendingEscalation && offersHumanHandover/.test(BOT));
+    assert.ok(/aiResponse\.accion !== 'escalar_humano'\s*\n\s*&& !session\.pendingEscalation && detectaOfertaTraspaso/.test(BOT));
 });
 
 // ─── 5. Los huecos reales que el bot no vio ───────────────────────────────────
