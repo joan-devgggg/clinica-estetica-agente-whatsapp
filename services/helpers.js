@@ -1977,7 +1977,11 @@ const SEPARADOR_DIAS = String.raw`(?:,|y|o|or|and|или|и|та|чи)`;
  * choca con la selección de hueco por número, y el fallo que esto viene a cazar siempre trae
  * el mes porque el bot está proponiendo fechas de calendario.
  */
-function extractMentionedDates(text) {
+function extractMentionedDates(text, refNow = null) {
+    // `refNow` (opcional): el instante que cuenta como HOY al resolver «28 de agosto» a una
+    // fecha concreta. Sin él (todos los call sites de producción) se usa el reloj real. Lo
+    // necesita el corpus de oro: un turno congelado de agosto de 2026 rejugado meses después
+    // resolvería sus fechas contra el año siguiente y caducaría solo.
     if (!text) return [];
     const t = normalizeText(text);
     const esLetra = c => !!c && /\p{L}/u.test(c);
@@ -2006,7 +2010,7 @@ function extractMentionedDates(text) {
 
             for (const dom of dias) {
                 if (dom < 1 || dom > 31) continue;
-                const f = resolveUpcomingDate(dom, mesIdx);
+                const f = resolveUpcomingDate(dom, mesIdx, refNow);
                 if (f) fechas.add(f);
             }
         }
@@ -2069,8 +2073,10 @@ function extractDatePreferenceSante(t) {
 }
 
 // Resuelve un día del mes (y mes opcional) a la próxima fecha YYYY-MM-DD a partir de hoy.
-function resolveUpcomingDate(dom, month) {
-    const now = new Date();
+// `refNow` (opcional) sustituye a «hoy» — lo usa el corpus de oro para rejugar turnos
+// congelados sin que sus fechas caduquen al cambiar el calendario real.
+function resolveUpcomingDate(dom, month, refNow = null) {
+    const now = refNow != null ? new Date(refNow) : new Date();
     now.setHours(0, 0, 0, 0);
     for (let i = 0; i < 366; i++) {
         const d = new Date(now);

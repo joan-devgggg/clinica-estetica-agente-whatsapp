@@ -1384,8 +1384,11 @@ function respondsWithInventedSlots(respuesta, availableSlots, horasHorario = nul
 // Olga porque el sustituto no pierde información: allí el mensaje bloqueado era el ÚNICO que
 // contestaba a la pregunta.
 function respondsWithInventedDates(respuesta, availableSlots, opts = {}) {
-    const { citasVivas = [] } = opts;
-    let fechas = extractMentionedDates(respuesta);
+    // `refNow` (opcional) viaja hasta extractMentionedDates: es el «hoy» con el que se
+    // resuelven las fechas del texto. Producción no lo pasa (reloj real); el corpus de oro
+    // sí, para que un turno congelado no caduque al cambiar el calendario.
+    const { citasVivas = [], refNow = null } = opts;
+    let fechas = extractMentionedDates(respuesta, refNow);
     if (!fechas.length) return false;
 
     const suyas = new Set((citasVivas || []).map(c => c && c.fecha).filter(Boolean));
@@ -7004,6 +7007,11 @@ module.exports = {
     extractSentMessageId,
     // Exportados para tests unitarios (lógica pura de selección/confirmación de huecos):
     _internals: { parseSlotSelection, normalizeHora, resolveSalonConfirmation, llmClaimsBooked,
+        // Corpus de oro (tests/corpus-oro.test.js): estas tres se exportan para rejugar
+        // turnos reales contra el detector REAL — recomponer blockPhantomBookingClaim con
+        // sus piezas sería reimplementar la orquestación, que es la trampa de
+        // caja-pendientes. No cambian de contrato por estar aquí.
+        blockPhantomBookingClaim, statesOpeningHours, messageHasDateWithoutTime,
         respondsWithInventedSlots, respondsWithInventedDates, proposesTimingWithoutService, soloDeclaraHorarioDelSalon, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonVariasPersonasMsg, respondsWithUnbackedPrice, salonPrecioNoCasaMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover, offersHumanHandover, ensureHandoverAcknowledged, HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, porTrato,
