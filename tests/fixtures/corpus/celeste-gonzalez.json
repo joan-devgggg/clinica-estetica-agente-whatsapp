@@ -1,0 +1,154 @@
+{
+  "_meta": {
+    "NO_ES_LA_CONVERSACION_VIVA": "Foto de `messages` tomada el 2026-08-15. No se sincroniza.",
+    "contacto": "Celeste González",
+    "wa_phone": "34603734833",
+    "contact_id": "b69fe690-b2f8-4c3b-91ef-220267eb5ae8",
+    "rango": ["2026-08-06T11:00:31.146Z", "2026-08-06T11:12:16.736Z"],
+    "auditoria_origen": "docs/auditoria-conversaciones-sante-2026-08-09.html · docs/incidentes-cerrados.md (Celeste) · tests/promesas-audit.test.js",
+    "idioma": "es",
+    "verificado_el": "2026-08-15",
+    "verificado_como": "la fila de la Consulta existe con source:'bot', creada a las 11:03:59 — DESPUÉS de la pregunta de aprobación (11:03:40) y ANTES de la afirmación de reserva (11:04:01). La confirmación del turno 7 estaba respaldada por estado en el instante de decirse."
+  },
+  "business_hours": {
+    "lunes": { "apertura": "10:00", "cierre": "19:00" },
+    "martes": { "apertura": "10:00", "cierre": "19:00" },
+    "miercoles": { "apertura": "10:00", "cierre": "19:00" },
+    "jueves": { "apertura": "10:00", "cierre": "19:00" },
+    "viernes": { "apertura": "10:00", "cierre": "19:00" },
+    "sabado": { "apertura": "10:00", "cierre": "19:00" }
+  },
+  "anclas": {
+    "citas": [
+      {
+        "id": "cita-celeste-consulta",
+        "service": "Consulta",
+        "starts_at": "2026-08-12T11:00:00Z",
+        "ends_at": "2026-08-12T12:00:00Z",
+        "status": "cancelled",
+        "source": "bot",
+        "created_at": "2026-08-06T11:03:59.557Z",
+        "stylist": "Natalia",
+        "stylist_id": "c3d4-0107",
+        "nota": "11:00Z = 13:00 hora de Madrid: casa con el «a las 13:00» de los turnos 6 y 7. Cancelada por el bot en el turno 8 (updated_by:'bot' en la fila viva). El estado final cancelled no borra que EXISTÍA viva entre 11:03:59 y 11:05:02."
+      }
+    ],
+    "pending_actions": [],
+    "nota_pending": "La oferta de traspaso del turno 10 quedó SIN respuesta: que no haya fila es lo correcto (la fila se escribe con el «sí»), y por eso el turno 10 es dirección 1, no un fallo."
+  },
+  "turnos": [
+    {
+      "n": 1,
+      "ts": "2026-08-06T11:00:41.268Z",
+      "entrante": ["Buenas me gustaría hacer una consulta , gracias"],
+      "saliente": "¡Hola! Bienvenida a Santé 😊 ¿Cómo te llamas?",
+      "clase": "neutro"
+    },
+    {
+      "n": 2,
+      "ts": "2026-08-06T11:01:08.507Z",
+      "entrante": ["Celeste"],
+      "saliente": "Encantada, Celeste. ¿Me dices también tu apellido, porfa?",
+      "clase": "neutro"
+    },
+    {
+      "n": 3,
+      "ts": "2026-08-06T11:01:32.688Z",
+      "entrante": ["Celeste González"],
+      "saliente": "Perfecto, Celeste González 😊 La consulta de valoración dura 20 minutos y allí te asesoramos sobre qué servicio te vendría mejor. ¿Qué día te va bien?",
+      "clase": "correcto_anclado",
+      "ancla": "El servicio del que habla acabó ESCRITO: anclas.citas[0].service = 'Consulta'. Con servicio en sesión, preguntar el día es legítimo.",
+      "estado": {
+        "session": { "selectedService": { "nombre": "Consulta", "categoria": "Consulta", "precio": null, "duracion": 60 } },
+        "procedencia_estado": "selectedService desde anclas.citas[0] (la fila prueba que la conversación giraba sobre la Consulta); no es reconstruible por Tier-1 (detectConsultaValoracion no casa «hacer una consulta» a secas)."
+      },
+      "espera": [
+        { "detector": "proposesTimingWithoutService", "sobre": "saliente", "resultado": false,
+          "nota": "Dirección 1 contra la red de Michal: «¿Qué día te va bien?» CON servicio no puede comerse." }
+      ]
+    },
+    {
+      "n": 4,
+      "ts": "2026-08-06T11:02:04.344Z",
+      "entrante": ["Entre un miércoles a jueves"],
+      "saliente": "Tengo huecos el miércoles 12 de agosto o el miércoles 19 de agosto. ¿Cuál prefieres?",
+      "excluido": { "motivo": "El veredicto depende de qué availableSlots había cargados ESE instante (¿existía de verdad hueco el 19?), y ese estado no se conserva. Solo el 12 dejó fila. No se aproxima: fuera." }
+    },
+    {
+      "n": 5,
+      "ts": "2026-08-06T11:02:46.426Z",
+      "entrante": ["12 de agosto"],
+      "saliente": "Perfecto. El miércoles 12 tienes estas opciones: 10:00, 10:30, 11:00, 11:30, 12:00, 12:30, 13:00, 13:30, 14:00, 14:30, 15:00, 15:30, 16:00, 16:30, 17:00 o 17:30. ¿Cuál te viene mejor?",
+      "excluido": { "motivo": "16 horas ofrecidas contra una agenda cuyo estado de ese instante no se conserva. Solo la de las 13:00 quedó probada por la fila. Fuera." }
+    },
+    {
+      "n": 6,
+      "ts": "2026-08-06T11:03:40.179Z",
+      "entrante": ["13:00"],
+      "saliente": "¿Te va bien el miércoles 12 de agosto a las 13:00 con Natalia?",
+      "clase": "correcto_anclado",
+      "ancla": "La 13:00 del 12/08 con Natalia era un hueco REAL: se reservó 19 s después y la fila lo dice (fecha, hora local y estilista casan con anclas.citas[0]).",
+      "estado": {
+        "availableSlots": [ { "fecha": "2026-08-12", "hora": "13:00", "stylistName": "Natalia" } ],
+        "procedencia_estado": "availableSlots reconstruido desde anclas.citas[0]: el hueco existió porque se escribió. Solo se reconstruye el hueco PROBADO, no la lista entera del turno 5.",
+        "session": { "selectedService": { "nombre": "Consulta", "categoria": "Consulta", "precio": null, "duracion": 60 } }
+      },
+      "espera": [
+        { "detector": "asksForBookingApproval", "sobre": "saliente", "resultado": true,
+          "nota": "Es una PREGUNTA («¿Te va bien…?»), no una afirmación. La exención que faltó tres veces." },
+        { "detector": "llmClaimsBooked", "sobre": "saliente", "resultado": false },
+        { "detector": "respondsWithInventedSlots", "sobre": "saliente", "resultado": false,
+          "nota": "La 13:00 casa con el hueco anclado: la red no puede comerse la propuesta buena." }
+      ]
+    },
+    {
+      "n": 7,
+      "ts": "2026-08-06T11:04:01.954Z",
+      "entrante": ["Si"],
+      "saliente": "✅ Perfecto, Celeste González. Cita reservada:\n\n📅 Miércoles 12 de agosto a las 13:00\n✂️ Consulta de valoración (20 min) con Natalia\n💰 El precio se confirma en el salón según lo que decidas\n📍 Calle San Juan Bosco 14, Alicante 03005\n\n🙏 Si necesitas cancelar o cambiar, avísanos con 48h de antelación.\n\n✨ Y una novedad para nuestras clientas: ahora tenemos Spa Hair Capilar y Masajes. En tu primera visita a cualquiera de los dos tienes un 10% de descuento, por si te apetece probarlo algún día 💛\n\n¿Algo más en lo que pueda ayudarte?",
+      "clase": "correcto_anclado",
+      "ancla": "«Cita reservada» con la fila YA escrita (created_at 11:03:59 < ts 11:04:01, source:'bot'). El fixture de oro de la exención de la red anti-fantasma: afirmar una reserva que EXISTE no se rectifica.",
+      "estado": {
+        "citasReales": [ { "id": "cita-celeste-consulta", "service": "Consulta", "starts_at": "2026-08-12T11:00:00Z", "ends_at": "2026-08-12T12:00:00Z", "status": "confirmed", "stylist_id": "c3d4-0107", "stylists": { "name": "Natalia" }, "nota": "status como estaba EN ESE INSTANTE (viva); la cancelación llegó un minuto después" } ],
+        "availableSlots": [ { "fecha": "2026-08-12", "hora": "13:00", "stylistName": "Natalia" } ],
+        "session": { "selectedService": { "nombre": "Consulta", "categoria": "Consulta", "precio": null, "duracion": 60 } }
+      },
+      "espera": [
+        { "detector": "llmClaimsBooked", "sobre": "saliente", "resultado": true },
+        { "detector": "blockPhantomBookingClaim", "sobre": "saliente", "resultado": false,
+          "nota": "Con la fila en la BD (estado.citasReales), la hora anunciada (13:00 local) tiene respaldo y la red NO sustituye. Verificado contra el detector real vía db.getUpcomingAppointments sobre el doble de Supabase." }
+      ]
+    },
+    {
+      "n": 8,
+      "ts": "2026-08-06T11:05:02.940Z",
+      "entrante": ["No entiendo", "Cancélala", "Muchas gracias. Y que pena"],
+      "saliente": "Tu cita ha sido cancelada ✅ Si quieres reservar otra, dímelo cuando quieras 😊",
+      "clase": "correcto_anclado",
+      "ancla": "La cancelación afirmada está ESCRITA: anclas.citas[0].status = 'cancelled', updated_by 'bot'.",
+      "espera": [
+        { "detector": "detectCancelRequest", "sobre": "entrante:1", "resultado": { "fuerza": "explicita" },
+          "nota": "«Cancélala» con enclítico ENUMERADO (-la): el camino determinista de cancelación la ve. Dirección 2 del detector de entrada." }
+      ]
+    },
+    {
+      "n": 9,
+      "ts": "2026-08-06T11:05:12.267Z",
+      "entrante": [],
+      "saliente": "De nada, Celeste 💛 Si en otro momento quieres venir, aquí estamos. ¡Que vaya todo bien!",
+      "clase": "neutro"
+    },
+    {
+      "n": 10,
+      "ts": "2026-08-06T11:12:16.736Z",
+      "entrante": ["Me gustaría sacarme el color negro del cabello"],
+      "saliente": "Entiendo, eso requiere una valoración personalizada para ver el estado de tu cabello 😊 ¿Quieres que te ponga en contacto con una especialista para que valore tu caso?",
+      "clase": "correcto_anclado",
+      "ancla": "Oferta de traspaso SIN respuesta: no hay fila en pending_actions y no debe haberla (la fila la escribe el «sí»). Lo afirmable es que la oferta SE VE — es lo que arma pendingEscalation para que un «sí» posterior no se evapore como el de Estefania.",
+      "espera": [
+        { "detector": "detectaOfertaTraspaso", "sobre": "saliente", "resultado": true },
+        { "detector": "ofertaTraspasoEnPregunta", "sobre": "saliente", "resultado": true }
+      ]
+    }
+  ]
+}

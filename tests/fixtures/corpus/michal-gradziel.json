@@ -1,0 +1,124 @@
+{
+  "_meta": {
+    "NO_ES_LA_CONVERSACION_VIVA": "Foto de `messages` tomada el 2026-08-15. No se sincroniza.",
+    "contacto": "Michal Gradziel",
+    "wa_phone": "447432204269",
+    "contact_id": "e0ed2969-b18b-4c70-bf21-e4eb8f24f389",
+    "rango": ["2026-08-07T11:04:54.230Z", "2026-08-07T11:10:26.082Z"],
+    "auditoria_origen": "docs/incidentes-cerrados.md#michal-y-esther · el comentario de proposesTimingWithoutService en bot.js nació de ESTA conversación",
+    "idioma": "en",
+    "verificado_el": "2026-08-15",
+    "verificado_como": "selectedService estuvo a null de principio a fin: lo prueban dos fósiles del propio sistema en messages (turno 7: «I don't have the available slots loaded» = la red de huecos disparando sobre agenda vacía; turno 9: «I first need to know which service» = la guarda de carga exigiendo servicio). La cita se creó desde el PANEL a las 11:19:26 (source:manual), 9 min después del último mensaje."
+  },
+  "business_hours": {
+    "lunes": { "apertura": "10:00", "cierre": "19:00" },
+    "martes": { "apertura": "10:00", "cierre": "19:00" },
+    "miercoles": { "apertura": "10:00", "cierre": "19:00" },
+    "jueves": { "apertura": "10:00", "cierre": "19:00" },
+    "viernes": { "apertura": "10:00", "cierre": "19:00" },
+    "sabado": { "apertura": "10:00", "cierre": "19:00" }
+  },
+  "anclas": {
+    "citas": [
+      { "service": "Deco Total Blond Corto", "starts_at": "2026-08-10T09:00:00Z", "status": "completed", "source": "manual", "created_at": "2026-08-07T11:19:26.000Z", "stylist": "Natalia", "nota": "Creada desde el panel 9 min después de que la conversación muriera. Que la ATENDIERON está probado por esta fila (positivo); sobre el silencio de messages no se afirma nada." }
+    ],
+    "pending_actions": []
+  },
+  "turnos": [
+    {
+      "n": 1,
+      "ts": "2026-08-07T11:04:54.939Z",
+      "entrante": ["Hi! That’s my hair in natural light, really dark", "[image]"],
+      "saliente": "No puedo ver fotos ni vídeos 😅 ¿Me describes con palabras qué te quieres hacer (corte, color, largo)? Así te busco hueco.",
+      "excluido": { "motivo": "Turno de MEDIA: la foto se contestó aparte y en castellano (el bug de cascada de idioma, arreglado y cubierto por tests/inbound-media-engine.test.js). Rejugarlo exige el motor de media, no los detectores de texto." }
+    },
+    {
+      "n": 2,
+      "ts": "2026-08-07T11:05:02.443Z",
+      "entrante": [],
+      "saliente": "Hi! Your hair looks beautiful 😊 What can we do for you today?",
+      "clase": "neutro",
+      "estado": { "session": { "selectedService": null } }
+    },
+    {
+      "n": 3,
+      "ts": "2026-08-07T11:06:16.083Z",
+      "entrante": ["I was thinking of that shade. Kind of icy, near platinum, not too warm or gold / honey as my complexion has pink shades that wouldn’t work well"],
+      "saliente": "That sounds gorgeous! So you're looking for a cool, platinum blonde that complements your skin tone. Are you thinking of going for that shade all over, or just highlights?",
+      "clase": "neutro",
+      "estado": { "session": { "selectedService": null } }
+    },
+    {
+      "n": 4,
+      "ts": "2026-08-07T11:06:25.082Z",
+      "entrante": ["I know it’s a challenge!"],
+      "saliente": "It definitely is, but we've got the right specialists for it! So, all over or highlights to start?",
+      "clase": "neutro",
+      "estado": { "session": { "selectedService": null } }
+    },
+    {
+      "n": 5,
+      "ts": "2026-08-07T11:07:02.397Z",
+      "entrante": ["All over. I’m getting a cut today so it’ll be a little shorter than in the photo"],
+      "saliente": "Perfect! So you want a full platinum blonde. When are you thinking — today, or another day this week?",
+      "clase": "fallo_anclado",
+      "ancla": "Preguntar el CUÁNDO con selectedService a null: el fallo del que nació proposesTimingWithoutService. El null está anclado por los dos fósiles del sistema (ver _meta) — «platinum blonde» nunca resolvió contra el catálogo en castellano.",
+      "estado": { "session": { "selectedService": null, "reservaConfirmada": false } },
+      "espera": [
+        { "detector": "proposesTimingWithoutService", "sobre": "saliente", "resultado": true,
+          "nota": "«When are you thinking … this week» sin servicio: hoy la red lo intercepta y pide el servicio en su lugar." }
+      ]
+    },
+    {
+      "n": 6,
+      "ts": "2026-08-07T11:07:42.290Z",
+      "entrante": ["Do you have slots on Monday next week? August 10"],
+      "saliente": "Monday August 10 works! What time suits you best — morning or afternoon?",
+      "clase": "fallo_anclado",
+      "ancla": "Acepta una fecha de calendario («August 10 works!») con la agenda SIN consultar — el fósil del turno siguiente prueba que no había un solo hueco cargado. Dos redes lo ven hoy.",
+      "estado": {
+        "availableSlots": [],
+        "citasVivas": [],
+        "session": { "selectedService": null, "reservaConfirmada": false },
+        "procedencia_estado": "availableSlots [] anclado por el fósil del turno 7 (salonNoSlotsMsg: la propia producción declaró la agenda vacía)."
+      },
+      "espera": [
+        { "detector": "proposesTimingWithoutService", "sobre": "saliente", "resultado": true },
+        { "detector": "respondsWithInventedDates", "sobre": "saliente", "resultado": true,
+          "nota": "Fecha mencionada con agenda sin consultar: «cualquier día es humo». refNow = ts del turno, para que «August 10» resuelva al 2026-08-10 de entonces y no caduque." }
+      ]
+    },
+    {
+      "n": 7,
+      "ts": "2026-08-07T11:08:03.014Z",
+      "entrante": ["We could do morning"],
+      "saliente": "Great! Unfortunately I don't have the available slots loaded for that day yet. What time in the morning would work best for you — around 10, 11, or 12?",
+      "excluido": { "motivo": "FÓSIL: la primera frase es la red de huecos admitiendo agenda vacía (texto del sistema), y la segunda el modelo ofreciendo «around 10, 11, or 12» sobre esa nada — el caso que enseñó a extractLooseClockHours a leer horas sin minutos. Como turno no se rejuega (texto mixto sistema+LLM); como ANCLA prueba availableSlots=[] para los turnos 6 y 8." }
+    },
+    {
+      "n": 8,
+      "ts": "2026-08-07T11:08:35.010Z",
+      "entrante": ["I’m fine with anything. 10 or 11 maybe?"],
+      "saliente": "Perfect! Let me get you sorted with our colorist. Do you have a stylist you've worked with before, or should I find you the best available slot?",
+      "clase": "neutro",
+      "estado": { "session": { "selectedService": null } },
+      "nota": "Pregunta por estilista sin proponer hora ni día: sin dato duro. (Que siguiera sin servicio a estas alturas es el fallo de FLUJO ya cubierto por el turno 5 y 6; este texto en sí no afirma nada falso.)"
+    },
+    {
+      "n": 9,
+      "ts": "2026-08-07T11:09:32.009Z",
+      "entrante": ["Best available, my first time colouring my hair at all"],
+      "saliente": "To check availability I first need to know which service you'd like 😊 What are you after?",
+      "excluido": { "motivo": "FÓSIL: es la guarda de carga de huecos exigiendo servicio (texto del sistema, no del LLM). Prueba selectedService=null para toda la conversación; como turno no hay nada del modelo que juzgar." }
+    },
+    {
+      "n": 10,
+      "ts": "2026-08-07T11:10:26.082Z",
+      "entrante": ["We’ve just discussed this: colouring my hair from dark to cool platinum"],
+      "saliente": "You're right, my apologies! So full platinum blonde — that's a decolorisation. Is your hair short, medium, long, or very long?",
+      "clase": "neutro",
+      "estado": { "session": { "selectedService": null } },
+      "nota": "Pregunta el largo (paso correcto para una decoloración: Deco Total Blond va por tramos Corto/Medio/Largo/XL en el catálogo, y la cita real acabó siendo «Deco Total Blond Corto»). Sin dato duro que anclar: neutro."
+    }
+  ]
+}

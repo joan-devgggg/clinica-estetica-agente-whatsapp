@@ -1,0 +1,58 @@
+{
+  "_meta": {
+    "NO_ES_LA_CONVERSACION_VIVA": "Foto de `messages` tomada el 2026-08-15. No se sincroniza.",
+    "contacto": "Ludmila Zarahovich",
+    "wa_phone": "380674482502",
+    "contact_id": "c91394e7-e78d-47ca-a655-e004f8175580",
+    "rango": ["2026-08-03T09:29:34.593Z", "2026-08-03T09:34:09.203Z"],
+    "auditoria_origen": "docs/auditoria-conversaciones-sante-2026-08-09.html (causa 1: la cita más cara del periodo, creada a mano) · el comentario de respondsWithInventedDates en bot.js nació de ESTA conversación",
+    "idioma": "ru",
+    "verificado_el": "2026-08-15",
+    "verificado_como": "DOCUMENTO DEL FILTRO, no test: los 4 turnos están excluidos. Este fixture existe para que la exclusión sea visible y ninguna auditoría futura los recicle sin querer. El runner los cuenta y no ejecuta nada.",
+    "por_que_entera_fuera": "Los cuatro salientes niegan o proponen DÍAS contra la disponibilidad de ese instante, y el historial de appointments/schedule_blocks no conserva estados pasados (los status cambian, last_change guarda solo el último). No se puede afirmar con honestidad ni que las negaciones fueran mentira ni que fueran verdad. Lo que SÍ quedó probado: la clienta pidió el 28 desde el primer mensaje, se le negaron 28, 27 y 29, y una persona le creó a mano la cita del 28 (source:manual, created_at 10:43 — 70 min después). La protección de esta familia es la propia respondsWithInventedDates, cubierta por tests/fechas-inventadas.test.js con estos mismos textos como material sintético."
+  },
+  "business_hours": {
+    "lunes": { "apertura": "10:00", "cierre": "19:00" },
+    "martes": { "apertura": "10:00", "cierre": "19:00" },
+    "miercoles": { "apertura": "10:00", "cierre": "19:00" },
+    "jueves": { "apertura": "10:00", "cierre": "19:00" },
+    "viernes": { "apertura": "10:00", "cierre": "19:00" },
+    "sabado": { "apertura": "10:00", "cierre": "19:00" }
+  },
+  "anclas": {
+    "citas": [
+      { "service": "Color raíz + Ampolla cuidado + Retocar mujer + Mechas 3", "starts_at": "2026-08-28T10:00:00Z", "status": "confirmed", "source": "manual", "created_at": "2026-08-03T10:43:50.446Z", "stylist": "Veronika", "nota": "El 28 que pidió desde el principio, creado a mano 70 min después de que el bot se lo negara tres veces." }
+    ],
+    "pending_actions": []
+  },
+  "turnos": [
+    {
+      "n": 1,
+      "ts": "2026-08-03T09:29:44.905Z",
+      "entrante": ["День добрый. Прошу записать меня к Веронике на 28 августа на послеобеденное время. Можно предложить пару вариантов. Процедура - прикорневое  окрашивание + мелирование. Спасибо"],
+      "saliente": "Добрый день! 😊 К сожалению, у меня нет свободных окон на 28 августа. Ближайшие доступные дни с Вероникой — 27, 29 или 30 августа. Какой из этих дней вам подойдёт?",
+      "excluido": { "motivo": "Niega el 28 y ofrece 27/29/30 contra una disponibilidad cuyo estado de ese instante no se conserva. Veredicto no anclable." }
+    },
+    {
+      "n": 2,
+      "ts": "2026-08-03T09:32:23.968Z",
+      "entrante": ["27 августа"],
+      "saliente": "Какой день или неделя тебе удобнее? Посмотрю реальные свободные окошки 😊",
+      "excluido": { "motivo": "Pregunta el día tras habérselo dicho ella dos veces: pérdida de contexto del estado del LLM, no reconstruible ni anclable." }
+    },
+    {
+      "n": 3,
+      "ts": "2026-08-03T09:33:27.617Z",
+      "entrante": ["Мне удобно на 27 августа"],
+      "saliente": "К сожалению, на 27 августа у меня нет свободных окон с Вероникой. Ближайшие доступные дни — 29 или 30 августа. Какой из них вам подойдёт?",
+      "excluido": { "motivo": "Misma familia que el turno 1: negación + oferta de días sin estado de agenda reconstruible." }
+    },
+    {
+      "n": 4,
+      "ts": "2026-08-03T09:34:09.203Z",
+      "entrante": ["Мне подойдет29 августа"],
+      "saliente": "К сожалению, на 29 августа у меня тоже нет свободных окон с Вероникой. Ближайший доступный день — 4 августа (завтра) или 11 августа. Какой вам удобнее?",
+      "excluido": { "motivo": "Tercera negación con «завтра» incluido. Mismo motivo. La fila del 28 creada a mano 70 min después sugiere que las negaciones eran falsas, pero SUGERIR no es el estándar de este corpus." }
+    }
+  ]
+}

@@ -1,0 +1,191 @@
+{
+  "_meta": {
+    "NO_ES_LA_CONVERSACION_VIVA": "Foto de `messages` tomada el 2026-08-15. No se sincroniza.",
+    "contacto": "Mafe Alayon",
+    "wa_phone": "34656332064",
+    "contact_id": "9e762bc8-1287-4b04-ab63-7a1370f8a16f",
+    "rango": ["2026-08-08T09:08:03.217Z", "2026-08-12T11:43:16.691Z"],
+    "auditoria_origen": "docs/observaciones-para-proxima-auditoria.md (los 4 hallazgos de Mafe) · tests/promesas-audit.test.js · escenarios 26 y 27 del arnés LLM",
+    "idioma": "es",
+    "verificado_el": "2026-08-15",
+    "verificado_como": "las DOS escaladas de Mafe FUNCIONARON y están escritas: pending_actions del 08/08 (consulta_permanente, creada 2 s antes del acuse) y del 12/08 (consulta_dato_no_disponible, 96 s tras la oferta y 1,7 s antes del acuse), ambas resueltas. Y su cita (Anti-encrespamiento Largo, 15/08) existe. Los turnos de escalada son dirección 1."
+  },
+  "business_hours": {
+    "lunes": { "apertura": "10:00", "cierre": "19:00" },
+    "martes": { "apertura": "10:00", "cierre": "19:00" },
+    "miercoles": { "apertura": "10:00", "cierre": "19:00" },
+    "jueves": { "apertura": "10:00", "cierre": "19:00" },
+    "viernes": { "apertura": "10:00", "cierre": "19:00" },
+    "sabado": { "apertura": "10:00", "cierre": "19:00" }
+  },
+  "anclas": {
+    "citas": [
+      { "service": "Anti-encrespamiento Largo + Difuminado de raíz", "starts_at": "2026-08-15T08:00:00Z", "status": "confirmed", "source": "manual", "created_at": "2026-08-12T12:37:14.135Z", "stylist": "Irina", "nota": "El largo que el bot dedujo en el turno 12 («eso es cabello largo») acabó escrito: la cita es del tramo Largo." }
+    ],
+    "pending_actions": [
+      { "type": "escalation", "status": "resolved", "created_at": "2026-08-08T09:08:54.559Z", "payload_motivo": "consulta_permanente", "nota": "2 s ANTES del acuse del turno 2." },
+      { "type": "escalation", "status": "resolved", "created_at": "2026-08-12T11:29:09.693Z", "payload_motivo": "consulta_dato_no_disponible", "nota": "96 s tras la oferta del turno 14, 1,7 s antes del acuse del turno 15." }
+    ]
+  },
+  "replay": {
+    "tipo": "consulta_si_escala",
+    "nota": "El par del 08/08 rejugado por el arnés real: (1) el entrante de la permanente dispara detectConsultaService ANTES del LLM y el bot responde él solo con la plantilla — byte-idéntica al saliente guardado en messages (bot.js:4741); (2) «Si por favor gracias» ejecuta la escalada: INSERT en pending_actions y un acuse de traspaso. MEDIDO 15/08: el TEXTO del acuse ya no es el «En breve…» de agosto (hoy sale el HANDOVER_ACUSE unificado), así que el runner afirma la CONDUCTA (announcesHumanHandover) y no la redacción — la foto congelada del acuse quedó como registro histórico en el turno 2, no como aserción. Cero LLM en los dos turnos.",
+    "turno_consulta": { "entrante": "Hola buen día, me gustaría hacerme un tratamiento capilar en donde mi cabello quede liso permanente, tipo como una keratina", "saliente_esperado": "La permanente requiere una valoración personalizada 😊 ¿Quieres que te ponga en contacto con una de nuestras especialistas?" },
+    "turno_si": { "entrante": "Si por favor gracias", "saliente_historico_2026_08_08": "Perfecto 🙏 En breve una de nuestras especialistas se pondrá en contacto contigo." }
+  },
+  "turnos": [
+    {
+      "n": 1,
+      "ts": "2026-08-08T09:08:09.038Z",
+      "entrante": ["Hola buen día, me gustaría hacerme un tratamiento capilar en donde mi cabello quede liso permanente, tipo como una keratina"],
+      "saliente": "La permanente requiere una valoración personalizada 😊 ¿Quieres que te ponga en contacto con una de nuestras especialistas?",
+      "clase": "correcto_anclado",
+      "ancla": "El saliente ES la plantilla determinista de bot.js:4741 (fósil: aquel día ya respondió el gate, no el LLM) y la oferta se ve — el «sí» de 39 s después dejó fila (anclas.pending_actions[0]).",
+      "espera": [
+        { "detector": "detectConsultaService", "sobre": "entrante:0", "resultado": { "type": "permanente" },
+          "nota": "El detector de entrada que armó todo: «liso permanente» → consulta de permanente." },
+        { "detector": "detectaOfertaTraspaso", "sobre": "saliente", "resultado": true }
+      ]
+    },
+    {
+      "n": 2,
+      "ts": "2026-08-08T09:08:56.285Z",
+      "entrante": ["Si por favor gracias"],
+      "saliente": "Perfecto 🙏 En breve una de nuestras especialistas se pondrá en contacto contigo.",
+      "clase": "correcto_anclado",
+      "ancla": "El acuse con la fila YA escrita (anclas.pending_actions[0], 2 s antes). El camino entero se afirma en el replay, byte a byte.",
+      "espera": [
+        { "detector": "isAffirmative", "sobre": "entrante:0", "resultado": true }
+      ]
+    },
+    {
+      "n": 3,
+      "ts": "2026-08-12T07:59:42.753Z",
+      "entrante": ["Hola buen día, me gustaría saber para cuando tienes cita para el alisado?"],
+      "saliente": "¡Hola! Bienvenida a Santé 😊 Antes de buscar disponibilidad, ¿cuál es la longitud de tu cabello: corto, medio o largo?",
+      "clase": "neutro",
+      "estado": { "session": { "selectedService": { "nombre": "Largo", "categoria": "Alisado vegano", "precio": 310, "duracion": 300 } } },
+      "nota": "Pide el largo antes de buscar huecos: el orden correcto. selectedService (la categoría del alisado) desde el ancla de la conversación; sin el largo aún no hay variante."
+    },
+    {
+      "n": 4,
+      "ts": "2026-08-12T08:01:06.687Z",
+      "entrante": ["Ayer he pasado por el salón y me han dicho que me cobran 210€ por realizar el tratamiento"],
+      "saliente": "Eso depende del largo de tu cabello. El alisado vegano cuesta 210€ si es corto, 260€ si es medio y 310€ si es largo. ¿Cuál es tu caso?",
+      "clase": "correcto_anclado",
+      "ancla": "Los tres precios son EXACTAMENTE los del catálogo (Alisado vegano Corto 210 / Medio 260 / Largo 310) y la respuesta NOMBRA los 210 € de ella: salida 'atendido'.",
+      "estado": { "precioPedido": 210 },
+      "espera": [
+        { "detector": "extractPrecioMencionado", "sobre": "entrante:0", "resultado": [210] },
+        { "detector": "respondsWithUnbackedPrice", "sobre": "saliente", "resultado": "atendido",
+          "nota": "Dirección 1 de la red de precio: contestar una cifra con la tabla real que la contiene no puede rectificarse." }
+      ]
+    },
+    {
+      "n": 5,
+      "ts": "2026-08-12T08:02:59.879Z",
+      "entrante": ["Vale, pues ayer hablé con ella, me ha mirado el cabello y me ha dicho eso, en este caso cambia ahora el precio?", "Este es mi cabello"],
+      "saliente": "Para mirarte los huecos primero necesito saber qué servicio quieres 😊 ¿Qué te apetece hacerte?",
+      "excluido": { "motivo": "FÓSIL: es la guarda de servicio (texto del sistema) disparando — y perdiendo el contexto del alisado, que es el hallazgo 1 de observaciones-para-proxima-auditoria.md. Ese fallo es de estado de sesión entre días (no reconstruible con honestidad); como turno no hay texto del LLM que juzgar." }
+    },
+    {
+      "n": 6,
+      "ts": "2026-08-12T09:14:37.057Z",
+      "entrante": ["El de este producto es la keratina , no? \nQuiero que el cabello me quede liso, sin frizz y brillante"],
+      "saliente": "La keratina es un tratamiento diferente. Para dejar el cabello liso sin frizz y brillante tenemos varias opciones: alisado vegano, anti-encrespamiento o tratamientos de hidratación. ¿Te gustaría una consulta para que valoremos cuál es mejor para tu cabello?",
+      "clase": "neutro",
+      "estado": { "session": { "selectedService": null } },
+      "nota": "Nombra tres familias reales del catálogo y ofrece consulta: sin dato duro que anclar."
+    },
+    {
+      "n": 7,
+      "ts": "2026-08-12T10:53:34.285Z",
+      "entrante": ["Mafe"],
+      "saliente": "¡Hola Mafe! Bienvenida a Santé 😊 ¿Me dices también tu apellido, porfa?",
+      "clase": "neutro"
+    },
+    {
+      "n": 8,
+      "ts": "2026-08-12T10:53:53.966Z",
+      "entrante": ["Ah vale claro, si yo le he preguntado por el producto que me has enviado en la foto que sería la keratina", "Alayon"],
+      "saliente": "Ah, entendido. Los productos como la keratina los puedes comprar en nuestra tienda online: https://shhssalon.com/tienda-online-sante-healthy-hair-salon\n\nPero dime, ¿hay algo que quieras hacerte en el salón? Un tratamiento, un corte, color... 😊",
+      "clase": "neutro"
+    },
+    {
+      "n": 9,
+      "ts": "2026-08-12T10:54:03.196Z",
+      "entrante": [],
+      "saliente": "Perfecto, Mafe Alayon 😊 ¿Qué te gustaría hacerte hoy en el salón?",
+      "clase": "neutro"
+    },
+    {
+      "n": 10,
+      "ts": "2026-08-12T10:54:26.456Z",
+      "entrante": ["Si este sería genial, para cuando tendrías disponibilidad?"],
+      "saliente": "Perdona, no entiendo bien. ¿Cuál de nuestros servicios te gustaría? Por ejemplo, un corte, color, mechas, tratamiento... ¿Qué necesitas?",
+      "clase": "neutro",
+      "estado": { "session": { "selectedService": null } },
+      "nota": "«Si este sería genial» perdió el referente (hallazgo 2 de observaciones): pedir aclaración en vez de adivinar es lo correcto y sin dato duro."
+    },
+    {
+      "n": 11,
+      "ts": "2026-08-12T11:22:03.869Z",
+      "entrante": ["Este alisado vegano"],
+      "saliente": "¡Perfecto! ¿Cuánto largo tienes aproximadamente? Corto (hasta hombros), medio (hasta la espalda) o largo (hasta la cintura o más)?",
+      "clase": "neutro",
+      "estado": { "session": { "selectedService": { "nombre": "Largo", "categoria": "Alisado vegano", "precio": 310, "duracion": 300 } } },
+      "nota": "«Este alisado vegano» resuelve por texto (Tier-1) — con servicio en sesión, preguntar el largo es el paso correcto."
+    },
+    {
+      "n": 12,
+      "ts": "2026-08-12T11:23:21.141Z",
+      "entrante": ["Unos centímetros arriba de la cintura"],
+      "saliente": "Eso es cabello largo 😊 El alisado vegano largo cuesta 310€ y dura 5 horas. ¿Tienes estilista de confianza o prefieres que te busque el hueco más cercano disponible?",
+      "clase": "correcto_anclado",
+      "ancla": "«Unos centímetros arriba de la cintura» → nivel 3 (Largo) y la CITA REAL es del tramo Largo (anclas.citas[0]): el mapeo que el bot afirmó acabó escrito. 310 € = catálogo. Es el material real del escenario 26.",
+      "estado": { "precioPedido": null, "procedencia_estado": "los 210 € del turno 4 quedaron atendidos allí ('atendido' limpia la cifra): cadena Tier-1." },
+      "espera": [
+        { "detector": "extractLargoPelo", "sobre": "entrante:0", "resultado": 3,
+          "nota": "El modificador «arriba de» sobre la cintura: tramo 3, no 4. El bucle de 4 a 1 es lo que lo atrapa." },
+        { "detector": "respondsWithUnbackedPrice", "sobre": "saliente", "resultado": "ninguna" }
+      ]
+    },
+    {
+      "n": 13,
+      "ts": "2026-08-12T11:25:34.705Z",
+      "entrante": ["Qué producto sería para la Keratina? \nQue dices que vale 210€ ?"],
+      "saliente": "No tengo a nadie llamada Keratina en el equipo 😊 ¿Te refieres a Irina, Natalia, Veronika o Yulia? Ellas pueden hacerte el alisado vegano. Y los 210€ son para cabello corto; el tuyo es largo, así que son 310€.",
+      "clase": "correcto_anclado",
+      "ancla": "La mitad del PRECIO es impecable: re-pregunta los 210 y la respuesta los nombra y los sitúa (corto vs largo) — 'atendido'. La otra mitad («nadie llamada Keratina», hallazgo 2 de observaciones) es la LIMITACIÓN OBSERVADA: resolveStylistMention sigue leyendo «Keratina» como mención de persona (status unknown) a fecha de 2026-08-15; la vigila el escenario 27 del arnés. No se fija aquí porque fijarla sería proteger el estado actual, no una conducta.",
+      "estado": { "precioPedido": 210 },
+      "espera": [
+        { "detector": "extractPrecioMencionado", "sobre": "entrante:0", "resultado": [210] },
+        { "detector": "respondsWithUnbackedPrice", "sobre": "saliente", "resultado": "atendido" }
+      ]
+    },
+    {
+      "n": 14,
+      "ts": "2026-08-12T11:27:33.683Z",
+      "entrante": ["Cómo te digo, ayer yo me acerqué a salón de SANTE me miraron el cabello y me dijeron que me vale 210€ \nEntonces quiero saber por qué me dicen un precio en el salón y por whatsaap ya me cambias el precio…."],
+      "saliente": "Lamento la confusión, Mafe 😔 Tienes razón en cuestionarlo. Lo mejor es que hables directamente con el equipo del salón para que te confirmen el precio exacto según lo que vieron ayer. ¿Quieres que te ponga en contacto con ellas para que te lo aclaren?",
+      "clase": "correcto_anclado",
+      "ancla": "La oferta de traspaso que SÍ cerró el círculo: 96 s después existe la fila (anclas.pending_actions[1]). Es la oferta con PRONOMBRE como destino («con ellas») que enseñó a ensanchar OFERTA_PRONOMBRE_DESTINO.",
+      "espera": [
+        { "detector": "detectaOfertaTraspaso", "sobre": "saliente", "resultado": true },
+        { "detector": "remisionAlEquipo", "sobre": "saliente", "resultado": true,
+          "nota": "«hables directamente con el equipo» es además la remisión afirmativa — la frase de Estefania, reconocida aquí también." }
+      ]
+    },
+    {
+      "n": 15,
+      "ts": "2026-08-12T11:29:11.433Z",
+      "entrante": ["Si por favor, o que me digas que producto me van aplicar con ese precio"],
+      "saliente": "Perfecto 🙏 En breve una de nuestras especialistas se pondrá en contacto contigo.",
+      "clase": "correcto_anclado",
+      "ancla": "El acuse con la fila escrita 1,7 s antes (anclas.pending_actions[1]). El «sí» de Mafe NO se evaporó — el contraste exacto con el de Estefania.",
+      "espera": [
+        { "detector": "isAffirmative", "sobre": "entrante:0", "resultado": true }
+      ]
+    }
+  ]
+}

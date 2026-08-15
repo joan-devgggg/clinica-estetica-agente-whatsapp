@@ -1,0 +1,122 @@
+{
+  "_meta": {
+    "NO_ES_LA_CONVERSACION_VIVA": "Foto de `messages` tomada el 2026-08-15. No se sincroniza.",
+    "contacto": "Estefania Sanz",
+    "wa_phone": "34670388651",
+    "contact_id": "a01d6ea6-d9cf-4108-94b7-70e382dff223",
+    "rango": ["2026-08-03T10:00:14.152Z", "2026-08-10T08:54:33.240Z"],
+    "auditoria_origen": "docs/auditoria-conversaciones-sante-2026-08-09.html (causa 1) · tests/promesas-audit.test.js (el par remisión + «Claro ☺️», único par entrante/saliente literal del repo)",
+    "idioma": "es",
+    "verificado_el": "2026-08-15",
+    "verificado_como": "pending_actions de este contacto: CERO filas. Esa ausencia es el ancla del fallo del turno 2 — pending_actions no tiene agujero de Coexistence, así que aquí la ausencia SÍ significa."
+  },
+  "business_hours": {
+    "lunes": { "apertura": "10:00", "cierre": "19:00" },
+    "martes": { "apertura": "10:00", "cierre": "19:00" },
+    "miercoles": { "apertura": "10:00", "cierre": "19:00" },
+    "jueves": { "apertura": "10:00", "cierre": "19:00" },
+    "viernes": { "apertura": "10:00", "cierre": "19:00" },
+    "sabado": { "apertura": "10:00", "cierre": "19:00" }
+  },
+  "anclas": {
+    "citas": [
+      { "service": "Corte mujer y peinado Dyson", "starts_at": "2026-08-08T10:30:00Z", "status": "completed", "source": "manual", "created_at": "2026-08-08T09:22:20.686Z", "stylist": "Natalia", "nota": "El corte del que hablaba acabó existiendo — creado a mano días después, fuera de esta conversación." }
+    ],
+    "pending_actions": [],
+    "nota_pending": "AUSENCIA VERIFICADA el 2026-08-15: ni la remisión del turno 1 ni el «Claro ☺️» del turno 2 dejaron fila. Es el fallo C7 del contrato: el sí que se evapora."
+  },
+  "replay": {
+    "tipo": "si_tras_oferta",
+    "nota": "Rejuega el par por el arnés REAL (bot.handleIncomingMessage, LLM stubeado con el saliente histórico): el estado (pendingEscalation) EMERGE del código determinista sobre los textos congelados, no se siembra a mano. Afirma lo que en producción no pasó: tras el «sí», la escalada se ejecuta y se escribe.",
+    "turno_oferta": { "entrante": "Buenos días!!!\nMe gustaría haceros una consulta/petición/favor.\n\nNo sé si sabéis que tengo a mi madre malita. Ha estado en el hospital dos meses y ahora está en casa ya recuperándose pero no puede salir de casa.\n\nEntonces lo que os quería preguntar es si es posible que venga Inna a casa para hacerle un corte (ella es quien le suele cortar el pelo) y cuánto costaría.\n\nMuchas gracias,\nEstefanía", "saliente_llm": "¡Hola Estefanía! Qué me alegra saber que tu madre está en casa recuperándose 💚 Lamento no poder hacer servicios a domicilio, pero te recomiendo que hables directamente con nuestro equipo — ellos podrán valorar tu situación y ver si hay alguna opción. ¿Te paso con alguien del salón?" },
+    "turno_si": { "entrante": "Claro ☺️" }
+  },
+  "turnos": [
+    {
+      "n": 1,
+      "ts": "2026-08-03T10:00:25.071Z",
+      "entrante": ["Buenos días!!!\nMe gustaría haceros una consulta/petición/favor.\n\nNo sé si sabéis que tengo a mi madre malita. Ha estado en el hospital dos meses y ahora está en casa ya recuperándose pero no puede salir de casa.\n\nEntonces lo que os quería preguntar es si es posible que venga Inna a casa para hacerle un corte (ella es quien le suele cortar el pelo) y cuánto costaría.\n\nMuchas gracias,\nEstefanía"],
+      "saliente": "¡Hola Estefanía! Qué me alegra saber que tu madre está en casa recuperándose 💚 Lamento no poder hacer servicios a domicilio, pero te recomiendo que hables directamente con nuestro equipo — ellos podrán valorar tu situación y ver si hay alguna opción. ¿Te paso con alguien del salón?",
+      "clase": "correcto_anclado",
+      "ancla": "La remisión de Estefania es el caso que ENSEÑÓ a detectarla (remisionAlEquipo nació de esta frase): hoy tiene que verse, para que el «sí» del turno siguiente arme.",
+      "espera": [
+        { "detector": "detectaOfertaTraspaso", "sobre": "saliente", "resultado": true },
+        { "detector": "remisionAlEquipo", "sobre": "saliente", "resultado": true }
+      ]
+    },
+    {
+      "n": 2,
+      "ts": "2026-08-03T11:43:49.961Z",
+      "entrante": ["Claro ☺️"],
+      "saliente": "¡Perfecto! ¿Qué servicio necesitas hoy?",
+      "clase": "fallo_anclado",
+      "ancla": "El «sí» a la remisión no escribió NADA (anclas.pending_actions vacío, verificado) y el bot contestó como si nada. La protección de hoy se afirma en el replay: pendingEscalation armado tras el turno 1 y escalada EJECUTADA (INSERT en pending_actions) tras el «Claro ☺️».",
+      "espera": [
+        { "detector": "isAffirmative", "sobre": "entrante:0", "resultado": true }
+      ]
+    },
+    {
+      "n": 3,
+      "ts": "2026-08-03T11:44:29.478Z",
+      "entrante": ["No es para hoy. De momento, necesito saber si es posible y el precio para corte."],
+      "saliente": "Claro, sin problema. ¿El corte es para hombre, para niño o para mujer?",
+      "clase": "neutro"
+    },
+    {
+      "n": 4,
+      "ts": "2026-08-03T11:45:08.092Z",
+      "entrante": ["Es para mujer como os he dicho. Es para mi madre."],
+      "saliente": "Perfecto, para tu madre. ¿Prefiere corte con secado o con peinado Dyson?",
+      "clase": "neutro"
+    },
+    {
+      "n": 5,
+      "ts": "2026-08-03T11:45:40.480Z",
+      "entrante": ["Con secado."],
+      "saliente": "Genial. El corte mujer con secado cuesta 40€ y dura 45 minutos, incluye lavado y secado 😊 ¿Tienes estilista de confianza o prefieres que te busque el hueco más cercano disponible?",
+      "clase": "correcto_anclado",
+      "ancla": "40 € y 45 min = catálogo (Cortes · «Mujer y secado», 40 €/45 min en el fixture). Cifra buena que ninguna red puede comerse.",
+      "estado": { "session": { "selectedService": { "nombre": "Mujer y secado", "categoria": "Cortes", "precio": 40, "duracion": 45 } } },
+      "espera": [
+        { "detector": "extractPrecioMencionado", "sobre": "saliente", "resultado": [40],
+          "nota": "La cifra es VISIBLE para la red de precio — si extractPrecioMencionado se rompe, esta fila cae (sabotaje 3)." },
+        { "detector": "respondsWithUnbackedPrice", "sobre": "saliente", "resultado": "ninguna",
+          "nota": "Sin cifra pedida por la clienta (precioPedido null) la red no tiene nada que contrastar: no interviene." }
+      ]
+    },
+    {
+      "n": 6,
+      "ts": "2026-08-03T13:50:34.753Z",
+      "entrante": ["Pues sería para esta semana o la que viene."],
+      "saliente": "Perfecto, Estefania. ¿Qué servicio te gustaría hacerte?",
+      "clase": "neutro",
+      "estado": { "session": { "selectedService": null } },
+      "nota": "Preguntar el servicio (aunque ya se había dicho — pérdida de contexto real) no es un dato duro inventado: sale barato. La pérdida de contexto es del estado del LLM y no se puede afirmar aquí con honestidad."
+    },
+    {
+      "n": 7,
+      "ts": "2026-08-04T09:52:33.971Z",
+      "entrante": ["¿O mejor sábado por la mañana sería posible?"],
+      "saliente": "Claro, el sábado por la mañana perfecto. ¿Qué servicio necesitas?",
+      "excluido": { "motivo": "Aceptar «el sábado por la mañana» estaba ¿bien o mal? depende de si selectedService seguía vivo en la sesión de producción (viajaba en datos del LLM) y de la agenda de ese instante: ninguno de los dos es reconstruible con honestidad." }
+    },
+    {
+      "n": 8,
+      "ts": "2026-08-04T12:23:58.007Z",
+      "entrante": ["¿12:30h podría ser? ☺️"],
+      "saliente": "Claro, pero primero cuéntame qué servicio quieres hacerte el sábado 😊",
+      "clase": "neutro",
+      "estado": { "session": { "selectedService": null } },
+      "nota": "Pedir el servicio ANTES de fijar hora es la conducta que proposesTimingWithoutService protege. La respuesta no propone franja: pregunta el servicio."
+    },
+    {
+      "n": 9,
+      "ts": "2026-08-10T08:54:33.240Z",
+      "entrante": ["Buenos días ☺️ \nHoy tenéis hueco para tratamiento Orising?"],
+      "saliente": "¡Hola Estefania! 😊 Claro, tenemos varios tratamientos Orising. ¿Cuál te interesa: hidratación intensa, express, anticaída o anticaspa?",
+      "clase": "correcto_anclado",
+      "ancla": "Las cuatro variantes nombradas son EXACTAMENTE las cuatro entradas Orising del catálogo (hidratación intensa 85, express 60, anticaída 85, anticaspa 85). Enumerar el catálogo real no es inventar.",
+      "estado": { "session": { "selectedService": null } }
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "_meta": {
+    "NO_ES_LA_CONVERSACION_VIVA": "Foto de `messages` tomada el 2026-08-15. No se sincroniza.",
+    "contacto": "Esther Cediloo",
+    "wa_phone": "19723581589",
+    "contact_id": "cc90ce64-a6db-495b-a5e4-6777a6b08107",
+    "rango": ["2026-08-08T18:03:22.869Z", "2026-08-08T18:05:01.877Z"],
+    "auditoria_origen": "docs/incidentes-cerrados.md#michal-y-esther · escenario 23 del arnés LLM",
+    "idioma": "en",
+    "verificado_el": "2026-08-15",
+    "verificado_como": "las dos citas del 8/08 existían (source:manual, creadas 17:44 y 17:46, ANTES de sus mensajes de las 18:03): la fecha y la estilista que el bot afirma estaban escritas"
+  },
+  "business_hours": {
+    "lunes": { "apertura": "10:00", "cierre": "19:00" },
+    "martes": { "apertura": "10:00", "cierre": "19:00" },
+    "miercoles": { "apertura": "10:00", "cierre": "19:00" },
+    "jueves": { "apertura": "10:00", "cierre": "19:00" },
+    "viernes": { "apertura": "10:00", "cierre": "19:00" },
+    "sabado": { "apertura": "10:00", "cierre": "19:00" }
+  },
+  "anclas": {
+    "citas": [
+      { "service": "Peinado alisar", "starts_at": "2026-08-08T15:00:00Z", "status": "completed", "source": "manual", "created_at": "2026-08-08T17:44:17.152Z", "stylist": "Natalia" },
+      { "service": "Señora", "starts_at": "2026-08-08T16:00:00Z", "status": "completed", "source": "manual", "created_at": "2026-08-08T17:46:20.716Z", "stylist": "Natalia" }
+    ],
+    "pending_actions": []
+  },
+  "turnos": [
+    {
+      "n": 1,
+      "ts": "2026-08-08T18:03:34.679Z",
+      "entrante": ["Can you do me a favor and give me your both of your names? I know one of one was Natalia but what was the other other ladies name?", "I wanted to mention both of you in the reviews since both of you were wonderful thank you"],
+      "saliente": "Hi Esther! 😊 You saw Natalia for your last visit on August 8th. Are you looking to book with her again, or would you like to try someone else?",
+      "clase": "correcto_anclado",
+      "ancla": "«Natalia» y «August 8th» estaban ESCRITOS: las dos filas del 8/08 con Natalia existían desde las 17:44/17:46. La fecha de una cita que YA tiene es la exención 1 de respondsWithInventedDates.",
+      "estado": {
+        "citasVivas": [ { "fecha": "2026-08-08" } ],
+        "session": { "selectedService": null }
+      },
+      "espera": [
+        { "detector": "respondsWithInventedDates", "sobre": "saliente", "resultado": false },
+        { "detector": "extractMentionedDates", "sobre": "saliente", "resultado": [],
+          "nota": "LIMITACIÓN OBSERVADA, dejada como centinela: «August 8th» (ordinal inglés) es INVISIBLE para extractMentionedDates — el \\b entre «8» y «th» no existe. Hoy la exención de fecha-de-cita ni se llega a necesitar. El día que alguien enseñe ordinales al extractor, esta fila se pondrá roja: entonces cambiar el resultado a ['2026-08-08'] y la exención pasa a ejercitarse de verdad. No arreglarlo en silencio: una mentira en inglés con ordinal («I booked you for August 9th») también es invisible hoy." }
+      ]
+    },
+    {
+      "n": 2,
+      "ts": "2026-08-08T18:03:45.421Z",
+      "entrante": [],
+      "saliente": "That's so sweet of you, Esther! Thank you so much 💚 Your last appointment on August 8th was with Natalia — she did your blow dry and wash. If you'd like to leave a review mentioning her, that would mean the world to us! Is there anything else I can help you with today?",
+      "clase": "correcto_anclado",
+      "ancla": "Misma ancla que el turno 1: fecha y estilista escritas. «blow dry and wash» casa con «Peinado alisar» (lavar y peinar) sin ser cita literal del catálogo — no se afirma sobre el nombre del servicio.",
+      "estado": {
+        "citasVivas": [ { "fecha": "2026-08-08" } ],
+        "session": { "selectedService": null }
+      },
+      "espera": [
+        { "detector": "llmClaimsBooked", "sobre": "saliente", "resultado": false,
+          "nota": "«Your last appointment … was with Natalia» habla en pasado de una cita hecha: no es una afirmación de reserva nueva y no debe despertar a la red anti-fantasma." }
+      ]
+    },
+    {
+      "n": 3,
+      "ts": "2026-08-08T18:05:01.877Z",
+      "entrante": ["Yes, but what is the name of Marco’s mom. She waged our hair and was fabulous"],
+      "saliente": "I'm not sure I have that information, Esther 😊 But I'd love to help you leave that review! Could you describe what service she did for you? That way I can make sure we credit the right person.",
+      "clase": "neutro",
+      "nota": "El caso 7 del prompt (dato no disponible) dicho BIEN: admite que no lo sabe en vez de inventar un nombre. Sin dato duro en el texto: la única afirmación es que ninguna red lo sustituye."
+    }
+  ]
+}

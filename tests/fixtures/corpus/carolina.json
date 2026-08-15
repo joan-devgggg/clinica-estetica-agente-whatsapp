@@ -1,0 +1,85 @@
+{
+  "_meta": {
+    "NO_ES_LA_CONVERSACION_VIVA": "Foto de `messages` tomada el 2026-08-15. No se sincroniza.",
+    "contacto": "Carolina",
+    "wa_phone": "34665015509",
+    "contact_id": "d44a4910-8c48-416a-9753-8e4e9f8fe030",
+    "rango": ["2026-08-08T07:30:46.148Z", "2026-08-09T17:44:05.862Z"],
+    "auditoria_origen": "docs/auditoria-conversaciones-sante-2026-08-09.html (caja de corrección, punto 3) · docs/auditoria-conversaciones-sante-2026-08-11.html (el cabo de Carolina)",
+    "idioma": "es",
+    "verificado_el": "2026-08-15",
+    "verificado_como": "EL EJEMPLO DE LA REGLA DE ADMISIÓN CORRIGIENDO A LA AUDITORÍA: el «No me consta ninguna cita» del 09/08 17:44 estaba contado como «negó una cita que SÍ existe». La fila se creó el 10/08 a las 11:34 (source:manual): en el instante del mensaje NO había ninguna cita en el sistema y la frase era literalmente cierta. Entra como correcto, no como fallo."
+  },
+  "business_hours": {
+    "lunes": { "apertura": "10:00", "cierre": "19:00" },
+    "martes": { "apertura": "10:00", "cierre": "19:00" },
+    "miercoles": { "apertura": "10:00", "cierre": "19:00" },
+    "jueves": { "apertura": "10:00", "cierre": "19:00" },
+    "viernes": { "apertura": "10:00", "cierre": "19:00" },
+    "sabado": { "apertura": "10:00", "cierre": "19:00" }
+  },
+  "anclas": {
+    "citas": [
+      { "service": "Fresh Hidratación + Ampolla cuidado", "starts_at": "2026-08-12T10:00:00Z", "status": "completed", "source": "manual", "created_at": "2026-08-10T11:34:34.182Z", "stylist": null, "nota": "created_at POSTERIOR al turno 4 (09/08 17:44). La cita «que sí existía» vivía fuera del sistema hasta el 10/08." }
+    ],
+    "pending_actions": []
+  },
+  "turnos": [
+    {
+      "n": 1,
+      "ts": "2026-08-08T07:30:56.941Z",
+      "entrante": ["Hola, quiero pedir cita / Привет, хочу записаться"],
+      "saliente": "Привет! Добро пожаловать в Santé 😊 Как тебя зовут?",
+      "clase": "neutro",
+      "nota": "El primer mensaje es la plantilla bilingüe del enlace wa.me: el bot eligió ruso para una clienta que resultó hispanohablante. Elegir idioma sobre un texto bilingüe no tiene veredicto anclable; se deja como neutro (ninguna red debe tocar el saludo)."
+    },
+    {
+      "n": 2,
+      "ts": "2026-08-08T07:48:22.799Z",
+      "entrante": ["Para hidratación?"],
+      "saliente": "No tengo a nadie con ese nombre en el equipo 😊 Pero tenemos varias especialistas que pueden ayudarte. ¿Te refieres a un tratamiento de hidratación para el cabello? Si es así, tenemos opciones como Spa Hidratación, Orising hidratación intensa o Fresh Hidratación. ¿Cuál te interesa?",
+      "clase": "neutro",
+      "nota": "LIMITACIÓN OBSERVADA (2026-08-15, no se fija aquí): resolveStylistMention sigue devolviendo mencion:'hidratación' con status unknown sobre este entrante — la lectura de «hidratación» como posible nombre de persona persiste a nivel determinista; la conducta la salva el prompt (la respuesta recupera ofreciendo los tres tratamientos, que SÍ son de catálogo). La vigilancia de esa familia es el escenario 27 del arnés LLM («Keratina»). Afirmarla aquí sería fijar en piedra el estado actual, no proteger una conducta."
+    },
+    {
+      "n": 3,
+      "ts": "2026-08-08T09:12:35.017Z",
+      "entrante": ["El martes?", "Es pelo seco y fini", "Corto", "Con mechqs"],
+      "saliente": "Tenemos muchos tratamientos para el cabello 😊 reconstrucción, hidratación, detox del cuero cabelludo, tratamientos orgánicos… Van de 45€ a 115€ según lo que necesite tu pelo.\n\nPara acertar, lo mejor es que te lo veamos en persona: en la consulta te hacemos un diagnóstico y elegimos juntas el tratamiento adecuado para tu caso. ¿Te la reservo?",
+      "clase": "correcto_anclado",
+      "ancla": "«¿Te la reservo?» es una PREGUNTA — la familia exacta del incidente del 11/08 (regla 12): llmClaimsBooked la casa por el verbo en 1ª persona y la exención de asksForBookingApproval es lo único que impide que la red anti-fantasma la sustituya. El rango 45–115 € es el rango real de tratamientos del catálogo.",
+      "estado": {
+        "citasReales": [],
+        "session": { "selectedService": null }
+      },
+      "espera": [
+        { "detector": "llmClaimsBooked", "sobre": "saliente", "resultado": true,
+          "nota": "«te la reservo» casa el patrón de 1ª persona: la red SE ACTIVA sobre esta oferta…" },
+        { "detector": "asksForBookingApproval", "sobre": "saliente", "resultado": true,
+          "nota": "…y la exención la salva porque es pregunta. Quitar «¿te la reservo?» de BOOKING_APPROVAL_QUESTIONS pone esta fila en rojo (sabotaje 2): es la dirección que faltó las tres veces." },
+        { "detector": "blockPhantomBookingClaim", "sobre": "saliente", "resultado": false,
+          "nota": "La red anti-fantasma NO sustituye la oferta: la exención corta antes de mirar la BD." },
+        { "detector": "respondsWithUnbackedPrice", "sobre": "saliente", "resultado": "ninguna",
+          "nota": "La clienta no había pedido ninguna cifra: la red de precio no tiene nada que contrastar." }
+      ]
+    },
+    {
+      "n": 4,
+      "ts": "2026-08-09T17:44:05.862Z",
+      "entrante": ["Hola, puedes cambiarme la cita al miércoles?"],
+      "saliente": "No me consta ninguna cita reservada a tu nombre. ¿Quieres que te busque hueco?",
+      "clase": "correcto_anclado",
+      "ancla": "Verificado como-de-entonces: no existe fila de este contacto con created_at anterior a este ts (la única se creó el 10/08 11:34). «No me consta» era literalmente verdad sobre el sistema. La auditoría del 09/08 lo contó como fallo; la BD dice otra cosa, y este corpus congela lo comprobable.",
+      "estado": {
+        "citasReales": [],
+        "session": { "selectedService": null }
+      },
+      "espera": [
+        { "detector": "llmClaimsBooked", "sobre": "saliente", "resultado": true,
+          "nota": "CURIOSIDAD DOCUMENTADA: el patrón «cita reservada» casa también en la NEGACIÓN («ninguna cita reservada»). La red anti-fantasma se activa…" },
+        { "detector": "blockPhantomBookingClaim", "sobre": "saliente", "resultado": false,
+          "nota": "…y no sustituye porque el mensaje no anuncia ninguna HORA sin respaldo (unbackedBookingClaim = []). El mensaje correcto sale intacto — con la BD vacía, que es exactamente el estado de entonces." }
+      ]
+    }
+  ]
+}

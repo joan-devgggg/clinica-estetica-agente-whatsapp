@@ -1,0 +1,116 @@
+{
+  "_meta": {
+    "NO_ES_LA_CONVERSACION_VIVA": "Foto de `messages` tomada el 2026-08-15. No se sincroniza.",
+    "contacto": "Mariola Mira Lopez",
+    "wa_phone": "34630739291",
+    "contact_id": "f721f06c-b92e-40b2-b797-88bba3e4bd05",
+    "rango": ["2026-08-12T16:07:15.558Z", "2026-08-12T16:42:13.570Z"],
+    "auditoria_origen": "docs/incidentes-cerrados.md#mariola · la red de precio y detectVariasPersonas nacieron de ESTA conversación (13/08, un día después)",
+    "idioma": "es",
+    "verificado_el": "2026-08-15",
+    "verificado_como": "las dos citas existen (Spa Hair Relax 13/08 a las 13:00 y 14:00 hora local, source:manual, creadas por la dueña a las 16:43 y 16:44) y LAS DOS llevan el nombre de Mariola — la de la amiga quedó con el nombre equivocado, tal como documenta el incidente"
+  },
+  "business_hours": {
+    "lunes": { "apertura": "10:00", "cierre": "19:00" },
+    "martes": { "apertura": "10:00", "cierre": "19:00" },
+    "miercoles": { "apertura": "10:00", "cierre": "19:00" },
+    "jueves": { "apertura": "10:00", "cierre": "19:00" },
+    "viernes": { "apertura": "10:00", "cierre": "19:00" },
+    "sabado": { "apertura": "10:00", "cierre": "19:00" }
+  },
+  "anclas": {
+    "citas": [
+      { "service": "Spa Hair Relax", "starts_at": "2026-08-13T11:00:00Z", "status": "completed", "source": "manual", "created_at": "2026-08-12T16:43:04.547Z", "stylist": "Larisa", "full_name": "Mariola Mira Lopez" },
+      { "service": "Spa Hair Relax", "starts_at": "2026-08-13T12:00:00Z", "status": "completed", "source": "manual", "created_at": "2026-08-12T16:44:57.018Z", "stylist": "Larisa", "full_name": "Mariola Mira Lopez", "nota": "La cita de la amiga (Maria Dolores Benitez Ivorra, dictada a las 16:40) guardada con el nombre de Mariola." }
+    ],
+    "pending_actions": []
+  },
+  "replay": {
+    "tipo": "varias_personas_pegajosa",
+    "nota": "Rejuega por el arnés real: (1) «para mi y una amiga» dispara detectVariasPersonas ANTES del LLM y responde con el texto fijo; (2) la marca es PEGAJOSA: sigue en true un turno después; (3) sobre el turno del precio, la mentira del Detox NO llega — MEDIDO 15/08: en la cadena completa la intercepta la red de TIMING-SIN-SERVICIO (bot.js:6315, va antes que la de precio) porque «¿Para cuándo os vendría bien, esta semana…?» propone timing con selectedService a null; la salida 'rectificar' de la red de precio, aislada, se afirma en los turnos 3 y 4. Lo protegido es la conducta (la cifra con otra unidad no sale), no qué red concreta la para.",
+    "turno_varias": { "entrante": "Hola quiero saber si teneis citas disponibles para mi y una amiga" },
+    "turno_precio": { "entrante": "El masaje capilar el de 60 euros", "saliente_llm": "Perfecto, el Spa Hair Detox de 60 minutos 💆 ¿Para cuándo os vendría bien, esta semana o la próxima?" }
+  },
+  "turnos": [
+    {
+      "n": 1,
+      "ts": "2026-08-12T16:07:24.353Z",
+      "entrante": ["Hola, quiero pedir cita / Привет, хочу записаться"],
+      "saliente": "Привет! Добро пожаловать в Santé 😊 Как тебя зовут?",
+      "clase": "neutro",
+      "nota": "La misma plantilla bilingüe y la misma elección de ruso que con Carolina."
+    },
+    {
+      "n": 2,
+      "ts": "2026-08-12T16:08:47.729Z",
+      "entrante": ["Hola quiero saber si teneis citas disponibles para mi y una amiga"],
+      "saliente": "¡Hola! Claro, podemos agendar para las dos 😊 Primero cuéntame, ¿qué servicio necesitáis?",
+      "clase": "fallo_anclado",
+      "ancla": "«para mí Y una amiga»: el gate de entonces (detectGuestBooking) no lo casaba y solo se consultaba tras reservaConfirmada — nunca en el primer mensaje. Las DOS filas a nombre de Mariola son el coste medido. detectVariasPersonas (sin gate, antes del LLM) existe por este entrante.",
+      "espera": [
+        { "detector": "detectVariasPersonas", "sobre": "entrante:0", "resultado": true }
+      ]
+    },
+    {
+      "n": 3,
+      "ts": "2026-08-12T16:09:43.107Z",
+      "entrante": ["El masaje capilar el de 60 euros"],
+      "saliente": "Perfecto, el Spa Hair Detox de 60 minutos 💆 ¿Para cuándo os vendría bien, esta semana o la próxima?",
+      "clase": "fallo_anclado",
+      "ancla": "SU cifra devuelta con OTRA unidad: pidió el de 60 EUROS y se le afirmó el Detox «de 60 MINUTOS» — que cuesta 115 € en el catálogo, mientras que a 60 € había cuatro entradas (Reconstrucción Pro Miracle entre ellas, la que ella acabó nombrando sola). El origen de la red de precio.",
+      "espera": [
+        { "detector": "extractPrecioMencionado", "sobre": "entrante:0", "resultado": [60],
+          "nota": "La cifra de la clienta se captura (MONEDA_SUFIJOS): es lo que siembra session.precioPedido." },
+        { "detector": "respondsWithUnbackedPrice", "sobre": "saliente", "resultado": "rectificar",
+          "nota": "«de 60 minutos» NO nombra 60 como precio (el sufijo lo descarta) y el servicio afirmado cuesta 115: rectificar, con las cuatro opciones a 60 € en el veredicto. Sabotajes 1b y 3 ponen esta fila en rojo." }
+      ],
+      "estado": { "precioPedido": 60 }
+    },
+    {
+      "n": 4,
+      "ts": "2026-08-12T16:10:03.107Z",
+      "entrante": ["Que entra en ese"],
+      "saliente": "El Detox limpia y desintoxica el cuero cabelludo a fondo, dejándolo fresco y revitalizado. Dura 60 minutos y cuesta 115€.",
+      "clase": "fallo_anclado",
+      "ancla": "El segundo turno de Mariola, citado en el comentario de la red: «cuesta 115€» con los 60 € de ella aún sin atender. El disparador 1 (precio afirmado ≠ precio pedido) existe por este texto.",
+      "estado": { "precioPedido": 60, "procedencia_estado": "precioPedido sigue en 60: en el turno 3 la red habría rectificado (no 'atendido'), así que la cifra no se limpia — cadena Tier-1 sobre los propios textos." },
+      "espera": [
+        { "detector": "respondsWithUnbackedPrice", "sobre": "saliente", "resultado": "rectificar" }
+      ]
+    },
+    {
+      "n": 5,
+      "ts": "2026-08-12T16:12:05.551Z",
+      "entrante": ["Recostruccion pro-miracle", "Que entra en ese"],
+      "saliente": "La Reconstrucción Pro Miracle repara y fortalece el cabello dañado. Dura 60 minutos y cuesta 60€. ¿Es para ti, para tu amiga o para las dos?",
+      "clase": "correcto_anclado",
+      "ancla": "La respuesta SÍ nombra los 60 € de ella (y es el precio de catálogo de la Pro Miracle): la salida 'atendido' — LA EXENCIÓN de la red de precio, que va en la salida y no en el gate para no comerse esta respuesta buena en el turno siguiente.",
+      "estado": { "precioPedido": 60 },
+      "espera": [
+        { "detector": "respondsWithUnbackedPrice", "sobre": "saliente", "resultado": "atendido",
+          "nota": "Dirección 1: si alguien ensancha la red o rompe la exención, esta fila cae." }
+      ]
+    },
+    {
+      "n": 6,
+      "ts": "2026-08-12T16:12:14.606Z",
+      "entrante": [],
+      "saliente": "Repara la estructura del cabello, lo deja más fuerte y brillante. Perfecta si tienes el pelo dañado, quemado o muy procesado.",
+      "clase": "neutro"
+    },
+    {
+      "n": 7,
+      "ts": "2026-08-12T16:12:59.595Z",
+      "entrante": ["Para esta semana porque la que viene no podemos. Seria para las dos"],
+      "saliente": "Perfecto, dos citas esta semana. ¿Cuál queréis primero, el Spa Hair Detox o la Reconstrucción Pro Miracle?",
+      "excluido": { "motivo": "«¿Cuál queréis primero?» — la Regla Dura 13 leyendo dos personas como dos servicios de una. La conducta corregida vive en el prompt (esquema sin campo de personas: no había DÓNDE guardarlo) y la vigila el escenario 24 del arnés; no hay detector determinista de RESPUESTA que afirmar sin inventar estado del LLM. La marca pegajosa que lo previene se afirma en el replay." }
+    },
+    {
+      "n": 8,
+      "ts": "2026-08-12T16:14:24.344Z",
+      "entrante": ["El segundo no es spa solo recostruccion? Porque nosotras buscamos masaje relajante", "Solo cabello", "Si ese estaria bien", "Cuando podriamos?", "El Sabado podria ser?", "A no que es festivo creo🤦‍♀️", "Voy a consultarle y te digo .", "Mañana a la 13.00", "Entonces que seria una espera fuera hasta que termine y despues la otra espera?", "Vale", "Ok", "Mariola Mira Lopez\nMaria Dolores Benitez Ivorra\n630739291", "No os vale el mio solo?", "Me teneis que mandar la ubicacion", "Por favor"],
+      "saliente": null,
+      "excluido": { "motivo": "Los 15 entrantes finales NO tienen saliente en messages: la dueña siguió desde el MÓVIL (Coexistence, hecho 1) y ese lado no se escribe. Cualquier veredicto sobre estos turnos sería un veredicto sobre un silencio — la clase exacta que la regla de admisión prohíbe. Las dos preguntas sin responder («¿espera fuera?» ×2) están documentadas en el incidente; aquí solo consta que los textos existieron." }
+    }
+  ]
+}
