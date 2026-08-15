@@ -833,8 +833,11 @@ test, no del sistema: 3 horarios copiados de la migración y un plural — ver a
 
 ### `verify:robustez:llm` — línea base y cómo leer un DEGRADADO
 
-Llama al LLM de verdad: **no es determinista y su línea base es un rango**. Desde el 13/08/2026
-son **25 escenarios**; línea base medida: **OK 25 · todo lo demás 0**.
+Llama al LLM de verdad: **no es determinista y su línea base es un rango**. Desde el 15/08/2026
+son **29 escenarios** (26–28: precio presencial, «Keratina», objeto olvidado; 29: el anillo C7
+de punta a punta); línea base medida el 15/08: **OK 29 · todo lo demás 0** — con un degradado
+transitorio del modelo en el 21 absorbido por el reintento automático del arnés, que es su
+trabajo.
 
 - **La fila dura es `BUG` · `SILENCIO` · `BUCLE` · `ERROR` = 0**: cualquiera por encima de 0 es
   un hallazgo, siempre.
