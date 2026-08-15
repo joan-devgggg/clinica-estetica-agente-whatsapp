@@ -2389,6 +2389,198 @@ function salonOfferSlotsMsg(session) {
     return (session.language && msgs[session.language]) || `Tengo hueco ${lista}. ¿Te viene bien alguno?`;
 }
 
+// ─── La ESCALERA (contrato, punto 4) — primera vuelta: clase AGENDA ──────────
+// Cuando una red de agenda condena la respuesta del LLM, la salida ya no es solo
+// borrarla: 3º REGENERAR (la respuesta rechazada vuelve al modelo con el veredicto de la
+// máquina, UNA sola vez) → 4º SUSTITUIR con el mensaje de SU causa, registrado como
+// derrota. Un falso positivo de detección pasa de costar el mensaje bueno a costar una
+// llamada de más. Todo lo que vigila la reescritura falla hacia el 4º, que es el
+// comportamiento de siempre: aquí no hay mensaje bueno que perder, solo uno que ganar.
+// 15 s por defecto; el override por entorno existe SOLO para que el gemelo determinista
+// pruebe el vencimiento en milisegundos en vez de esperar el presupuesto real.
+const REGEN_TIMEOUT_MS = Number(process.env.ESCALERA_REGEN_TIMEOUT_MS) || 15000;
+
+// Qué red REGENERA y cuál va directa al 4º. timing-sin-servicio no regenera: su veredicto
+// es «no hay servicio elegido» y la única respuesta verdadera es pedirlo — que es lo que
+// salonNoSlotsMsg ya hace, con su propia mini-escalera por sinServicioStreak. No hay
+// ningún falso positivo registrado de esa red (Michal fue un positivo VERDADERO): el
+// peldaño 3 ahí pagaría latencia sin nada que rescatar.
+const REGEN_POLITICA = {
+    proposesTimingWithoutService: false,
+    respondsWithInventedSlots: true,
+    respondsWithInventedDates: true,
+};
+
+// El veredicto se redacta desde estas piezas y los MARCADORES del filtro anti-fuga son
+// exactamente estas mismas piezas (patrón MONEDA_SUFIJOS: una sola lista para los dos
+// consumidores con intenciones opuestas — redactar y vetar—; con dos, retocar la
+// redacción dejaría ciego al filtro en silencio).
+const VEREDICTO_PIEZAS = {
+    centinela: 'CORRECCIÓN INTERNA',
+    noCitar: 'no menciones esta nota',
+    noEnviado: 'no se ha enviado a la clienta',
+    sinRespaldo: 'sin respaldo en la agenda real',
+    reescribe: 'reescribe tu respuesta',
+};
+
+// Frases de MAQUINARIA que jamás pueden llegar a una clienta, en los 4 idiomas.
+// ENUMERADAS, nunca un matcher difuso (criterio de largoKeywords): cada una la ha dicho
+// o podría decir el modelo recitando jerga del prompt. Sembrada con la frase REAL que le
+// llegó a Michal Gradziel el 07/08/2026 («I don't have the available slots loaded for
+// that day yet») — el filtro por marcadores no caza una fuga TRADUCIDA, esta lista sí.
+// Solo se aplica a la respuesta REGENERADA: ensancharla es barato (su falso positivo
+// cae al 4º peldaño, nunca se come un mensaje original).
+const REGEN_FRASES_MAQUINARIA = [
+    // en:
+    'slots loaded', 'not loaded', "haven't loaded", 'the system', 'my system', 'internal note',
+    // es:
+    'huecos cargados', 'el sistema', 'mi sistema', 'nota interna', 'borrador',
+    // ru ('систем' cubre система/систему/системе; 'загружен' cubre загружены/загружено):
+    'систем', 'загружен',
+    // uk:
+    'завантажен',
+];
+
+// El texto que vuelve al modelo con la respuesta rechazada, y los marcadores que el
+// filtro vetará en la reescritura. Los huecos REALES sí son citables (son el dato bueno,
+// con el mismo texto por hueco que ve la clienta); la jerga del veredicto, jamás.
+function construirVeredictoAgenda(red, session) {
+    const p = VEREDICTO_PIEZAS;
+    const huecos = (session.availableSlots || []).slice(0, 6)
+        .map(s => calendarSante.formatSlotForMessage(s));
+    const listaHuecos = huecos.length
+        ? `Los ÚNICOS huecos que puedes ofrecer son: ${huecos.join(', ')}.`
+        : 'Ahora mismo no hay ninguna disponibilidad consultada: no propongas ninguna hora ni fecha; pregunta qué día o semana le viene mejor.';
+    const queCosa = red === 'respondsWithInventedDates' ? 'fechas concretas' : 'horas concretas';
+    const paraModelo = `${p.centinela} (${p.noCitar} ni esta comprobación): tu último borrador `
+        + `${p.noEnviado} porque ofrecía ${queCosa} ${p.sinRespaldo}. ${listaHuecos} `
+        + `${p.reescribe} en el idioma de la clienta, conservando lo que era correcto `
+        + `(servicio, precios, tono) y sin proponer ninguna hora ni fecha que no esté respaldada.`;
+    return { paraModelo, marcadores: Object.values(p) };
+}
+
+// ¿La reescritura cita el veredicto o habla de maquinaria? Devuelve la frase que la
+// condena, o null. Todo normalizado por normalizeText en los dos lados.
+function filtraVeredictoRegen(texto, marcadores) {
+    const t = normalizeText(texto);
+    if (!t) return null;
+    return [...(marcadores || []), ...REGEN_FRASES_MAQUINARIA]
+        .find(m => t.includes(normalizeText(m))) || null;
+}
+
+// La compuerta de aceptación de la reescritura: TODO tiene que pasar, y cualquier fallo
+// devuelve el motivo del rechazo (→ 4º peldaño). Los tres detectores de agenda vuelven a
+// correr sobre el texto nuevo; llmClaimsBooked va aparte porque en un turno de violación
+// de agenda no hay ninguna reserva hecha — cualquier afirmación de reserva es mentira.
+function compuertaRegen(texto, session, horasHorario, marcadores) {
+    if (proposesTimingWithoutService(texto, session, horasHorario)) return 'regen_timing_sin_servicio';
+    if (respondsWithInventedSlots(texto, session.availableSlots, horasHorario)) return 'regen_sigue_inventando_horas';
+    if (respondsWithInventedDates(texto, session.availableSlots, { citasVivas: session._citasVivasTurno || [] })) return 'regen_sigue_inventando_fechas';
+    if (llmClaimsBooked(texto)) return 'regen_afirma_reserva';
+    const marcador = filtraVeredictoRegen(texto, marcadores);
+    if (marcador) return 'regen_cita_veredicto';
+    return null;
+}
+
+// ¿Hay texto de la clienta esperando (aparcado durante este turno, o en ventana)? Si ya
+// escribió, la regeneración se salta: contestaría a una foto que ella ha dejado atrás, y
+// el turno de sus pendientes llega justo después con todo el contexto. Así la escalera
+// nunca añade latencia a una conversación que ya va por delante del bot.
+function hayTextoPendienteEnBuffer(orgId, userPhone) {
+    const b = messageBuffers.get(sessionKey(orgId, userPhone));
+    return !!(b && ((b.pendingTexts?.length || 0) + (b.texts?.length || 0)) > 0);
+}
+
+// La segunda llamada al modelo: history original + el borrador rechazado como turno
+// assistant + el veredicto como system (el patrón de inyección de escalationJustResolved).
+// Presupuesto PROPIO de 15 s con unref (doctrina de timers): los 45 s del race principal
+// ya vencieron a favor. De lo que devuelva se usa SOLO `.respuesta` — accion/datos/
+// reserva_confirmada del segundo intento se descartan, porque el despacho de acciones y
+// el procesado de datos del turno ya corrieron sobre la primera respuesta.
+async function regenerarConVeredicto(orgId, session, llmHistory, partialDataWithCtx, intent, borrador, veredicto) {
+    const t0 = Date.now();
+    const historyRegen = [
+        ...llmHistory,
+        { role: 'assistant', content: borrador },
+        { role: 'system', content: veredicto.paraModelo },
+    ];
+    const promesa = getChatbotResponse(orgId, historyRegen, partialDataWithCtx, intent, session.reservaConfirmada, session.summary)
+        .catch(e => {
+            logger.error('escalera_regen_error', { orgId, error: e.message, latencia_ms: Date.now() - t0 });
+            return null;
+        });
+    const TIMED_OUT = {};
+    const timeout = new Promise(resolve => unrefTimer(setTimeout(() => resolve(TIMED_OUT), REGEN_TIMEOUT_MS)));
+    const res = await Promise.race([promesa, timeout]);
+    const latencia_ms = Date.now() - t0;
+    if (res === TIMED_OUT) return { ok: false, motivo: 'regen_timeout', latencia_ms };
+    if (!res) return { ok: false, motivo: 'regen_error_proveedor', latencia_ms };
+    if (res._isFallback) return { ok: false, motivo: `regen_fallback:${res._fallbackReason || 'unknown'}`, latencia_ms };
+    if (!res.respuesta || !String(res.respuesta).trim()) return { ok: false, motivo: 'regen_respuesta_vacia', latencia_ms };
+    return { ok: true, respuesta: res.respuesta, latencia_ms };
+}
+
+// El 4º peldaño: el mensaje de SU causa, nunca un genérico ciego. timing → pedir el
+// servicio (salonNoSlotsMsg, con su mini-escalera por streak). huecos/fechas inventados →
+// la verdad son los huecos reales: se ofrecen si los hay (patrón de la red anti-cierre-
+// falso), y si no, salonNoSlotsMsg dice la causa del cero (slotsCausaCero).
+function sustitutoDeCausaAgenda(red, session) {
+    if (red !== 'proposesTimingWithoutService' && session.availableSlots?.length) {
+        return salonOfferSlotsMsg(session);
+    }
+    return salonNoSlotsMsg(session);
+}
+
+// La escalera entera para un veredicto de agenda. UNA regeneración como máximo; todos
+// los fallos caen al 4º; cada intervención deja su evento con la respuesta comida (hoy
+// solo 2 de 15 trazas de redes la guardan — este evento la guarda siempre) y sus
+// contadores (escaleraSustituida / escaleraIntervencion es el proxy de mensajes buenos
+// en riesgo: tiene que bajar).
+async function aplicarEscaleraAgenda({ orgId, session, userPhone, aiResponse, red, horasHorario, llmHistory, partialDataWithCtx, intent }) {
+    const respuestaOriginal = aiResponse.respuesta;
+    let peldano = 'sustituir';
+    let motivo = null;
+    let latenciaRegen = null;
+
+    if (!REGEN_POLITICA[red]) {
+        motivo = 'politica_directa_4';
+    } else if (process.env.ESCALERA_REGENERAR === 'off') {
+        // Rollback sin deploy (patrón SANTE_CHANNEL): apaga SOLO el peldaño 3.
+        motivo = 'regeneracion_desactivada';
+    } else if (hayTextoPendienteEnBuffer(orgId, userPhone)) {
+        motivo = 'pendientes_en_buffer';
+    } else {
+        const veredicto = construirVeredictoAgenda(red, session);
+        const regen = await regenerarConVeredicto(orgId, session, llmHistory, partialDataWithCtx, intent, respuestaOriginal, veredicto);
+        latenciaRegen = regen.latencia_ms;
+        if (!regen.ok) {
+            motivo = regen.motivo;
+            logger.warn('escalera_regeneracion_fallida', { orgId, telefono: userPhone, red, motivo, latencia_ms: latenciaRegen });
+        } else {
+            const rechazo = compuertaRegen(regen.respuesta, session, horasHorario, veredicto.marcadores);
+            if (rechazo) {
+                motivo = rechazo;
+                logger.warn('escalera_regeneracion_fallida', { orgId, telefono: userPhone, red, motivo, latencia_ms: latenciaRegen });
+            } else {
+                peldano = 'regenerar';
+                aiResponse.respuesta = regen.respuesta;
+            }
+        }
+    }
+
+    if (peldano === 'sustituir') {
+        aiResponse.respuesta = sustitutoDeCausaAgenda(red, session);
+    }
+    aiResponse.reserva_confirmada = false;
+
+    logger.warn('escalera_intervencion', {
+        orgId, telefono: userPhone, clase: 'agenda', red, peldano, motivo,
+        respuestaOriginal, respuestaFinal: aiResponse.respuesta, latencia_regen_ms: latenciaRegen,
+    });
+    incrementMetric('escaleraIntervencion');
+    incrementMetric(peldano === 'regenerar' ? 'escaleraRegeneradaOk' : 'escaleraSustituida');
+}
+
 // ─── Estado de servicio: fuente de verdad única ─────────────────────────────
 // Cualquier campo de sesión relacionado con la SELECCIÓN DE SERVICIO va aquí.
 // clearServiceState() y el test de regresión lo consumen. Añadir un campo nuevo
@@ -6323,46 +6515,49 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // Va ANTES de la red de huecos inventados: si aún no hay servicio, el mensaje
         // correcto es pedirlo, y sustituirlo aquí ahorra el turno que Michal perdió
         // eligiendo entre tres horas que no existían.
-        let _timingSinServicio = false;
-        if (orgType === 'salon' && !aiResponse._rectificadoPorRedFantasma
-                && proposesTimingWithoutService(aiResponse.respuesta, session, horasHorario)) {
-            logger.warn('cita_sante_timing_sin_servicio_bloqueado', {
-                orgId, telefono: userPhone,
-                servicioMencionado: session.partialData?.servicio || null,
-                streak: session.sinServicioStreak || 0,
-            });
-            aiResponse.respuesta = salonNoSlotsMsg(session);
-            aiResponse.reserva_confirmada = false;
-            _timingSinServicio = true;
+        //
+        // Las tres redes de agenda ya no sustituyen inline: producen un VEREDICTO (la
+        // primera que dispara habla, como hacía _timingSinServicio) y la ESCALERA decide
+        // el peldaño — 3º regenerar con el veredicto de la máquina, 4º sustituir con el
+        // mensaje de la causa. Las trazas de detección no cambian: el corpus de oro las
+        // afirma por nombre. La red de FECHAS va aparte y no dentro de la de horas porque
+        // su disparador es el contrario: la conversación de Ludmila no tuvo ni una HH:MM,
+        // así que aquella salía en su primera línea. Se le pasan las citas vivas del turno
+        // para no bloquear el día de una cita que la clienta YA tiene.
+        let veredictoAgendaRed = null;
+        if (orgType === 'salon' && !aiResponse._rectificadoPorRedFantasma) {
+            if (proposesTimingWithoutService(aiResponse.respuesta, session, horasHorario)) {
+                logger.warn('cita_sante_timing_sin_servicio_bloqueado', {
+                    orgId, telefono: userPhone,
+                    servicioMencionado: session.partialData?.servicio || null,
+                    streak: session.sinServicioStreak || 0,
+                });
+                veredictoAgendaRed = 'proposesTimingWithoutService';
+            } else if (!session.reservaConfirmada
+                    && respondsWithInventedSlots(aiResponse.respuesta, session.availableSlots, horasHorario)) {
+                logger.warn('cita_sante_disponibilidad_inventada_bloqueada', {
+                    orgId, telefono: userPhone,
+                    huecosReales: (session.availableSlots || []).length,
+                    tieneServicio: !!session.selectedService,
+                });
+                veredictoAgendaRed = 'respondsWithInventedSlots';
+            } else if (!session.reservaConfirmada
+                    && respondsWithInventedDates(aiResponse.respuesta, session.availableSlots,
+                        { citasVivas: session._citasVivasTurno || [] })) {
+                logger.warn('cita_sante_fechas_inventadas_bloqueada', {
+                    orgId, telefono: userPhone,
+                    fechas: extractMentionedDates(aiResponse.respuesta),
+                    huecosReales: (session.availableSlots || []).length,
+                    tieneServicio: !!session.selectedService,
+                });
+                veredictoAgendaRed = 'respondsWithInventedDates';
+            }
         }
-
-        if (orgType === 'salon' && !_timingSinServicio && !session.reservaConfirmada && !aiResponse._rectificadoPorRedFantasma
-                && respondsWithInventedSlots(aiResponse.respuesta, session.availableSlots, horasHorario)) {
-            logger.warn('cita_sante_disponibilidad_inventada_bloqueada', {
-                orgId, telefono: userPhone,
-                huecosReales: (session.availableSlots || []).length,
-                tieneServicio: !!session.selectedService,
+        if (veredictoAgendaRed) {
+            await aplicarEscaleraAgenda({
+                orgId, session, userPhone, aiResponse, red: veredictoAgendaRed,
+                horasHorario, llmHistory, partialDataWithCtx, intent,
             });
-            aiResponse.respuesta = salonNoSlotsMsg(session);
-            aiResponse.reserva_confirmada = false;
-            _timingSinServicio = true;   // ya sustituido: la red de fechas no lo vuelve a hacer
-        }
-
-        // Y el gemelo por FECHAS. Va aparte y no dentro de la red de horas porque su
-        // disparador es el contrario: la conversación de Ludmila no tuvo ni una HH:MM, así
-        // que aquella salía en su primera línea. Se le pasan las citas vivas del turno para
-        // no bloquear el día de una cita que la clienta YA tiene.
-        if (orgType === 'salon' && !_timingSinServicio && !session.reservaConfirmada && !aiResponse._rectificadoPorRedFantasma
-                && respondsWithInventedDates(aiResponse.respuesta, session.availableSlots,
-                    { citasVivas: session._citasVivasTurno || [] })) {
-            logger.warn('cita_sante_fechas_inventadas_bloqueada', {
-                orgId, telefono: userPhone,
-                fechas: extractMentionedDates(aiResponse.respuesta),
-                huecosReales: (session.availableSlots || []).length,
-                tieneServicio: !!session.selectedService,
-            });
-            aiResponse.respuesta = salonNoSlotsMsg(session);
-            aiResponse.reserva_confirmada = false;
         }
 
         // ─── Red anti-cierre-falso (Sante) ────────────────────────────────────
@@ -7027,6 +7222,11 @@ module.exports = {
         // caja-pendientes. No cambian de contrato por estar aquí.
         blockPhantomBookingClaim, statesOpeningHours, messageHasDateWithoutTime,
         respondsWithInventedSlots, respondsWithInventedDates, proposesTimingWithoutService, soloDeclaraHorarioDelSalon, unbackedBookingClaim, asksForBookingApproval, respondsWithFalseClosureClaim, applyAnchorFilter, salonNoSlotsMsg, salonOfferSlotsMsg, salonPickServiceMenuMsg, salonHairTreatmentRangeMsg, salonOfferHumanMsg, salonVariasPersonasMsg, respondsWithUnbackedPrice, salonPrecioNoCasaMsg, salonFueraDeHorarioMsg, horasLimiteHorario, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX,
+        // La escalera de la clase agenda (contrato, punto 4): piezas puras para el gemelo
+        // determinista (tests/escalera-agenda.test.js). La orquestación se prueba
+        // conduciendo turnos reales; estas se exponen para los bloques de unidad.
+        construirVeredictoAgenda, filtraVeredictoRegen, compuertaRegen, sustitutoDeCausaAgenda,
+        hayTextoPendienteEnBuffer, REGEN_POLITICA, REGEN_FRASES_MAQUINARIA, VEREDICTO_PIEZAS,
         // Red de escalada: traspaso anunciado en el texto del LLM (backstop determinista):
         announcesHumanHandover, offersHumanHandover, ensureHandoverAcknowledged, HANDOVER_ACUSE, HANDOVER_ACUSE_FORMAL, porTrato,
         // Fuente única de «esto es una oferta de traspaso»: la comparten el armado de
