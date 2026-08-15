@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import type { Cliente, OrgType } from "@/lib/types";
 import { syncHoraCita, INITIAL_HORA_CITA } from "@/lib/cliente-form";
 import { confirmacionBloqueo, confirmacionDesbloqueo } from "@/lib/blacklist";
+import { confirmacionBorrado, type ImpactoBorrado } from "@/lib/borrado-contacto";
 import {
   Sheet,
   SheetContent,
@@ -43,6 +44,8 @@ interface ClienteEditSheetProps {
   onBlock?: (id: number, motivo: string) => Promise<void>;
   /** Quita la marca Y devuelve la conversación a 'auto' — ver el comentario del call site. */
   onUnblock?: (id: number) => Promise<void>;
+  /** Cuánto se lleva por delante el borrado (mensajes, citas, escaladas). Solo lectura. */
+  onImpactoBorrado?: (id: number) => Promise<ImpactoBorrado | null>;
   orgType?: OrgType;
 }
 
@@ -54,6 +57,7 @@ export function ClienteEditSheet({
   onDelete,
   onBlock,
   onUnblock,
+  onImpactoBorrado,
   orgType = "restaurant",
 }: ClienteEditSheetProps) {
   const [saving, setSaving] = useState(false);
@@ -64,6 +68,13 @@ export function ClienteEditSheet({
   const [confirmando, setConfirmando] = useState<"bloquear" | "desbloquear" | null>(null);
   const [motivo, setMotivo] = useState("");
   const [aplicando, setAplicando] = useState(false);
+  // Confirmación de BORRADO. Hasta el 15/08/2026 no había ninguna: un clic y la ficha
+  // desaparecía, y con ella la conversación entera por CASCADE (Olga Yarmak, 11/08). No
+  // bloquea nada — sigue bastando un clic más—, solo dice qué se pierde. `impacto` a null
+  // significa «no contado todavía» o «no se ha podido contar», y el texto lo distingue.
+  const [confirmandoBorrado, setConfirmandoBorrado] = useState(false);
+  const [impacto, setImpacto] = useState<ImpactoBorrado | null>(null);
+  const [contando, setContando] = useState(false);
   // Derivado del cliente seleccionado (el sheet nunca se desmonta): ver lib/cliente-form.
   const [horaState, setHoraState] = useState(INITIAL_HORA_CITA);
   const syncedHora = syncHoraCita(horaState, cliente);
@@ -106,12 +117,38 @@ export function ClienteEditSheet({
     onClose();
   }
 
+  // Abre la confirmación y va a contar. El diálogo se abre YA, sin esperar al recuento: si la
+  // lectura tarda o falla, la confirmación sale igual —solo que sin cifras— en vez de dejar el
+  // botón muerto. Informar no puede depender de que la BD conteste.
+  async function pedirBorrado() {
+    if (!cliente) return;
+    setImpacto(null);
+    setConfirmandoBorrado(true);
+    if (!onImpactoBorrado) return;
+    setContando(true);
+    try {
+      setImpacto(await onImpactoBorrado(cliente.id));
+    } catch {
+      setImpacto(null); // se queda en «no se ha podido contar», que es lo que dirá el texto
+    } finally {
+      setContando(false);
+    }
+  }
+
   async function handleDelete() {
     if (!cliente) return;
     setDeleting(true);
-    await onDelete(cliente.id);
-    setDeleting(false);
-    onClose();
+    try {
+      await onDelete(cliente.id);
+      setConfirmandoBorrado(false);
+      onClose();
+    } catch (e) {
+      // Un borrado rechazado (p. ej. 409 por un cobro en caja) se veía igual que uno hecho:
+      // el sheet se cerraba y la ficha seguía ahí.
+      toast.error(e instanceof Error ? e.message : "No se ha podido eliminar el contacto");
+    } finally {
+      setDeleting(false);
+    }
   }
 
   // El sheet NO se cierra al bloquear: cerrarlo escondería el resultado, y lo primero que
@@ -388,7 +425,7 @@ export function ClienteEditSheet({
             variant="outline"
             size="sm"
             className="text-destructive border-destructive/30 hover:bg-destructive/5 hover:text-destructive"
-            onClick={handleDelete}
+            onClick={pedirBorrado}
             disabled={deleting}
           >
             <Trash2 size={13} className="mr-1.5" />
@@ -476,6 +513,80 @@ export function ClienteEditSheet({
                 disabled={aplicando}
               >
                 {aplicando ? "Aplicando..." : copia.cta}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Confirmación de BORRADO. No estorba —un clic más y se borra igual—, pero dice qué se
+            destruye: hasta el 15/08/2026 no preguntaba nada y así se perdió la conversación de
+            Olga Yarmak, 30 mensajes que se llevó el CASCADE sin dejar traza. El texto vive en
+            @/lib/borrado-contacto, anclado a las FK que lo hacen cierto. */}
+        <Dialog
+          open={confirmandoBorrado}
+          onOpenChange={(o) => !o && !deleting && setConfirmandoBorrado(false)}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <AlertCircle size={15} className="text-destructive" />
+                {confirmacionBorrado(cliente?.nombre, impacto).titulo}
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3">
+              <p className="text-[13px] text-foreground">Se borra para siempre:</p>
+              <ul className="space-y-1.5">
+                {(contando
+                  ? ["Contando lo que se perderá…"]
+                  : confirmacionBorrado(cliente?.nombre, impacto).efectos
+                ).map((efecto) => (
+                  <li key={efecto} className="flex gap-2 text-[12.5px] text-muted-foreground">
+                    <span aria-hidden className="text-muted-foreground/60">·</span>
+                    <span>{efecto}</span>
+                  </li>
+                ))}
+              </ul>
+              {onBlock && !cliente?.is_blacklisted && (
+                <div className="rounded-md border border-border bg-muted/40 p-3 space-y-2">
+                  <p className="text-[12.5px] text-muted-foreground">
+                    {confirmacionBorrado(cliente?.nombre, impacto).alternativa}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={deleting}
+                    onClick={() => {
+                      setConfirmandoBorrado(false);
+                      setConfirmando("bloquear");
+                    }}
+                  >
+                    <Ban size={13} className="mr-1.5" />
+                    Bloquear en su lugar
+                  </Button>
+                </div>
+              )}
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setConfirmandoBorrado(false)}
+                disabled={deleting}
+              >
+                {confirmacionBorrado(cliente?.nombre, impacto).cancelar}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                onClick={handleDelete}
+                disabled={deleting}
+              >
+                {deleting
+                  ? "Eliminando..."
+                  : confirmacionBorrado(cliente?.nombre, impacto).confirmar}
               </Button>
             </DialogFooter>
           </DialogContent>

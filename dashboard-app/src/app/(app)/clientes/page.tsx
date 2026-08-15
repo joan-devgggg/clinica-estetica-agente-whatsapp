@@ -90,8 +90,31 @@ export default function ClientesPage() {
   }
 
   async function handleDelete(id: number) {
-    await fetch(`${API}/api/leads/${id}`, { method: "DELETE", headers: await apiHeaders(orgId) });
+    const res = await fetch(`${API}/api/leads/${id}`, {
+      method: "DELETE",
+      headers: await apiHeaders(orgId),
+    });
+    // Un borrado rechazado (409 si alguna cita tiene un cobro en caja) devolvía `ok` para el
+    // panel: la lista se refrescaba y la ficha seguía ahí, sin decir por qué.
+    if (!res.ok) {
+      const detalle = await res
+        .json()
+        .then((b) => b?.error as string | undefined)
+        .catch(() => undefined);
+      throw new Error(detalle || `El servidor respondió ${res.status}`);
+    }
     await fetchClientes();
+  }
+
+  // Solo lectura: alimenta el texto de la confirmación de borrado (cuántos mensajes, citas y
+  // escaladas se lleva el CASCADE). Devuelve null si no se puede contar — el diálogo lo dice
+  // en vez de enseñar un 0 inventado.
+  async function fetchImpactoBorrado(id: number) {
+    const res = await fetch(`${API}/api/leads/${id}/impacto-borrado`, {
+      headers: await apiHeaders(orgId),
+    });
+    if (!res.ok) return null;
+    return res.json();
   }
 
   // La ficha abierta es estado aparte de la lista: sin esto, bloquear no se vería hasta cerrar
@@ -195,6 +218,7 @@ export default function ClientesPage() {
         onDelete={handleDelete}
         onBlock={handleBlock}
         onUnblock={handleUnblock}
+        onImpactoBorrado={fetchImpactoBorrado}
         orgType={orgType}
       />
     </>

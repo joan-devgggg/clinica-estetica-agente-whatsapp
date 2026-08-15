@@ -2351,6 +2351,49 @@ async function getAppointmentById(orgId, appointmentId) {
     return data || null;
 }
 
+/**
+ * Lo que un borrado de contacto se va a llevar por delante, CONTADO antes de borrar.
+ *
+ * Existe por Olga Yarmak (11/08/2026): se borró su ficha desde el panel y con ella se fueron
+ * 30 mensajes —una conversación auditada entera— por `ON DELETE CASCADE`, sin que nadie
+ * emitiera un solo DELETE contra `messages` ni quedara traza. La confirmación del panel no
+ * decía nada de eso porque nadie lo había contado nunca.
+ * Historia: docs/incidentes-cerrados.md#olga-borrada
+ *
+ * Cuenta las TRES tablas que cuelgan de `contacts` con CASCADE y que la dueña reconoce al
+ * verlas: la conversación, las citas y las escaladas abiertas. Es solo lectura y NO bloquea
+ * nada: alimenta un texto, no una decisión.
+ *
+ * Con `assertRead` a propósito: si esta lectura fallara en silencio devolvería ceros, y un
+ * «0 mensajes» en la confirmación es peor que no decir nada — invita a borrar. Quien llama
+ * tiene que distinguir «no hay nada» de «no he podido mirarlo».
+ */
+async function contarImpactoBorrado(orgId, contactId) {
+    const oid = resolveOrg(orgId);
+    const { data: convs, error: errConv } = await supabase
+        .from('conversations').select('id').eq('organization_id', oid).eq('contact_id', contactId);
+    assertRead(errConv, 'conversations');
+    const convIds = (convs || []).map(c => c.id);
+
+    let mensajes = 0;
+    if (convIds.length) {
+        const { count, error } = await supabase
+            .from('messages').select('id', { count: 'exact', head: true }).in('conversation_id', convIds);
+        assertRead(error, 'messages');
+        mensajes = count || 0;
+    }
+    const { count: citas, error: errCitas } = await supabase
+        .from('appointments').select('id', { count: 'exact', head: true })
+        .eq('organization_id', oid).eq('contact_id', contactId);
+    assertRead(errCitas, 'appointments');
+    const { count: escaladas, error: errEsc } = await supabase
+        .from('pending_actions').select('id', { count: 'exact', head: true })
+        .eq('organization_id', oid).eq('contact_id', contactId).eq('status', 'pending');
+    assertRead(errEsc, 'pending_actions');
+
+    return { mensajes, citas: citas || 0, escaladas: escaladas || 0 };
+}
+
 async function getAppointmentsByLead(orgId, contactId) {
     const oid = resolveOrg(orgId);
     const { data } = await supabase
@@ -3789,6 +3832,7 @@ module.exports = {
     deleteAppointment,
     getAppointmentById,
     getAppointmentsByLead,
+    contarImpactoBorrado,
     getAppointmentsByDateRange,
     getCompletedAppointmentsForBilling,
     stampBillingSnapshot,

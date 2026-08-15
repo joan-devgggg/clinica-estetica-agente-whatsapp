@@ -267,6 +267,17 @@ function esBloqueoPorCobro(e) {
     return e?.code === '23503' || msg.includes('23503') || msg.includes('cobros_appointment_id_fkey');
 }
 
+// Lo que el borrado se llevaría por delante, para que la confirmación del panel lo diga en vez
+// de callarlo (Olga Yarmak, 11/08/2026: 30 mensajes por CASCADE, sin traza). Solo lectura, y
+// NO condiciona el borrado: si esto falla, el panel avisa de que no ha podido contarlo y el
+// botón de borrar sigue estando — informar no es bloquear.
+app.get('/api/leads/:id/impacto-borrado', async (req, res) => {
+    try {
+        const orgId = extractOrgId(req);
+        res.json(await db.contarImpactoBorrado(orgId, req.params.id));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.delete('/api/leads/:id', async (req, res) => {
     try {
         const orgId = extractOrgId(req);
