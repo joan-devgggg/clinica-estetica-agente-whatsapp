@@ -1,0 +1,67 @@
+{
+  "_meta": {
+    "NO_ES_LA_CONVERSACION_VIVA": "Foto de `messages` tomada el 2026-08-17. No se sincroniza.",
+    "contacto": "Ihab",
+    "wa_phone": "4790768781",
+    "contact_id": "f8876063-94eb-45b3-bba7-6fe2b5fa4c0a",
+    "conversation_id": "dfd8f36f-f51b-46c9-8841-d5f3c974c3d5",
+    "rango": ["2026-08-16T11:34:12.080Z", "2026-08-17T11:42:58.254Z"],
+    "idioma": "es",
+    "verificado_el": "2026-08-17",
+    "verificado_como": "EL CASO DE LA CONTENCIÓN DEL CATÁLOGO: «Para lavar.» resolvió por token suelto contra la ÚNICA entrada de las 81 que contiene 'lavar' en el nombre — «Reconstrucción K18 + lavar y peinar», 60 € — y la huella quedó en positivo: el ✅ del 16/08 11:38:48 la recita («✂️ Reconstrucción K18 + lavar y peinar con Natalia · 💰 60€») y la cita del 27/08 (created_at 16/08 14:26:40, updated_by null: puro bot) sigue confirmada con ese service. La regla que este fixture congela vive en la pasada 2 de extractServiceFromText y su test determinista es tests/contencion-catalogo.test.js; aquí se congela el TURNO REAL."
+  },
+  "business_hours": {
+    "lunes": { "apertura": "10:00", "cierre": "19:00" },
+    "martes": { "apertura": "10:00", "cierre": "19:00" },
+    "miercoles": { "apertura": "10:00", "cierre": "19:00" },
+    "jueves": { "apertura": "10:00", "cierre": "19:00" },
+    "viernes": { "apertura": "10:00", "cierre": "19:00" },
+    "sabado": { "apertura": "10:00", "cierre": "19:00" }
+  },
+  "anclas": {
+    "citas": [
+      { "service": "Reconstrucción K18 + lavar y peinar", "starts_at": "2026-08-27T13:00:00Z", "status": "confirmed", "created_at": "2026-08-16T14:26:40.087Z", "stylist": "Natalia", "updated_by": null, "nota": "La huella del fallo: nadie pidió una K18. Nació del ✅ del 14:26 (la 2ª cita fantasma, trabajo aparte) arrastrando el service mal resuelto del turno 1." },
+      { "service": "Señora", "starts_at": "2026-08-17T13:00:00Z", "status": "confirmed", "created_at": "2026-08-16T11:38:46.294Z", "stylist": "Yulia", "updated_by": "panel:aae49696-…", "nota": "La cita que Ihab sí pidió (lavar y peinar), luego tocada desde el panel." }
+    ],
+    "pending_actions": []
+  },
+  "turnos": [
+    {
+      "n": 1,
+      "ts": "2026-08-16T11:34:12.080Z",
+      "entrante": ["Hola buenos días. Tienes cita libre mañana a las 14-15 h por ejemplo? Para lavar."],
+      "saliente": "Buenos días 😊 Perfecto, para lavar y peinar. ¿Prefieres solo secado o peinado con ondas?",
+      "clase": "fallo_anclado",
+      "ancla": "El fallo no está en este saliente (que suena bien) sino en lo que la resolución dejó en la sesión: 'lavar' casó la entrada K18+lavar de 60 €, y la huella es el ✅ del 11:38:48 y la cita del 27/08 (anclas.citas[0]). «Lavar y peinar» COMPLETO devuelve null a propósito (categoría con 4 variantes) — el token suelto se colaba porque los nombres de categoría eran invisibles para la pasada 2.",
+      "estado": {
+        "citasReales": [],
+        "session": { "selectedService": null }
+      },
+      "espera": [
+        { "detector": "extractServiceFromText", "sobre": "entrante:0", "resultado": null,
+          "nota": "LA CONDUCTA EXIGIDA, no la histórica: con la contención (tests/contencion-catalogo.test.js) el token 'lavar' es identidad de la categoría «Lavar y peinar» y no puede reservar la entrada AJENA que lo lleva en el nombre. Null aquí = el bot pregunta qué servicio. Antes del arreglo este turno resolvía «Reconstrucción K18 + lavar y peinar» (visto en rojo el 17/08/2026)." }
+      ]
+    },
+    {
+      "n": 2,
+      "ts": "2026-08-16T11:36:56.955Z",
+      "entrante": ["Soy hombre con pelo corto, lavar y peinar es perfecto. No tengo preferencias."],
+      "saliente": "Perfecto, te apunto lavar y peinar. Mañana a las 14:00 con Natalia, ¿te va bien?",
+      "excluido": { "motivo": "El veredicto del saliente depende de availableSlots y del selectedService de ESE instante, y los dos venían contaminados por la resolución mala del turno 1: no se reconstruyen con honestidad. Y el entrante tiene su propia rareza COLINDANTE, medida idéntica antes y después de la contención: resuelve «Hombre» (Cortes, 25 €) por el keyword 'corto' más la palabra «soy hombre» — preexistente, fuera del alcance de la regla, documentada en tests/contencion-catalogo.test.js sin fijarla." }
+    },
+    {
+      "n": 3,
+      "ts": "2026-08-16T11:38:48.286Z",
+      "entrante": ["Claro, me llamo Ihab.", "Muchas gracias."],
+      "saliente": "✅ Perfecto, Ihab. Cita reservada:\n\n📅 Lunes 17 de agosto a las 15:00\n✂️ Reconstrucción K18 + lavar y peinar con Natalia\n💰 60€ · 60 minutos",
+      "excluido": { "motivo": "El ✅ recita el service mal resuelto (es el ANCLA del turno 1, no un turno rejugable) y diez segundos después salió otro saliente con «Lavar y peinar, 25€»: dos servicios y dos precios para la misma cita en el mismo minuto. La fila guardada (anclas.citas[1]) dice «Señora». Estado de sesión irrecuperable." }
+    },
+    {
+      "n": 4,
+      "ts": "2026-08-16T14:26:43.390Z",
+      "entrante": ["❤️🥰"],
+      "saliente": "✅ Perfecto, Ihab. Cita reservada:\n\n📅 Jueves 27 de agosto a las 15:00\n✂️ Reconstrucción K18 + lavar y peinar con Natalia\n💰 60€ · 60 minutos",
+      "excluido": { "motivo": "La 2ª cita fantasma: un emoji produjo una reserva nueva (anclas.citas[0], created_at 14:26:40) con el service mal resuelto arrastrado. Es el trabajo del ✅ que no viaja en session.history — OTRO arreglo, decidido aparte el 17/08/2026; cuando se haga, este turno es su candidato a rejugado." }
+    }
+  ]
+}

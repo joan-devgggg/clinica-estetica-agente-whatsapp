@@ -206,6 +206,10 @@ const DETECTORES = {
     extractMentionedHours: (ctx, t) => h.extractMentionedHours(t),
     extractLargoPelo: (ctx, t) => h.extractLargoPelo(t),
     detectVariasPersonas: (ctx, t) => h.detectVariasPersonas(t),
+    // La resolución de servicio de la conversación, contra el catálogo FIJO del fixture
+    // (regla 5: nada de catálogo vivo aquí). Devuelve el nombre de catálogo o null; null
+    // significa «el bot pregunta». Entró con el caso de Ihab (contención del catálogo).
+    extractServiceFromText: (ctx, t) => h.extractServiceFromText(t, CATALOGO)?.nombre ?? null,
     detectCancelRequest: (ctx, t) => h.detectCancelRequest(t),
     detectConsultaService: (ctx, t) => h.detectConsultaService(t),
     isAffirmative: (ctx, t) => h.isAffirmative(t),
