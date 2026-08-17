@@ -679,8 +679,11 @@ De ahí la línea que sostiene todo esto, y que es lo único que hay que recorda
 `isReactiveOnlyService`, que es el mismo patrón para otro motivo.
 
 **El filtro va en el CALL SITE, jamás dentro de un helper.** `extractServiceFromText` es a la
-vez un detector (oferta) y el fallback de `computeServiceBilling` (facturación): meterle el
-filtro dentro apaga la factura de una cita pasada sin que ningún test de oferta se entere.
+vez un detector (oferta) y el resolutor de las etiquetas de upselling al persistir y al
+estimar duración (`resolveAcceptedUpsellName` / `resolveServiceDurationMin`): meterle el
+filtro dentro apaga esas resoluciones sin que ningún test de oferta se entere. (La
+facturación ya no es el consumidor difuso: `computeServiceBilling` casa EXACTO desde
+`f187270` — un nombre que no existe da `unmatched`, no el parecido más cercano.)
 
 **Ofrecen** (filtrado): el catálogo del prompt (`openai.js`, el 90 % del efecto), el bloque
 determinista de `bot.js` (`catalogoOfertable`: cortes, detección libre, K18, categoría por

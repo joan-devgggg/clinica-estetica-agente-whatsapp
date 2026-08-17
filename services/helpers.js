@@ -1233,6 +1233,42 @@ function extractServiceFromText(text, servicesCatalog) {
             ? servicesCatalog.filter(s => catsMencionadas.includes(normalizeText(s.categoria)))
             : servicesCatalog;
         if (textTokens.size) {
+            // CONTENCIÓN (la cita de Ihab, 16/08/2026): los tokens del NOMBRE de una
+            // categoría son identidad de esa categoría aunque el texto no la nombre entera.
+            // catsMencionadas (arriba) exige el nombre COMPLETO, así que «Para lavar.» no la
+            // armaba, y 'lavar' aparece en UNA sola entrada de las 81 —«Reconstrucción K18 +
+            // lavar y peinar», 60 €— que ganaba sin empate que la frenara: quedó una cita
+            // confirmada con ese service. Mismo agujero con 'premium' (→ Holistic relajante
+            // Premium 95 €, hablando de Color Premium) y 'blond' (→ Botanical Glow Pure
+            // Blond 45 €, hablando de Deco Total Blond). La regla: el GANADOR necesita al
+            // menos un token que no sea identidad de OTRA categoría; si toda su evidencia lo
+            // es, la mención pertenece a la otra categoría y se devuelve null — con null el
+            // bot pregunta, con el servicio ajeno reserva mal en silencio. El índice sale
+            // del catálogo en cada llamada: una entrada nueva con una palabra de otra
+            // categoría dentro queda cubierta sin tocar código.
+            //
+            // Lo que la puerta NO puede comerse (regla 12; medido contra el catálogo vivo el
+            // 17/08/2026 — 0 cambios en los 81 nombres, 4 tokens de 94, 84 pares de 8.742,
+            // todos resolver→null sobre las tres entradas de arriba): los tokens de la
+            // PROPIA categoría no contaminan («pedicura esmaltado» sigue resolviendo) y
+            // basta un token limpio para ganar («higienica mujer»). Y se veta al GANADOR,
+            // nunca se filtra el pool: descartar candidatos contaminados deja que evidencia
+            // basura gane sola («mechas hasta la cintura» pasaría de null a «Infantil hasta
+            // 8 años»), y borrar el token de la evidencia mueve empates ajenos («peinado
+            // mujer» perdería su resolución). Las tres formulaciones se midieron; solo esta
+            // deja el resto del catálogo exactamente igual.
+            const categoriasDelToken = {};
+            for (const svc of servicesCatalog) {
+                const cat = normalizeText(svc.categoria || '');
+                if (!cat) continue;
+                for (const w of tokenizeService(normalizeService(svc.categoria))) {
+                    if (w.length < MIN_DISTINCTIVE_TOKEN || SERVICE_MATCH_STOPWORDS.has(w) || /^\d+$/.test(w)) continue;
+                    (categoriasDelToken[w] = categoriasDelToken[w] || new Set()).add(cat);
+                }
+            }
+            const esIdentidadAjena = (matched, propia) =>
+                matched.every(w => categoriasDelToken[w]
+                    && [...categoriasDelToken[w]].some(c => c !== propia));
             const conMatch = [];
             for (const svc of candidatos) {
                 const distintivos = tokenize(normalizeService(svc.nombre)).filter(w =>
@@ -1240,6 +1276,7 @@ function extractServiceFromText(text, servicesCatalog) {
                 );
                 const matched = distintivos.filter(w => textTokens.has(w));
                 if (!matched.length) continue;
+                const catPropia = normalizeText(svc.categoria || '');
                 conMatch.push({
                     svc,
                     score: matched.length,
@@ -1248,7 +1285,8 @@ function extractServiceFromText(text, servicesCatalog) {
                     // no en "Holistic relajante Premium". Es el desempate, no el criterio.
                     isPrefix: matched.includes(distintivos[0]),
                     clave: [...new Set(matched)].sort().join('|'),
-                    cat: normalizeText(svc.categoria || ''),
+                    cat: catPropia,
+                    contaminado: esIdentidadAjena(matched, catPropia),
                 });
             }
             const maxScore = Math.max(0, ...conMatch.map(c => c.score));
@@ -1269,12 +1307,12 @@ function extractServiceFromText(text, servicesCatalog) {
             const variasCategorias = new Set(top.map(c => c.cat)).size > 1;
 
             if (top.length === 1) {
-                bestMatch = top[0].svc;
+                if (!top[0].contaminado) bestMatch = top[0].svc;
             } else if (!(mismosTokens && variasCategorias)) {
                 // Empate que el prefijo no rompe → mejor seguir sin match que arriesgar
                 // un servicio equivocado (precio y duración distintos).
                 const conPrefijo = top.filter(c => c.isPrefix);
-                if (conPrefijo.length === 1) bestMatch = conPrefijo[0].svc;
+                if (conPrefijo.length === 1 && !conPrefijo[0].contaminado) bestMatch = conPrefijo[0].svc;
             }
         }
     }
@@ -3293,9 +3331,11 @@ function isServiceActive(svc) {
 
 // El catálogo tal como puede OFRECERSE. Se llama en el CALL SITE, nunca dentro de los
 // helpers de resolución: `extractServiceFromText`, por ejemplo, es a la vez un detector
-// (oferta) y el fallback de `computeServiceBilling` (facturación, helpers.js). Meterle el
-// filtro dentro apagaría la factura de una cita pasada sin que ningún test de oferta se
-// enterara — el fallo silencioso que este diseño existe para evitar.
+// (oferta) y el resolutor de las etiquetas de upselling al persistir y al estimar duración
+// (`resolveAcceptedUpsellName` / `resolveServiceDurationMin`; `computeServiceBilling` ya no
+// usa el difuso desde f187270 — casa exacto). Meterle el filtro dentro apagaría esas
+// resoluciones sin que ningún test de oferta se enterara — el fallo silencioso que este
+// diseño existe para evitar.
 function offerableCatalog(catalog) {
     return (Array.isArray(catalog) ? catalog : []).filter(isServiceActive);
 }
