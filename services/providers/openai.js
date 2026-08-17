@@ -3,7 +3,7 @@ require('dotenv').config();
 const config = require('../../config.json');
 const db = require('../db');
 const { getOrgType } = require('../org-registry');
-const { normalizeText, classifyLargoVariant, hasApellido, isReactiveOnlyCategory, offerableCatalog, IDIOMAS_SOPORTADOS, resolveDiasDeApertura, DIAS_SEMANA_ES, DIAS_SEMANA_ES_PLURAL, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX } = require('../helpers');
+const { normalizeText, classifyLargoVariant, hasApellido, isReactiveOnlyCategory, offerableCatalog, IDIOMAS_SOPORTADOS, MOTIVOS_LLM, MOTIVOS_OFRECIBLES, resolveDiasDeApertura, DIAS_SEMANA_ES, DIAS_SEMANA_ES_PLURAL, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX } = require('../helpers');
 // Observador de la salud del proveedor del modelo. No decide nada del flujo: solo cuenta.
 // summarizeHistory NO se instrumenta — no recibe orgId, y que falle un resumen no le llega
 // a ninguna clienta. El embudo que importa es este.
@@ -19,6 +19,12 @@ const aiConfig = config.ai || {};
 // Modelo LLM. Fuente única de verdad: config.ai.model (con fallback). El ID
 // debe ser un slug válido de OpenRouter (ver https://openrouter.ai/api/v1/models).
 const LLM_MODEL = aiConfig.model || 'anthropic/claude-haiku-4.5';
+
+// Las dos enumeraciones que el prompt de Sante le recita al modelo, RENDERIZADAS de la lista
+// única (helpers.MOTIVOS_LLM). Escritas a mano se separaron: la del esquema se quedó sin
+// `dato_no_disponible` mientras el caso 7 le pedía justo ese valor, y el modelo leía las dos.
+const MOTIVOS_LLM_STR = Object.keys(MOTIVOS_LLM).map(k => `"${k}"`).join(' | ');
+const MOTIVOS_OFRECIBLES_STR = MOTIVOS_OFRECIBLES.map(k => `"${k}"`).join(' | ');
 
 // ─── San Remo prompt (restaurante) ──────────────────────────────────────────
 
@@ -951,7 +957,7 @@ Escala SOLO en estos casos concretos. En todos (excepto tono agresivo) SIEMPRE p
 
 7. TE PREGUNTAN UN DATO DEL EQUIPO O DE UNA VISITA PASADA QUE NO TIENES → motivo_escalado: "dato_no_disponible"
    Cuándo: la clienta pregunta algo CONCRETO y COMPROBABLE sobre el salón que no está en tu contexto —el nombre de quien la atendió, quién le hizo un servicio, qué le aplicaron en una visita anterior— y no lo puedes responder con la información de arriba. Lo sabe una persona del salón, no tú.
-   Pregunta primero: "Eso no lo tengo yo, pero lo sabe el equipo 😊 ¿Quieres que se lo pregunte y te contesten ellas?"
+   Pregunta primero, y en ESE mensaje pon ofrezco_traspaso: "dato_no_disponible" (accion sigue null): "Eso no lo tengo yo, pero lo saben en el salón 😊 ¿Quieres que te ponga en contacto con ellas?"
    Si dice sí → escala. Si dice no → sigue ayudándola con normalidad.
    NO uses este motivo para precios, servicios, horarios ni disponibilidad: eso lo tienes y lo respondes tú. Tampoco para una pregunta vaga o de opinión ("¿qué me recomiendas?"), que la contestas tú.
    Esther Cediloo (08/08/2026) quería nombrar a DOS personas en una reseña de Google, el bot solo sabía una y contestó "I'm not sure I have that information" pidiéndole que describiera el servicio. La segunda persona no estaba registrada en ninguna parte: solo cabía preguntar dentro. Nadie del salón se enteró.
@@ -1015,6 +1021,7 @@ Responde SIEMPRE con JSON puro y nada más. SIN backticks, SIN markdown, SIN tex
   "slot_rechazado": false,
   "accion": null,
   "motivo_escalado": null,
+  "ofrezco_traspaso": null,
   "idioma_detectado": "es",
   "datos": {
     "nombre": null,
@@ -1031,7 +1038,8 @@ Responde SIEMPRE con JSON puro y nada más. SIN backticks, SIN markdown, SIN tex
 PROHIBIDO envolver el JSON en \`\`\`json o \`\`\` — devuelve el objeto { } directamente.
 
 Valores posibles de accion: "cancelar" | "cambiar" | "escalar_humano" | null
-motivo_escalado: solo cuando accion es "escalar_humano" → "queja_cita" | "tono_agresivo" | "pedir_persona" | "servicio_especial" | "error_tecnico" | null
+motivo_escalado: solo cuando accion es "escalar_humano" → ${MOTIVOS_LLM_STR} | null
+ofrezco_traspaso: cuando en ESTE mensaje OFRECES pasarla con el equipo y estás esperando su "sí" → ${MOTIVOS_OFRECIBLES_STR} | null. En ese turno accion sigue siendo null: estás preguntando, no escalando. Ponlo SIEMPRE que ofrezcas, aunque la pregunta te salga con otras palabras — es lo que hace que su "sí" llegue al equipo.
 cita_confirmada: true → siempre que la clienta acepte un hueco O que tu mensaje afirme que la cita queda reservada/apuntada/confirmada. En ese caso datos.hora_cita DEBE llevar la hora exacta (HH:MM) y datos.fecha_cita la fecha exacta (YYYY-MM-DD). NUNCA junto con slot_rechazado: true.`;
 }
 
@@ -1077,6 +1085,9 @@ function getFallbackResponse(orgId, language) {
             // llega a escribirse porque bot.js corta antes con su `return` de fallback, pero
             // era un default vivo colgando de que ese `return` no cambie nunca.
             idioma_detectado: IDIOMAS_SOPORTADOS.includes(language) ? language : null,
+            // Explícito y no por omisión: un fallback no ofrece nada, y `undefined` aquí
+            // dejaría el campo fuera del sobre en vez de decir que no hay oferta.
+            ofrezco_traspaso: null,
             datos: { nombre: null, servicio: null, categoria_servicio: null, estilista_preferida: null, fecha_cita: null, hora_cita: null, upselling_aceptado: [], notas: null },
         };
     }
@@ -1231,6 +1242,18 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
         }
         parsed.idioma_detectado = IDIOMAS_SOPORTADOS.includes(parsed.idioma_detectado)
             ? parsed.idioma_detectado
+            : null;
+        // `ofrezco_traspaso` va contra conjunto CERRADO, igual que idioma_detectado y por el
+        // mismo motivo: aguas abajo arma una espera de dos turnos y se escribe como
+        // `consulta_<valor>` en la ficha. Un valor inventado por el modelo pondría una razón
+        // de escalada que ningún mapa de etiquetas conoce y que nadie sabría resolver. El
+        // normalizador NO tiene whitelist de nivel superior —los campos desconocidos pasan
+        // tal cual y sin default—, así que sin estas líneas el campo llegaría a bot.js crudo.
+        if (parsed.ofrezco_traspaso && !MOTIVOS_OFRECIBLES.includes(parsed.ofrezco_traspaso)) {
+            logger.warn('ofrezco_traspaso_no_soportado', { orgId, valor: String(parsed.ofrezco_traspaso).slice(0, 30) });
+        }
+        parsed.ofrezco_traspaso = MOTIVOS_OFRECIBLES.includes(parsed.ofrezco_traspaso)
+            ? parsed.ofrezco_traspaso
             : null;
         // Normalize: salon uses cita_confirmada, map to reserva_confirmada for bot.js compatibility
         parsed.reserva_confirmada = parsed.cita_confirmada;

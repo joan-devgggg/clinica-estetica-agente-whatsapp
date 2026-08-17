@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -2036,29 +2036,47 @@ function salonFueraDeHorarioMsg(session, { hora, apertura, cierre }) {
 // `pendingEscalation` se arma aquí a mano y no se deja en manos de `offersHumanHandover`,
 // que solo reconoce el castellano — para una clienta rusa la oferta se habría quedado
 // colgando, que es exactamente el bug que esa red existe para tapar.
+// La PREGUNTA de traspaso, SOLA y sin preámbulo. La recitan dos sitios con preámbulos
+// distintos: el menú de rescate de aquí abajo (que le antepone su «no consigo entenderte») y
+// el CODA del anillo 2 (bot.js, al final del turno), que se pega detrás de una respuesta
+// BUENA — y ahí aquel preámbulo sería falso: se ha entendido perfectamente, lo que falta es
+// un dato que solo sabe el salón. Una sola fuente para que las dos no se separen, que es
+// justo lo que le pasó a la tabla de días de la semana.
+const PREGUNTA_TRASPASO = {
+    es: '¿Quieres que te ponga en contacto con una de nuestras especialistas?',
+    en: 'Would you like me to put you in touch with one of our specialists?',
+    ru: 'Хочешь, я свяжу тебя с одной из наших специалисток?',
+    uk: 'Хочеш, я з\'єднаю тебе з однією з наших спеціалісток?',
+};
+const PREGUNTA_TRASPASO_FORMAL = {
+    es: '¿Quiere que le ponga en contacto con una de nuestras especialistas?',
+    ru: 'Хотите, я свяжу Вас с одной из наших специалисток?',
+    uk: 'Хочете, я з\'єднаю Вас з однією з наших спеціалісток?',
+};
+
 function salonOfferHumanMsg(session) {
     session.pendingEscalation = true;
     session.pendingEscalationService = 'traspaso';
     session.pendingEscalationOfrecidaAt = Date.now();
     const msgs = {
-        es: 'Perdona, no consigo entenderte bien y no quiero hacerte perder más tiempo 🙏 '
-            + '¿Quieres que te ponga en contacto con una de nuestras especialistas?',
-        en: "Sorry, I'm not managing to understand you and I don't want to waste your time 🙏 "
-            + 'Would you like me to put you in touch with one of our specialists?',
-        ru: 'Извини, я никак не могу тебя понять и не хочу отнимать у тебя время 🙏 '
-            + 'Хочешь, я свяжу тебя с одной из наших специалисток?',
-        uk: 'Вибач, я ніяк не можу тебе зрозуміти і не хочу забирати твій час 🙏 '
-            + 'Хочеш, я з\'єднаю тебе з однією з наших спеціалісток?',
+        es: 'Perdona, no consigo entenderte bien y no quiero hacerte perder más tiempo 🙏 ' + PREGUNTA_TRASPASO.es,
+        en: "Sorry, I'm not managing to understand you and I don't want to waste your time 🙏 " + PREGUNTA_TRASPASO.en,
+        ru: 'Извини, я никак не могу тебя понять и не хочу отнимать у тебя время 🙏 ' + PREGUNTA_TRASPASO.ru,
+        uk: 'Вибач, я ніяк не можу тебе зрозуміти і не хочу забирати твій час 🙏 ' + PREGUNTA_TRASPASO.uk,
     };
     const msgsFormal = {
-        es: 'Perdone, no consigo entenderle bien y no quiero hacerle perder más tiempo 🙏 '
-            + '¿Quiere que le ponga en contacto con una de nuestras especialistas?',
-        ru: 'Извините, я никак не могу Вас понять и не хочу отнимать у Вас время 🙏 '
-            + 'Хотите, я свяжу Вас с одной из наших специалисток?',
-        uk: 'Вибачте, я ніяк не можу Вас зрозуміти і не хочу забирати Ваш час 🙏 '
-            + 'Хочете, я з\'єднаю Вас з однією з наших спеціалісток?',
+        es: 'Perdone, no consigo entenderle bien y no quiero hacerle perder más tiempo 🙏 ' + PREGUNTA_TRASPASO_FORMAL.es,
+        ru: 'Извините, я никак не могу Вас понять и не хочу отнимать у Вас время 🙏 ' + PREGUNTA_TRASPASO_FORMAL.ru,
+        uk: 'Вибачте, я ніяк не можу Вас зрозуміти і не хочу забирати Ваш час 🙏 ' + PREGUNTA_TRASPASO_FORMAL.uk,
     };
     return porTrato(session, msgs, msgsFormal);
+}
+
+// El CODA del anillo 2: la pregunta de traspaso lista para pegarse detrás de la respuesta del
+// modelo cuando ÉL declaró que ofrecía y su prosa no ofreció nada. No arma nada — lo arma el
+// llamador, que es quien sabe si la declaración era válida.
+function codaTraspaso(session) {
+    return porTrato(session, PREGUNTA_TRASPASO, PREGUNTA_TRASPASO_FORMAL);
 }
 
 // «Somos dos». Lo que el sistema NO sabe hacer, dicho sin rodeos y con la pregunta de la
@@ -2210,8 +2228,11 @@ const HANDOVER_TRASPASO = /\b(paso|pasar|pasare|derivo|derivar|derivare|traslado
 // Los destinos nuevos exigen preposición ("con una especialista", "al salón") para no
 // confundir al receptor con una mención cualquiera: "los precios del salón" no es un
 // traspaso aunque la frase lleve el verbo "paso".
+// `con el equipo` entró el 18/08/2026: faltaba, y su ausencia costó la escalada de Gisvell
+// G·Perez (12/08). El bot le dijo «¿Quieres que te ponga en contacto CON EL EQUIPO para que lo
+// confirmen?» y no armó nada — la misma frase con «con ellas» sí arma. Dos palabras.
 const HANDOVER_DESTINO = new RegExp([
-    'nuestro equipo', 'al equipo', 'del equipo', 'el equipo se',
+    'nuestro equipo', 'al equipo', 'del equipo', 'el equipo se', 'con el equipo',
     'mis companer', 'nuestras companer', 'una companer',
     'el salon te', 'te contactara', 'se pondran en contacto', 'se pondra en contacto',
     'atiendan directamente', 'atiendan personalmente',
@@ -2274,6 +2295,13 @@ const OFERTA_TRASPASO_EN = [
 const OFERTA_TRASPASO_CYR = buildCyrillicRe([
     'связала тебя', 'связать тебя с', 'соединить тебя с', 'передам твой вопрос',
     'хочешь, я свяжу', "зв'язала тебе", "зв'язати тебе з", "хочеш, я зв'яжу",
+    // Medido el 18/08/2026: de las SIETE preguntas de traspaso que el propio bot emite
+    // (PREGUNTA_TRASPASO ×4 + su variante de usted ×3), TRES no las veía nadie — el verbo
+    // ucraniano es «з'єднаю» y no «зв'яжу», y las de usted van en 2ª del plural. Como
+    // `salonOfferHumanMsg` arma a mano, el bot funcionaba y el ciego era el BARRIDO: sus
+    // propias ofertas en uk y en usted no se clasificaban como ofertas. Ensanchar aquí es
+    // barato a propósito (ver el comentario de arriba): esta lista solo ARMA una espera.
+    "хочеш, я з'єднаю", "хочете, я з'єднаю", 'хотите, я свяжу',
 ]);
 const OFERTA_PRONOMBRE_DESTINO = /\b(?:con|a) ell[ao]s?\b/;
 const REMISION_EQUIPO_RE = /habl(?:a|as|es|ar|ad|en) (?:directamente )?con (?:nuestro|el) equipo/;
@@ -5137,6 +5165,11 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // preguntó nada.
             delete session._huecoVerificadoEsteTurno;
             delete session._codaNombre;
+            // Igual de turno: la declaración de oferta del modelo vale para ESTE mensaje. Si
+            // el turno se fue por una salida temprana (un `accion` que despacha y hace return)
+            // sin llegar al armado, una declaración heredada armaría la espera detrás de una
+            // respuesta que no ofrece nada. Tampoco viaja en buildSessionExtra.
+            delete session._ofertaDeclarada;
             // Se resuelve SIEMPRE, no solo cuando un detector se dispara: el bloque
             // __citasVivas del prompt es el refuerzo que cubre las frases que los detectores
             // no ven, y sin leer no puede afirmar nada (decirle al modelo "no tiene ninguna
@@ -6268,8 +6301,64 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // maquinaria que YA resuelve el "sí" de forma determinista y en los cuatro idiomas.
         // Solo para este motivo: los otros seis los sigue gobernando el prompt, que lleva
         // meses funcionando, y tocarlos aquí sería cambiar conducta que nadie ha pedido.
+        //
+        // ─── ANILLO 2: el modelo DECLARA la oferta ────────────────────────────────────
+        // Antes de nada, porque decide de quién es el turno. `ofrezco_traspaso` existe para
+        // que el modelo pueda decir «estoy OFRECIENDO» sin desobedecer la regla crítica —que
+        // le prohíbe poner accion:escalar_humano en el turno de la pregunta—, que hasta hoy
+        // era imposible: obedecer significaba no declarar NADA, y entonces armar la espera
+        // dependía de que su prosa libre casara con detectaOfertaTraspaso. Medido el
+        // 17/08/2026: 1 de 4 casos reales llegó a tener fila, y la única que llegó fue porque
+        // el modelo DESOBEDECIÓ y cayó en la red de aquí abajo.
+        //
+        // Si declara la oferta Y además pone la acción, gana la OFERTA: escalar en el turno
+        // de la pregunta deja bot_mode='manual' y el bot mudo ante el «sí» siguiente.
+        // Todavía no se arma nada — armar depende del texto FINAL, que aún no existe.
+        //
+        // La lista se comprueba AQUÍ además de en el normalizador de openai.js, y no es
+        // duplicar: los dos leen la MISMA constante (helpers.MOTIVOS_OFRECIBLES), así que no
+        // pueden separarse, y el sobre llega a este punto por tres caminos —el normalizador y
+        // los dos fallbacks que bot.js arma a mano—. Lo que cuelga de este valor es una razón
+        // de escalada que se escribe en la ficha como `consulta_<valor>`: un motivo inventado
+        // pondría ahí una razón que ningún mapa de etiquetas conoce.
+        if (orgType === 'salon' && aiResponse.ofrezco_traspaso
+                && !MOTIVOS_OFRECIBLES.includes(aiResponse.ofrezco_traspaso)) {
+            logger.warn('traspaso_declarado_no_ofrecible', {
+                orgId, telefono: userPhone, valor: String(aiResponse.ofrezco_traspaso).slice(0, 30),
+            });
+            aiResponse.ofrezco_traspaso = null;
+        }
+        if (orgType === 'salon' && aiResponse.ofrezco_traspaso) {
+            session._ofertaDeclarada = { motivo: aiResponse.ofrezco_traspaso };
+            incrementMetric('traspasoDeclarado');
+            if (aiResponse.accion === 'escalar_humano') {
+                logger.info('traspaso_declarado_y_accion_a_la_vez', {
+                    orgId, telefono: userPhone, motivo: aiResponse.ofrezco_traspaso,
+                });
+                aiResponse.accion = null;
+                aiResponse.motivo_escalado = null;
+            }
+        }
+
+        // El trinquete, cerrado el 18/08/2026. Esta red convertía en espera CUALQUIER
+        // escalada por este motivo, incluida la del turno en que la clienta acaba de decir
+        // que SÍ: si la oferta del turno anterior no llegó a armar nada, el bloque de
+        // pendingEscalation (que corre ANTES del LLM) no intercepta ese «sí», el modelo hace
+        // lo que el prompt le manda para el turno 2 —accion:escalar_humano— y aquí se le
+        // anulaba para armar otra espera. Resultado: el texto anunciaba el traspaso, no había
+        // fila, bot_mode seguía en auto, y el bot esperaba un segundo «sí» que nadie sabía que
+        // tenía que dar. Con la espera ya armada este caso no llega hasta aquí, así que un
+        // afirmativo AQUÍ solo puede significar que la oferta falló: entonces se escala.
         if (orgType === 'salon' && aiResponse.accion === 'escalar_humano'
-            && aiResponse.motivo_escalado === 'dato_no_disponible' && !session.pendingEscalation) {
+            && aiResponse.motivo_escalado === 'dato_no_disponible'
+            && !session.pendingEscalation && !session._ofertaDeclarada
+            && isAffirmative(sanitized)) {
+            logger.warn('escalada_dato_no_disponible_tras_afirmativo_no_convertida', {
+                orgId, telefono: userPhone,
+            });
+        } else if (orgType === 'salon' && aiResponse.accion === 'escalar_humano'
+            && aiResponse.motivo_escalado === 'dato_no_disponible'
+            && !session.pendingEscalation && !session._ofertaDeclarada) {
             logger.info('escalada_dato_no_disponible_a_pendiente', { orgId, telefono: userPhone });
             aiResponse.accion = null;
             aiResponse.motivo_escalado = null;
@@ -7116,11 +7205,54 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         //
         // detectaOfertaTraspaso es la MISMA función que usa el barrido de promesas: una
         // oferta que el barrido ve es una oferta que aquí se armó, por construcción.
-        if (orgType === 'salon' && aiResponse.accion !== 'escalar_humano'
+        //
+        // ─── ANILLO 2, segunda mitad: armar lo DECLARADO y tapar la divergencia ────────
+        // Va primero porque la declaración manda sobre la prosa. Los dos casos:
+        //
+        //   · declaró Y su prosa ofrece  → se arma y no se toca el texto;
+        //   · declaró y su prosa NO ofrece → se arma IGUAL y se le pega la pregunta. Es el
+        //     turno real del 17/08/2026: «Eso no lo tengo yo, pero el equipo te lo confirma
+        //     en el salón 😊 ¿Reservamos tu cita primero?» — media frase del caso 7 y, en
+        //     lugar de la oferta, un empujón a reservar. Armar sin pegar la pregunta dejaría
+        //     a la clienta sin nada que contestar y la espera moriría en su siguiente
+        //     mensaje; pegarla es lo que convierte la declaración en un turno que CONTESTA.
+        //     Mismo precedente que el coda de la puerta del nombre, aquí abajo.
+        //
+        // La divergencia se registra SIEMPRE con la respuesta original: es la señal de que el
+        // modelo declara mejor de lo que redacta, y el saliente con el coda queda en
+        // `messages` como registro durable que sobrevive a los deploys (metrics.json no).
+        // La bandera NO se borra aquí: su vida la gobierna UN solo sitio, el barrido de
+        // banderas de turno de más arriba, que corre en cada mensaje antes del LLM. Borrarla
+        // en los dos sitios dejaba el barrido sin trabajo en el camino normal — o sea, una
+        // guarda que parecía protegerlo todo y no se podía ver fallar (regla 2).
+        if (orgType === 'salon' && session._ofertaDeclarada) {
+            const { motivo } = session._ofertaDeclarada;
+            if (aiResponse.accion !== 'escalar_humano' && !session.pendingEscalation) {
+                session.pendingEscalation = true;
+                session.pendingEscalationService = motivo;
+                session.pendingEscalationOfrecidaAt = Date.now();
+                incrementMetric('traspasoArmado');
+                logger.info('sante_traspaso_declarado_espera_confirmacion', { orgId, telefono: userPhone, motivo });
+                if (!detectaOfertaTraspaso(aiResponse.respuesta) && !isFallbackText(aiResponse.respuesta)) {
+                    const coda = codaTraspaso(session);
+                    logger.warn('traspaso_declarado_sin_oferta_en_prosa', {
+                        orgId, telefono: userPhone, motivo, respuestaOriginal: aiResponse.respuesta,
+                    });
+                    incrementMetric('traspasoDeclaradoSinOfertaEnProsa');
+                    const base = aiResponse.respuesta.trim();
+                    const margen = 1000 - coda.length - 1;
+                    aiResponse.respuesta = (base.length > margen ? `${base.slice(0, Math.max(0, margen - 3))}...` : base)
+                        + `\n${coda}`;
+                }
+            }
+        } else if (orgType === 'salon' && aiResponse.accion !== 'escalar_humano'
                 && !session.pendingEscalation && detectaOfertaTraspaso(aiResponse.respuesta)) {
             session.pendingEscalation = true;
             session.pendingEscalationService = 'traspaso';
             session.pendingEscalationOfrecidaAt = Date.now();
+            // El anillo 3: ofreció en prosa sin declararlo. Sigue vivo a propósito — es lo
+            // que salvó a Mafe y lo que hace que el barrido y el bot no puedan divergir.
+            incrementMetric('traspasoProsaSinDeclaracion');
             logger.info('sante_traspaso_ofrecido_espera_confirmacion', { orgId, telefono: userPhone });
         }
 
