@@ -61,7 +61,15 @@
       "ts": "2026-08-16T14:26:43.390Z",
       "entrante": ["❤️🥰"],
       "saliente": "✅ Perfecto, Ihab. Cita reservada:\n\n📅 Jueves 27 de agosto a las 15:00\n✂️ Reconstrucción K18 + lavar y peinar con Natalia\n💰 60€ · 60 minutos",
-      "excluido": { "motivo": "La 2ª cita fantasma: un emoji produjo una reserva nueva (anclas.citas[0], created_at 14:26:40) con el service mal resuelto arrastrado. Es el trabajo del ✅ que no viaja en session.history — OTRO arreglo, decidido aparte el 17/08/2026; cuando se haga, este turno es su candidato a rejugado." }
+      "excluido": { "motivo": "La 2ª cita fantasma: un emoji produjo una reserva nueva (anclas.citas[0], created_at 14:26:40) con el service mal resuelto arrastrado. Era el trabajo del ✅ que no viajaba en session.history — HECHO el 17/08/2026 (_sendHist): este turno vive ahora en el rejugado confirmacion_en_historial de abajo, que afirma que el modelo VE el ✅ y que el emoji no escribe otra cita." }
     }
-  ]
+  ],
+  "replay": {
+    "tipo": "confirmacion_en_historial",
+    "nota": "Los turnos 3-4 por el arnés real: el ✅ determinista queda en session.history (llmCalls 0) y el turno del emoji llega al modelo CON ese ✅ en su history (llmCalls 1) sin escribir otra cita. El estado del cierre se siembra como en el rescate de Ludmila: el estado de sesión del instante no se conserva, y reconstruirlo desde el turno 1 exigiría rejugar la resolución mala que la contención del catálogo ya prohíbe. La agenda es del motor REAL con filas congeladas.",
+    "agenda": { "stylist": { "id": "st-natalia", "name": "Natalia", "skills": ["Reconstrucción"] } },
+    "servicio": "Reconstrucción K18 + lavar y peinar",
+    "turno_nombre": { "entrante": "Claro, me llamo Ihab." },
+    "turno_emoji": { "entrante": "❤️🥰", "saliente_llm": "¡Gracias a ti! 😊 Te esperamos" }
+  }
 }

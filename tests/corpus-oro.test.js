@@ -35,7 +35,8 @@
  *     REAL, no a una copia del runner.
  *
  * Duración medida el 15/08/2026: ~0,8 s el fichero entero (55 turnos + 3 rejugados por el
- * arnés real + 13 excluidos documentados).
+ * arnés real + 13 excluidos documentados). Desde el 17/08/2026 hay un 4º rejugado
+ * (Ihab, confirmacion_en_historial), que además conduce el motor de huecos real.
  */
 process.env.TZ = 'Europe/Madrid';
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
@@ -118,8 +119,12 @@ require.cache[loggerPath] = {
 const openai = require('../services/providers/openai');
 const llmQueue = [];
 let llmCalls = 0;
-openai.getChatbotResponse = async () => {
+// El history que RECIBIÓ la última llamada: el rejugado de Ihab afirma lo que el modelo
+// VE (su propio ✅ en el historial), no lo que redacta.
+let ultimoHistoryLLM = null;
+openai.getChatbotResponse = async (_orgId, history) => {
     llmCalls++;
+    ultimoHistoryLLM = (history || []).map(m => ({ ...m }));
     const respuesta = llmQueue.length ? llmQueue.shift() : 'Ok 😊';
     return {
         respuesta,
@@ -341,10 +346,67 @@ async function replayVariasPersonasPegajosa(fx) {
         'la marca variasPersonas se perdió un turno después: ya no es pegajosa');
 }
 
+// El turno 4 de Ihab en el arnés real: tras el ✅ determinista, el modelo del turno
+// siguiente VE ese ✅ en su historial (era el trabajo del arreglo del 17/08/2026) y el
+// emoji no crea otra cita. El estado del cierre (servicio + reserva esperando nombre) se
+// SIEMBRA, como el rescate de Ludmila en escalera-agenda: el estado de sesión de aquel
+// instante no se conserva, y reconstruirlo desde el turno 1 exigiría rejugar la
+// resolución mala que la contención del catálogo ya prohíbe. La agenda sí es del motor
+// REAL: filas congeladas de estilista/horarios servidas por el doble de Supabase.
+async function replayConfirmacionEnHistorial(fx) {
+    const r = fx.replay;
+    const phone = nuevoTelefono();
+    const client = clienteNuevo();
+    const st = r.agenda.stylist;
+    DB.stylists = [{ id: st.id, name: st.name, skills: st.skills, is_active: true }];
+    DB.stylist_schedules = [];
+    for (let d = 0; d <= 6; d++) DB.stylist_schedules.push({ stylist_id: st.id, day_of_week: d, start_time: '10:00', end_time: '19:00' });
+    DB.schedule_blocks = [];
+    DB.appointments = [];
+    DB.contacts = [{ id: 'ct-ihab', full_name: 'Ihab', wa_phone: phone.replace(/\D/g, '') }];
+    try {
+        const svc = CATALOGO.find(s => s.nombre === r.servicio);
+        assert.ok(svc, `el servicio del rejugado no está en el catálogo congelado: ${r.servicio}`);
+        const d = new Date(Date.now() + 7 * 24 * 3600 * 1000);
+        const fecha = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const session = I.createEmptySession(phone, SANTE_ORG, phone.replace(/\D/g, ''));
+        session.leadId = 'ct-ihab';
+        session.language = 'es';
+        session.selectedService = { ...svc };
+        session.pendingNameForBooking = { slot: { fecha, hora: '15:00', stylistId: st.id, stylistName: st.name }, intentos: 1, fase: 'nombre', agotado: false };
+        session.preguntasCierre = 2;
+        session.spaPromoOffered = true;
+        I.userSessions.set(I.sessionKey(SANTE_ORG, phone), session);
+
+        const out1 = await turnoReal(client, phone, r.turno_nombre.entrante);
+        assert.ok(/✅/.test(out1) && new RegExp(`${svc.precio}€`).test(out1),
+            `el ✅ con el precio del catálogo congelado no salió.\n   salió: ${JSON.stringify(out1)}`);
+        const citasEscritas = WRITES.filter(w => w.table === 'appointments' && w.op === 'insert').length;
+        assert.ok(citasEscritas >= 1, 'el ✅ salió sin que el motor real escribiera la cita');
+        const last = session.history[session.history.length - 1];
+        assert.strictEqual(last && last.content, out1, 'el ✅ enviado no quedó en session.history');
+        assert.strictEqual(last.det, true, 'el ✅ entró sin la marca det');
+
+        // La agenda ahora dice que la cita existe, como diría Supabase.
+        DB.appointments = [{ id: 'apt-ihab', service: svc.nombre, status: 'confirmed', starts_at: `${fecha}T13:00:00Z`, contact_id: 'ct-ihab' }];
+        await turnoReal(client, phone, r.turno_emoji.entrante, r.turno_emoji.saliente_llm);
+        assert.ok(ultimoHistoryLLM && ultimoHistoryLLM.some(m => m.role === 'assistant' && m.content === out1),
+            'LA CEGUERA DE IHAB: el ✅ no está en el history que recibió el modelo — puede reabrir la cita con otro precio');
+        assert.strictEqual(ultimoHistoryLLM[ultimoHistoryLLM.length - 1].role, 'user',
+            'el history del modelo no puede terminar en assistant: prefill cerrado (bot.js:2500)');
+        assert.strictEqual(WRITES.filter(w => w.table === 'appointments' && w.op === 'insert').length, citasEscritas,
+            'el emoji volvió a escribir una cita: la 2ª cita fantasma del 16/08 sigue viva');
+    } finally {
+        delete DB.stylists; delete DB.stylist_schedules; delete DB.schedule_blocks; delete DB.contacts;
+        DB.appointments = [];
+    }
+}
+
 const REPLAYS = {
     si_tras_oferta: replaySiTrasOferta,
     consulta_si_escala: replayConsultaSiEscala,
     varias_personas_pegajosa: replayVariasPersonasPegajosa,
+    confirmacion_en_historial: replayConfirmacionEnHistorial,
 };
 
 // ─── Corrida ─────────────────────────────────────────────────────────────────────────
