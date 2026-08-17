@@ -557,6 +557,46 @@ Todo con historia completa en [Olga](docs/incidentes-cerrados.md#olga-yarmak) y
   real (`flushBuffer` pasa `messageKey = null` y toda la protección es `buffer.seenKeys`); y
   `sinServicioStreak`, que no viaja en `buildSessionExtra`.
 
+## La puerta del nombre pide UN dato, pero ya no se come el turno (Ihab, 16/08/2026)
+
+Sin nombre no hay recordatorio de 24 h, así que antes de escribir la cita se pregunta y la
+reserva queda retenida en `session.pendingNameForBooking`. Lo que costó: era una puerta de UN
+SOLO DATO leída **antes que nada** (`handleNombreParaCita`, antes del LLM y de los detectores),
+así que a «Hay cita libre a las 15 h?» le contestó «Perdona, ¿me dices tu nombre?» — y ese turno
+**no se procesó en absoluto**. Los dos turnos están congelados en el corpus
+(`tests/fixtures/corpus/ihab.json`, 2.1 y 2.2) y conducidos en
+`tests/puerta-nombre-no-come-turno.test.js`.
+
+- **El tragado estaba en DOS capas.** La pre-LLM y, en cuanto esa deja pasar el turno, la
+  confirmación del LLM: «a las 15 h» da `hora_cita` y casa por `match_hora`, y ese sitio
+  sustituye la respuesta entera. Arreglar solo la primera no arregla nada.
+- **En esos turnos hablamos NOSOTROS, y no es pereza: es lo único cerrado.** Medido el
+  17/08/2026, «te la dejo apartada a las 15:00», «vale, te lo guardo para las 15», «ese hueco es
+  tuyo», «I will hold it for you at 3pm» y «Оставлю за тобой 15:00» dan `llmClaimsBooked`
+  **false** y no las para ninguna red (la anti-fantasma la GATEA `llmClaimsBooked`; la de huecos
+  inventados deja pasar la hora porque sí tiene respaldo). No hay regla textual que garantice
+  que una prosa arbitraria no promete un hueco, así que la sustitución sigue siendo TOTAL —
+  lo que cambia es que el texto que sustituye ya **contesta**.
+- **El acuse va por DEIXIS y con el hueco verificado en ESE turno.** «Ese hueco te lo puedo
+  dejar» (4 idiomas), sin hora y sin ✅, y solo si `_huecoVerificadoEsteTurno` — bandera de
+  turno puesta donde el motor dice que sigue libre, nunca derivada de `pendingNameForBooking`
+  (un hueco retenido hace tres turnos no está comprobado ahora). Con la hora dentro, el mismo
+  mensaje saldría unas veces y otras no, según `availableSlots`.
+- **La hora RETENIDA no se dice hasta que esté escrita** (`mencionaLoRetenido`): en un turno de
+  coda, un texto del modelo que la nombre se descarta. Vigila el DATO y no la redacción, con la
+  exención de `soloDeclaraHorarioDelSalon` para no repetir el horario de Olga. Residuo
+  declarado: una promesa SIN hora sigue saliendo, y es el hueco preexistente de
+  `llmClaimsBooked` — ensancharlo pondría a `resolveSalonConfirmation` a CREAR citas desde la
+  prosa, así que es una decisión aparte y está escrita como test.
+- **Contabilidad: `pedirNombre` es la única boca y el único contador.** Un turno cuyo único
+  contenido es la pregunta gasta intento; una pregunta pegada a una respuesta (el coda), no —
+  tope propio de 2, el mismo que el de preguntas. Contando en la puerta, cada disparo de la
+  confirmación gastaba tope y **dos preguntas sobre horas escribían la cita sin nombre**.
+- **Con nombre y algo más en el mismo mensaje**: no se pide el apellido (es opcional y no le
+  gana el turno a una pregunta), y si el residuo CAMBIA la cita —otra hora, otro día, otro
+  servicio, cancelar, reagendar, reinicio, «somos dos»— no se escribe nada: manda la petición
+  nueva.
+
 ## El largo del pelo: el modificador manda, y se evalúa de 4 a 1
 
 El largo fija el precio (Anti-encrespamiento: 120 / 160 / 180 €) y se le dice a la clienta
