@@ -76,15 +76,29 @@ export function ChatView({
   const showInput = isManual || !!globalBotPaused;
   const initials = getInitials(conversation.nombre, conversation.telefono);
 
+  // ESPEJO de services/helpers.js → ETIQUETAS_ESCALADA. El panel es otra app y no importa
+  // de services/, así que las CLAVES se mantienen a mano — y que no falte ninguna lo vigila
+  // tests/etiquetas-escalada-paridad.test.js, que sale en rojo con el nombre de la que falte.
+  // (La redacción sí puede diferir: aquí se lee en una píldora estrecha.)
+  // Sin esa red faltaban `servicio_especial` y `consulta_dato_no_disponible`, dos de los
+  // cinco motivos vivos en producción, y la píldora mostraba la clave cruda.
   const ESCALATION_LABELS: Record<string, string> = {
     escalado_bot: "Escalado por el bot",
     lista_negra: "Cliente en lista negra",
+    limite_mensajes: "Conversación muy larga",
+    cancelacion_fallida: "No se pudo cancelar la cita",
     consulta_extensiones: "Consulta sobre extensiones",
     consulta_permanente: "Consulta sobre permanente",
     consulta_salida_negro: "Consulta sobre eliminación del pigmento (salida de negro)",
+    consulta_dato_no_disponible: "Consulta: dato que solo sabe el equipo",
+    consulta_traspaso: "Consulta: pidió hablar con el equipo",
+    consulta_varias_personas: "Consulta: cita para varias personas",
     queja_cita: "Queja sobre cita anterior",
     tono_agresivo: "Tono agresivo",
     pedir_persona: "Pidió hablar con una persona",
+    servicio_especial: "Servicio que requiere valoración",
+    error_tecnico: "Error técnico del sistema",
+    dato_no_disponible: "Dato que solo sabe el equipo",
     pregunta_sin_respuesta: "Pregunta sin respuesta",
   };
 

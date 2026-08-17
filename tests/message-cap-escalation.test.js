@@ -240,11 +240,15 @@ const updates = (table) => sqlCalls.filter(c => c.table === table && c.op === 'u
             'no debe haber quedado ninguna escalada incompleta');
     });
 
-    await test('6 · limite_mensajes tiene etiqueta en ESCALATION_LABELS', async () => {
-        // ESCALATION_LABELS no se exporta y el módulo está stubeado: se comprueba en la
-        // fuente. Sin la etiqueta, el Telegram mostraría el slug crudo "limite_mensajes".
-        const src = fs.readFileSync(path.join(__dirname, '..', 'services', 'telegram.js'), 'utf8');
-        assert.ok(/limite_mensajes\s*:/.test(src), 'falta la entrada limite_mensajes en ESCALATION_LABELS');
+    await test('6 · limite_mensajes tiene etiqueta legible (no el slug crudo)', async () => {
+        // Antes se comprobaba grepeando services/telegram.js, porque el mapa vivía allí y no
+        // se exportaba. Desde el 18/08/2026 la fuente única es helpers.ETIQUETAS_ESCALADA
+        // (Telegram y el panel beben de ahí), así que se afirma la CONDUCTA: que la razón
+        // traduzca a algo legible y no se devuelva a sí misma, que es lo que vería Yulia.
+        const { etiquetaEscalada } = require('../services/helpers');
+        const etiqueta = etiquetaEscalada('limite_mensajes');
+        assert.ok(etiqueta && etiqueta !== 'limite_mensajes',
+            'falta la etiqueta de limite_mensajes: el aviso de Telegram mostraría el slug crudo');
     });
 
     await test('7 · turno 62: silencio y sin escalada repetida (idempotencia)', async () => {

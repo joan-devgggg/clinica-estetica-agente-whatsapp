@@ -91,6 +91,72 @@ function motivoNoEnviable(phone) {
 // panel y la que eligen los constructores de mensajes; vivía copiada en seis sitios.
 const IDIOMAS_SOPORTADOS = ['es', 'en', 'ru', 'uk'];
 
+// ─── Los motivos de escalada, en UN solo sitio ───────────────────────────────────────────
+//
+// Vivían copiados en CINCO, y ninguno coincidía con otro: los 8 casos del prompt de Sante,
+// la enumeración del esquema JSON del MISMO prompt —que se había quedado sin
+// `dato_no_disponible`, así que al modelo se le decía en un sitio que usara un valor y en
+// otro que ese valor no existe—, el espacio de nombres `consulta_*` que construye bot.js al
+// resolver una espera, el mapa de etiquetas de Telegram y el del panel. De los cinco motivos
+// que HABÍA en producción el 17/08/2026, DOS se pintaban en crudo al admin: `servicio_especial`
+// y `consulta_dato_no_disponible` (la escalada de Mafe).
+//
+// Son DOS vocabularios distintos y conviene no fundirlos:
+//   · MOTIVOS_LLM — lo que el modelo puede declarar en `motivo_escalado`. Es lo único que se
+//     le enumera a él.
+//   · ESPERAS_ESCALADA — los tipos de espera de dos turnos (`session.pendingEscalationService`),
+//     que al resolverse se escriben con el prefijo `consulta_`. `extensiones`/`permanente`/
+//     `salida_negro` no son motivos del modelo: los arma un detector determinista de ENTRADA.
+//
+// `ofrecible` NO es «se puede ofrecer en abstracto», es «el campo `ofrezco_traspaso` acepta
+// este valor HOY». Se pone sólo donde el flujo está cableado de punta a punta; aceptar un
+// motivo sin flujo armaría una espera que nadie sabe resolver. Cablear el 4 y el 5 es
+// levantar esta bandera, no añadir un campo.
+const MOTIVOS_LLM = {
+    queja_cita:         { etiqueta: 'Queja sobre cita anterior' },
+    tono_agresivo:      { etiqueta: 'Tono agresivo o amenazante' },
+    pedir_persona:      { etiqueta: 'Pidió hablar con una persona' },
+    servicio_especial:  { etiqueta: 'Servicio que requiere valoración' },
+    error_tecnico:      { etiqueta: 'Error técnico del sistema' },
+    dato_no_disponible: { etiqueta: 'Dato que sólo sabe el equipo', ofrecible: true },
+};
+
+const ESPERAS_ESCALADA = {
+    dato_no_disponible: 'Consulta: dato que sólo sabe el equipo',
+    traspaso:           'Consulta: pidió hablar con el equipo',
+    varias_personas:    'Consulta: cita para varias personas',
+    extensiones:        'Consulta: extensiones de cabello',
+    permanente:         'Consulta: permanente',
+    salida_negro:       'Consulta: eliminación del pigmento (salida de negro / arrastre de color)',
+};
+
+// Razones que escribe el CÓDIGO, sin pasar por el modelo ni por una espera.
+const RAZONES_DE_CODIGO = {
+    escalado_bot:          'Escalado por el bot',
+    lista_negra:           'Cliente en lista negra',
+    limite_mensajes:       'Conversación muy larga: límite de mensajes alcanzado',
+    cancelacion_fallida:   'No se pudo cancelar la cita',
+    // Sin escritor desde hace meses; se conserva para que las filas históricas no se
+    // pinten en crudo. Si aparece en una fila nueva, alguien ha resucitado un camino.
+    pregunta_sin_respuesta: 'Pregunta que el bot no puede responder',
+};
+
+// Los valores que el modelo puede declarar en `ofrezco_traspaso`.
+const MOTIVOS_OFRECIBLES = Object.keys(MOTIVOS_LLM).filter(k => MOTIVOS_LLM[k].ofrecible);
+
+// El mapa PLANO de todo lo que puede acabar en `contacts.escalation_reason` y en
+// `pending_actions.payload.motivo`. Es el que consumen Telegram y el panel: si una razón no
+// está aquí, se pinta la clave cruda y quien la lee no sabe qué pasó.
+const ETIQUETAS_ESCALADA = {
+    ...Object.fromEntries(Object.entries(MOTIVOS_LLM).map(([k, v]) => [k, v.etiqueta])),
+    ...Object.fromEntries(Object.entries(ESPERAS_ESCALADA).map(([k, v]) => [`consulta_${k}`, v])),
+    ...RAZONES_DE_CODIGO,
+};
+
+function etiquetaEscalada(reason) {
+    return ETIQUETAS_ESCALADA[reason] || reason || null;
+}
+
 // ─── Claves de `config` que son NÚMEROS ──────────────────────────────────────────────────
 //
 // De estas cuelga que salga o no un mensaje a una clienta, así que un valor que no sea un
@@ -4797,6 +4863,12 @@ module.exports = {
     normalizeText,
     detectLanguage,
     IDIOMAS_SOPORTADOS,
+    MOTIVOS_LLM,
+    MOTIVOS_OFRECIBLES,
+    ESPERAS_ESCALADA,
+    RAZONES_DE_CODIGO,
+    ETIQUETAS_ESCALADA,
+    etiquetaEscalada,
     CONFIG_NUMERICAS,
     validateConfigValue,
     resolveReminderWindowMin,

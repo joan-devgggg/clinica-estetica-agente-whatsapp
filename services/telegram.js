@@ -9,6 +9,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const { getConfigValue, setConfigValue, getAgentConfig, updateAgentConfig, getAllLeads, setBlacklist, removeBlacklist, setVip, getPendingActions, resolvePendingAction, findByPhone, setLeadBotMode } = require('./db');
 const { getAllOrgs } = require('./org-registry');
+const { etiquetaEscalada } = require('./helpers');
 const logger = require('../lib/logger');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -151,21 +152,11 @@ async function notifyBizumPending(orgId, reserva) {
     notifyOrgAdmin(orgId, msg);
 }
 
-const ESCALATION_LABELS = {
-    escalado_bot: 'Escalado por el bot',
-    lista_negra: 'Cliente en lista negra',
-    consulta_extensiones: 'Consulta: extensiones de cabello',
-    consulta_permanente: 'Consulta: permanente',
-    consulta_salida_negro: 'Consulta: eliminación del pigmento (salida de negro / arrastre de color)',
-    queja_cita: 'Queja sobre cita anterior',
-    tono_agresivo: 'Tono agresivo o frustrado',
-    pedir_persona: 'Pide hablar con una persona',
-    pregunta_sin_respuesta: 'Pregunta que el bot no puede responder',
-    limite_mensajes: 'Conversación muy larga: límite de mensajes alcanzado',
-};
-
 async function notifyEscalation(orgId, contacto, mensaje, reason) {
-    const motivoLabel = ESCALATION_LABELS[reason] || reason || 'Requiere atención humana';
+    // Las etiquetas salen de la lista única (helpers.ETIQUETAS_ESCALADA). Copiada aquí a mano
+    // se quedó sin `servicio_especial` ni `consulta_dato_no_disponible`, que son DOS de los
+    // cinco motivos que existían en producción: a Yulia le llegaba la clave cruda.
+    const motivoLabel = etiquetaEscalada(reason) || 'Requiere atención humana';
     const hora = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' });
     const msg = `⚠️ <b>ATENCIÓN REQUERIDA — Santé</b>\n\n` +
         `👤 Cliente: ${esc(contacto?.nombre || 'Sin nombre')}\n` +
