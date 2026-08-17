@@ -854,17 +854,25 @@ function isUsableName(nombre) {
 // normalizeText(text) —que colapsa espacios— pero el substring se aplicaba al text CRUDO,
 // así que "Hola   ,   me llamo   Lucia" devolvía "amo Lucia". Una sola regex sobre el texto
 // crudo elimina los dos sistemas de coordenadas que podían divergir.
+// Los verbos de presentación, en UNA sola lista. La leen dos funciones con intenciones
+// opuestas: NAME_INTRO_RE para SACAR el nombre y `residuoTrasNombre` para QUITARLO y quedarse
+// con lo que el mensaje pedía además. Con dos listas, añadir «мене кличуть» a una dejaría a la
+// otra devolviendo «мене кличуть» dentro del residuo — y el residuo decide si el turno sigue
+// vivo, así que el fallo saldría como un turno comido, sin relación visible con la causa.
+//
+// Presentaciones RU/UK, sacadas de cómo escriben las clientas: "Меня зовут X",
+// "Мене звати X", y el "я X" de "( я Светлана)". El literal va SIN \b (es ASCII y no
+// casaría) y sin normalizar, porque este patrón se aplica al texto CRUDO — ninguna de
+// estas formas lleva й ni ё, así que no le afecta la descomposición NFD.
+// "я" solo, anclado a principio de frase, es seguro: "я хочу" produce el candidato
+// "хочу", que ahora es stopword y muere en isValidName.
+const NAME_INTRO_VERBS_SRC = 'soy|me\\s+llamo|mi\\s+nombre\\s+es|ll[aá]mame|my\\s+name\\s+is'
+    + '|i\\s*am|i\'m|меня\\s+зовут|мене\\s+звати|мене\\s+звуть|моё\\s+имя|моя\\s+ім\'я|я';
+
 const NAME_INTRO_RE = new RegExp(
     '(?:^|[.!?;\\n,])\\s*'
     + '(?:(?:hola|buenas|buenos)\\s*(?:tardes|noches|dias|días)?[\\s,.!¡]*)?'
-    // Presentaciones RU/UK, sacadas de cómo escriben las clientas: "Меня зовут X",
-    // "Мене звати X", y el "я X" de "( я Светлана)". El literal va SIN \b (es ASCII y no
-    // casaría) y sin normalizar, porque este patrón se aplica al texto CRUDO — ninguna de
-    // estas formas lleva й ni ё, así que no le afecta la descomposición NFD.
-    // "я" solo, anclado a principio de frase, es seguro: "я хочу" produce el candidato
-    // "хочу", que ahora es stopword y muere en isValidName.
-    + '(?:soy|me\\s+llamo|mi\\s+nombre\\s+es|ll[aá]mame|my\\s+name\\s+is|i\\s*am|i\'m'
-    + '|меня\\s+зовут|мене\\s+звати|мене\\s+звуть|моё\\s+имя|моя\\s+ім\'я|я)\\s+'
+    + `(?:${NAME_INTRO_VERBS_SRC})\\s+`
     + '(.+)',
     'i'
 );
@@ -916,6 +924,133 @@ function filterServiceKeyword(name) {
         }
     }
     return name;
+}
+
+// ─── Un mensaje puede contestar el nombre y traer OTRA COSA ──────────────────
+//
+// Caso Ihab (16/08/2026, 13:37-13:38): la puerta del nombre le preguntó «¿a nombre de quién la
+// pongo?» y él contestó «Hay cita libre a las 15 h?». La puerta pasa el texto por
+// leerNombreDeRespuesta, salió null, y el turno murió repreguntando: es una puerta de UN SOLO
+// dato que se comía el turno entero. La puerta hace falta —sin nombre no hay recordatorio de
+// 24 h— pero no puede ser lo único que se lea de ese mensaje.
+//
+// Estas dos funciones son PURAS y no sustituyen nada: solo dicen si, además del nombre (o en
+// su lugar), el mensaje pedía algo. Quien decide qué hacer es bot.js.
+//
+// REGLA 12 — qué mensaje bueno puede comerse: NINGUNO. Un falso positivo cuesta como mucho
+// una respuesta de más (el turno sigue su curso normal y el nombre se vuelve a pedir pegado a
+// esa respuesta); un falso negativo deja la conducta de antes (repreguntar). Las dos
+// direcciones son baratas, y por eso el detector puede ser generoso — al revés que
+// leerNombreDeRespuesta, donde un falso positivo guarda basura en la ficha para siempre.
+
+// Saludos y cortesías no son contenido: «Claro, me llamo Ihab.» + «Muchas gracias.» no pide
+// nada, y sin quitarlas el residuo tendría dos tokens y parecería una pregunta.
+const RESIDUO_CORTESIA_RE = new RegExp(
+    '\\b(?:hola|buenas|buenos\\s+dias|buenas\\s+tardes|buenas\\s+noches|gracias|muchas\\s+gracias'
+    + '|vale|ok|okey|okay|perfecto|genial|claro|hi|hello|hey|thanks|thank\\s+you|please'
+    + '|привет|здравствуйте|добрый\\s+день|спасибо|пожалуйста'
+    + '|привіт|добрий\\s+день|дякую|будь\\s+ласка)\\b',
+    'gi'
+);
+
+/**
+ * El texto SIN la presentación ni el nombre: lo que el mensaje pedía ADEMÁS.
+ *
+ * No calcula índices sobre normalizeText para cortar el texto CRUDO —los dos sistemas de
+ * coordenadas divergen porque normalizeText colapsa espacios, y es el bug que devolvía
+ * «amo Lucia» en extractNameAfterIntro—: quita por regex y sobre el crudo.
+ */
+function residuoTrasNombre(texto, nombre) {
+    if (!texto) return '';
+    let resto = String(texto);
+    if (nombre) {
+        const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const nombreSrc = String(nombre).trim().split(/\s+/).filter(Boolean).map(esc).join('\\s+');
+        if (nombreSrc) {
+            // La presentación COMPLETA primero ("me llamo Ihab"): quitar solo el nombre
+            // dejaría «me llamo» en el residuo, que son dos tokens y parecen contenido.
+            const conIntro = new RegExp(`(?:${NAME_INTRO_VERBS_SRC})\\s+${nombreSrc}`, 'i');
+            resto = conIntro.test(resto)
+                ? resto.replace(conIntro, ' ')
+                : resto.replace(new RegExp(nombreSrc, 'i'), ' ');
+        }
+    }
+    return resto.replace(RESIDUO_CORTESIA_RE, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// Interrogativos ENUMERADOS, nunca un corrector difuso ni un «acaba en ?». Los dos primeros
+// idiomas van con límites de palabra a mano; el cirílico por buildCyrillicRe contra
+// normalizeText (NFD descompone й/ё/ї y \b es ASCII). Se dejan fuera a propósito los muy
+// cortos y muy comunes («де», «що»), que casan dentro de otras palabras: el coste de un falso
+// positivo es bajo, pero el ruido en la traza no ayuda a nadie.
+const OTRA_COSA_INTERROGATIVOS = [
+    { lang: 'es', marcas: ['cuanto', 'cuantos', 'cuanta', 'cuantas', 'cuando', 'donde', 'cual',
+        'hay', 'teneis', 'tienes', 'puedo', 'podria', 'podriamos', 'sabes', 'que hora', 'a que hora'] },
+    { lang: 'en', marcas: ['how much', 'how many', 'when', 'where', 'which', 'what time',
+        'is there', 'are there', 'do you', 'can i', 'could i'] },
+];
+const OTRA_COSA_INTERROGATIVOS_RE = OTRA_COSA_INTERROGATIVOS.map(({ lang, marcas }) => ({
+    lang,
+    re: new RegExp(`(?:^|[^\\p{L}])(?:${marcas.map(m => m.replace(/ /g, '\\s+')).join('|')})(?:[^\\p{L}]|$)`, 'u'),
+}));
+const OTRA_COSA_CIRILICO_RE = buildCyrillicRe([
+    'сколько', 'когда', 'где', 'какой', 'какая', 'есть ли', 'можно',        // ru
+    'скільки', 'коли', 'який', 'яка', 'чи є', 'можна',                      // uk
+]);
+
+// Un DÍA suelto es contenido y `extractMentionedDates` no lo ve a propósito (un día sin mes se
+// deja fuera allí, para no fabricar fechas). Aquí sí cuenta: «Ihab, y el jueves mejor» pide
+// otra cosa. Los siete días en los cuatro idiomas salen de `DIA_SEMANA_CONSULTA`, que ya es la
+// lista única; los relativos van enumerados al lado. Se construye en la primera llamada porque
+// ese mapa se declara más abajo en el fichero (un const no se iza).
+// El latín va con \b a mano y el cirílico por buildCyrillicRe (donde \b no sirve): son dos
+// regex porque son dos reglas de frontera distintas, no por comodidad.
+let _otraCosaDiaRes = null;
+function _diaSueltoRes() {
+    if (_otraCosaDiaRes) return _otraCosaDiaRes;
+    const claves = Object.keys(DIA_SEMANA_CONSULTA);
+    const latinas = claves.filter(k => /^[a-z]+$/i.test(k))
+        .concat(['hoy', 'manana', 'pasado manana', 'today', 'tomorrow']);
+    const cirilicas = claves.filter(k => !/^[a-z]+$/i.test(k))
+        .concat(['сегодня', 'завтра', 'сьогодні']);
+    _otraCosaDiaRes = [
+        new RegExp(`\\b(?:${latinas.map(m => m.replace(/ /g, '\\s+')).join('|')})\\b`),
+        buildCyrillicRe(cirilicas),
+    ];
+    return _otraCosaDiaRes;
+}
+
+/**
+ * ¿El residuo pide algo? Devuelve { trae, senal } — la señal va a la traza, para que un turno
+ * que sigue vivo diga POR QUÉ siguió.
+ *
+ * Las señales fuertes (hora, fecha, servicio, cancelar, reagendar, reinicio, varias personas)
+ * no exigen que la frase parezca una pregunta: «el jueves mejor» no lleva ni un «?» y es
+ * contenido. Las de pregunta exigen ≥2 tokens, para que «¿Ihab?» no cuente.
+ */
+function mensajeTraeOtraCosa(residuo, opts = {}) {
+    const texto = String(residuo || '').trim();
+    if (!texto) return { trae: false, senal: null };
+    const catalogo = Array.isArray(opts.catalogo) ? opts.catalogo : [];
+
+    if (extractMentionedHours(texto).length) return { trae: true, senal: 'hora' };
+    if (extractMentionedDates(texto).length) return { trae: true, senal: 'fecha' };
+    if (_diaSueltoRes().some(re => re.test(normalizeText(texto)))) return { trae: true, senal: 'dia' };
+    if (catalogo.length && extractServiceFromText(texto, catalogo)) return { trae: true, senal: 'servicio' };
+    if (detectCancelRequest(texto)) return { trae: true, senal: 'cancelar' };
+    if (detectRescheduleRequest(texto)) return { trae: true, senal: 'reagendar' };
+    if (wantsRestart(texto)) return { trae: true, senal: 'reinicio' };
+    if (detectVariasPersonas(texto)) return { trae: true, senal: 'varias_personas' };
+
+    const t = normalizeText(texto);
+    const tokens = t.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    if (tokens.length < 2) return { trae: false, senal: null };
+    if (/[?¿]/.test(texto)) return { trae: true, senal: 'interrogacion' };
+    for (const { lang, re } of OTRA_COSA_INTERROGATIVOS_RE) {
+        if (re.test(t)) return { trae: true, senal: `interrogativo_${lang}` };
+    }
+    if (OTRA_COSA_CIRILICO_RE.test(t)) return { trae: true, senal: 'interrogativo_cirilico' };
+    return { trae: false, senal: null };
 }
 
 // ─── Campos faltantes ─────────────────────────────────────────────────────────
@@ -4689,6 +4824,8 @@ module.exports = {
     NAME_STOPWORDS,
     NOMBRES_RU_UK_NUNCA_STOPWORD,
     extractNameAfterIntro,
+    residuoTrasNombre,
+    mensajeTraeOtraCosa,
     isServiceName,
     // Salon-specific
     extractServiceFromText,
