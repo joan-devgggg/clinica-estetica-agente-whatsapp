@@ -4940,7 +4940,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             }
 
             await resolveCitasVivas(orgId, session);
-            if (await handleCitasExistentes(client, orgId, session, sanitized, _send, userPhone)) {
+            if (await handleCitasExistentes(client, orgId, session, sanitized, _sendHist, userPhone)) {
                 persistSession(orgId, userPhone, session);
                 triggerAsyncSummary(orgId, userPhone, session);
                 return;
@@ -6088,11 +6088,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // que nadie le preguntara. El camino determinista recita la cita y espera un sí; a
         // partir de aquí este hace lo mismo, con la misma función.
         if (orgType === 'salon' && aiResponse.accion === 'cancelar') {
-            if (await cancelarConConfirmacion(client, orgId, session, sanitized, _send, userPhone)) {
+            if (await cancelarConConfirmacion(client, orgId, session, sanitized, _sendHist, userPhone)) {
                 // Nada de `session.history.push(aiResponse.respuesta)`: ese texto anuncia una
-                // cancelación que NO ha ocurrido. Lo que ha salido es la pregunta, y el
-                // camino determinista tampoco la mete en el historial — el estado lo lleva
-                // `pendingCitaAccion`, que se resuelve antes de volver a llamar al modelo.
+                // cancelación que NO ha ocurrido. Lo que SÍ entra en el historial (17/08/2026,
+                // matiza la decisión del 14/08) es la pregunta REALMENTE enviada, vía _sendHist:
+                // es lo que la clienta leyó, y cuando su respuesta no es un sí/no limpio y cae
+                // al modelo, sin ella el modelo no sabe qué se le preguntó. El «sí» limpio lo
+                // sigue interceptando `pendingCitaAccion` antes del LLM, como siempre.
                 persistSession(orgId, userPhone, session);
                 return;
             }

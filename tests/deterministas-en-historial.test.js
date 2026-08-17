@@ -12,7 +12,9 @@
 //   · push ANTES del await del envío → rojo «un envío que revienta no se anota»;
 //   · sin el bump de _snapshot en _sendHist → rojo «el rollback no borra lo entregado»;
 //   · quitar la exención `m.det === true` de los 3 filtros (rehidratación + las dos
-//     ramas pre-LLM) → rojo «det sobrevive a FALLBACK_PATTERNS», y SOLO ese.
+//     ramas pre-LLM) → rojo «det sobrevive a FALLBACK_PATTERNS», y SOLO ese;
+//   · devolver la capa de citas (handleCitasExistentes / cancelarConConfirmacion) a
+//     _send → rojo «cancelar: la pregunta enviada y el acuse quedan en history».
 process.env.TZ = 'Europe/Madrid';
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
 process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'test-service-role-key';
@@ -26,13 +28,15 @@ const stub = (rel, exports) => {
     require.cache[p] = { id: p, filename: p, loaded: true, exports };
 };
 stub('../services/supabase', {});
-// Mutable a propósito: tras reservar en el bloque 1, el bloque 2 hace que la agenda
-// devuelva esa cita (es lo que leería Supabase de verdad).
+// Holder mutable y DELEGADO: bot.js desestructura las funciones de db en el require,
+// así que reasignar la propiedad después no le cambia la referencia — la delegación sí.
+// Los bloques lo mueven para que la agenda diga lo que Supabase diría en ese momento.
+let upcomingImpl = async () => [];
 const dbImpls = {
     findByPhone: async () => ({ id: 'ct-ihab', full_name: 'Ihab', wa_phone: '34790768781' }),
     saveMessage: async () => 1,
     saveLead: async () => 'ct-ihab',
-    getUpcomingAppointments: async () => [],
+    getUpcomingAppointments: async (...a) => upcomingImpl(...a),
     getStylistsByOrg: async () => [],
     getAllStylistSchedules: async () => [],
     getScheduleBlocks: async () => [],
@@ -180,8 +184,8 @@ test('el turno siguiente al ✅ llega al modelo CON el ✅ en su history, termin
     assert.ok(/✅/.test(mensajeConfirmacion), 'precondición: el ✅ salió');
 
     // La agenda ahora DICE que la cita existe (es lo que leería Supabase de verdad).
-    const upcomingAntes = dbImpls.getUpcomingAppointments;
-    dbImpls.getUpcomingAppointments = async () => [{
+    const upcomingAntes = upcomingImpl;
+    upcomingImpl = async () => [{
         id: 'apt-ihab-1', service: K18.nombre, status: 'confirmed',
         starts_at: `${SLOT.fecha}T13:00:00Z`, stylists: { name: 'Natalia' },
     }];
@@ -198,7 +202,7 @@ test('el turno siguiente al ✅ llega al modelo CON el ✅ en su history, termin
             'el history del modelo no puede terminar en assistant: prefill cerrado (bot.js:2500, commit 6eb0fbc)');
         assert.strictEqual(session.reservaConfirmada, true, 'el turno del emoji no toca la reserva');
     } finally {
-        dbImpls.getUpcomingAppointments = upcomingAntes;
+        upcomingImpl = upcomingAntes;
     }
 });
 
@@ -269,5 +273,44 @@ test('una entrada det que casa FALLBACK_PATTERNS sobrevive a la rehidratación y
             'la entrada det no llegó al prompt: el filtro pre-LLM se la comió');
     } finally {
         memoriaPersistida = null;
+    }
+});
+
+// ─── 6 · La capa de citas: pregunta y acuse de cancelación en history ────────
+// La pregunta REALMENTE enviada entra (matiz del 17/08 sobre la decisión del 14/08:
+// lo que sigue fuera es la respuesta del LLM, que anuncia una cancelación no ocurrida);
+// el «sí» limpio lo sigue interceptando pendingCitaAccion antes del LLM.
+
+test('cancelar: la pregunta enviada y el acuse quedan en history, todo determinista (0 llamadas LLM)', async () => {
+    const phone = `347907${String(1000 + seq++).slice(-4)}@c.us`;
+    const session = createEmptySession(phone, ORG, phone.replace(/\D/g, ''));
+    session.leadId = 'ct-ihab';
+    session.language = 'es';
+    userSessions.set(sessionKey(ORG, phone), session);
+
+    const upcomingAntes = upcomingImpl;
+    upcomingImpl = async () => [{
+        id: 'apt-c1', service: 'Manicura', status: 'confirmed',
+        starts_at: `${SLOT.fecha}T08:00:00Z`, stylists: { name: 'Olga' },
+    }];
+    try {
+        const sink = [];
+        const antes = llmCalls;
+        await turno(phone, sink, 'Quiero cancelar mi cita');
+        const pregunta = sink[sink.length - 1];
+        assert.ok(session.pendingCitaAccion?.estado === 'confirmar', `la capa determinista no recitó la cita: ${pregunta}`);
+        let last = session.history[session.history.length - 1];
+        assert.strictEqual(last.content, pregunta, 'la PREGUNTA de cancelación enviada no quedó en history');
+        assert.strictEqual(last.det, true);
+
+        await turno(phone, sink, 'sí');
+        const acuse = sink[sink.length - 1];
+        assert.ok(/cancelada ✅/.test(acuse), `el «sí» no ejecutó la cancelación: ${acuse}`);
+        last = session.history[session.history.length - 1];
+        assert.strictEqual(last.content, acuse, 'el ACUSE de cancelación no quedó en history');
+        assert.strictEqual(session.history[session.history.length - 2].role, 'user', 'el orden real es sí → acuse');
+        assert.strictEqual(llmCalls - antes, 0, 'cancelar es determinista puro: cero llamadas al modelo');
+    } finally {
+        upcomingImpl = upcomingAntes;
     }
 });
