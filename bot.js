@@ -4465,6 +4465,25 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         const session = userSessions.get(sKey);
         if (!session) return;
 
+        // ─── Saliente determinista que la clienta LEE → session.history ─────────
+        // El ✅ de Ihab (16/08/2026): finalizarReservaPendiente lo mandó por _send, que
+        // escribe en WhatsApp y en `messages` pero no en session.history, y en el turno
+        // siguiente el modelo reabrió la cita cerrada con otro precio — para él ese ✅
+        // nunca existió. Este envoltorio es el camino de todo determinista del salón que
+        // el modelo deba recordar; la decisión de usarlo vive en el CALL SITE. Cuatro
+        // decisiones dentro, cada una con su porqué:
+        //   · push DESPUÉS del await — lo que no salió no se anota (pendingMediaHistory);
+        //   · `ts` — sin él, el filtro de conversationStartedAt lo tira del prompt;
+        //   · `det` — exime del filtro isFallbackText: varios textos deterministas
+        //     legítimos casan FALLBACK_PATTERNS y se borrarían al rehidratar;
+        //   · bump de _snapshot.historyLen — el rollback del fallo de LLM no puede
+        //     borrar del historial un mensaje que la clienta YA leyó.
+        const _sendHist = async (text) => {
+            await _send(text);
+            session.history.push({ role: 'assistant', content: text, ts: Date.now(), det: true });
+            if (_snapshot) _snapshot.historyLen = session.history.length;
+        };
+
         // Check contact in DB
         if (isNewSession) {
             try {
@@ -4767,9 +4786,26 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // loadAvailableSlots). Lo usa la red anti-escalada-falsa más abajo.
         session._slotsQueriedThisTurn = false;
 
+        // Los salientes AUTOMÁTICOS (recordatorio de 24 h) que salieron desde el último
+        // turno van ANTES del mensaje de la clienta: es el orden real, y sin ellos el bot
+        // contesta a ciegas a una respuesta a su propio recordatorio — Barbora Jalova,
+        // 13/08/2026: «Hola, si confirmado 😊» → «¿Qué día o semana te viene mejor?».
+        // El worker los anota en services/pending-outbound (no puede tocar la sesión
+        // directamente); aquí es donde la conversación por fin los ve.
+        //
+        // Y van ANTES del snapshot a propósito: el drenaje es destructivo (el buzón se
+        // vacía al leer), así que si el rollback de un fallo del LLM los truncara del
+        // historial no volverían nunca — el recordatorio entregado desaparecería de la
+        // conversación por un hiccup del modelo en el mismo turno.
+        const salientesAuto = drainPendingOutboundTurns(orgId, userPhone, SESSION_TIMEOUT);
+        for (const t of salientesAuto) session.history.push({ role: t.role, content: t.content, ts: t.ts });
+        if (salientesAuto.length) logger.info('salientes_automaticos_al_historial', { orgId, telefono: userPhone, turnos: salientesAuto.length });
+
         // ─── Snapshot del estado ANTES de modificar la sesión ────────────
         // Si el LLM falla/timeout, restauramos para no dejar la sesión en un
-        // estado parcial que confunde al LLM en el siguiente turno.
+        // estado parcial que confunde al LLM en el siguiente turno. historyLen
+        // incluye los salientes recién drenados (ver arriba); lo que el rollback
+        // descarta es el turno user y lo que el LLM haya dejado a medias.
         _snapshot = {
             historyLen:          session.history.length,
             selectedService:     session.selectedService ? { ...session.selectedService } : null,
@@ -4787,16 +4823,6 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             pendingCorteNinoTipo: session.pendingCorteNinoTipo,
             partialData:         JSON.parse(JSON.stringify(session.partialData)),
         };
-
-        // Los salientes AUTOMÁTICOS (recordatorio de 24 h) que salieron desde el último
-        // turno van ANTES del mensaje de la clienta: es el orden real, y sin ellos el bot
-        // contesta a ciegas a una respuesta a su propio recordatorio — Barbora Jalova,
-        // 13/08/2026: «Hola, si confirmado 😊» → «¿Qué día o semana te viene mejor?».
-        // El worker los anota en services/pending-outbound (no puede tocar la sesión
-        // directamente); aquí es donde la conversación por fin los ve.
-        const salientesAuto = drainPendingOutboundTurns(orgId, userPhone, SESSION_TIMEOUT);
-        for (const t of salientesAuto) session.history.push({ role: t.role, content: t.content, ts: t.ts });
-        if (salientesAuto.length) logger.info('salientes_automaticos_al_historial', { orgId, telefono: userPhone, turnos: salientesAuto.length });
 
         session.history.push({ role: 'user', content: sanitized, ts: Date.now() });
         // Las fotos que llegaron mientras esto se cocía van DESPUÉS de su texto, que es el
@@ -4894,7 +4920,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // Hay una reserva RETENIDA por la guarda de cita viva ("¿quieres OTRA cita?"):
             // este turno es la respuesta. Va incluso antes que la puerta del nombre, porque
             // esa pregunta fue la última que se hizo.
-            if (await handleSegundaCitaPendiente(client, orgId, session, sanitized, _send, userPhone)) {
+            if (await handleSegundaCitaPendiente(client, orgId, session, sanitized, _sendHist, userPhone)) {
                 persistSession(orgId, userPhone, session);
                 triggerAsyncSummary(orgId, userPhone, session);
                 return;
@@ -4902,8 +4928,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // Hay una reserva esperando el nombre (o el apellido): este turno ES la respuesta
             // a esa pregunta. Va ANTES que nada, incluido el LLM: si dejáramos que el modelo
             // interpretara "Marta" por su cuenta, la reserva en espera se quedaría colgada.
-            if (await handleNombreParaCita(client, orgId, session, sanitized, _send, userPhone)
-                || await handleApellidoParaCita(client, orgId, session, sanitized, _send, userPhone)) {
+            if (await handleNombreParaCita(client, orgId, session, sanitized, _sendHist, userPhone)
+                || await handleApellidoParaCita(client, orgId, session, sanitized, _sendHist, userPhone)) {
                 persistSession(orgId, userPhone, session);
                 triggerAsyncSummary(orgId, userPhone, session);
                 return;
