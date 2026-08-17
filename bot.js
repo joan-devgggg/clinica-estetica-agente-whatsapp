@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -3471,6 +3471,113 @@ function preguntaApellidoMsg(session) {
     return PREGUNTA_APELLIDO[session.language] || PREGUNTA_APELLIDO.es;
 }
 
+// ─── El acuse del hueco: contestar sin decir la hora y sin ✅ ─────────────────
+//
+// Caso Ihab (16/08/2026): preguntó «A las 15:00 puedo?» y recibió «¿A nombre de quién la
+// pongo?». La reserva SÍ se había procesado —el hueco quedó retenido en
+// pendingNameForBooking.slot y la cita acabó a las 15:00— pero el acuse no podía decírselo:
+// en ese turno no hay nada escrito en Supabase, así que un ✅ o una hora presentada como
+// guardada es exactamente lo que la red anti-cita-fantasma tiene que bloquear.
+//
+// Por DEIXIS y no con la hora, a propósito: una HH:MM en un texto NUESTRO sobrevive o no
+// según lo que haya en availableSlots (`respondsWithInventedSlots`), o sea que el mismo
+// mensaje saldría unas veces y otras no. «Ese hueco» es inerte con cualquier agenda, en los
+// cuatro idiomas, y dice lo único afirmable: que se puede dejar, no que esté dejado.
+//
+// CONDICIÓN DURA: solo sale si el hueco se ha verificado contra el motor EN ESTE TURNO
+// (`session._huecoVerificadoEsteTurno`). Sin comprobar, afirmar que el hueco está ahí es
+// afirmar disponibilidad sin respaldo, y entonces se calla y sale la pregunta a secas.
+const ACUSE_HUECO_LIBRE = {
+    es: 'Ese hueco te lo puedo dejar.',
+    en: 'That slot is still free.',
+    ru: 'Это окошко пока свободно.',
+    uk: 'Це віконце поки вільне.',
+};
+
+// Tope de codas: el MISMO número que el de veces que se pide el nombre. Una coda por
+// pregunta, sin vida propia — si el nombre se pide dos veces como mucho, la coda también.
+const CODAS_NOMBRE_MAX = 2;
+
+// ─── UNA sola boca pide el nombre, y una sola cuenta ─────────────────────────
+//
+// Antes el texto y los contadores estaban repartidos en cinco sitios
+// (evaluarNombreAntesDeReservar, handleNombreParaCita, la rama de segunda cita y las dos de
+// confirmación del LLM), cada uno incrementando por su cuenta. Eso tenía una consecuencia
+// medible: cada disparo de la confirmación gastaba tope, así que DOS preguntas sobre horas
+// agotaban los dos intentos y la cita se escribía SIN nombre — justo lo que la puerta existe
+// para evitar (sin nombre no hay recordatorio de 24 h).
+//
+// La regla de contabilidad, en una línea: **un turno cuyo único contenido es la pregunta
+// gasta intento; una pregunta que viaja PEGADA a una respuesta, no.** Lo segundo no le cuesta
+// un turno a la clienta, así que no puede consumir el presupuesto que protege la reserva.
+//
+// La redacción no se repite nunca: la primera vez que se pide (sea sola o pegada) va la
+// frase 1, y de ahí en adelante la 2 — repetir literalmente la misma pregunta es lo que hace
+// pensar que el bot se ha colgado.
+function pedirNombre(session, { conRespuesta = false } = {}) {
+    const pend = session.pendingNameForBooking;
+    const hechas = (pend?.intentos || 0) + (pend?.codas || 0);
+    if (conRespuesta) {
+        if ((pend?.codas || 0) >= CODAS_NOMBRE_MAX) return null;
+        if (pend) session.pendingNameForBooking = { ...pend, codas: (pend.codas || 0) + 1 };
+        incrementMetric('puertaNombreConCoda');
+    } else {
+        if (pend) session.pendingNameForBooking = { ...pend, intentos: (pend.intentos || 0) + 1 };
+        session.preguntasCierre = (session.preguntasCierre || 0) + 1;
+        incrementMetric('puertaNombreSola');
+    }
+    logger.info('cita_sante_pide_nombre', {
+        orgId: session.orgId, telefono: session.partialData?.telefono, conRespuesta,
+        intentos: session.pendingNameForBooking?.intentos || 0,
+        codas: session.pendingNameForBooking?.codas || 0,
+        fecha: pend?.slot?.fecha, hora: pend?.slot?.hora,
+    });
+    return preguntaNombreMsg(session, hechas === 0 ? 1 : 2);
+}
+
+// El texto de la puerta cuando habla SOLA: acuse (si hay verificación de este turno) +
+// pregunta. Con `conRespuesta` devuelve solo la pregunta, porque va detrás de la respuesta
+// del turno y ahí el acuse no acusa nada — ya contestó el mensaje que lleva delante.
+function textoPuertaNombre(session, { conRespuesta = false } = {}) {
+    const pregunta = pedirNombre(session, { conRespuesta });
+    if (!pregunta || conRespuesta) return pregunta;
+    if (!session._huecoVerificadoEsteTurno) return pregunta;
+    const acuse = ACUSE_HUECO_LIBRE[session.language] || ACUSE_HUECO_LIBRE.es;
+    return `${acuse} ${pregunta}`;
+}
+
+// ¿El texto ya pide el nombre? El modelo también sabe pedirlo —está en el prompt—, y dos veces
+// la misma pregunta en un mensaje es peor que no añadirla. Marcadores ENUMERADOS en los cuatro
+// idiomas; el cirílico por buildCyrillicRe (\b es ASCII).
+const YA_PIDE_NOMBRE_LATIN = /\b(?:a nombre de|tu nombre|su nombre|your name|name should i|name for the)\b/;
+const YA_PIDE_NOMBRE_CIRILICO = buildCyrillicRe(['имя', 'ім\'я', 'зовут', 'звати']);
+function textoYaPideNombre(texto) {
+    const t = normalizeText(texto || '');
+    return YA_PIDE_NOMBRE_LATIN.test(t) || YA_PIDE_NOMBRE_CIRILICO.test(t);
+}
+
+// ¿El texto nombra la hora o la fecha del hueco RETENIDO?
+//
+// Es la regla que sustituye a una lista de verbos, y por eso es estructural: en un turno en el
+// que no se ha escrito nada, la hora en espera no se dice hasta que esté escrita — la dice el ✅
+// o no la dice nadie. Da igual con qué palabras venga («te la dejo apartada», «te lo guardo»,
+// «ese hueco es tuyo»): lo que se vigila es el DATO, no la redacción, porque las cinco frases
+// medidas el 17/08/2026 dan `llmClaimsBooked` false y ninguna red las para.
+//
+// La exención es la de siempre: decir el HORARIO del salón no es hablar del hueco. Sin ella,
+// esta regla se comería «cerramos a las 19:00» cuando el hueco retenido fuera el de cierre —
+// la lección del horario de Olga, y la razón de que `soloDeclaraHorarioDelSalon` sea una
+// función compartida y no una copia.
+function mencionaLoRetenido(texto, slot, horasHorario = null) {
+    if (!slot || !texto) return false;
+    const mencionadas = extractMentionedHours(texto).map(normalizeHora).filter(Boolean);
+    if (mencionadas.length && !soloDeclaraHorarioDelSalon(texto, mencionadas, horasHorario)) {
+        const horaRetenida = normalizeHora(slot.hora);
+        if (horaRetenida && mencionadas.includes(horaRetenida)) return true;
+    }
+    return !!slot.fecha && extractMentionedDates(texto).includes(slot.fecha);
+}
+
 // Avisa de las etiquetas de upselling que NO son un nombre de catálogo, con su destino.
 //
 // Es la mitad visible de `resolveAcceptedUpsellName`: la traducción por parecido se acepta
@@ -3622,43 +3729,114 @@ function leerNombreDeRespuesta(texto, catalogoServicios) {
 // huecos y comprueba que el elegido sigue libre. Entre la pregunta y la respuesta pasan turnos
 // (y puede pasar una recarga de sesión, o una noche entera), así que el hueco puede haberse
 // ocupado. Reservar a ciegas sobre el slot guardado sería crear una cita encima de otra.
+//
+// LO QUE ESTA FUNCIÓN YA NO HACE: comerse el turno cuando el mensaje no es un nombre. Caso
+// Ihab (16/08/2026): a la pregunta del nombre contestó «Hay cita libre a las 15 h?» y esto
+// repreguntó sin leer nada más. La puerta sigue estando —sin nombre no hay recordatorio de
+// 24 h— pero deja de ser lo ÚNICO que se lee del mensaje: si además pide algo
+// (`mensajeTraeOtraCosa`), el turno continúa su curso normal y el nombre se vuelve a pedir
+// PEGADO a la respuesta, en el mismo mensaje (el coda de bot.js, un solo sitio).
 async function handleNombreParaCita(client, orgId, session, sanitized, _send, userPhone) {
     const pending = session.pendingNameForBooking;
     if (!pending || pending.fase !== 'nombre') return false;
 
     const cfg = await getAgentConfig(orgId).catch(() => null);
-    const nombre = leerNombreDeRespuesta(sanitized, cfg?.services || []);
+    const catalogo = cfg?.services || [];
+    const nombre = leerNombreDeRespuesta(sanitized, catalogo);
+    // OFERTA: el residuo se mide contra lo ofertable, que es lo que el turno podría acabar
+    // proponiendo. Un servicio de baja no abre un turno.
+    const otra = mensajeTraeOtraCosa(residuoTrasNombre(sanitized, nombre),
+        { catalogo: offerableCatalog(catalogo) });
 
     if (nombre) {
         session.partialData.nombre = nombre;
         logger.info('cita_sante_nombre_capturado', {
             orgId, telefono: userPhone, intento: pending.intentos, tieneApellido: hasApellido(nombre),
+            traeOtraCosa: otra.senal,
         });
-    } else if (pending.intentos < 2 && session.preguntasCierre < 2) {
+    } else if (otra.trae) {
+        // El mensaje no es un nombre pero PIDE algo. Ni se repregunta ni se traga el turno:
+        // sigue su curso (detectores, capa de citas, LLM) y el nombre viaja como coda.
+        session._codaNombre = true;
+        logger.info('cita_sante_nombre_puerta_no_come_turno', {
+            orgId, telefono: userPhone, senal: otra.senal,
+            intentos: pending.intentos || 0, codas: pending.codas || 0,
+        });
+        return false;
+    } else if ((pending.intentos || 0) < 2 && session.preguntasCierre < 2) {
         // Segundo intento, con OTRA frase. Repetir la misma parece que el bot se ha colgado.
-        session.pendingNameForBooking = { ...pending, intentos: pending.intentos + 1 };
-        session.preguntasCierre = (session.preguntasCierre || 0) + 1;
-        logger.info('cita_sante_pide_nombre', {
-            orgId, telefono: userPhone, intento: pending.intentos + 1,
-            fecha: pending.slot?.fecha, hora: pending.slot?.hora,
-        });
-        await _send(preguntaNombreMsg(session, 2));
+        // El hueco NO se ha reverificado en este turno, así que aquí no hay acuse que dar
+        // (`textoPuertaNombre` lo decide leyendo la bandera, no lo decide este call site).
+        await _send(textoPuertaNombre(session, { conRespuesta: false }));
         return true;
     } else {
         // Dos intentos gastados: la cita vale más que el dato. Se reserva sin nombre.
         session.pendingNameForBooking = { ...pending, agotado: true };
     }
 
-    // ¿Pedimos el apellido? Como MÁXIMO una vez, nunca bloquea, y solo si queda cupo dentro
-    // del tope de 2 preguntas del cierre.
-    if (nombre && !hasApellido(nombre) && session.preguntasCierre < 2) {
+    // Con el nombre en la mano y algo MÁS sobre la mesa, el apellido no se pide: es opcional
+    // por definición y no puede ganarle el turno a una pregunta sin contestar.
+    if (nombre && !otra.trae && !hasApellido(nombre) && session.preguntasCierre < 2) {
         session.pendingNameForBooking = { ...pending, fase: 'apellido' };
         session.preguntasCierre = (session.preguntasCierre || 0) + 1;
         await _send(preguntaApellidoMsg(session));
         return true;
     }
 
-    return finalizarReservaPendiente(client, orgId, session, _send, userPhone);
+    // Lo que trae el mensaje CAMBIA la cita (otra hora, otro día, otro servicio, cancelar,
+    // reagendar, empezar de cero, «somos dos»): no se escribe la reserva vieja a espaldas de
+    // lo que acaba de pedir. El nombre ya está capturado, así que la puerta no volverá a
+    // dispararse, y el turno sigue para que la petición nueva mande.
+    if (nombre && otra.trae && residuoCambiaLaCita(sanitized, otra.senal, session, pending.slot, catalogo)) {
+        logger.info('cita_sante_nombre_con_peticion_nueva', {
+            orgId, telefono: userPhone, senal: otra.senal,
+            retenido: pending.slot ? `${pending.slot.fecha} ${pending.slot.hora}` : null,
+        });
+        return false;
+    }
+
+    const resuelto = await finalizarReservaPendiente(client, orgId, session, _send, userPhone);
+    // El ✅ ya recita fecha y hora, así que una pregunta por el hueco retenido queda
+    // contestada. Lo que el ✅ NO cubre (un «¿tenéis parking?» pegado al nombre) sigue vivo:
+    // el turno continúa y lo contesta el modelo, que ve el ✅ en session.history porque salió
+    // por _sendHist.
+    if (resuelto && otra.trae && !HORARIO_SENALES.has(otra.senal)) {
+        logger.info('cita_sante_nombre_y_pregunta_suelta', { orgId, telefono: userPhone, senal: otra.senal });
+        return false;
+    }
+    return resuelto;
+}
+
+// Las señales que hablan de CUÁNDO. Se listan aquí una vez porque las leen dos decisiones
+// opuestas: si el ✅ ya contesta el mensaje (no hace falta seguir el turno) y si lo que pide
+// es otro momento (no se escribe nada).
+const HORARIO_SENALES = new Set(['hora', 'fecha', 'dia']);
+
+// ¿Lo que trae el mensaje cambia la cita que está en espera?
+//
+// Sin slot retenido no hay nada que comparar: se responde `false` para no abrir un camino
+// nuevo sobre una espera vacía (el default recuperable, como en la guarda de cita duplicada).
+function residuoCambiaLaCita(texto, senal, session, slot, catalogo = []) {
+    if (senal === 'cancelar' || senal === 'reagendar' || senal === 'reinicio' || senal === 'varias_personas') {
+        return true;
+    }
+    if (senal === 'servicio') {
+        // Nombrar el MISMO servicio que ya está elegido no cambia nada; otro, sí.
+        const cat = offerableCatalog(catalogo);
+        const svc = cat.length ? extractServiceFromText(texto, cat) : null;
+        return !!svc && svc.nombre !== session.selectedService?.nombre;
+    }
+    if (!HORARIO_SENALES.has(senal)) return false;
+    if (!slot) return false;
+    const horas = extractMentionedHours(texto).map(normalizeHora).filter(Boolean);
+    const horaRetenida = normalizeHora(slot.hora);
+    if (horas.length) return !(horaRetenida && horas.includes(horaRetenida));
+    // Sin hora mencionada decide la fecha; un día suelto («el jueves») no se resuelve a fecha
+    // aquí a propósito (fabricarla es lo que extractMentionedDates evita), así que cuenta como
+    // petición nueva y la resuelve el turno.
+    const fechas = extractMentionedDates(texto);
+    if (fechas.length && slot.fecha) return !fechas.includes(slot.fecha);
+    return true;
 }
 
 // El apellido es opcional por definición: llegue o no llegue, la cita se reserva en este turno.
@@ -3743,7 +3921,7 @@ async function handleSegundaCitaPendiente(client, orgId, session, sanitized, _se
             return true;
         }
         if (res.reason === PENDIENTE_NOMBRE) {
-            await _send(preguntaNombreMsg(session, session.pendingNameForBooking?.intentos || 1));
+            await _send(textoPuertaNombre(session, { conRespuesta: false }));
             return true;
         }
         if (res.reason === 'ocupado') {
@@ -3772,19 +3950,36 @@ const PENDIENTE_NOMBRE = 'pendiente_nombre';
 
 // ¿Podemos escribir ya, o hay que preguntar el nombre antes?
 // Devuelve PENDIENTE_NOMBRE si hay que preguntar; null si se puede reservar.
+//
+// ARMA la espera y NO CUENTA: quien cuenta es `pedirNombre`, en el momento de emitir el
+// texto, porque solo ahí se sabe si la pregunta va sola o pegada a una respuesta. Contando
+// aquí, cada disparo de la confirmación gastaba tope aunque no se le preguntara nada nuevo a
+// la clienta, y dos preguntas sobre horas dejaban la cita sin nombre.
+//
+// El tope de intentos se lee sobre lo YA gastado (`>= 2`), que es lo mismo que antes: allí el
+// valor se incrementaba en esta función y aquí lo incrementa el emisor del texto, un paso
+// después y en el mismo turno.
 function evaluarNombreAntesDeReservar(session, slot, userPhone) {
     if (session.orgType !== 'salon') return null;              // San Remo no pasa por aquí
     if (isValidName(session.partialData.nombre)) return null;  // ya lo tenemos
     if (session.pendingNameForBooking?.agotado) return null;   // 2 intentos gastados → se reserva sin nombre
     if (session.preguntasCierre >= 2) return null;             // tope duro
+    if ((session.pendingNameForBooking?.intentos || 0) >= 2) {  // los dos intentos, gastados
+        session.pendingNameForBooking = { ...session.pendingNameForBooking, agotado: true };
+        logger.info('cita_sante_nombre_agotado', {
+            orgId: session.orgId, telefono: userPhone, fecha: slot?.fecha, hora: slot?.hora,
+        });
+        return null;
+    }
 
-    const intentos = (session.pendingNameForBooking?.intentos || 0) + 1;
-    session.pendingNameForBooking = { slot, intentos, fase: 'nombre', agotado: false };
-    session.preguntasCierre = (session.preguntasCierre || 0) + 1;
-    logger.info('cita_sante_pide_nombre', {
-        orgId: session.orgId, telefono: userPhone, intento: intentos,
-        fecha: slot?.fecha, hora: slot?.hora,
-    });
+    const prev = session.pendingNameForBooking;
+    session.pendingNameForBooking = {
+        slot,
+        intentos: prev?.intentos || 0,
+        codas: prev?.codas || 0,
+        fase: 'nombre',
+        agotado: false,
+    };
     return PENDIENTE_NOMBRE;
 }
 
@@ -4159,6 +4354,11 @@ async function confirmSlotConReverificacion(client, session, userPhone, slot) {
         stylistId: slot.stylistId || null, huecosRealesTrasReload: freshSlots.length, encontrado: stillFree,
     });
     if (!stillFree) return { ok: false, reason: 'ocupado', freshSlots };
+    // El hueco está libre AHORA, comprobado contra el motor en ESTE turno. Es la única
+    // condición que permite el acuse deíctico de la puerta del nombre («ese hueco te lo puedo
+    // dejar»): se marca DONDE SE ESTABLECE, no donde se usa, para que ningún camino nuevo
+    // pueda heredar la afirmación sin haberla comprobado. Bandera de turno.
+    session._huecoVerificadoEsteTurno = true;
     const res = await finalizarCitaSante(client, session, userPhone, verified || slot);
     // PENDIENTE_NOMBRE no es ni éxito ni fallo: se ha preguntado el nombre y no se ha escrito
     // nada. Se propaga como razón propia para que el llamante no anuncie una cita inexistente
@@ -4931,6 +5131,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // cita ya ha quedado cargada en sesión y el turno continúa sobre ELLA.
         if (orgType === 'salon') {
             delete session._citasVivasTurno;   // caché de turno: se relee en cada mensaje
+            // Las dos banderas de la puerta del nombre son de TURNO y se borran aquí, no en
+            // buildSessionExtra (donde NO viajan): un hueco verificado hace tres turnos no es
+            // un hueco comprobado ahora, y un coda heredado se pegaría a una respuesta que no
+            // preguntó nada.
+            delete session._huecoVerificadoEsteTurno;
+            delete session._codaNombre;
             // Se resuelve SIEMPRE, no solo cuando un detector se dispara: el bloque
             // __citasVivas del prompt es el refuerzo que cubre las frases que los detectores
             // no ven, y sin leer no puede afirmar nada (decirle al modelo "no tiene ninguna
@@ -6394,10 +6600,20 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     aiResponse.reserva_confirmada = true;
                 } else if (res.reason === PENDIENTE_NOMBRE) {
                     // Falta el nombre: se pregunta y NO se reserva. El texto sustituye al del
-                    // LLM, así que este turno no puede contener ni un ✅ ni una hora — que es
-                    // justo lo que la red anti-cita-fantasma vigila.
+                    // LLM y la sustitución sigue siendo TOTAL a propósito: este turno no puede
+                    // contener ni un ✅ ni una hora presentada como guardada, y NINGUNA regla
+                    // sobre el texto del modelo lo garantiza. Medido el 17/08/2026: «Te la dejo
+                    // apartada a las 15:00», «vale, te lo guardo para las 15», «ese hueco es
+                    // tuyo», «I will hold it for you at 3pm» y «Оставлю за тобой 15:00» dan
+                    // llmClaimsBooked FALSE y no las para ninguna red (la anti-fantasma la
+                    // gatea llmClaimsBooked, y la de huecos inventados deja pasar la hora
+                    // porque SÍ tiene respaldo). La única garantía cerrada es hablar nosotros.
+                    //
+                    // Lo que cambia respecto de antes es que el texto ya CONTESTA: si el hueco
+                    // se acaba de verificar contra el motor, delante de la pregunta va el acuse
+                    // deíctico — sin hora y sin ✅.
                     aiResponse.reserva_confirmada = false;
-                    aiResponse.respuesta = preguntaNombreMsg(session, session.pendingNameForBooking?.intentos || 1);
+                    aiResponse.respuesta = textoPuertaNombre(session, { conRespuesta: false });
                 } else if (res.reason === PENDIENTE_SEGUNDA_CITA) {
                     // La guarda de cita viva retuvo la reserva: ya tiene una cita por
                     // delante y nadie pidió una segunda. Se pregunta. El texto sustituye
@@ -6436,11 +6652,15 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         stylistId: styId, huecosRealesTrasReload: freshSlots.length, encontrado: !!cand,
                     });
                     if (cand) {
+                        // Mismo motivo que en confirmSlotConReverificacion: el hueco se acaba
+                        // de comprobar contra el motor en este turno, y eso —y solo eso— es lo
+                        // que habilita el acuse deíctico de la puerta del nombre.
+                        session._huecoVerificadoEsteTurno = true;
                         const res = await finalizarCitaSante(client, session, userPhone, cand);
                         if (res === PENDIENTE_NOMBRE) {
                             // Ni éxito ni fallo: falta el nombre. Se pregunta, no se reserva.
                             aiResponse.reserva_confirmada = false;
-                            aiResponse.respuesta = preguntaNombreMsg(session, session.pendingNameForBooking?.intentos || 1);
+                            aiResponse.respuesta = textoPuertaNombre(session, { conRespuesta: false });
                             hecho = true;
                         } else if (res === PENDIENTE_SEGUNDA_CITA) {
                             // Guarda de cita viva: este es el camino del caso Ihab — el
@@ -6902,6 +7122,48 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             session.pendingEscalationService = 'traspaso';
             session.pendingEscalationOfrecidaAt = Date.now();
             logger.info('sante_traspaso_ofrecido_espera_confirmacion', { orgId, telefono: userPhone });
+        }
+
+        // ─── El coda de la puerta del nombre ────────────────────────────────────
+        //
+        // La puerta dejó pasar el turno porque el mensaje pedía otra cosa (caso Ihab): la
+        // respuesta ya está hecha y aquí se le pega la pregunta del nombre, en el MISMO
+        // mensaje. Un solo sitio, y el último: después de todas las redes y del recorte, de
+        // modo que lo que se anota en history y lo que se envía son el mismo texto.
+        //
+        // Cuatro decisiones dentro:
+        //   · no se pega sobre un fallback («no he podido procesar tu mensaje» no es una
+        //     respuesta): la puerta sobrevive intacta al turno siguiente y no gasta nada;
+        //   · no se pega si el texto ya pide el nombre — el modelo también sabe pedirlo, y
+        //     duplicar la pregunta es peor que no añadirla;
+        //   · si el texto del modelo nombra la hora o la fecha RETENIDAS, se descarta y habla
+        //     la puerta: la hora en espera no se dice hasta que esté escrita (la dice el ✅ o
+        //     no la dice nadie), y esa es la regla que no depende de ninguna lista de verbos;
+        //   · si no cabe en 1000 se recorta la BASE, nunca el coda.
+        if (orgType === 'salon' && session._codaNombre) {
+            const slotRetenido = session.pendingNameForBooking?.slot || null;
+            if (isFallbackText(aiResponse.respuesta)) {
+                logger.info('cita_sante_coda_nombre_omitida', { orgId, telefono: userPhone, motivo: 'fallback' });
+            } else if (textoYaPideNombre(aiResponse.respuesta)) {
+                logger.info('cita_sante_coda_nombre_omitida', { orgId, telefono: userPhone, motivo: 'ya_lo_pide' });
+            } else if (mencionaLoRetenido(aiResponse.respuesta, slotRetenido, horasHorario)) {
+                logger.warn('cita_sante_hora_retenida_en_texto', {
+                    orgId, telefono: userPhone,
+                    retenido: slotRetenido ? `${slotRetenido.fecha} ${slotRetenido.hora}` : null,
+                    respuestaOriginal: aiResponse.respuesta,
+                });
+                aiResponse.reserva_confirmada = false;
+                aiResponse.respuesta = textoPuertaNombre(session, { conRespuesta: false });
+            } else {
+                const coda = textoPuertaNombre(session, { conRespuesta: true });
+                if (coda) {
+                    const base = aiResponse.respuesta.trim();
+                    const margen = 1000 - coda.length - 1;
+                    aiResponse.respuesta = (base.length > margen ? `${base.slice(0, Math.max(0, margen - 3))}...` : base)
+                        + `\n${coda}`;
+                }
+            }
+            delete session._codaNombre;
         }
 
         session.history.push({ role: 'assistant', content: aiResponse.respuesta, ts: Date.now() });
@@ -7533,6 +7795,8 @@ module.exports = {
         // Nombre antes de reservar:
         evaluarNombreAntesDeReservar, handleNombreParaCita, handleApellidoParaCita,
         leerNombreDeRespuesta, preguntaNombreMsg, preguntaApellidoMsg, PENDIENTE_NOMBRE,
+        pedirNombre, textoPuertaNombre, textoYaPideNombre, mencionaLoRetenido,
+        residuoCambiaLaCita, ACUSE_HUECO_LIBRE, CODAS_NOMBRE_MAX, PREGUNTA_NOMBRE,
         // Guarda de cita viva (segunda cita sin pedir):
         evaluarSegundaCitaAntesDeReservar, handleSegundaCitaPendiente, PENDIENTE_SEGUNDA_CITA,
         mensajeConfirmacionSante,

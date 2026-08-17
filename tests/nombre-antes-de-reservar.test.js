@@ -72,6 +72,8 @@ const {
     evaluarNombreAntesDeReservar, handleNombreParaCita, handleApellidoParaCita,
     leerNombreDeRespuesta, preguntaNombreMsg, preguntaApellidoMsg, PENDIENTE_NOMBRE,
     createEmptySession, llmClaimsBooked, clearServiceState, SERVICE_STATE_DEFAULTS,
+    textoPuertaNombre, pedirNombre, textoYaPideNombre, mencionaLoRetenido,
+    ACUSE_HUECO_LIBRE, CODAS_NOMBRE_MAX, buildSessionExtra,
 } = bot._internals;
 
 const BOT = fs.readFileSync(path.join(__dirname, '..', 'bot.js'), 'utf8');
@@ -94,12 +96,26 @@ function sesion(over = {}) {
 // Captura lo que el bot envía.
 function makeSend(sink) { return async texto => { sink.push(texto); }; }
 
+// La puerta como la recorre PRODUCCIÓN: arma la espera y, acto seguido, emite el texto.
+//
+// Desde el 17/08/2026 son dos pasos y no uno: `evaluarNombreAntesDeReservar` ARMA y no cuenta,
+// y quien cuenta es el emisor (`textoPuertaNombre` → `pedirNombre`), porque solo en el momento
+// de emitir se sabe si la pregunta va sola o PEGADA a una respuesta — y una pregunta pegada a
+// una respuesta no le cuesta un turno a la clienta, así que no puede gastar el presupuesto que
+// protege la reserva. Contando en la puerta, cada disparo de la confirmación gastaba tope y dos
+// preguntas sobre horas dejaban la cita sin nombre (medido: era el caso de Ihab).
+function puerta(s, sink = []) {
+    const r = evaluarNombreAntesDeReservar(s, SLOT, '34600111222');
+    if (r === PENDIENTE_NOMBRE) sink.push(textoPuertaNombre(s, { conRespuesta: false }));
+    return r;
+}
+
 // ─── La puerta ───────────────────────────────────────────────────────────────
 
 test('sin nombre: la puerta devuelve PENDIENTE_NOMBRE y deja la reserva en espera', () => {
     resetState();
     const s = sesion();
-    const r = evaluarNombreAntesDeReservar(s, SLOT, '34600111222');
+    const r = puerta(s);
     assert.strictEqual(r, PENDIENTE_NOMBRE);
     assert.ok(s.pendingNameForBooking, 'la reserva queda en espera');
     assert.strictEqual(s.pendingNameForBooking.intentos, 1);
@@ -177,7 +193,7 @@ test('validación estricta: sí acepta nombres reales, incluido cirílico', () =
 test('no contesta el nombre: segunda pregunta, distinta, y sigue sin escribirse nada', async () => {
     resetState();
     const s = sesion();
-    evaluarNombreAntesDeReservar(s, SLOT, '34600111222');
+    puerta(s);
     const enviados = [];
 
     const resuelto = await handleNombreParaCita(
@@ -194,7 +210,7 @@ test('no contesta el nombre: segunda pregunta, distinta, y sigue sin escribirse 
 test('contesta al SEGUNDO intento: se guarda el nombre', async () => {
     resetState();
     const s = sesion();
-    evaluarNombreAntesDeReservar(s, SLOT, '34600111222');
+    puerta(s);
     await handleNombreParaCita(null, 'org-sante', s, 'ni idea', makeSend([]), '34600111222');
 
     // Segundo turno: ahora sí da el nombre. Con apellido, para que no pregunte más.
@@ -206,7 +222,7 @@ test('contesta al SEGUNDO intento: se guarda el nombre', async () => {
 test('da nombre Y apellido de una: NO se pregunta el apellido', async () => {
     resetState();
     const s = sesion();
-    evaluarNombreAntesDeReservar(s, SLOT, '34600111222');
+    puerta(s);
     const enviados = [];
 
     await handleNombreParaCita(null, 'org-sante', s, 'Marina Petrova', makeSend(enviados), '34600111222');
@@ -219,7 +235,7 @@ test('da nombre Y apellido de una: NO se pregunta el apellido', async () => {
 test('da solo el nombre: se pregunta el apellido UNA vez', async () => {
     resetState();
     const s = sesion();
-    evaluarNombreAntesDeReservar(s, SLOT, '34600111222');
+    puerta(s);
     const enviados = [];
 
     const resuelto = await handleNombreParaCita(
@@ -234,7 +250,7 @@ test('da solo el nombre: se pregunta el apellido UNA vez', async () => {
 test('el apellido NUNCA bloquea: si no llega, se guarda solo el nombre', async () => {
     resetState();
     const s = sesion();
-    evaluarNombreAntesDeReservar(s, SLOT, '34600111222');
+    puerta(s);
     await handleNombreParaCita(null, 'org-sante', s, 'Marta', makeSend([]), '34600111222');
     assert.strictEqual(s.pendingNameForBooking.fase, 'apellido');
 
@@ -248,7 +264,7 @@ test('el apellido NUNCA bloquea: si no llega, se guarda solo el nombre', async (
 test('si el nombre gasta las 2 preguntas, el apellido ya no se pide', async () => {
     resetState();
     const s = sesion();
-    evaluarNombreAntesDeReservar(s, SLOT, '34600111222');          // pregunta 1
+    puerta(s);                                                     // pregunta 1
     await handleNombreParaCita(null, 'org-sante', s, 'qué?', makeSend([]), '34600111222'); // pregunta 2
     assert.strictEqual(s.preguntasCierre, 2);
     const enviados = [];
@@ -290,7 +306,7 @@ test('INVARIANTE 2 · la reentrada pasa por confirmSlotConReverificacion', () =>
 test('INVARIANTE 2 · si el hueco se ocupó, NO se reserva y se avisa', async () => {
     resetState();
     const s = sesion();
-    evaluarNombreAntesDeReservar(s, SLOT, '34600111222');
+    puerta(s);
     const enviados = [];
     // confirmSlotConReverificacion recarga huecos reales; sin calendario devuelve 'ocupado'.
     await handleNombreParaCita(null, 'org-sante', s, 'Marina Petrova', makeSend(enviados), '34600111222');
@@ -356,6 +372,149 @@ test('INVARIANTE 4 · al reservar se limpia SIEMPRE, con nombre o sin él', () =
     assert.ok(/session\.pendingNameForBooking = null;/.test(fn));
     assert.ok(fn.indexOf('session.pendingNameForBooking = null;') < fn.indexOf('saveLead('),
         'se limpia antes de escribir, no en una rama de éxito que puede no alcanzarse');
+});
+
+// ─── INVARIANTE 6 · el acuse solo sale con el hueco VERIFICADO en ese turno ──
+//
+// El acuse deíctico («ese hueco te lo puedo dejar») es lo que hace que el turno de la puerta
+// CONTESTE: Ihab preguntó por las 15:00 y solo recibió la pregunta del nombre. Pero afirmar que
+// el hueco está ahí sin haberlo comprobado es afirmar disponibilidad sin respaldo, así que la
+// condición es dura y se prueba en las dos direcciones.
+
+test('INVARIANTE 6 · con el hueco verificado en ESTE turno, el acuse sale (4 idiomas)', () => {
+    for (const lang of ['es', 'en', 'ru', 'uk']) {
+        const s = sesion({ language: lang });
+        evaluarNombreAntesDeReservar(s, SLOT, '34600111222');
+        s._huecoVerificadoEsteTurno = true;
+        const msg = textoPuertaNombre(s, { conRespuesta: false });
+        assert.ok(msg.startsWith(ACUSE_HUECO_LIBRE[lang]), `${lang}: falta el acuse → "${msg}"`);
+        assert.ok(msg.endsWith(preguntaNombreMsg(s, 1)), `${lang}: falta la pregunta → "${msg}"`);
+        // Y sigue sin poder sonar a cita hecha: es un turno que no ha escrito nada.
+        assert.ok(!llmClaimsBooked(msg), `${lang}: el acuse suena a reserva hecha`);
+        assert.ok(!msg.includes('✅'), `${lang}: ✅ en un turno sin escritura`);
+        assert.ok(!/\d{1,2}:\d{2}/.test(msg), `${lang}: el acuse dice una hora`);
+    }
+});
+
+test('INVARIANTE 6 · SIN verificación no sale: solo la pregunta, en los 4 idiomas', () => {
+    for (const lang of ['es', 'en', 'ru', 'uk']) {
+        const s = sesion({ language: lang });
+        evaluarNombreAntesDeReservar(s, SLOT, '34600111222');
+        // La bandera es de TURNO y aquí no la ha puesto nadie: es el caso del turno de
+        // repregunta pura, donde no se ha vuelto a mirar el motor.
+        const msg = textoPuertaNombre(s, { conRespuesta: false });
+        assert.strictEqual(msg, preguntaNombreMsg(s, 1), `${lang}: acuse sin verificación`);
+        assert.ok(!msg.includes(ACUSE_HUECO_LIBRE[lang]));
+    }
+});
+
+test('INVARIANTE 6 · la bandera no viaja a SQLite (no es estado de la conversación)', () => {
+    const s = sesion();
+    s._huecoVerificadoEsteTurno = true;
+    s._codaNombre = true;
+    const extra = buildSessionExtra(s);
+    assert.ok(!('_huecoVerificadoEsteTurno' in extra), 'un hueco verificado hace 3 turnos no está verificado');
+    assert.ok(!('_codaNombre' in extra), 'un coda heredado se pegaría a un turno que no preguntó nada');
+    // Y se borran al empezar cada turno, junto a la caché de citas vivas.
+    assert.ok(/delete session\._huecoVerificadoEsteTurno;/.test(BOT));
+    assert.ok(/delete session\._codaNombre;/.test(BOT));
+});
+
+// ─── El coda: una pregunta pegada a una respuesta ────────────────────────────
+
+test('el coda NO gasta intento ni preguntasCierre, y tiene su propio tope de 2', () => {
+    const s = sesion();
+    evaluarNombreAntesDeReservar(s, SLOT, '34600111222');
+    assert.strictEqual(CODAS_NOMBRE_MAX, 2, 'el tope de codas es el MISMO que el de preguntas');
+
+    const c1 = pedirNombre(s, { conRespuesta: true });
+    assert.ok(c1, 'la primera coda sale');
+    assert.strictEqual(s.pendingNameForBooking.intentos, 0, 'no gasta intento');
+    assert.strictEqual(s.preguntasCierre, 0, 'no gasta pregunta de cierre');
+    assert.strictEqual(s.pendingNameForBooking.codas, 1);
+
+    const c2 = pedirNombre(s, { conRespuesta: true });
+    assert.ok(c2, 'la segunda coda sale');
+    assert.notStrictEqual(c2, c1, 'y no repite la frase');
+
+    assert.strictEqual(pedirNombre(s, { conRespuesta: true }), null, 'la tercera NO sale');
+    assert.strictEqual(s.pendingNameForBooking.codas, 2, 'y no cuenta la que no salió');
+    assert.strictEqual(s.preguntasCierre, 0, 'el tope del cierre sigue intacto');
+});
+
+test('los dos intentos PUROS siguen gastando, y el acuse no cambia eso', () => {
+    const s = sesion();
+    evaluarNombreAntesDeReservar(s, SLOT, '34600111222');
+    s._huecoVerificadoEsteTurno = true;
+    textoPuertaNombre(s, { conRespuesta: false });
+    assert.strictEqual(s.pendingNameForBooking.intentos, 1);
+    assert.strictEqual(s.preguntasCierre, 1);
+});
+
+// ─── La hora RETENIDA no se dice hasta que esté escrita ──────────────────────
+//
+// Es la regla que sustituye a una lista de verbos. Medido el 17/08/2026: las cinco frases de
+// abajo dan `llmClaimsBooked` FALSE y no las para NINGUNA red (la anti-fantasma la gatea
+// llmClaimsBooked; la de huecos inventados deja pasar la hora porque tiene respaldo real). Lo
+// que se vigila aquí es el DATO, no la redacción.
+
+test('mencionaLoRetenido caza la promesa que NO casa ningún patrón', () => {
+    const slot = { fecha: '2026-08-17', hora: '15:00' };
+    for (const frase of [
+        'Te la dejo apartada a las 15:00.',
+        'I will hold it for you at 3pm.',
+        'Оставлю за тобой 15:00.',
+        'Тримаю за тобою 15:00.',
+    ]) {
+        // La mitad del valor de este bloque está en esta línea: si algún día llmClaimsBooked
+        // empieza a cazarla, este assert lo dirá y habrá que decidir qué red manda.
+        assert.strictEqual(llmClaimsBooked(frase), false,
+            `este test existe porque llmClaimsBooked NO la caza: "${frase}"`);
+        assert.strictEqual(mencionaLoRetenido(frase, slot, []), true, `no cazada: "${frase}"`);
+    }
+    // Control: la que SÍ casa el patrón enumerado sigue casándolo.
+    assert.strictEqual(llmClaimsBooked('Te la reservo para las 15:00'), true);
+});
+
+test('RESIDUO DECLARADO · una promesa SIN hora ni fecha no la caza esta regla', () => {
+    // No es un agujero de este trabajo: es el hueco preexistente de llmClaimsBooked, que
+    // afecta a TODOS los turnos anteriores a una reserva. Se deja escrito en un test para que
+    // esté medido y no descubierto, y porque ensanchar llmClaimsBooked no es gratis —
+    // alimenta resolveSalonConfirmation ('texto_llm_confirma'), así que pondría a CREAR citas
+    // desde la prosa del modelo. Decisión del dueño, no de este arreglo.
+    const slot = { fecha: '2026-08-17', hora: '15:00' };
+    for (const frase of ['Perfecto, ese hueco es tuyo.', 'Vale, te lo guardo.']) {
+        assert.strictEqual(llmClaimsBooked(frase), false);
+        assert.strictEqual(mencionaLoRetenido(frase, slot, []), false);
+    }
+});
+
+test('mencionaLoRetenido NO se come el horario del salón (la lección de Olga)', () => {
+    const slot = { fecha: '2026-08-17', hora: '19:00' };   // el hueco retenido ES el de cierre
+    assert.strictEqual(
+        mencionaLoRetenido('Abrimos de 10:00 a 19:00.', slot, ['10:00', '19:00']),
+        false,
+        'declarar el horario no es hablar del hueco retenido',
+    );
+    // Y una respuesta que no habla de cuándo, tampoco.
+    assert.strictEqual(mencionaLoRetenido('Sí, tenemos parking en la puerta.', slot, []), false);
+});
+
+test('mencionaLoRetenido también mira la FECHA retenida', () => {
+    const slot = { fecha: '2026-08-28', hora: '15:00' };
+    assert.strictEqual(mencionaLoRetenido('Te lo dejo para el 28 de agosto.', slot, []), true);
+    assert.strictEqual(mencionaLoRetenido('Te lo dejo para el 29 de agosto.', slot, []), false);
+});
+
+test('textoYaPideNombre reconoce las cuatro preguntas propias (no se duplica el coda)', () => {
+    for (const lang of ['es', 'en', 'ru', 'uk']) {
+        const s = sesion({ language: lang });
+        for (const intento of [1, 2]) {
+            assert.ok(textoYaPideNombre(preguntaNombreMsg(s, intento)),
+                `${lang}/${intento}: no se reconoce como pregunta por el nombre`);
+        }
+    }
+    assert.ok(!textoYaPideNombre('Sí, tenemos parking en la puerta.'));
 });
 
 (async () => {
