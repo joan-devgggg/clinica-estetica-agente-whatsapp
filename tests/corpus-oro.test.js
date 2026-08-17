@@ -33,6 +33,8 @@
  *   · services/helpers.js — extractPrecioMencionado devolviendo [] → rojos Estefania t5,
  *     Mafe t4, Mafe t13 y Mariola t3. Prueba que la cadena de imports llega al helper
  *     REAL, no a una copia del runner.
+ *   · services/helpers.js — mensajeTraeOtraCosa devolviendo {trae:false} → rojos Ihab t2.1 y
+ *     t2.2 (17/08/2026), los dos turnos que la puerta del nombre se comía.
  *
  * Duración medida el 15/08/2026: ~0,8 s el fichero entero (55 turnos + 3 rejugados por el
  * arnés real + 13 excluidos documentados). Desde el 17/08/2026 hay un 4º rejugado
@@ -216,6 +218,12 @@ const DETECTORES = {
     // significa «el bot pregunta». Entró con el caso de Ihab (contención del catálogo).
     extractServiceFromText: (ctx, t) => h.extractServiceFromText(t, CATALOGO)?.nombre ?? null,
     detectCancelRequest: (ctx, t) => h.detectCancelRequest(t),
+    // La puerta del nombre, en sus dos mitades: lo ÚNICO que leía del mensaje (el nombre) y lo
+    // que ahora también lee (si el mensaje pide algo más). Los dos con el catálogo FIJO del
+    // fixture; el segundo devuelve la SEÑAL, que es lo que declara el turno.
+    leerNombreDeRespuesta: (ctx, t) => I.leerNombreDeRespuesta(t, CATALOGO),
+    mensajeTraeOtraCosa: (ctx, t) => h.mensajeTraeOtraCosa(
+        h.residuoTrasNombre(t, I.leerNombreDeRespuesta(t, CATALOGO)), { catalogo: CATALOGO }).senal,
     detectConsultaService: (ctx, t) => h.detectConsultaService(t),
     isAffirmative: (ctx, t) => h.isAffirmative(t),
     detectLanguage: (ctx, t) => h.detectLanguage(t),

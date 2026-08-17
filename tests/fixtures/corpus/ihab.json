@@ -8,7 +8,9 @@
     "rango": ["2026-08-16T11:34:12.080Z", "2026-08-17T11:42:58.254Z"],
     "idioma": "es",
     "verificado_el": "2026-08-17",
-    "verificado_como": "EL CASO DE LA CONTENCIÓN DEL CATÁLOGO: «Para lavar.» resolvió por token suelto contra la ÚNICA entrada de las 81 que contiene 'lavar' en el nombre — «Reconstrucción K18 + lavar y peinar», 60 € — y la huella quedó en positivo: el ✅ del 16/08 11:38:48 la recita («✂️ Reconstrucción K18 + lavar y peinar con Natalia · 💰 60€») y la cita del 27/08 (created_at 16/08 14:26:40, updated_by null: puro bot) sigue confirmada con ese service. La regla que este fixture congela vive en la pasada 2 de extractServiceFromText y su test determinista es tests/contencion-catalogo.test.js; aquí se congela el TURNO REAL."
+    "verificado_como": "EL CASO DE LA CONTENCIÓN DEL CATÁLOGO: «Para lavar.» resolvió por token suelto contra la ÚNICA entrada de las 81 que contiene 'lavar' en el nombre — «Reconstrucción K18 + lavar y peinar», 60 € — y la huella quedó en positivo: el ✅ del 16/08 11:38:48 la recita («✂️ Reconstrucción K18 + lavar y peinar con Natalia · 💰 60€») y la cita del 27/08 (created_at 16/08 14:26:40, updated_by null: puro bot) sigue confirmada con ese service. La regla que este fixture congela vive en la pasada 2 de extractServiceFromText y su test determinista es tests/contencion-catalogo.test.js; aquí se congela el TURNO REAL.",
+    "segundo_hallazgo_2026_08_17": "LA PUERTA DEL NOMBRE SE COMÍA EL TURNO (turnos 2.1 y 2.2, releídos de `messages` el 17/08 y byte-idénticos): preguntó dos veces por las 15:00 y las dos veces recibió la pregunta del nombre. El fallo NO está en el texto del saliente (es inerte a todas las redes) sino en lo que FALTA: la respuesta. Su gemelo conducido es tests/puerta-nombre-no-come-turno.test.js.",
+    "numeracion": "Los turnos descubiertos DESPUÉS llevan decimal (2.1, 2.2) en vez de renumerar: el `n` de un turno ya congelado se cita en prosa desde otros ficheros (deterministas-en-historial habla de los turnos 3-4), y cambiarlo dejaría esas referencias apuntando a otro turno sin que nada se pusiera rojo."
   },
   "business_hours": {
     "lunes": { "apertura": "10:00", "cierre": "19:00" },
@@ -48,6 +50,41 @@
       "entrante": ["Soy hombre con pelo corto, lavar y peinar es perfecto. No tengo preferencias."],
       "saliente": "Perfecto, te apunto lavar y peinar. Mañana a las 14:00 con Natalia, ¿te va bien?",
       "excluido": { "motivo": "El veredicto del saliente depende de availableSlots y del selectedService de ESE instante, y los dos venían contaminados por la resolución mala del turno 1: no se reconstruyen con honestidad. Y el entrante tiene su propia rareza COLINDANTE, medida idéntica antes y después de la contención: resuelve «Hombre» (Cortes, 25 €) por el keyword 'corto' más la palabra «soy hombre» — preexistente, fuera del alcance de la regla, documentada en tests/contencion-catalogo.test.js sin fijarla." }
+    },
+    {
+      "n": 2.1,
+      "ts": "2026-08-16T11:37:36.541Z",
+      "entrante": ["A las 15:00 puedo?"],
+      "saliente": "¿A nombre de quién la pongo? 😊",
+      "clase": "fallo_anclado",
+      "ancla": "LA PUERTA DEL NOMBRE, primer turno. Pidió las 15:00 y recibió la pregunta del nombre y NADA MÁS. La reserva sí se procesó —el hueco quedó retenido en pendingNameForBooking y la cita acabó a las 15:00 (saliente del 11:38:48)—, pero el acuse no podía decírselo: en ese turno no hay fila en Supabase, así que un ✅ o una hora presentada como guardada es justo lo que la red anti-cita-fantasma tiene que bloquear. El arreglo no toca la puerta: le añade un acuse DEÍCTICO («ese hueco te lo puedo dejar»), sin hora y sin ✅, y solo si el hueco se ha verificado contra el motor en ESE turno.",
+      "estado": {
+        "citasReales": [],
+        "session": { "selectedService": "Lavar y peinar" }
+      },
+      "espera": [
+        { "detector": "leerNombreDeRespuesta", "sobre": "entrante:0", "resultado": null,
+          "nota": "Lo único que la puerta leía de este mensaje. Null = repregunta, y con `return true` el turno moría ahí." },
+        { "detector": "mensajeTraeOtraCosa", "sobre": "entrante:0", "resultado": "hora",
+          "nota": "LA CONDUCTA EXIGIDA: el mensaje PIDE algo (una hora), así que la puerta no puede quedárselo. Antes del arreglo esta señal no existía y el turno no llegaba ni al modelo." }
+      ]
+    },
+    {
+      "n": 2.2,
+      "ts": "2026-08-16T11:38:16.056Z",
+      "entrante": ["Hay cita libre a las 15 h?"],
+      "saliente": "Perdona, ¿me dices tu nombre para la cita? 😊",
+      "clase": "fallo_anclado",
+      "ancla": "EL TURNO QUE NO SE PROCESÓ EN ABSOLUTO. Volvió a preguntar por las 15:00 —la misma pregunta, con otras palabras— y la puerta la pasó por leerNombreDeRespuesta, salió null y repreguntó. Ni detectores, ni agenda, ni modelo. Y el tragado estaba en DOS capas: con la puerta abierta, «a las 15 h» da hora_cita 15:00 y vuelve a disparar la confirmación por 'match_hora', que sustituía la respuesta entera — por eso el arreglo tiene que cambiar las dos.",
+      "estado": {
+        "citasReales": [],
+        "session": { "selectedService": "Lavar y peinar" }
+      },
+      "espera": [
+        { "detector": "leerNombreDeRespuesta", "sobre": "entrante:0", "resultado": null },
+        { "detector": "mensajeTraeOtraCosa", "sobre": "entrante:0", "resultado": "hora",
+          "nota": "«a las 15 h» sin los dos puntos: la ve extractMentionedHours por el marcador temporal delante, no HORA_HHMM_SRC." }
+      ]
     },
     {
       "n": 3,
