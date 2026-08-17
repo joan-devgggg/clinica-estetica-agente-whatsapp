@@ -129,6 +129,12 @@ test('la fuente de verdad coincide con la lista esperada (candado anti-drift)', 
         // contador del tope de 2 preguntas tiene que reiniciarse con cada cierre nuevo, o la
         // segunda reserva del día no podría preguntar nada.
         'pendingNameForBooking', 'preguntasCierre',
+        // Guarda de cita viva (caso Ihab, 16/08/2026). Se limpian con el servicio a
+        // propósito: la autorización describe LA segunda reserva en curso (arrastrarla
+        // dejaría exenta de la guarda a la siguiente conversación), y una reserva RETENIDA
+        // con su pregunta a medias no puede sobrevivir a un reinicio del flujo — el «sí»
+        // de mañana escribiría el hueco de ayer.
+        'segundaReservaAutorizada', 'pendingSegundaCita',
     ];
     const EXPECTED_PARTIAL = [
         'servicio', 'categoria_servicio', 'estilista_preferida',

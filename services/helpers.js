@@ -2913,6 +2913,75 @@ function _lineaCita(c, lang) {
     return `📅 ${_formatFechaHora(c.fecha, c.hora, lang)} — ${c.servicio || ''}${estilista}`.trim();
 }
 
+// ─── Pregunta antes de una SEGUNDA cita que nadie pidió (guarda de cita viva) ─
+//
+// La manda la guarda de finalizarCitaSante (bot.js) cuando el flujo está a punto de
+// ESCRIBIR una cita nueva para alguien que ya tiene una por delante y en esta
+// conversación nadie ha pedido explícitamente una segunda. Nació del caso Ihab
+// (16/08/2026): la sesión rehidratada olvidó que ya había reservado y un "❤️🥰" acabó
+// escrito en la agenda como una cita real para 11 días después.
+//
+// Este texto SUSTITUYE a la respuesta del LLM, así que tiene que ser INERTE para todo lo
+// que corre después sobre el texto sustituido (regla 12):
+//   · ni una HH:MM — respondsWithInventedSlots no tiene exención de citas vivas y una
+//     hora con availableSlots vacío (lo normal tras rehidratar) condenaría la pregunta;
+//   · ni una fecha — la exención de respondsWithInventedDates depende de que la lectura
+//     de citas vivas de ESTE turno haya funcionado, y esta guarda existe justo para
+//     cuando las lecturas fallan;
+//   · ni «cita apuntada/reservada/confirmada» ni «te la reservo» — BOOKING_CLAIM_PATTERNS
+//     los caza y la red final volvería a intentar reservar sobre nuestra propia pregunta.
+// El día y la hora de la cita existente los dice buildSegundaCitaNoMsg (o la confirmación
+// normal), que salen por _send y no pasan por las redes.
+//
+// `citaExistente` puede ser null: es la variante «no he podido comprobarlo» (lectura de
+// Supabase fallida), donde afirmar «ya tienes una cita» sería inventar (regla 3).
+function buildPreguntaSegundaCitaMsg({ citaExistente = null, language } = {}) {
+    const lang = IDIOMAS_SOPORTADOS.includes(language) ? language : 'es';
+    const svc = (citaExistente?.servicio || '').trim();
+    if (citaExistente) {
+        const T = {
+            es: s => `Veo que ya tienes una cita en la agenda${s ? ` (${s})` : ''} 😊 ¿Quieres reservar OTRA cita aparte de esa? Respóndeme «sí» y sigo con la nueva; con un «no», seguimos solo con la que ya tienes.`,
+            en: s => `I see you already have an upcoming appointment with us${s ? ` (${s})` : ''} 😊 Would you like to book ANOTHER appointment in addition to that one? Reply "yes" and I'll continue; "no" keeps just the one you have.`,
+            ru: s => `Вижу, у тебя уже есть запись к нам${s ? ` (${s})` : ''} 😊 Хочешь записаться ЕЩЁ раз, отдельно от неё? Ответь «да» — и я продолжу; «нет» — оставим только её.`,
+            uk: s => `Бачу, у тебе вже є запис до нас${s ? ` (${s})` : ''} 😊 Хочеш записатися ЩЕ раз, окремо від нього? Відповіси «так» — і я продовжу; «ні» — залишимо лише його.`,
+        };
+        return T[lang](svc);
+    }
+    const T = {
+        es: 'Antes de reservarte esta cita necesito comprobar las que ya tienes, y ahora mismo no lo consigo 😊 ¿Quieres que siga y la guarde como una cita nueva? Respóndeme «sí» o «no».',
+        en: "Before saving this appointment I need to check the ones you already have, and right now I can't 😊 Do you want me to go ahead and save it as a new appointment anyway? Reply \"yes\" or \"no\".",
+        ru: 'Прежде чем оформить эту запись, мне нужно проверить твои текущие, а сейчас не получается 😊 Продолжить и оформить её как новую? Ответь «да» или «нет».',
+        uk: 'Перш ніж оформити цей запис, мені треба перевірити твої поточні, а зараз не виходить 😊 Продовжити й оформити його як новий? Відповіси «так» або «ні».',
+    };
+    return T[lang];
+}
+
+// El acuse del «no» a la pregunta de arriba. Sale por _send (camino determinista), NO
+// pasa por las redes, así que aquí SÍ se nombra la cita entera — el cuándo por
+// formatSlotTexto/formatReminderWhen (el día de la semana se dice en UN solo sitio).
+// Una fecha ilegible no rompe el acuse: se degrada a nombrar solo el servicio (regla 3).
+function buildSegundaCitaNoMsg({ citaExistente = null, language } = {}) {
+    const lang = IDIOMAS_SOPORTADOS.includes(language) ? language : 'es';
+    let detalle = null;
+    if (citaExistente) {
+        const cuando = citaExistente.estilista
+            ? formatSlotTexto(citaExistente.fecha, citaExistente.hora, lang, citaExistente.estilista)
+            : (() => {
+                const c = formatReminderWhen(citaExistente.fecha, citaExistente.hora, lang);
+                return c ? `${SLOT_TEXTO_PARTES[lang].hora} ${c}` : null;
+            })();
+        const svc = (citaExistente.servicio || '').trim();
+        detalle = [svc || null, cuando].filter(Boolean).join(' ') || null;
+    }
+    const T = {
+        es: d => d ? `De acuerdo 😊 No apunto nada nuevo: seguimos con tu cita de ${d}.` : 'De acuerdo 😊 No apunto nada nuevo.',
+        en: d => d ? `Alright 😊 I won't add anything new: we'll keep your appointment — ${d}.` : "Alright 😊 I won't add anything new.",
+        ru: d => d ? `Хорошо 😊 Ничего нового не добавляю: остаётся твоя запись — ${d}.` : 'Хорошо 😊 Ничего нового не добавляю.',
+        uk: d => d ? `Гаразд 😊 Нічого нового не додаю: залишається твій запис — ${d}.` : 'Гаразд 😊 Нічого нового не додаю.',
+    };
+    return T[lang](detalle);
+}
+
 // Respuesta determinista a "¿a qué hora tengo la cita?" y familia. Enumera SIEMPRE la cita
 // completa (fecha, hora, servicio y estilista) sea cual sea el campo preguntado: el dato
 // viene de Supabase y darlo entero cuesta lo mismo que darlo a medias.
@@ -4630,6 +4699,8 @@ module.exports = {
     detectCancelRequest,
     detectRescheduleRequest,
     buildCitasVivasMsg,
+    buildPreguntaSegundaCitaMsg,
+    buildSegundaCitaNoMsg,
     buildCancelConfirmMsg,
     buildElegirCitaMsg,
     buildCancelFalloMsg,

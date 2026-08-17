@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -309,6 +309,9 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         // Citas que ya existen (ver SERVICE_STATE_DEFAULTS)
         citaEnCurso: null,
         pendingCitaAccion: null,
+        // Segunda cita: guarda de cita viva (ver SERVICE_STATE_DEFAULTS)
+        segundaReservaAutorizada: false,
+        pendingSegundaCita: null,
         // Nombre antes de reservar (ver SERVICE_STATE_DEFAULTS)
         pendingNameForBooking: null,
         preguntasCierre: 0,
@@ -746,6 +749,9 @@ function buildSessionExtra(session) {
         // La reserva en espera del nombre cruza turnos por definición: si no sobrevive a una
         // recarga, la clienta contesta su nombre al vacío y la cita no se guarda jamás.
         pendingNameForBooking: session.pendingNameForBooking || null,
+        // La reserva RETENIDA por la guarda de cita viva, ídem. Su pareja
+        // (segundaReservaAutorizada) NO viaja a propósito — ver SERVICE_STATE_DEFAULTS.
+        pendingSegundaCita: session.pendingSegundaCita || null,
         preguntasCierre: session.preguntasCierre || 0,
         // Sin esto, la rama de lista negra se rearmaba entera en cada sesión nueva —timeout de
         // 1 h, GC o reinicio—: otro Telegram, otra fila en pending_actions y (antes de quitarlo)
@@ -2703,6 +2709,18 @@ const SERVICE_STATE_DEFAULTS = {
     // y se espera un sí. Y con dos citas vivas nunca se adivina: adivinar mal cancela la
     // cita equivocada, el peor resultado posible de toda esta funcionalidad.
     pendingCitaAccion: null,
+    // ─── Segunda cita: guarda de cita viva (caso Ihab, 16/08/2026) ─────────────
+    // La clienta ha pedido EXPLÍCITAMENTE otra cita en esta conversación (frases de
+    // wantsAnotherBooking, servicio/estilista distintos con cita confirmada, acompañante,
+    // ancla). Lo pone UN solo sitio —resetForSecondBooking— y lo consume la guarda de
+    // finalizarCitaSante. NO viaja en buildSessionExtra a propósito: un true huérfano en
+    // SQLite desarmaría la guarda en una conversación futura, y el coste de perderlo en
+    // una rehidratación es UNA pregunta de más, nunca una cita de más.
+    segundaReservaAutorizada: false,
+    // Reserva RETENIDA por la guarda a la espera de un «sí»: { slot, citaExistente }.
+    // citaExistente = { servicio, fecha, hora, estilista } o null (lectura fallida).
+    // Sí viaja en buildSessionExtra: la pregunta cruza turnos por definición.
+    pendingSegundaCita: null,
 };
 // Campos de servicio anidados en partialData (se borran con delete).
 const SERVICE_PARTIAL_FIELDS = [
@@ -2850,6 +2868,13 @@ function resetForSecondBooking(session, sanitized) {
     session.reservaConfirmada = false;
     session.appointmentId = null;
     clearServiceState(session);
+    // DESPUÉS de clearServiceState (que lo deja a false): esta función es el ÚNICO sitio
+    // donde una segunda cita queda autorizada — por aquí pasan todos los caminos
+    // explícitos (wantsAnotherBooking, servicio/estilista/categoría distintos con cita
+    // confirmada, acompañante, ancla). La guarda de finalizarCitaSante lo consume; el
+    // día que exista la reserva-para-dos de verdad, su integración es este marker, nunca
+    // un bypass de finalizarCitaSante.
+    session.segundaReservaAutorizada = true;
     session.leadStatus = 'in_progress';
 
     // ¿Es para otra persona? Pedimos su nombre; si ya viene en el mensaje, lo capturamos.
@@ -3661,6 +3686,17 @@ async function finalizarReservaPendiente(client, orgId, session, _send, userPhon
         await _send(await mensajeConfirmacionSante(orgId, session));
         return true;
     }
+    if (res.reason === PENDIENTE_SEGUNDA_CITA) {
+        // La guarda de cita viva retuvo la reserva (p. ej. la autorización de segunda
+        // cita se perdió en una rehidratación entre la pregunta del nombre y su
+        // respuesta). Se pregunta; el nombre capturado ya está en partialData.
+        session.pendingNameForBooking = null;
+        await _send(buildPreguntaSegundaCitaMsg({
+            citaExistente: session.pendingSegundaCita?.citaExistente || null,
+            language: session.language,
+        }));
+        return true;
+    }
     if (res.reason === 'ocupado') {
         // El hueco se ocupó mientras preguntábamos. No se reserva y se le dice, ofreciendo
         // los huecos REALES del reload — nunca un error vacío.
@@ -3677,6 +3713,51 @@ async function finalizarReservaPendiente(client, orgId, session, _send, userPhon
     session.pendingNameForBooking = null;
     await _send(salonRetryMsg(session.language));
     return true;
+}
+
+// ─── La respuesta a "¿quieres OTRA cita?" (guarda de cita viva) ──────────────
+// Este turno ES la respuesta a la pregunta de la guarda: va ANTES que nada, incluido el
+// LLM y la puerta del nombre (la pregunta de la guarda fue la última que se hizo).
+// Un «sí» autoriza y reserva el hueco RETENIDO, re-verificado contra la agenda real; un
+// «no» lo suelta con acuse; cualquier otra cosa deja morir la pregunta EN SILENCIO y el
+// turno sigue su curso — para una cita que nadie pidió, insistir es construir un bucle.
+async function handleSegundaCitaPendiente(client, orgId, session, sanitized, _send, userPhone) {
+    const pend = session.pendingSegundaCita;
+    if (!pend || !pend.slot) return false;
+    session.pendingSegundaCita = null;
+
+    if (isAffirmative(sanitized)) {
+        session.segundaReservaAutorizada = true;
+        logger.info('cita_sante_segunda_autorizada', {
+            orgId, telefono: userPhone, fecha: pend.slot.fecha, hora: pend.slot.hora,
+        });
+        const res = await confirmSlotConReverificacion(client, session, userPhone, pend.slot);
+        if (res.ok) {
+            session.reservaConfirmada = true;
+            await _send(await mensajeConfirmacionSante(orgId, session));
+            return true;
+        }
+        if (res.reason === PENDIENTE_NOMBRE) {
+            await _send(preguntaNombreMsg(session, session.pendingNameForBooking?.intentos || 1));
+            return true;
+        }
+        if (res.reason === 'ocupado') {
+            ofrecerAlternativas(session, res.freshSlots || []);
+            await _send(buildHuecoOcupadoMsg(session, res.freshSlots || []));
+            return true;
+        }
+        await _send(salonRetryMsg(session.language));
+        return true;
+    }
+
+    if (isNegative(sanitized)) {
+        logger.info('cita_sante_segunda_rechazada', { orgId, telefono: userPhone });
+        await _send(buildSegundaCitaNoMsg({ citaExistente: pend.citaExistente, language: session.language }));
+        return true;
+    }
+
+    logger.info('cita_sante_segunda_sin_respuesta', { orgId, telefono: userPhone });
+    return false;
 }
 
 // Sentinela de finalizarCitaSante: "he preguntado el nombre, NO he escrito nada". No es
@@ -3700,6 +3781,67 @@ function evaluarNombreAntesDeReservar(session, slot, userPhone) {
         fecha: slot?.fecha, hora: slot?.hora,
     });
     return PENDIENTE_NOMBRE;
+}
+
+// Sentinela de finalizarCitaSante: "he preguntado si quiere OTRA cita, NO he escrito
+// nada". Mismo contrato que PENDIENTE_NOMBRE: ni `true` (anunciaría una cita que no
+// existe) ni `false` (dispararía salonRetryMsg sobre un hueco que nadie perdió).
+const PENDIENTE_SEGUNDA_CITA = 'pendiente_segunda_cita';
+
+// ─── Guarda de cita viva: una SEGUNDA cita solo se escribe pedida o preguntada ─
+//
+// Caso Ihab (16/08/2026): la sesión rehidratada tras el timeout de 1 h vuelve con
+// reservaConfirmada=false (no se persiste, y NO debe persistirse: restaurarlo a true
+// desarma cinco de las seis redes del salón — decisión del 04/08), así que un mensaje
+// afirmativo suelto ("❤️🥰") volvió a entrar por el camino de confirmación y nació una
+// cita para 11 días después que nadie pidió. La bandera de sesión no es de fiar; la
+// agenda sí: aquí se pregunta a Supabase si ya hay una cita por delante, igual que
+// reconciliarCitaViva y la red anti-cita-fantasma.
+//
+// Devuelve null si se puede reservar; PENDIENTE_SEGUNDA_CITA si la reserva queda
+// RETENIDA en session.pendingSegundaCita a la espera de un «sí» (handleSegundaCitaPendiente).
+// Si la lectura falla, ante la duda NO se reserva y se pregunta: un guardado de menos se
+// recupera con un «sí»; una cita fantasma la ve la clienta y bloquea agenda real.
+async function evaluarSegundaCitaAntesDeReservar(orgId, session, slot, userPhone) {
+    if (session.orgType !== 'salon') return null;              // San Remo no pasa por aquí
+    if (session.modoReagendamiento) return null;               // UPDATE in-place, no cita nueva
+    if (session.segundaReservaAutorizada) return null;         // pedida EXPLÍCITAMENTE (resetForSecondBooking)
+
+    const leadId = await ensureLeadId(orgId, session);
+    if (!leadId) return null;   // sin ficha no hay citas previas posibles: clienta nueva
+
+    let citas;
+    try {
+        citas = await getUpcomingAppointments(orgId, leadId);
+    } catch (e) {
+        session.pendingSegundaCita = { slot, citaExistente: null };
+        incrementMetric('segundaCitaRetenida');
+        logger.warn('cita_sante_segunda_retenida', {
+            orgId, telefono: userPhone, leadId, motivo: 'lectura_fallida', error: e.message,
+            slotRetenido: `${slot.fecha} ${slot.hora}`,
+        });
+        return PENDIENTE_SEGUNDA_CITA;
+    }
+    if (!citas.length) return null;
+
+    const c = citas[0];
+    const inicio = new Date(c.starts_at);
+    session.pendingSegundaCita = {
+        slot,
+        citaExistente: {
+            servicio: c.service || null,
+            fecha: toLocalDateStr(inicio),
+            hora: toLocalTimeStr(inicio),
+            estilista: c.stylists?.name || null,
+        },
+    };
+    incrementMetric('segundaCitaRetenida');
+    logger.warn('cita_sante_segunda_retenida', {
+        orgId, telefono: userPhone, leadId, motivo: 'cita_viva',
+        citaExistente: `${c.service || ''} ${c.starts_at}`.trim(), citasVivas: citas.length,
+        slotRetenido: `${slot.fecha} ${slot.hora}`,
+    });
+    return PENDIENTE_SEGUNDA_CITA;
 }
 
 async function finalizarCitaSante(client, session, userPhone, slot) {
@@ -3760,6 +3902,12 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
         logger.warn('cita_sante_bookedSlot_sin_cita_activa', { orgId, telefono: userPhone, slotSig });
         session.bookedSlots = session.bookedSlots.filter(s => s !== slotSig);
     }
+
+    // Guarda de cita viva: ANTES que la puerta del nombre (no se pregunta el nombre para
+    // una cita que quizá no deba existir) y antes de cualquier escritura. Si retiene,
+    // no se escribe nada y el turno siguiente la retoma handleSegundaCitaPendiente.
+    const retenida = await evaluarSegundaCitaAntesDeReservar(orgId, session, slot, userPhone);
+    if (retenida) return retenida;
 
     // Puerta del nombre: ANTES de saveLead/saveAppointment, o sea antes de tocar Supabase.
     // Si hay que preguntarlo, no se escribe nada y la reserva queda en espera en
@@ -3973,6 +4121,10 @@ async function finalizarCitaSante(client, session, userPhone, slot) {
         // eventual tercera reserva arranque limpia.
         session.guestBooking = false;
         session.guestName = null;
+        // La autorización de segunda cita se gasta al usarse: una TERCERA vuelve a
+        // necesitar petición explícita (o la pregunta de la guarda).
+        session.segundaReservaAutorizada = false;
+        session.pendingSegundaCita = null;
         return true;
     } catch (e) {
         logger.error('error_finalizar_cita_sante', { telefono: userPhone, error: e.message, stack: e.stack });
@@ -4007,6 +4159,8 @@ async function confirmSlotConReverificacion(client, session, userPhone, slot) {
     // nada. Se propaga como razón propia para que el llamante no anuncie una cita inexistente
     // ni suelte el "no he podido fijar ese hueco", que aquí sería falso.
     if (res === PENDIENTE_NOMBRE) return { ok: false, reason: PENDIENTE_NOMBRE, freshSlots };
+    // Mismo contrato para la guarda de cita viva: reserva RETENIDA a la espera de un «sí».
+    if (res === PENDIENTE_SEGUNDA_CITA) return { ok: false, reason: PENDIENTE_SEGUNDA_CITA, freshSlots };
     return { ok: res === true, reason: res === true ? 'guardado' : 'error_guardado', freshSlots };
 }
 
@@ -4218,6 +4372,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     newSession.citaEnCurso           = ex.citaEnCurso || null;
                     newSession.pendingCitaAccion         = ex.pendingCitaAccion || null;
                     newSession.pendingNameForBooking = ex.pendingNameForBooking || null;
+                    newSession.pendingSegundaCita    = ex.pendingSegundaCita || null;
                     newSession.preguntasCierre       = ex.preguntasCierre || 0;
                     newSession.blacklistNotified     = !!ex.blacklistNotified;
                     newSession.blacklistAlertEntregado = !!ex.blacklistAlertEntregado;
@@ -4736,6 +4891,14 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // cita" porque no hemos mirado es la misma mentira, con otro emisor).
             // Es una lectura indexada por (organization_id, contact_id) y sustituye a la que
             // ya hacía el ancla, así que el coste neto por turno es prácticamente el mismo.
+            // Hay una reserva RETENIDA por la guarda de cita viva ("¿quieres OTRA cita?"):
+            // este turno es la respuesta. Va incluso antes que la puerta del nombre, porque
+            // esa pregunta fue la última que se hizo.
+            if (await handleSegundaCitaPendiente(client, orgId, session, sanitized, _send, userPhone)) {
+                persistSession(orgId, userPhone, session);
+                triggerAsyncSummary(orgId, userPhone, session);
+                return;
+            }
             // Hay una reserva esperando el nombre (o el apellido): este turno ES la respuesta
             // a esa pregunta. Va ANTES que nada, incluido el LLM: si dejáramos que el modelo
             // interpretara "Marta" por su cuenta, la reserva en espera se quedaría colgada.
@@ -6177,6 +6340,16 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     // justo lo que la red anti-cita-fantasma vigila.
                     aiResponse.reserva_confirmada = false;
                     aiResponse.respuesta = preguntaNombreMsg(session, session.pendingNameForBooking?.intentos || 1);
+                } else if (res.reason === PENDIENTE_SEGUNDA_CITA) {
+                    // La guarda de cita viva retuvo la reserva: ya tiene una cita por
+                    // delante y nadie pidió una segunda. Se pregunta. El texto sustituye
+                    // al del LLM y es INERTE a las redes de después (sin HH:MM, sin fecha,
+                    // sin afirmación de reserva — ver buildPreguntaSegundaCitaMsg).
+                    aiResponse.reserva_confirmada = false;
+                    aiResponse.respuesta = buildPreguntaSegundaCitaMsg({
+                        citaExistente: session.pendingSegundaCita?.citaExistente || null,
+                        language: session.language,
+                    });
                 } else if (res.reason === 'ocupado') {
                     // El hueco que eligió ya no está libre: ofrecemos alternativas REALES.
                     logger.warn('cita_sante_hueco_ocupado', { orgId, telefono: userPhone, fecha: confirm.slot.fecha, hora: confirm.slot.hora, alternativas: res.freshSlots.length });
@@ -6210,6 +6383,16 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                             // Ni éxito ni fallo: falta el nombre. Se pregunta, no se reserva.
                             aiResponse.reserva_confirmada = false;
                             aiResponse.respuesta = preguntaNombreMsg(session, session.pendingNameForBooking?.intentos || 1);
+                            hecho = true;
+                        } else if (res === PENDIENTE_SEGUNDA_CITA) {
+                            // Guarda de cita viva: este es el camino del caso Ihab — el
+                            // modelo "confirma" una fecha que nadie propuso sobre una
+                            // sesión que ya tiene cita por delante. Se retiene y pregunta.
+                            aiResponse.reserva_confirmada = false;
+                            aiResponse.respuesta = buildPreguntaSegundaCitaMsg({
+                                citaExistente: session.pendingSegundaCita?.citaExistente || null,
+                                language: session.language,
+                            });
                             hecho = true;
                         } else if (res === true) {
                             logger.info('cita_sante_confirmacion_tras_reload', { orgId, telefono: userPhone, fecha: cand.fecha, hora: cand.hora });
@@ -6251,6 +6434,14 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     const res = await confirmSlotConReverificacion(client, session, userPhone, slot);
                     if (res.ok) {
                         aiResponse.reserva_confirmada = true;
+                    } else if (res.reason === PENDIENTE_SEGUNDA_CITA) {
+                        // Guarda de cita viva: retenida y preguntada, no "no he podido
+                        // fijar ese hueco" — aquí no falló ningún guardado.
+                        aiResponse.reserva_confirmada = false;
+                        aiResponse.respuesta = buildPreguntaSegundaCitaMsg({
+                            citaExistente: session.pendingSegundaCita?.citaExistente || null,
+                            language: session.language,
+                        });
                     } else if (res.reason === 'ocupado') {
                         logger.warn('cita_sante_hueco_ocupado', { orgId, telefono: userPhone, fecha: slot.fecha, hora: slot.hora, alternativas: res.freshSlots.length });
                         ofrecerAlternativas(session, res.freshSlots);
@@ -7270,6 +7461,8 @@ module.exports = {
         // Nombre antes de reservar:
         evaluarNombreAntesDeReservar, handleNombreParaCita, handleApellidoParaCita,
         leerNombreDeRespuesta, preguntaNombreMsg, preguntaApellidoMsg, PENDIENTE_NOMBRE,
+        // Guarda de cita viva (segunda cita sin pedir):
+        evaluarSegundaCitaAntesDeReservar, handleSegundaCitaPendiente, PENDIENTE_SEGUNDA_CITA,
         mensajeConfirmacionSante,
         // Huecos: exportados para poder comprobar que la duración con la que se BUSCA es la
         // misma con la que se ESCRIBE ends_at (si divergen, la cita pisa a la siguiente).
