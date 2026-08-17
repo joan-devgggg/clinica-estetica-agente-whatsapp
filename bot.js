@@ -16,7 +16,7 @@ const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante,
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
-const { drainPendingOutboundTurns } = require('./services/pending-outbound');
+const { drainPendingOutboundTurns, notePendingOutboundTurn } = require('./services/pending-outbound');
 const { notePausedDrop, resetPauseAlert } = require('./services/bot-pause-alert');
 const { noteSendResult } = require('./services/channel-health');
 const { summarizeHistory } = require('./services/providers/openai');
@@ -4807,7 +4807,18 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // historial no volverían nunca — el recordatorio entregado desaparecería de la
         // conversación por un hiccup del modelo en el mismo turno.
         const salientesAuto = drainPendingOutboundTurns(orgId, userPhone, SESSION_TIMEOUT);
-        for (const t of salientesAuto) session.history.push({ role: t.role, content: t.content, ts: t.ts });
+        for (const t of salientesAuto) {
+            session.history.push({ role: t.role, content: t.content, ts: t.ts });
+            // El drenado puede ser ANTERIOR al arranque de la conversación: sesión nueva
+            // (conversationStartedAt = ahora) o rehidratada con reset por hueco de >24 h —
+            // que es EXACTAMENTE el caso del recordatorio, porque quien lleva >24 h sin
+            // escribir es a quien se le recuerda. Sin este clamp, el filtro por ts de la
+            // construcción del prompt tiraba la nota recién drenada: quedaba en history y
+            // el modelo seguía sin verla (la ceguera de Barbora, un piso más abajo).
+            if (session.conversationStartedAt && t.ts < session.conversationStartedAt) {
+                session.conversationStartedAt = t.ts;
+            }
+        }
         if (salientesAuto.length) logger.info('salientes_automaticos_al_historial', { orgId, telefono: userPhone, turnos: salientesAuto.length });
 
         // ─── Snapshot del estado ANTES de modificar la sesión ────────────
@@ -7194,6 +7205,20 @@ async function handleIncomingMessage(client, message, orgId) {
                     return;
                 }
                 await sendWithDelay(client, userPhone, 'No pude escuchar el audio 😅 ¿Puedes escribirme lo que necesitas?', orgId, dbPhone);
+                // El texto que ella escriba a continuación ES la respuesta a este aviso, y el
+                // aviso sale con `return` antes del buffer: sin la nota, el modelo contesta a
+                // ese texto sin saber que hubo un audio que no se pudo oír ni que se lo
+                // pedimos por escrito (misma ceguera que la foto de Michal). Va por el buzón
+                // porque aquí no hay sesión en la mano; el drenaje del próximo turno lo
+                // ordena bien (el aviso salió antes que su texto). Solo salón: el envío es
+                // código compartido y San Remo no cambia (regla de oro).
+                if (getOrgType(orgId) === 'salon') {
+                    try {
+                        notePendingOutboundTurn(orgId, dbPhone || userPhone, 'No pude escuchar el audio 😅 ¿Puedes escribirme lo que necesitas?');
+                    } catch (e2) {
+                        logger.error('audio_aviso_registro_historial_fallido', { orgId, telefono: userPhone, error: e2.message });
+                    }
+                }
                 return;
             }
         }

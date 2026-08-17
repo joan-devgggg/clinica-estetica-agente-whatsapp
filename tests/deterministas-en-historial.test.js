@@ -16,7 +16,12 @@
 //   · devolver la capa de citas (handleCitasExistentes / cancelarConConfirmacion) a
 //     _send → rojo «cancelar: la pregunta enviada y el acuse quedan en history»;
 //   · devolver el push del dispatch (bot.js, handled del LLM) al universal de antes →
-//     rojo «cambiar: se anota el texto ENVIADO» (la divergencia vuelve).
+//     rojo «cambiar: se anota el texto ENVIADO» (la divergencia vuelve);
+//   · quitar la nota del aviso de audio (bot.js, error_transcripcion) → rojo «el aviso
+//     de audio fallido llega al modelo», y SOLO ese;
+//   · quitar el CLAMP de conversationStartedAt del drenaje → rojos «aviso de audio» y
+//     «el recordatorio drenado llega al prompt» (la nota queda en history y el filtro
+//     por ts se la come igualmente — la ceguera de Barbora un piso más abajo).
 process.env.TZ = 'Europe/Madrid';
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
 process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'test-service-role-key';
@@ -371,6 +376,66 @@ test('la oferta de especialista y el acuse del «sí» quedan en history; Telegr
     const ultima = escaladas[escaladas.length - 1];
     assert.ok(ultima, 'no llegó ninguna escalada a Telegram');
     assert.strictEqual(ultima.mensaje, 'sí', 'el admin tiene que ver el texto de la CLIENTA, no el del bot');
+});
+
+// ─── 8 · El aviso de audio fallido (fuera del turno): viaja por el buzón ─────
+
+test('el aviso de audio fallido llega al modelo en el turno siguiente, ANTES del texto de la clienta', async () => {
+    const phone = `347907${String(1000 + seq++).slice(-4)}@c.us`;
+    const sink = [];
+    await bot.handleIncomingMessage(makeClient(sink), {
+        from: phone, body: '', id: { _serialized: `wamid.AUD${Date.now()}` },
+        fromMe: false, timestamp: Date.now(), isStatus: false, isBroadcast: false,
+        hasMedia: true, type: 'ptt',
+        downloadMedia: async () => { throw new Error('media rota en test'); },
+        getChat: async () => ({ sendStateTyping: async () => {} }),
+        getContact: async () => ({ number: phone.replace(/\D/g, '') }),
+    }, ORG);
+    await new Promise(r => setTimeout(r, 200));
+    assert.ok(/No pude escuchar el audio/.test(sink[sink.length - 1] || ''),
+        `el aviso de audio no salió: ${JSON.stringify(sink)}`);
+
+    llmQueue.push('Claro, dime 😊');
+    await turno(phone, sink, 'quería preguntar por la keratina');
+    const visto = llmHistories[llmHistories.length - 1];
+    const iAviso = visto.findIndex(m => m.role === 'assistant' && /No pude escuchar el audio/.test(m.content));
+    const iTexto = visto.findIndex(m => m.role === 'user' && /keratina/.test(m.content));
+    assert.ok(iAviso >= 0, 'el aviso de audio no llegó al history del modelo: contesta sin saber que pidió el texto por escrito');
+    assert.ok(iTexto > iAviso, 'el orden real es aviso → texto de la clienta');
+});
+
+test('el recordatorio drenado llega al prompt aunque el hueco de >24 h haya reseteado la conversación', async () => {
+    // El caso REAL del recordatorio: quien lleva >24 h sin escribir es justo a quien se le
+    // recuerda, así que la rehidratación resetea conversationStartedAt a AHORA y el filtro
+    // por ts tiraba la nota recién drenada (ts anterior) — quedaba en history y el modelo
+    // no la veía. El clamp del drenaje retrasa conversationStartedAt hasta la nota; el
+    // historial viejo de verdad (3 días) sigue fuera.
+    const po = require('../services/pending-outbound');
+    const phone = `347907${String(1000 + seq++).slice(-4)}@c.us`;
+    const digits = phone.replace(/\D/g, '');
+    const ahora = Date.now();
+    const RECORDATORIO = 'Te recordamos tu cita mañana a las 10:00 😊';
+    po.notePendingOutboundTurn(ORG, digits, RECORDATORIO, { ttlMs: 48 * 3600 * 1000 });
+    memoriaPersistida = {
+        history: [{ role: 'user', content: 'hola de hace tres días', ts: ahora - 3 * 864e5 }],
+        partialData: { telefono: digits }, summary: null, botActivo: true,
+        lastSeen: ahora - 3 * 864e5,
+        extra: { conversationStartedAt: ahora - 3 * 864e5 },
+    };
+    try {
+        const sink = [];
+        llmQueue.push('¡Genial! Te esperamos 😊');
+        await turno(phone, sink, 'Sí, confirmado 😊');
+        const visto = llmHistories[llmHistories.length - 1];
+        const iNota = visto.findIndex(m => m.role === 'assistant' && m.content === RECORDATORIO);
+        const iTexto = visto.findIndex(m => m.role === 'user' && /confirmado/.test(m.content));
+        assert.ok(iNota >= 0, 'LA CEGUERA DE BARBORA, un piso más abajo: la nota drenada no llegó al prompt');
+        assert.ok(iTexto > iNota, 'el orden real es recordatorio → respuesta de la clienta');
+        assert.ok(!visto.some(m => /hace tres días/.test(m.content || '')),
+            'el clamp se pasó de largo: re-admitió historial viejo que el reset de >24 h debe seguir dejando fuera');
+    } finally {
+        memoriaPersistida = null;
+    }
 });
 
 test('GUARDIA San Remo: el dispatch sigue pusheando aiResponse.respuesta, byte a byte como siempre', async () => {
