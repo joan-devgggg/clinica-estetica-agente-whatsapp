@@ -14,7 +14,9 @@
 //   · quitar la exención `m.det === true` de los 3 filtros (rehidratación + las dos
 //     ramas pre-LLM) → rojo «det sobrevive a FALLBACK_PATTERNS», y SOLO ese;
 //   · devolver la capa de citas (handleCitasExistentes / cancelarConConfirmacion) a
-//     _send → rojo «cancelar: la pregunta enviada y el acuse quedan en history».
+//     _send → rojo «cancelar: la pregunta enviada y el acuse quedan en history»;
+//   · devolver el push del dispatch (bot.js, handled del LLM) al universal de antes →
+//     rojo «cambiar: se anota el texto ENVIADO» (la divergencia vuelve).
 process.env.TZ = 'Europe/Madrid';
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
 process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'test-service-role-key';
@@ -60,8 +62,12 @@ stub('../services/calendar-sante', {
     cancelAppointment: async () => ({ success: true }),
     formatSlotForMessage: s => `${s.fecha} ${s.hora}`,
 });
+// Captura lo que le llegaría al admin: el aviso de escalada debe llevar el texto de la
+// CLIENTA, nunca el del bot (un push mal ordenado lo cambiaría en silencio).
+const escaladas = [];
 stub('../services/telegram', {
-    notifyBizumPending: async () => {}, notifyEscalation: async () => {},
+    notifyBizumPending: async () => {},
+    notifyEscalation: async (_orgId, contacto, mensaje, motivo) => { escaladas.push({ contacto, mensaje, motivo }); },
     notifyBlacklistAlert: async () => {}, startTelegramBot: () => {},
 });
 // Mutable: el bloque de rehidratación siembra aquí lo que "SQLite" devolvería.
@@ -132,10 +138,10 @@ function armarSesionIhab() {
     return { phone, session };
 }
 
-async function turno(phone, sink, texto) {
+async function turno(phone, sink, texto, org = ORG) {
     // Dos turnos del gemelo van a milisegundos; en producción van a minutos. Sin esto, la
     // guarda de duplicado rápido (bot.js:4720, ventana 1500 ms) tiraría el segundo turno.
-    const s = userSessions.get(sessionKey(ORG, phone));
+    const s = userSessions.get(sessionKey(org, phone));
     if (s && s.lastMessageTime) s.lastMessageTime -= 5000;
     await bot.handleIncomingMessage(makeClient(sink), {
         from: phone, body: texto, id: { _serialized: `wamid.DET${Date.now()}_${seq++}` },
@@ -143,8 +149,8 @@ async function turno(phone, sink, texto) {
         hasMedia: false, type: 'chat',
         getChat: async () => ({ sendStateTyping: async () => {} }),
         getContact: async () => ({ number: phone.replace(/\D/g, '') }),
-    }, ORG);
-    await I.flushBuffer(ORG, phone);
+    }, org);
+    await I.flushBuffer(org, phone);
     await new Promise(r => setTimeout(r, 400));
 }
 
@@ -313,4 +319,76 @@ test('cancelar: la pregunta enviada y el acuse quedan en history, todo determini
     } finally {
         upcomingImpl = upcomingAntes;
     }
+});
+
+// ─── 7 · Escalada y reagendar: el historial dice lo que SALIÓ ────────────────
+
+test('cambiar (señal del LLM): se anota el texto ENVIADO, no aiResponse.respuesta', async () => {
+    const phone = `347907${String(1000 + seq++).slice(-4)}@c.us`;
+    const session = createEmptySession(phone, ORG, phone.replace(/\D/g, ''));
+    session.leadId = 'ct-ihab';
+    session.language = 'es';
+    session.appointmentId = 'apt-r1';   // sin él, la señal 'cambiar' del LLM se descarta (bot.js:6048)
+    userSessions.set(sessionKey(ORG, phone), session);
+
+    const sink = [];
+    const DIVERGENTE = 'Este texto del modelo NO sale por el canal';
+    llmQueue.push({ respuesta: DIVERGENTE, accion: 'cambiar' });
+    await turno(phone, sink, 'cuéntame más sobre eso');
+
+    const enviado = sink[sink.length - 1];
+    assert.ok(/nueva cita/.test(enviado), `no salió la pregunta de reagendado: ${enviado}`);
+    const last = session.history[session.history.length - 1];
+    assert.strictEqual(last.content, enviado, 'el historial tiene que decir lo que SALIÓ');
+    assert.strictEqual(last.det, true);
+    assert.ok(!session.history.some(m => m.content === DIVERGENTE),
+        'aiResponse.respuesta entró en history: el modelo recordaría haber dicho algo que la clienta nunca leyó');
+});
+
+test('la oferta de especialista y el acuse del «sí» quedan en history; Telegram recibe el texto de la CLIENTA', async () => {
+    const phone = `347907${String(1000 + seq++).slice(-4)}@c.us`;
+    const session = createEmptySession(phone, ORG, phone.replace(/\D/g, ''));
+    session.leadId = 'ct-ihab';
+    session.language = 'es';
+    userSessions.set(sessionKey(ORG, phone), session);
+
+    const sink = [];
+    const antes = llmCalls;
+    await turno(phone, sink, '¿Hacéis extensiones de pelo?');
+    const oferta = sink[sink.length - 1];
+    assert.strictEqual(session.pendingEscalation, true, `la consulta no armó la oferta: ${oferta}`);
+    let last = session.history[session.history.length - 1];
+    assert.strictEqual(last.content, oferta, 'la oferta de especialista (CONSULTA_ASK) no quedó en history');
+    assert.strictEqual(last.det, true, 'sin det, este texto casa FALLBACK_PATTERNS y se borraría al rehidratar');
+
+    await turno(phone, sink, 'sí');
+    const acuse = sink[sink.length - 1];
+    assert.ok(/Le paso tu mensaje/.test(acuse), `el «sí» no produjo el acuse: ${acuse}`);
+    last = session.history[session.history.length - 1];
+    assert.strictEqual(last.content, acuse, 'el acuse del traspaso no quedó en history');
+    assert.strictEqual(llmCalls - antes, 0, 'consulta → oferta → sí es determinista puro');
+
+    const ultima = escaladas[escaladas.length - 1];
+    assert.ok(ultima, 'no llegó ninguna escalada a Telegram');
+    assert.strictEqual(ultima.mensaje, 'sí', 'el admin tiene que ver el texto de la CLIENTA, no el del bot');
+});
+
+test('GUARDIA San Remo: el dispatch sigue pusheando aiResponse.respuesta, byte a byte como siempre', async () => {
+    const { SANREMO_ORG_ID } = require('../services/org-registry');
+    bot.setBotActivo(SANREMO_ORG_ID, true, false);
+    const phone = `346674${String(1000 + seq++).slice(-4)}@c.us`;
+    const session = createEmptySession(phone, SANREMO_ORG_ID, phone.replace(/\D/g, ''));
+    session.appointmentId = 'apt-sr1';
+    userSessions.set(sessionKey(SANREMO_ORG_ID, phone), session);
+
+    const sink = [];
+    const RESPUESTA_MODELO = 'Texto del modelo para el restaurante';
+    llmQueue.push({ respuesta: RESPUESTA_MODELO, accion: 'cambiar' });
+    await turno(phone, sink, 'cuéntame más sobre eso', SANREMO_ORG_ID);
+
+    assert.ok(/comida o cena/.test(sink[sink.length - 1]), `no salió el mensaje de reagendado de San Remo: ${sink[sink.length - 1]}`);
+    const last = session.history[session.history.length - 1];
+    assert.strictEqual(last.content, RESPUESTA_MODELO,
+        'San Remo tiene que conservar su push de aiResponse.respuesta EXACTO (regla de oro), aunque sea divergente');
+    assert.ok(!last.det, 'la marca det es del salón: San Remo no cambia ni un byte');
 });

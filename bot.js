@@ -927,6 +927,11 @@ async function handleAppointmentAction(client, session, userPhone, accion, respu
             ? (session.language && rescheduleMsgs[session.language]) || '¿Qué día y hora te vendría mejor para la nueva cita?'
             : 'Sin problema 😊 ¿Qué día y para comida o cena te vendría mejor?';
         await sendWithDelay(client, userPhone, msg, orgId, session.partialData.telefono);
+        // El historial guarda lo que SALIÓ. El push del call site del LLM anotaba
+        // aiResponse.respuesta —un texto que la clienta nunca leyó— mientras por aquí
+        // salía este; para el salón, el texto verdadero se anota aquí y aquel push queda
+        // solo para el restaurante (que conserva su conducta byte a byte, regla de oro).
+        if (session.orgType === 'salon') session.history.push({ role: 'assistant', content: msg, ts: Date.now(), det: true });
         return true;
     }
     if (accion === 'escalar_humano') {
@@ -5096,7 +5101,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         && Date.now() - session.pendingEscalationOfrecidaAt > OFERTA_TRASPASO_TTL_MS) {
                     session.pendingEscalationOfrecidaAt = Date.now();
                     logger.info('oferta_traspaso_expirada_reofrecida', { orgId, telefono: userPhone, type: pendingType });
-                    await _send(REOFERTA_TRASPASO[lang] || REOFERTA_TRASPASO.es);
+                    await _sendHist(REOFERTA_TRASPASO[lang] || REOFERTA_TRASPASO.es);
                     persistSession(orgId, userPhone, session);
                     return;
                 }
@@ -5107,7 +5112,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     session.pendingEscalation = false;
                     session.pendingEscalationService = null;
                     session.pendingEscalationOfrecidaAt = null;
-                    await _send(CONFIRM_YES[lang] || CONFIRM_YES.es);
+                    await _sendHist(CONFIRM_YES[lang] || CONFIRM_YES.es);
                     persistSession(orgId, userPhone, session);
                     return;
                 }
@@ -5116,7 +5121,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 // la triple— y el bot sigue hablando (botActivo intacto: sin escalada
                 // registrada no hay motivo para callarse encima del fallo).
                 logger.error('traspaso_aceptado_escritura_fallida', { orgId, telefono: userPhone, type: pendingType });
-                await _send(TRASPASO_FALLO_MSGS[lang] || TRASPASO_FALLO_MSGS.es);
+                await _sendHist(TRASPASO_FALLO_MSGS[lang] || TRASPASO_FALLO_MSGS.es);
                 persistSession(orgId, userPhone, session);
                 return;
             }
@@ -5157,7 +5162,10 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 session.pendingEscalation = true;
                 session.pendingEscalationService = consulta.type;
                 session.pendingEscalationOfrecidaAt = Date.now();
-                await _send(msg);
+                // _sendHist con `det`: el texto de CONSULTA_ASK casa FALLBACK_PATTERNS
+                // («las extensiones se presupuestan…» / «te pongo en contacto…») y sin la
+                // marca se borraría del historial al rehidratar.
+                await _sendHist(msg);
                 persistSession(orgId, userPhone, session);
                 return;
             }
@@ -6105,7 +6113,15 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         if (aiResponse.accion && !(aiResponse.accion === 'cambiar' && session.modoReagendamiento)) {
             const handled = await handleAppointmentAction(client, session, userPhone, aiResponse.accion, aiResponse.respuesta, aiResponse.motivo_escalado);
             if (handled) {
-                if (aiResponse.accion !== 'escalar_humano') session.history.push({ role: 'assistant', content: aiResponse.respuesta, ts: Date.now() });
+                // Salón: NADA que pushear aquí. 'cambiar' anota dentro el texto que SALIÓ
+                // (pushear aiResponse.respuesta guardaba un mensaje que la clienta nunca
+                // leyó), y 'escalar_humano' se queda fuera a propósito: `ultimoMensaje`
+                // del Telegram debe seguir siendo el texto de la clienta, y al resolver la
+                // escalada ya se inyecta el system de arranque limpio. El restaurante
+                // conserva su push de siempre, byte a byte (regla de oro).
+                if (session.orgType !== 'salon' && aiResponse.accion !== 'escalar_humano') {
+                    session.history.push({ role: 'assistant', content: aiResponse.respuesta, ts: Date.now() });
+                }
                 persistSession(orgId, userPhone, session);
                 return;
             }
