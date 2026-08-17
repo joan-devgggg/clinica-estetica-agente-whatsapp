@@ -4309,8 +4309,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 loadedFromSQLite = true;
                 const rawHistory = persisted.history || [];
                 const cleanLen = rawHistory.length;
+                // `det:true` exime del filtro: son deterministas ENVIADOS de verdad
+                // (algunos —la oferta de especialista, CONSULTA_ASK— casan
+                // FALLBACK_PATTERNS por su forma, y sin la marca este borrado es
+                // permanente). Lo legacy sin marca se limpia igual que siempre.
                 newSession.history = rawHistory.filter(m =>
-                    m.role !== 'assistant' || !isFallbackText(m.content)
+                    m.role !== 'assistant' || m.det === true || !isFallbackText(m.content)
                 );
                 if (newSession.history.length < cleanLen) {
                     logger.info('history_fallbacks_limpiados', { orgId, telefono: userPhone, eliminados: cleanLen - newSession.history.length });
@@ -5198,8 +5202,9 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             session.variasPersonasAvisado = true;
             const msg = salonVariasPersonasMsg(session);
             logger.info('varias_personas_detectado', { orgId, telefono: userPhone });
-            session.history.push({ role: 'assistant', content: msg, ts: Date.now() });
-            await _send(msg);
+            // _sendHist y no push+_send: anota tras el envío bueno, y con `det` — la cola
+            // de este texto casa FALLBACK_PATTERNS y sin la marca se borraba al rehidratar.
+            await _sendHist(msg);
             persistSession(orgId, userPhone, session);
             return;
         }
@@ -5229,8 +5234,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     orgId, telefono: userPhone, hora: fuera.hora,
                     apertura: fuera.apertura, cierre: fuera.cierre,
                 });
-                session.history.push({ role: 'assistant', content: msg, ts: Date.now() });
-                await _send(msg);
+                await _sendHist(msg);
                 persistSession(orgId, userPhone, session);
                 return;
             }
@@ -5267,8 +5271,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     logger.info('tratamiento_generico_rango_ofrecido', {
                         orgId, telefono: userPhone, intento: 1,
                     });
-                    session.history.push({ role: 'assistant', content: msg, ts: Date.now() });
-                    await _send(msg);
+                    await _sendHist(msg);
                     persistSession(orgId, userPhone, session);
                     return;
                 }
@@ -5842,7 +5845,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         if (session.conversationStartedAt) {
             llmHistory = session.history.filter(m =>
                 m.ts >= session.conversationStartedAt &&
-                (m.role !== 'assistant' || !isFallbackText(m.content))
+                (m.role !== 'assistant' || m.det === true || !isFallbackText(m.content))
             );
             if (llmHistory.length === 0) {
                 llmHistory = [];
@@ -5850,7 +5853,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             logger.info('conversation_history_filtered', { orgId, telefono: userPhone, totalMessages: session.history.length, filteredMessages: llmHistory.length, conversationStartedAt: new Date(session.conversationStartedAt).toISOString() });
         } else {
             llmHistory = session.history.slice(-10).filter(m =>
-                m.role !== 'assistant' || !isFallbackText(m.content)
+                m.role !== 'assistant' || m.det === true || !isFallbackText(m.content)
             );
         }
         if (session.escalationJustResolved) {

@@ -11,8 +11,8 @@
 //     siguiente VE el ✅» — la ceguera exacta de Ihab;
 //   · push ANTES del await del envío → rojo «un envío que revienta no se anota»;
 //   · sin el bump de _snapshot en _sendHist → rojo «el rollback no borra lo entregado»;
-//   · sin la exención det en la rehidratación/filtro (bot.js:4312, :5819) → rojo «det
-//     sobrevive a FALLBACK_PATTERNS» (se añade con ese commit).
+//   · quitar la exención `m.det === true` de los 3 filtros (rehidratación + las dos
+//     ramas pre-LLM) → rojo «det sobrevive a FALLBACK_PATTERNS», y SOLO ese.
 process.env.TZ = 'Europe/Madrid';
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
 process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'test-service-role-key';
@@ -60,8 +60,10 @@ stub('../services/telegram', {
     notifyBizumPending: async () => {}, notifyEscalation: async () => {},
     notifyBlacklistAlert: async () => {}, startTelegramBot: () => {},
 });
+// Mutable: el bloque de rehidratación siembra aquí lo que "SQLite" devolvería.
+let memoriaPersistida = null;
 stub('../services/memory', {
-    loadClient: () => null, saveClient: () => {}, saveSummary: () => {}, deleteClient: () => {},
+    loadClient: () => memoriaPersistida, saveClient: () => {}, saveSummary: () => {}, deleteClient: () => {},
 });
 stub('../services/metrics', { incrementMetric: () => {} });
 const logs = [];
@@ -231,4 +233,41 @@ test('tras un fallo del LLM, el rollback conserva el ✅ ya entregado y descarta
         'el turno fallido se descarta entero: esa semántica no cambia');
     assert.ok(!session.history.some(m => /no he podido procesar/.test(m.content || '')),
         'el fallback sigue SIN entrar en history (exclusión deliberada, bot.js:5931)');
+});
+
+// ─── 5 · Rehidratación: det sobrevive a FALLBACK_PATTERNS; sin det se limpia ─
+
+test('una entrada det que casa FALLBACK_PATTERNS sobrevive a la rehidratación y llega al prompt; sin det se limpia (CONTROL)', async () => {
+    // Texto determinista REAL cuya cola casa un patrón (bot.js:50): sin la exención, la
+    // rehidratación lo borraba de SQLite para siempre y el filtro pre-LLM lo tiraba.
+    const OFERTA = 'Puedo avisar a nuestro equipo 😊 ¿Quieres que te ponga en contacto con una de nuestras especialistas?';
+    const FALLBACK = 'Perdona, no he podido procesar tu mensaje. ¿Me lo repites? 😊';
+    const phone = `347907${String(1000 + seq++).slice(-4)}@c.us`;   // sin sesión viva: fuerza loadClient
+    const ahora = Date.now();
+    memoriaPersistida = {
+        history: [
+            { role: 'user', content: 'hola', ts: ahora - 50000 },
+            { role: 'assistant', content: OFERTA, ts: ahora - 49000, det: true },
+            { role: 'assistant', content: FALLBACK, ts: ahora - 48000 },
+        ],
+        partialData: { telefono: phone.replace(/\D/g, '') },
+        summary: null, botActivo: true, lastSeen: ahora - 30000,
+        extra: { conversationStartedAt: ahora - 60000 },
+    };
+    try {
+        const sink = [];
+        llmQueue.push('Claro, dime 😊');
+        await turno(phone, sink, 'sigo aquí');
+        const session = userSessions.get(sessionKey(ORG, phone));
+
+        assert.ok(session.history.some(m => m.det === true && m.content === OFERTA),
+            'la entrada det se borró al rehidratar (bot.js, filtro isFallbackText de la carga)');
+        assert.ok(!session.history.some(m => m.content === FALLBACK),
+            'CONTROL: el fallback real SIN det tiene que seguir limpiándose — la exención no puede ensancharse');
+        const visto = llmHistories[llmHistories.length - 1];
+        assert.ok(visto.some(m => m.role === 'assistant' && m.content === OFERTA),
+            'la entrada det no llegó al prompt: el filtro pre-LLM se la comió');
+    } finally {
+        memoriaPersistida = null;
+    }
 });
