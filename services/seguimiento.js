@@ -23,6 +23,12 @@ const {
     resolveSeguimientoRegla, buildSeguimientoMensaje,
 } = require('./helpers');
 
+// Cuánto vive en el buzón de pending-outbound la nota del mensaje enviado (lo que hace
+// que el bot SEPA lo que ofreció cuando la clienta conteste). Más largo que las 48 h del
+// recordatorio a propósito: la oferta del -10 % caduca lenta y una respuesta a los 5 días
+// sigue siendo una respuesta a la oferta.
+const TTL_NOTA_SEGUIMIENTO_MS = 7 * 24 * 60 * 60 * 1000;
+
 // Cuántos días DESPUÉS del día N sigue teniendo sentido el mensaje.
 //
 // Sin este tope, encender el interruptor mandaría de golpe un WhatsApp por cada cita
@@ -599,6 +605,17 @@ async function procesarSeguimientos() {
                         await client.sendMessage(chatId, cand.mensaje);
                     }
                     await noteSendResult(orgId, { ok: true });
+                    // El bot VE lo que salió (el arreglo del recordatorio, a741fd5): esto es
+                    // lo ÚNICO que EMPIEZA conversación, así que sin la nota el bot contesta
+                    // a la respuesta del -10 % sin saber qué ofreció ni a qué precio — y
+                    // cotizaría el precio completo. TTL = el de la promesa (7 días): la
+                    // oferta caduca lenta. Nunca lanza: el mensaje ya salió.
+                    try {
+                        const { notePendingOutboundTurn } = require('./pending-outbound');
+                        notePendingOutboundTurn(orgId, cand.telefono, cand.mensaje, { ttlMs: TTL_NOTA_SEGUIMIENTO_MS });
+                    } catch (e2) {
+                        logger.error('seguimiento_registro_historial_fallido', { orgId, telefono: cand.telefono, error: e2.message });
+                    }
 
                     // 3. APUNTAR lo que salió, con el texto exacto.
                     await db.marcarSeguimientoEnviado(orgId, seguimientoId, { mensaje: cand.mensaje });

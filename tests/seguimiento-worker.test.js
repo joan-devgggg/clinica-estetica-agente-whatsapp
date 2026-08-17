@@ -149,6 +149,35 @@ test('lo que se apunta es el texto EXACTO que salió', async () => {
     assert.ok(!estado.enviado.texto.includes('%'), estado.enviado.texto);
 });
 
+test('el envío deja su nota en pending-outbound: el bot verá lo que ofreció cuando la clienta conteste', async () => {
+    // El arreglo del recordatorio (a741fd5) aplicado a lo único que EMPIEZA conversación:
+    // sin la nota, la respuesta al -10 % se contesta a ciegas y se cotiza precio completo.
+    process.env.SEGUIMIENTOS = 'on';
+    const po = require('../services/pending-outbound');
+    po._resetPendingOutbound();
+    reset();
+    await seguimiento.procesarSeguimientos();
+    const turnos = po.drainPendingOutboundTurns('org-sante', CONTACTO.wa_phone, 60000);
+    assert.strictEqual(turnos.length, 1, 'la nota del seguimiento no está en el buzón');
+    assert.strictEqual(turnos[0].role, 'assistant');
+    assert.strictEqual(turnos[0].content, estado.enviado.texto, 'la nota tiene que ser el texto EXACTO que salió');
+});
+
+test('honestidad de la nota: sin envío (sin_plantilla) o con envío reventado, el buzón queda vacío', async () => {
+    process.env.SEGUIMIENTOS = 'on';
+    const po = require('../services/pending-outbound');
+    po._resetPendingOutbound();
+    reset({ modoEnvio: 'sin_plantilla' });
+    await seguimiento.procesarSeguimientos();
+    assert.strictEqual(po.drainPendingOutboundTurns('org-sante', CONTACTO.wa_phone, 60000).length, 0,
+        'quedó nota de un mensaje que no salió (sin_plantilla)');
+    po._resetPendingOutbound();
+    reset({ envioLanza: 'timeout de red' });
+    await seguimiento.procesarSeguimientos();
+    assert.strictEqual(po.drainPendingOutboundTurns('org-sante', CONTACTO.wa_phone, 60000).length, 0,
+        'quedó nota de un envío que reventó');
+});
+
 test('la reserva congela el precio con descuento, no solo el porcentaje', async () => {
     process.env.SEGUIMIENTOS = 'on';
     reset();

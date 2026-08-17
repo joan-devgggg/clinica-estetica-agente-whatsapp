@@ -10,7 +10,13 @@ const { getOrgType } = require('./org-registry');
 const { prepararOfertaTrasResena, confirmarOfertaTrasResena } = require('./seguimiento');
 const { noteSendResult } = require('./channel-health');
 const { alertOnce } = require('./admin-alerts');
+const { notePendingOutboundTurn } = require('./pending-outbound');
 const logger = require('../lib/logger');
+
+// Cuánto vive la nota del buzón sin que la clienta escriba. El mismo criterio que
+// TTL_NOTA_RECORDATORIO_MS (reminder.js): pasadas 48 h la respuesta ya no es «a la
+// petición de reseña» y meterla en el historial confundiría más que ayudar.
+const TTL_NOTA_RESENA_MS = 48 * 60 * 60 * 1000;
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 let waClients = null;
@@ -101,6 +107,19 @@ async function sendReviewMessage(orgId, { telefono, language, waJid }, { mensaje
         // Telegram, y sin await el worker sigue adelante sin saber si salió. Es el mismo
         // await que se puso en alertOnce cuando se arreglaron los avisos que no llegaban.
         await noteSendResult(orgId, { ok: true });
+        // El bot VE lo que salió: la nota va al buzón y el próximo turno la drena al
+        // historial ANTES del mensaje de la clienta (el arreglo del recordatorio, a741fd5)
+        // — sin ella, un «¿dónde os dejo la reseña?» se contesta a ciegas. El texto va a
+        // secas (un prefijo técnico solo despistaría al modelo) y también en modo
+        // plantilla: `mensaje` es su equivalente en texto libre. Solo salón (regla de
+        // oro), y nunca lanza: el mensaje ya salió.
+        if (getOrgType(orgId) === 'salon') {
+            try {
+                notePendingOutboundTurn(orgId, telefono, mensaje, { ttlMs: TTL_NOTA_RESENA_MS });
+            } catch (e) {
+                logger.error('resena_registro_historial_fallido', { orgId, telefono, error: e.message });
+            }
+        }
         return 'enviado';
     } catch (e) {
         logger.error('review_error_envio', { orgId, telefono, chatId, error: e.message });
