@@ -39,6 +39,8 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
 
 const db = require('../services/db');
 const { auditPromesas, DESENLACES_MAL } = require('../tests/lib/promesas-audit');
+// El impresor del informe de escaladas, para correr las dos mitades en la MISMA tanda.
+const { imprimirEscaladas } = require('./informe-escaladas');
 
 const DESENLACE_LABEL = {
     rota: '❌ ROTA — promesa sin ninguna fila detrás',
@@ -137,6 +139,21 @@ function parseArgs(argv) {
 
         console.log('\n─── Cobertura declarada de este barrido ───');
         for (const linea of cobertura) console.log(`  · ${linea}`);
+
+        // ─── La otra mitad del mismo aparato ─────────────────────────────────────
+        // Este barrido mide las promesas que NO tienen fila detrás. El informe de escaladas
+        // mide, de las filas que SÍ existen, cuáles pasaron por el protocolo de dos turnos.
+        // Van juntos y en la misma tanda a propósito: un informe de solo lectura que hay que
+        // acordarse de lanzar no lo lanza nadie, y por separado cada uno enseña media
+        // fotografía. Reutiliza las lecturas de arriba, así que los dos miran EL MISMO
+        // instante y no cuesta ni una consulta más.
+        //
+        // No toca el exit code: la alarma de promesas rotas es de este barrido, y mezclarlas
+        // emborronaría qué significa un exit 1.
+        imprimirEscaladas({
+            pendingActions, entrantes, contactos, salientes, desdeDias,
+            titulo: `${org.sessionId.toUpperCase()} · escaladas`,
+        });
     }
 
     console.log('');

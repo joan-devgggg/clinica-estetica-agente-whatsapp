@@ -3385,7 +3385,11 @@ async function getPendingActionsBarrido(orgId) {
     const oid = resolveOrg(orgId);
     const { data, error } = await supabase
         .from('pending_actions')
-        .select('id, type, contact_id, status, resolution, created_at, resolved_at')
+        // `payload` lleva el `motivo`, y el motivo es lo único que distingue una escalada que
+        // pasó por la espera de dos turnos (prefijo `consulta_`) de una inmediata. Es el
+        // discriminador que usa informe:escaladas, y no hace falta escribir nada nuevo para
+        // tenerlo: ya estaba en la fila. Aditivo — quien no lo mire no se entera.
+        .select('id, type, contact_id, status, resolution, created_at, resolved_at, payload')
         .eq('organization_id', oid)
         .order('created_at', { ascending: true });
     assertRead(error, 'pending_actions');
@@ -3420,7 +3424,9 @@ async function getContactosBarrido(orgId) {
     const oid = resolveOrg(orgId);
     const { data, error } = await supabase
         .from('contacts')
-        .select('id, full_name, wa_phone, bot_mode, escalation_reason')
+        // `language` para el reparto por idioma de informe:escaladas — el agregado esconde
+        // justo lo que decide, porque el backstop de escalada anunciada es solo castellano.
+        .select('id, full_name, wa_phone, bot_mode, escalation_reason, language')
         .eq('organization_id', oid);
     assertRead(error, 'contacts');
     return data || [];

@@ -7909,6 +7909,10 @@ module.exports = {
         // Fuente única de «esto es una oferta de traspaso»: la comparten el armado de
         // pendingEscalation y el barrido de promesas — no pueden divergir.
         detectaOfertaTraspaso, remisionAlEquipo, ofertaTraspasoEnPregunta,
+        // Para informe:escaladas, que cuenta los salientes que llevan el coda pegado. Se
+        // EXPORTA en vez de copiarse: si la pregunta cambia, el informe la sigue solo (misma
+        // regla que los núcleos de plantilla del barrido de promesas).
+        PREGUNTA_TRASPASO, PREGUNTA_TRASPASO_FORMAL, codaTraspaso,
         // Plantillas de promesa con texto fijo — las lee el barrido de promesas
         // (tests/lib/promesas-audit.js) para no copiar literales que luego divergen:
         CANCEL_OK_MSGS, CONFIRM_YES, CONFIRM_YES_LEGACY, REOFERTA_TRASPASO, TRASPASO_FALLO_MSGS,
