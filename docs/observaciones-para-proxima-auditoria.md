@@ -373,3 +373,68 @@ y B sobra.
 (renombrado de los tres Spa Hair) y tiene un alta sin fechar (`Difuminado de raíz`).
 Aproximadamente semanal — bastante para que A importe, y bastante para que cualquier check
 de «deben ser iguales» viviera en rojo.
+
+---
+
+## 18/08/2026 · Los casos 1-3 del prompt no existen en cirílico, y el arnés casi tampoco
+
+Salió de rebote al trazar el caso 7 (`dato_no_disponible`) para el anillo 2. Se anota aquí y
+**no se arregla ahora**: no está en el alcance acordado y tocarlo es cambiar la conducta de
+tres casos de escalada a la vez.
+
+### El hecho
+
+`detectConsultaService` (`services/helpers.js`) es el detector determinista de ENTRADA que
+cubre los casos 1, 2 y 3 del prompt de Sante — extensiones, permanente y eliminación del
+pigmento. Corre **antes del LLM**, arma `pendingEscalation` con texto propio del bot y es
+la razón por la que esos tres casos NO dependen de cómo redacte el modelo.
+
+Es **íntegramente de alfabeto latino**:
+
+```js
+/\b(extension|extensiones)\b/        → 'extensiones'
+/\b(permanente|permanent)\b/         → 'permanente'
+/salida de negro|arrastre de color|quitar tinte negro|…|quitar pigmento/  → 'salida_negro'
+```
+
+Ni una letra cirílica. Una clienta rusa o ucraniana preguntando exactamente lo mismo se salta
+el detector entero y cae en el modelo — o sea, en el mismo agujero que el caso 7 tenía hasta
+ayer, y sin la red del anillo 2, que solo se cableó para `dato_no_disponible`.
+
+### El caso real que lo motiva
+
+**Nastya Nizenko, 09/08/2026, `ru`.** Fila de `pending_actions` con motivo
+`servicio_especial` **pelado, sin el prefijo `consulta_`** — o sea que NO pasó por el
+protocolo de dos turnos: la escribió el despacho de acciones directamente. Su último entrante
+antes de la fila fue una pregunta, no una aceptación:
+
+```
+Как это проходит и как можно гарантировать что волосы ни как не повреждаются
+```
+
+Es decir: el detector no la vio, el modelo escaló por su cuenta y a ella no se le preguntó.
+Sale sola en `npm run informe:escaladas -- sante`, clasificada como «inmediata SIN preguntar».
+
+### Lo que hace que esto no se vea
+
+El arnés LLM tiene **29 escenarios y su reparto por idioma es 26 `es` · 2 `ru` · 1 `en` ·
+CERO `uk`** (contado el 18/08 sobre las metas `idioma:` de `verify-sante-robustez-llm.js`).
+Los tres casos que este hallazgo afecta se prueban solo en castellano, así que el agujero es
+invisible por construcción: no hay escenario que pueda ponerse rojo.
+
+Ese cero en ucraniano es además el más caro de los dos, porque `uk` no tiene ni el backstop
+castellano de `announcesHumanHandover` ni —hasta ayer— las formas de su propio verbo en el
+detector de ofertas (`з'єднаю` frente a `зв'яжу`; se arregló al escribir el coda).
+
+### Qué costaría, para cuando se decida
+
+1. Enumerar los términos cirílicos de los tres servicios (`наращивание`, `химическая завивка`,
+   `выход из чёрного`… y sus formas ucranianas), **siempre por `buildCyrillicRe`** y nunca con
+   `\b`, que es ASCII. Criterio de admisión de siempre: formas que alguien haya escrito de
+   verdad, nunca un fuzzy.
+2. Un escenario `ru` y otro `uk` en el arnés para cada uno de los tres, o el agujero se
+   vuelve a cerrar sobre sí mismo.
+3. Mirar de paso si `detectConsultaValoracion` y `detectVariasPersonas` tienen el mismo sesgo.
+
+**No decidido como «no arreglar»: decidido como «no ahora».** La señal existe (una fila real)
+pero es una, y ampliar el alcance por iniciativa propia es la regla 8.

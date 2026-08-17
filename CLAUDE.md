@@ -330,6 +330,71 @@ San Remo fuera por `getOrgType`, estructuralmente y no por config vacía. Red:
 `tests/seguimiento-{post-visita,a-quien,tanda,worker,en-resena}.test.js`, probado con seis
 mutaciones (la del `includes` por frase suelta tumba 5 bloques).
 
+## El caso 7 (`dato_no_disponible`): el modelo DECLARA la oferta, la máquina la arma
+
+Escalaba **1 de cada 4 veces**, y la única que escaló lo hizo porque el modelo DESOBEDECIÓ.
+La REGLA CRÍTICA del prompt le prohíbe poner `accion:escalar_humano` en el turno de la
+PREGUNTA; obedeciéndola no declaraba nada, y entonces armar la espera dependía de que su
+prosa libre casara con `detectaOfertaTraspaso`. Medido el 17/08/2026: **la frase que el
+propio prompt le sugería para el caso 7 NO casaba** («preguntar» no es verbo de traspaso), ni
+«¿te paso con el equipo?» (faltaba `con el equipo` en `HANDOVER_DESTINO`). Roto también en su
+forma canónica. Historia: Esther (08/08), Mafe (12/08, la que sí), Gisvell (12/08),
+34699866837 (17/08).
+
+- **`ofrezco_traspaso` LLEVA el motivo, no es un booleano.** Dos campos pueden llegar en
+  desacuerdo (`true` con motivo null) y entonces hay que inventar un default — el
+  `escalado_bot` que ya lamentamos. Conjunto CERRADO (`MOTIVOS_OFRECIBLES`), validado en el
+  normalizador **y** en `bot.js`: los dos leen la misma constante, y lo que cuelga del valor
+  es una razón que se escribe en la ficha como `consulta_<valor>`.
+- **Se lee en DOS puntos porque el texto final no existe al principio**: temprano se marca de
+  quién es el turno (y si además viene `accion:escalar_humano`, gana la OFERTA — escalar en
+  el turno de la pregunta deja `bot_mode='manual'` y el bot mudo ante el «sí»); tarde, sobre
+  el texto ya definitivo, se arma.
+- **Si declara y su prosa no ofrece, se le PEGA la pregunta** (4 idiomas, de la misma
+  constante que el menú de rescate). Armar sin pegarla deja a la clienta sin nada que
+  contestar. Precedente y reglas idénticas al coda de la puerta del nombre.
+- **El TRINQUETE del turno N+1**, que era un segundo generador del mismo fallo: la red que
+  baja la escalada a espera se guardaba solo de `!pendingEscalation`, así que si la oferta no
+  armó nada, el «sí» siguiente —que el gate determinista no intercepta porque no hay espera—
+  llegaba al modelo, este escalaba como le manda el prompt, y aquí se le anulaba para armar
+  OTRA espera. Texto anunciando el traspaso, cero filas, `bot_mode` en auto. Ahora un
+  afirmativo en ese punto ESCALA.
+- **El anillo 3 (prosa) no se desmonta**: es lo que salvó a Mafe y lo que hace que el barrido
+  y el bot no puedan divergir. Gana la declaración cuando hay ambas.
+- **Los motivos viven en UNA lista** (`helpers.MOTIVOS_LLM` / `ESPERAS_ESCALADA` /
+  `RAZONES_DE_CODIGO` → `ETIQUETAS_ESCALADA`). Estaban en cinco sitios y de los cinco motivos
+  vivos en producción, DOS llegaban al admin como clave cruda. Telegram importa la fuente; el
+  panel mantiene copia y la vigila `tests/etiquetas-escalada-paridad.test.js`.
+
+Red: `tests/traspaso-declarado.test.js` (11 bloques, las tres frases reales congeladas, 5
+sabotajes medidos) y el corpus (`alisado-organico-17-08.json`, con el turno que lo trajo).
+
+### La medida NO vive en `metrics.json` — vive en Supabase, y corre pegada al barrido
+
+Un umbral con ventana de dos semanas sobre `metrics.json` es **inalcanzable por
+construcción**: el disco del contenedor es efímero y, medido sobre el reflog de `origin/main`
+(un push = un deploy), en 30 días el hueco MAYOR entre dos pushes fue de **1,88 días** y en 90
+días el mayor de todo el registro fue de **7,00**. Nunca ha habido 14 días sin desplegar.
+
+No hace falta contador: **`pending_actions.payload.motivo` lleva el prefijo `consulta_` si y
+solo si la escalada pasó por el protocolo de dos turnos**; un motivo pelado es inmediata. Con
+eso y el último entrante anterior a la fila sale la clasificación entera, retroactiva y sobre
+cualquier ventana. `npm run informe:escaladas -- sante [--desde N]`, y **corre además pegado
+al final de `barrido:promesas`** reutilizando sus lecturas — un informe que hay que acordarse
+de lanzar no lo lanza nadie. No toca su exit code.
+
+Dos trampas suyas, las dos convertidas en regresión: **`isAffirmative` casa por SUBCADENA** y
+sobre un mensaje largo miente («confu-**si**-ón», «повре-**жда**-ются»), así que un afirmativo
+solo cuenta si el saliente ANTERIOR era una oferta; y **el coda se cuenta por el salto de
+línea** que lo pega, porque las plantillas fijas hacen la misma pregunta en una sola línea.
+
+**Umbral para cablear el 4 y el 5, escrito antes de mirar el número** (días NATURALES): se
+cablean si aparecen escaladas de esos motivos precedidas de una oferta ACEPTADA y sin fila
+—eso lo mide el barrido con `aceptada_sin_escalada`— con ≥2 en 14 días, o **1 sola en
+`ru`/`uk`**, donde no hay backstop. Las inmediatas de `pedir_persona` **no cuentan: ahí lo
+correcto es escalar en el acto**. Las de `queja_cita` se vigilan aparte (≥5 en 30 días abre la
+conversación, que es de trato y no de código).
+
 ## Avisos al admin: solo cuentan si llegan
 
 `alertOnce` (`services/admin-alerts.js`) marca la clave **después** de que Telegram confirme; el
@@ -997,6 +1062,8 @@ npm run verify:sante          # catálogo + motor de huecos + Fase 7 (coherencia
 npm run verify:sante:agenda   # SOLO LECTURA: ¿las citas futuras siguen cabiendo?
 npm run informe:nombres       # SOLO LECTURA: ¿a quién no sabemos cómo llamar?  (-- sante)
 npm run informe:seguimientos -- sante   # SOLO LECTURA: la tanda post-visita, sin enviarla
+npm run informe:escaladas -- sante      # SOLO LECTURA: ¿qué escaladas preguntaron antes?
+                                        # (corre TAMBIÉN al final de barrido:promesas)
 ```
 
 - **`verify:sante:agenda`** es la red que faltaba: cuando la dueña quita un día o recorta una

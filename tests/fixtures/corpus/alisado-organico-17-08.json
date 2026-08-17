@@ -1,0 +1,99 @@
+{
+  "_meta": {
+    "NO_ES_LA_CONVERSACION_VIVA": "Foto de `messages` tomada el 2026-08-18. No se sincroniza.",
+    "contacto": "(sin nombre — nunca lo dio)",
+    "wa_phone": "34699866837",
+    "contact_id": "6973639b-0cb5-412d-95aa-ce2f30b89ec5",
+    "conversation_id": "c25c42ee-f605-4305-a9f1-61073d145b3d",
+    "rango": ["2026-08-17T14:20:55.300Z", "2026-08-17T14:41:54.000Z"],
+    "auditoria_origen": "El turno que trajo el anillo 2 de C7 (ofrezco_traspaso). Vino del anuncio de la web, preguntó DOS VECES por el producto del alisado y no lo obtuvo ninguna de las dos.",
+    "idioma": "es",
+    "verificado_el": "2026-08-18",
+    "verificado_como": "pending_actions de este contacto: CERO filas. appointments: CERO. contacts.bot_mode sigue en 'auto' y escalation_reason a null. Esa ausencia es el ancla: pending_actions no tiene agujero de Coexistence, así que aquí la ausencia SÍ significa — nadie del salón se enteró de que había una clienta preguntando con qué producto trabajan.",
+    "por_que_NO_es_una_promesa_rota": "El barrido de promesas la marcó como C1 ROTA por «te apunto corte con secado e alisado vegano corto», y es un FALSO POSITIVO suyo: en la misma frase pregunta «¿Qué día te viene mejor?», no hay ni una fecha ni una hora ni una estilista en toda la conversación, y ella acabó diciendo que no quería reservar. El objeto de «apunto» son los SERVICIOS, no un hueco. Se congela aquí para que ese falso positivo no se confunda nunca con el fallo real, que es el de más abajo."
+  },
+  "business_hours": {
+    "lunes": { "apertura": "10:00", "cierre": "19:00" },
+    "martes": { "apertura": "10:00", "cierre": "19:00" },
+    "miercoles": { "apertura": "10:00", "cierre": "19:00" },
+    "jueves": { "apertura": "10:00", "cierre": "19:00" },
+    "viernes": { "apertura": "10:00", "cierre": "19:00" },
+    "sabado": { "apertura": "10:00", "cierre": "19:00" }
+  },
+  "anclas": {
+    "citas": [],
+    "pending_actions": [],
+    "nota_pending": "Cero filas, comprobado el 18/08/2026. Es el ancla del turno 3: el bot dijo que el equipo se lo confirmaría y no quedó constancia en ninguna parte."
+  },
+  "turnos": [
+    {
+      "n": 1,
+      "ts": "2026-08-17T14:33:58.502Z",
+      "entrante": ["Me interesa el alisado, pero no el japonés...con que producto lo hacéis?\nCual es el precio?"],
+      "saliente": "Perfecto, el alisado vegano es lo tuyo. Tenemos tres opciones según el largo del cabello: cabello corto (210€), medio (260€) o largo (310€). ¿Cuál es tu largo?",
+      "clase": "correcto_anclado",
+      "ancla": "Los tres precios son EXACTOS contra el catálogo vivo (Alisado vegano: Corto 210 €, Medio 260 €, Largo 310 €, leídos de agent_configs el 18/08). Cifras buenas que ninguna red puede comerse. La pregunta del producto queda sin contestar, que es lo que acaba en el turno 3.",
+      "estado": {
+        "session": { "selectedService": null }
+      },
+      "espera": [
+        { "detector": "detectaOfertaTraspaso", "sobre": "saliente", "resultado": false,
+          "nota": "Ni ofrece ni remite: la pregunta del producto simplemente no se contesta." }
+      ]
+    },
+    {
+      "n": 2,
+      "ts": "2026-08-17T14:36:21.000Z",
+      "entrante": ["Corte con secado"],
+      "saliente": "Perfecto. Entonces te apunto corte con secado e alisado vegano corto. ¿Qué día te viene mejor?",
+      "clase": "neutro",
+      "nota": "El FALSO POSITIVO del barrido de promesas, congelado. `llmClaimsBooked` dispara con «te apunto» (patrón de 1ª persona) y `asksForBookingApproval` NO lo exime, porque solo conoce la forma «¿te va bien?» / «¿te lo reservo?» — «¿Qué día te viene mejor?» no es una petición de aprobación, es la pregunta de apertura del flujo. Dentro del bot no pasó nada, y con razón: las dos redes que escriben están gateadas por `session.slotsProposed`, que aquí nunca fue true porque ella jamás dio un día.",
+      "estado": {
+        "session": { "selectedService": { "nombre": "Mujer y secado", "categoria": "Cortes", "precio": 40, "duracion": 45 } }
+      },
+      "espera": [
+        { "detector": "llmClaimsBooked", "sobre": "saliente", "resultado": true,
+          "nota": "SÍ dispara, y es correcto que dispare: el detector mide la frase. Lo que falla es leerlo como promesa sin mirar el estado. Si algún día se exime «¿qué día te viene mejor?», ojo: esa lista la comparte la red anti-cita-fantasma dentro del bot." },
+        { "detector": "asksForBookingApproval", "sobre": "saliente", "resultado": false },
+        { "detector": "proposesTimingWithoutService", "sobre": "saliente", "resultado": false,
+          "nota": "Pregunta por el día, así que con `selectedService` a null esta red se lo comería — y con razón. Aquí NO se lo come porque el servicio estaba resuelto: ella acababa de decir «Corte con secado». La primera versión de este fixture puso selectedService a null por descuido y el corpus lo cazó al primer intento." }
+      ]
+    },
+    {
+      "n": 3,
+      "ts": "2026-08-17T14:36:40.000Z",
+      "entrante": ["Pero infórmame del producto o marca que utilizáis"],
+      "saliente": "Eso no lo tengo yo, pero el equipo te lo confirma en el salón 😊 ¿Reservamos tu cita primero?",
+      "clase": "fallo_anclado",
+      "ancla": "CERO filas en pending_actions para este contacto (comprobado el 18/08/2026), y `pending_actions` no tiene agujero de Coexistence: la ausencia significa. El bot dijo que el equipo se lo confirmaría y no avisó a nadie.",
+      "nota": "EL TURNO QUE TRAJO EL ANILLO 2. La primera mitad es casi literal del caso 7 del prompt («Eso no lo tengo yo, pero…») y la segunda, donde debería ir la OFERTA, es un empujón a reservar. Sin oferta no hay «sí» que esperar, y sin «sí» no hay fila. Antes del 18/08 el único modo de armar la espera era que esta prosa casara con detectaOfertaTraspaso — y no casa.",
+      "estado": {
+        "session": { "selectedService": null }
+      },
+      "espera": [
+        { "detector": "detectaOfertaTraspaso", "sobre": "saliente", "resultado": false,
+          "nota": "ESTA es la fila que explica el fallo entero. Y tiene que seguir en false: el arreglo NO fue ensanchar el detector para que esta frase colara —eso metería como oferta un «¿reservamos?»— sino que el modelo DECLARE `ofrezco_traspaso` y la máquina le pegue la pregunta que falta. Si algún día esto se pone en true, alguien ha ensanchado la red por el sitio equivocado." },
+        { "detector": "remisionAlEquipo", "sobre": "saliente", "resultado": false,
+          "nota": "«el equipo te lo confirma en el salón» no lleva el verbo hablar, así que la remisión de Estefania tampoco lo ve." },
+        { "detector": "llmClaimsBooked", "sobre": "saliente", "resultado": false }
+      ]
+    },
+    {
+      "n": 4,
+      "ts": "2026-08-17T14:37:15.000Z",
+      "entrante": ["No, quiero informarme.Gracias"],
+      "saliente": "Claro, lo entiendo perfectamente. Puedes llamarnos al salón o escribirnos cuando quieras y te lo cuentan con detalle 😊 ¿Necesitas algo más?",
+      "clase": "fallo_anclado",
+      "ancla": "Mismo ancla: cero filas. Segunda vez que se le manda al salón sin dejar constancia, y ya es la despedida.",
+      "nota": "Ella RECHAZA reservar y pide información. El bot la devuelve al salón por segunda vez. Aquí se pierde el lead: vino del anuncio de la web, se interesó por un servicio de 250 € (alisado corto 210 + corte con secado 40) y se fue sin respuesta y sin nombre en la ficha.",
+      "estado": {
+        "session": { "selectedService": null }
+      },
+      "espera": [
+        { "detector": "detectaOfertaTraspaso", "sobre": "saliente", "resultado": false },
+        { "detector": "isAffirmative", "sobre": "entrante:0", "resultado": false,
+          "nota": "«No, quiero informarme.Gracias» — si el turno anterior HUBIERA armado una espera, este mensaje la habría cerrado con un no, que es lo correcto. Lo que no puede pasar es lo que pasó: que no hubiera nada que cerrar." }
+      ]
+    }
+  ]
+}

@@ -65,7 +65,13 @@
       "entrante": ["Yes, but what is the name of Marco’s mom. She waged our hair and was fabulous"],
       "saliente": "I'm not sure I have that information, Esther 😊 But I'd love to help you leave that review! Could you describe what service she did for you? That way I can make sure we credit the right person.",
       "clase": "neutro",
-      "nota": "El caso 7 del prompt (dato no disponible) dicho BIEN: admite que no lo sabe en vez de inventar un nombre. Sin dato duro en el texto: la única afirmación es que ninguna red lo sustituye."
+      "nota": "El caso 7 del prompt (dato no disponible) dicho a MEDIAS: admite que no lo sabe en vez de inventar un nombre —eso está bien y es lo que se afirmaba aquí desde el 15/08— pero NO ofrece pasarla con el equipo, así que nadie del salón se enteró. Es la conversación que el propio prompt cita en su caso 7 (openai.js) como el incidente que lo motivó, y seguía sin fila nueve días después. Desde el 18/08 lo que arma la espera no es esta prosa sino que el modelo DECLARE `ofrezco_traspaso`; este saliente queda como el ANTES.",
+      "espera": [
+        { "detector": "detectaOfertaTraspaso", "sobre": "saliente", "resultado": false,
+          "nota": "La fila que explica por qué no hubo escalada, y tiene que seguir en false: el arreglo no fue ensanchar el detector hasta que esta frase colara. Ella nunca volvió a escribir — este saliente es el último mensaje de la conversación." },
+        { "detector": "announcesHumanHandover", "sobre": "saliente", "resultado": false,
+          "nota": "Tampoco AFIRMA un traspaso, así que el backstop que fuerza escalada tampoco tenía nada que hacer. Ni ofrece ni promete: simplemente se queda ahí." }
+      ]
     }
   ]
 }
