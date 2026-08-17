@@ -72,7 +72,14 @@ stub('../services/calendar-sante', {
     formatSlotForMessage: s => `${s.fecha} ${s.hora}`,
 });
 
-let upcomingImpl = async () => [];
+// La agenda que devolvería Supabase DESPUÉS de escribir: sin esto, la red anti-cita-fantasma
+// leería cero citas sobre un ✅ legítimo y lo rectificaría — un artefacto del doble, no del
+// sistema. Se alimenta de `reservas`, o sea de lo que el motor dice haber escrito.
+let upcomingImpl = async () => reservas.map((s, i) => ({
+    id: `apt-${i + 1}`, service: SERVICIO.nombre, status: 'confirmed',
+    starts_at: new Date(`${s.fecha}T${s.hora}:00`).toISOString(),
+    stylist_id: s.stylistId, stylists: { name: s.stylistName },
+}));
 const dbImpls = {
     findByPhone: async () => ({ id: 'ct-ihab', full_name: null, wa_phone: '34790768781', bot_mode: 'auto' }),
     saveMessage: async () => 1,
@@ -177,7 +184,7 @@ async function turno(phone, sink, texto) {
     await new Promise(r => setTimeout(r, 400));
 }
 
-function reset() { logs.length = 0; llmQueue.length = 0; reservas.length = 0; motorVacio = false; upcomingImpl = async () => []; }
+function reset() { logs.length = 0; llmQueue.length = 0; reservas.length = 0; motorVacio = false; }
 const trazas = evento => logs.filter(l => l.evento === evento);
 const ultimo = sink => sink[sink.length - 1] || '';
 // Lo que la clienta NO puede recibir en un turno donde no se ha escrito nada.
@@ -310,6 +317,26 @@ test('con una respuesta larguísima, lo que se recorta es la BASE y el coda sobr
     assert.ok(salida.length <= 1000, `se pasa de 1000 (${salida.length})`);
     assert.ok(salida.includes(preguntaNombreMsg(session, 2)),
         `el coda se perdió en el recorte: "...${salida.slice(-80)}"`);
+});
+
+test('si la espera se resuelve en el MISMO turno, el coda no se pega detrás del ✅', async () => {
+    // La puerta deja pasar el turno, y dentro del turno la reserva se escribe (aquí porque los
+    // dos intentos estaban gastados: «la cita vale más que el dato»). Preguntar el nombre
+    // detrás de un ✅ sería preguntar por algo ya cerrado.
+    reset();
+    const { phone, session } = armarSesion({
+        pendingNameForBooking: { slot: { ...SLOT }, intentos: 2, codas: 0, fase: 'nombre', agotado: false },
+        preguntasCierre: 2,
+    });
+    const sink = [];
+    llmQueue.push({ respuesta: 'Perfecto, las 15:00.', datos: { hora_cita: '15:00', fecha_cita: FECHA } });
+
+    await turno(phone, sink, 'A las 15:00 puedo? gracias');
+
+    assert.strictEqual(reservas.length, 1, 'con los intentos gastados la cita se escribe');
+    assert.ok(/✅/.test(ultimo(sink)), `esperaba el ✅: "${ultimo(sink)}"`);
+    assert.ok(!/nombre/i.test(ultimo(sink)), `pidió el nombre detrás del ✅: "${ultimo(sink)}"`);
+    assert.strictEqual(session.reservaConfirmada, true);
 });
 
 // ─── 4 · La repregunta pura: sin verificación NO hay acuse ───────────────────

@@ -7142,7 +7142,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         //   · si no cabe en 1000 se recorta la BASE, nunca el coda.
         if (orgType === 'salon' && session._codaNombre) {
             const slotRetenido = session.pendingNameForBooking?.slot || null;
-            if (isFallbackText(aiResponse.respuesta)) {
+            if (session.pendingNameForBooking?.fase !== 'nombre' || session.reservaConfirmada) {
+                // La espera se resolvió DENTRO de este mismo turno (la cita se escribió, con
+                // nombre o sin él, o el flujo la limpió). Pedir el nombre detrás de un ✅ sería
+                // preguntar por algo que ya está cerrado.
+                logger.info('cita_sante_coda_nombre_omitida', { orgId, telefono: userPhone, motivo: 'espera_resuelta' });
+            } else if (isFallbackText(aiResponse.respuesta)) {
                 logger.info('cita_sante_coda_nombre_omitida', { orgId, telefono: userPhone, motivo: 'fallback' });
             } else if (textoYaPideNombre(aiResponse.respuesta)) {
                 logger.info('cita_sante_coda_nombre_omitida', { orgId, telefono: userPhone, motivo: 'ya_lo_pide' });
