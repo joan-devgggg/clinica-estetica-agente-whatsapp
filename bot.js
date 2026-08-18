@@ -3452,8 +3452,12 @@ function resolveSalonConfirmation(session, aiResponse, sanitized, frozenProposed
     // ha cerrado; el claim sin escritura lo come la red anti-fantasma, que verifica contra
     // BD). Las ramas de hora/fecha de ARRIBA no se gatean a propósito: «sí pero a las 18»
     // lo resuelve la hora, que es la señal buena.
-    const ambiguo = esAmbiguo(sanitized, { lang: session.language });
-    if (session.slotsProposed && !ambiguo && isAffirmative(sanitized, { lang: session.language })) {
+    // `conHueco: true` SOLO aquí: es el único sitio que elige hueco, y los demostrativos
+    // («ese» = «ese hueco») son elección exactamente en este contexto. En las demás puertas
+    // (escalada, cancelar, segunda cita, consulta) «Este alisado vegano» no es un sí —
+    // medido 18/08/2026: los 8 falsos por demostrativo llegaron todos SIN huecos en la mesa.
+    const ambiguo = esAmbiguo(sanitized, { lang: session.language, conHueco: true });
+    if (session.slotsProposed && !ambiguo && isAffirmative(sanitized, { lang: session.language, conHueco: true })) {
         const slot = pickChosenSlot(session, aiResponse.datos, proposed);
         if (slot) return { slot, motivo: 'afirmativo_tras_propuesta' };
     }

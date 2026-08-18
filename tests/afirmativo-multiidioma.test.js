@@ -62,9 +62,40 @@ test('los demostivos dentro de otra palabra tampoco', () => {
     }
 });
 
-test('pero sueltos siguen valiendo: significan "ese hueco"', () => {
+test('pero sueltos siguen valiendo DONDE hay hueco sobre la mesa (conHueco)', () => {
+    // «ese» = «ese hueco»: es elección solo en el sitio que elige hueco, que es el único
+    // que pasa conHueco:true (resolveSalonConfirmation, ya gateado por slotsProposed).
     for (const t of ['ese', 'esa', 'eso', 'este', 'ese me viene bien', 'el 2, ese']) {
-        assert.strictEqual(isAffirmative(t), true, `debería ser sí: "${t}"`);
+        assert.strictEqual(isAffirmative(t, { conHueco: true }), true, `con hueco debería ser sí: "${t}"`);
+    }
+});
+
+test('y SIN hueco sobre la mesa un demostrativo pelado NO es un sí (el doblete del scoping)', () => {
+    // Quitar el scoping (contar demostrativos siempre) pone este bloque en rojo: es el
+    // registro visible del cambio de semántica del 18/08/2026.
+    for (const t of ['ese', 'esa', 'eso', 'este', 'el 2, ese']) {
+        assert.strictEqual(isAffirmative(t), false, `sin hueco no debería ser sí: "${t}"`);
+    }
+    // 'ese me viene bien' sigue siendo sí SIN hueco — pero por «me viene bien» (lista
+    // general), no por el demostrativo:
+    assert.strictEqual(isAffirmative('ese me viene bien'), true);
+});
+
+test('los 8 falsos REALES por demostrativo (18/08, tras la frontera) dan FALSE en las puertas sin hueco', () => {
+    // Los únicos falsos que sobrevivían a la frontera. Ninguno llegó con huecos sobre la
+    // mesa (0/8 con HH:MM en el saliente previo, medido en BD). «Este alisado vegano» en
+    // la puerta de la escalada EJECUTABA la triple. «Que entra en ese» apareció dos veces.
+    const falsos = [
+        'Este es mi cabello',                                            // 12/08, foto
+        'Este alisado vegano',                                           // 12/08, nombra servicio
+        'Que entra en ese',                                              // 13/08 ×2, pregunta precio
+        'Este lo dejé hace cinco días',                                  // producto
+        'El de este producto es la keratina , no? Quiero que el cabello me quede liso, sin frizz y brillante',
+        'Con cariño y respeto, Tatiana, administradora del salón. Siento mucho haber tenido que irme en ese momento.',
+        'Hola, gracias por su mensaje y por contactar con DarYsol Events Cuénteme su idea — la haremos realidad juntos 🤍 En este momento no estoy disponible.',
+    ];
+    for (const t of falsos) {
+        assert.strictEqual(isAffirmative(t), false, `sin hueco no debería ser sí: "${t.slice(0, 50)}"`);
     }
 });
 

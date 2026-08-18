@@ -315,6 +315,11 @@ test('HUECO · el ambiguo no elige por afirmativo NI por la prosa del modelo', (
     // control: el sí limpio elige el único hueco (el guard no sobre-bloquea):
     const limpio = I.resolveSalonConfirmation(base(), aiSinNada, 'sí, perfecto', [{ ...SLOT }]);
     assert.strictEqual(limpio?.motivo, 'afirmativo_tras_propuesta');
+    // y el demostrativo TAMBIÉN, porque este sitio es el único que pasa conHueco: «ese»
+    // contestando a una lista de huecos es una elección (el scoping de la pieza 3 no puede
+    // dejar mudo al único contexto donde el demostrativo significa exactamente eso):
+    const demostrativo = I.resolveSalonConfirmation(base(), aiSinNada, 'ese', [{ ...SLOT }]);
+    assert.strictEqual(demostrativo?.motivo, 'afirmativo_tras_propuesta');
     // y la hora explícita sigue mandando aunque el mensaje sea ambiguo («sí pero a las 18»
     // con hueco a las 18 debe seguir funcionando — las ramas de hora no se gatean):
     const slot18 = { fecha: '2026-08-21', hora: '18:00', stylistId: 'st-1', stylistName: 'Irina' };

@@ -699,8 +699,16 @@ function extractTelefono(text) {
 // 26 perdidos son EXACTAMENTE los falsos y ni un sí real se pierde; gana 0.
 //
 // Los DEMOSTRATIVOS ya salieron de las subcadenas en su día («'este' está dentro de
-// y-este-rday», «eso» en «peso», «esa» en «mesa»); con \b siguen valiendo sueltos: son
-// ASCII y significan "ese hueco".
+// y-este-rday», «eso» en «peso», «esa» en «mesa»); son ASCII y \b les vale. Pero significan
+// "ese hueco", y eso es un dato de CONTEXTO: medido el 18/08/2026, tras la frontera los
+// ÚNICOS 8 falsos restantes de los 411 se sostenían solo en un demostrativo («Este es mi
+// cabello», «Este alisado vegano», «Que entra en ese»…) y NINGUNO de los 8 llegó con
+// huecos sobre la mesa. Por eso solo cuentan con `opts.conHueco`, que lo pasa únicamente
+// el sitio que elige hueco (resolveSalonConfirmation, ya gateado por slotsProposed):
+// «ese» contestando a una lista de huecos es una elección; «Este alisado vegano»
+// contestando a «¿qué servicio quieres?» no es un sí, y en la puerta de la escalada
+// ejecutaba la triple. Las dos candidatas globales se midieron y se descartaron con
+// números: «al arranque» perdía 30/76 síes reales y «turno corto ≤25» perdía ≥8.
 //
 // «так» es el residuo que la frontera NO puede arreglar: en ucraniano es «sí» y en ruso es
 // un adverbio comunísimo («…я всегда к Веронике так записываюсь…», real del 04/08, dio
@@ -726,13 +734,13 @@ const TAK_FRONTERA = buildBoundedRe(['так']);
 // «siii» → «si», «Perfectooo» → «perfecto», «дааа» → «да». Solo para MIRAR: el texto que
 // se guarda o se reenvía no pasa por aquí.
 const colapsaAlargamiento = t => t.replace(/(\p{L})\1+/gu, '$1');
-function isAffirmative(text, { lang = null } = {}) {
+function isAffirmative(text, { lang = null, conHueco = false } = {}) {
     const t = normalizeText(text);
     if (!t) return false;
     const tc = colapsaAlargamiento(t);
     for (const s of (tc === t ? [t] : [t, tc])) {
         if (AFIRMATIVOS_EN_RE.test(s)) return true;
-        if (AFIRMATIVOS_DEMOSTRATIVOS_RE.test(s)) return true;
+        if (conHueco && AFIRMATIVOS_DEMOSTRATIVOS_RE.test(s)) return true;
         if (AFIRMATIVOS_FRONTERA.test(s)) return true;
         if (lang !== 'ru' && TAK_FRONTERA.test(s)) return true;
     }
