@@ -116,9 +116,12 @@ const { SANTE_ORG_ID } = require('../services/org-registry');
 const ORG = SANTE_ORG_ID;
 bot.setBotActivo(ORG, true, false);
 
-// Los DOS ambiguos reales de la medición, congelados byte a byte de `messages`:
-const AMBIGUO_CANCELAR = 'No tienes nada cita libre? No necesito cortar';       // 17/08, nece-SI-to + no
-const AMBIGUO_TRASPASO = 'Si pero no puedo decirte cuando ahora vale';          // 10/08, si + no puedo
+// Los DOS mensajes reales de la medición, congelados byte a byte de `messages`.
+// El primero era EL caso del gate de cancelar bajo la lista de subcadenas (nece-SI-to);
+// la frontera de la pieza 2 lo mató en la raíz —ya ni siquiera es afirmativo— y el test
+// afirma AMBAS capas. El segundo sigue siendo ambiguo también con frontera (si + no puedo).
+const NI_SI_CANCELAR = 'No tienes nada cita libre? No necesito cortar';         // 17/08
+const AMBIGUO_TRASPASO = 'Si pero no puedo decirte cuando ahora vale';          // 10/08
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -170,7 +173,12 @@ test('esAmbiguo: los cuatro controles de la medición del 18/08', () => {
     assert.strictEqual(esAmbiguo('Si, perfecto. Muchas gracias. Nos vemos mañana.'), false);
     assert.strictEqual(esAmbiguo(AMBIGUO_TRASPASO), true);
     assert.strictEqual(esAmbiguo('No es perfecto, a que hora?'), true);
-    assert.strictEqual(esAmbiguo(AMBIGUO_CANCELAR), true);
+    // El caso que trajo la regla, resuelto una capa más abajo: la frontera (pieza 2) mató
+    // el «nece-SI-to» en la raíz. Ya no es afirmativo, así que tampoco ambiguo — y las DOS
+    // capas se afirman para que ninguna pueda retirarse en silencio.
+    const { isAffirmative } = require('../services/helpers');
+    assert.strictEqual(isAffirmative(NI_SI_CANCELAR), false, 'la frontera lo mata en la raíz');
+    assert.strictEqual(esAmbiguo(NI_SI_CANCELAR), false);
 });
 
 test('esAmbiguo: un sí limpio y un no limpio no son ambiguos', () => {
@@ -186,16 +194,27 @@ test('esAmbiguo: la negación cirílica cuenta (isNegative no la veía)', () => 
 
 // ─── 2 · Cancelar (pendingCitaAccion 'confirmar'): el ambiguo re-pregunta ────
 
-test('CANCELAR · el ambiguo real del 17/08 NO cancela: re-pregunta y la cita sigue viva', async () => {
+test('CANCELAR · un ambiguo real NO cancela: re-pregunta y la cita sigue viva', async () => {
     reset();
     const { phone, session } = armarSesion({ pendingCitaAccion: { estado: 'confirmar', accion: 'cancelar', cita: CITA } });
     const sink = [];
-    await turno(phone, sink, AMBIGUO_CANCELAR);
+    await turno(phone, sink, AMBIGUO_TRASPASO);
 
     assert.ok(!calendario.llamadas.includes('cancelAppointment'), 'la cita se canceló sobre un mensaje ambiguo');
     assert.strictEqual(session.pendingCitaAccion?.repetida, true, 'la pregunta se repite (techo 1), no se abandona');
     assert.strictEqual(sink[0], buildCancelConfirmMsg({ cita: CITA, language: 'es' }),
         're-pregunta con la plantilla de confirmación, no otra cosa');
+});
+
+test('CANCELAR · el caso del 17/08, ya matado en la raíz por la frontera: la cita sigue viva', async () => {
+    // «No tienes nada cita libre? No necesito cortar» disparaba por nece-SI-to y habría
+    // CANCELADO. Con la frontera ya ni es afirmativo: cae en la rama del no (conservadora:
+    // la cita se queda) — lo que este bloque prohíbe para siempre es la cancelación.
+    reset();
+    const { phone } = armarSesion({ pendingCitaAccion: { estado: 'confirmar', accion: 'cancelar', cita: CITA } });
+    const sink = [];
+    await turno(phone, sink, NI_SI_CANCELAR);
+    assert.ok(!calendario.llamadas.includes('cancelAppointment'), 'volvió a cancelar sobre un no-sí');
 });
 
 test('CANCELAR · control: un «sí» limpio SÍ ejecuta (el guard no sobre-bloquea)', async () => {

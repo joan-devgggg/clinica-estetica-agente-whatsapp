@@ -279,7 +279,7 @@ function evaluarC7Afirmacion(tMsg, pasContacto, contacto, ahora) {
 // detector arma la espera y el «sí» ejecuta la triple o dice que no pudo. La aceptación
 // se lee del ENTRANTE siguiente con isAffirmative — el mismo vocabulario que usa el bot,
 // y un dato COMPLETO (los entrantes no los pierde Coexistence).
-function evaluarC7Oferta(tMsg, pasContacto, entrantesContacto, { remisionAfirmativa = false } = {}) {
+function evaluarC7Oferta(tMsg, pasContacto, entrantesContacto, { remisionAfirmativa = false, idioma = null } = {}) {
     const atendida = pasContacto.some(pa =>
         pa.type === 'escalation'
         && Date.parse(pa.created_at) >= tMsg - VENTANA_TURNO_ANTES_MS
@@ -290,7 +290,8 @@ function evaluarC7Oferta(tMsg, pasContacto, entrantesContacto, { remisionAfirmat
         const t = Date.parse(m.createdAt);
         return t > tMsg && t <= tMsg + VENTANA_OFERTA_MS;
     });
-    if (respuesta && isAffirmative(respuesta.content)) {
+    // El idioma de la ficha decide el vocabulario del «sí» («так» no cuenta con ficha 'ru').
+    if (respuesta && isAffirmative(respuesta.content, { lang: idioma })) {
         return { desenlace: 'aceptada_sin_escalada',
             detalle: `la clienta aceptó («${String(respuesta.content).replace(/\s+/g, ' ').slice(0, 30)}») y no existe fila — tras el anillo 1 esto solo lo produce un bug` };
     }
@@ -377,7 +378,7 @@ function auditPromesas({ salientes, citas, pendingActions, contactos, entrantes,
             else if (clase === 'C7_AFIRMACION') r = evaluarC7Afirmacion(tMsg, pasContacto, contacto, ahora);
             else r = evaluarC7Oferta(tMsg, pasContacto,
                 (msg.contactId && entrantesPorContacto.get(msg.contactId)) || [],
-                { remisionAfirmativa: clase === 'C7_REMISION' && esRemisionAfirmativaPura(msg.content) });
+                { remisionAfirmativa: clase === 'C7_REMISION' && esRemisionAfirmativaPura(msg.content), idioma: contacto?.language || null });
 
             anota(clase, r.desenlace);
             if (r.desenlace === 'respaldada' || r.desenlace === 'atendido') continue;

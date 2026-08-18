@@ -3205,8 +3205,8 @@ async function handleCitasExistentes(client, orgId, session, sanitized, _send, u
             // isAffirmative se preguntaba primero, así que un mensaje ambiguo salía como SÍ
             // y CANCELABA — medido 18/08/2026: «No tienes nada cita libre? No necesito
             // cortar» (real, 17/08) daba las dos cosas y aquí habría ejecutado.
-            const ambiguo = esAmbiguo(sanitized);
-            if (!ambiguo && isAffirmative(sanitized)) return ejecutarCancelacion(orgId, session, pend.cita, _send, userPhone);
+            const ambiguo = esAmbiguo(sanitized, { lang: session.language });
+            if (!ambiguo && isAffirmative(sanitized, { lang: session.language })) return ejecutarCancelacion(orgId, session, pend.cita, _send, userPhone);
             if (!ambiguo && isNegative(sanitized)) {
                 logger.info('cita_cancelacion_rechazada', { orgId, telefono: userPhone, appointmentId: pend.cita.id });
                 await _send(CANCEL_NO_MSGS[lang] || CANCEL_NO_MSGS.es);
@@ -3452,8 +3452,8 @@ function resolveSalonConfirmation(session, aiResponse, sanitized, frozenProposed
     // ha cerrado; el claim sin escritura lo come la red anti-fantasma, que verifica contra
     // BD). Las ramas de hora/fecha de ARRIBA no se gatean a propósito: «sí pero a las 18»
     // lo resuelve la hora, que es la señal buena.
-    const ambiguo = esAmbiguo(sanitized);
-    if (session.slotsProposed && !ambiguo && isAffirmative(sanitized)) {
+    const ambiguo = esAmbiguo(sanitized, { lang: session.language });
+    if (session.slotsProposed && !ambiguo && isAffirmative(sanitized, { lang: session.language })) {
         const slot = pickChosenSlot(session, aiResponse.datos, proposed);
         if (slot) return { slot, motivo: 'afirmativo_tras_propuesta' };
     }
@@ -3951,8 +3951,8 @@ async function handleSegundaCitaPendiente(client, orgId, session, sanitized, _se
     // «Sí y no a la vez» ni autoriza ni suelta con acuse: cae al camino documentado de
     // «cualquier otra cosa» (la pregunta muere en silencio y el turno sigue su curso).
     // isAffirmative iba primero, así que «Si pero no puedo decirte cuando» RESERVABA.
-    const ambiguo = esAmbiguo(sanitized);
-    if (!ambiguo && isAffirmative(sanitized)) {
+    const ambiguo = esAmbiguo(sanitized, { lang: session.language });
+    if (!ambiguo && isAffirmative(sanitized, { lang: session.language })) {
         session.segundaReservaAutorizada = true;
         logger.info('cita_sante_segunda_autorizada', {
             orgId, telefono: userPhone, fecha: pend.slot.fecha, hora: pend.slot.hora,
@@ -5355,7 +5355,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // acuse. Antes la triple iba inline en un try/catch que se tragaba el fallo y el
         // acuse salía igual: un «le paso tu mensaje al equipo» sobre cero filas — la
         // mentira exacta que el contrato C7 cierra.
-        if (orgType === 'salon' && session.pendingEscalation && esAmbiguo(sanitized)) {
+        if (orgType === 'salon' && session.pendingEscalation && esAmbiguo(sanitized, { lang: session.language })) {
             // «Sí y no a la vez»: ni consume el sí, ni desarma la espera, ni escala. La
             // espera queda ARMADA (el TTL y la re-oferta ya la gobiernan) y el turno sigue
             // su curso hacia el LLM — no se come el turno (lección de Ihab): el próximo
@@ -5366,7 +5366,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             });
         } else if (orgType === 'salon' && session.pendingEscalation) {
             const pendingType = session.pendingEscalationService;
-            if (isAffirmative(sanitized)) {
+            if (isAffirmative(sanitized, { lang: session.language })) {
                 const lang = session.language || 'es';
                 // Oferta EXPIRADA + afirmación: re-preguntar, jamás tragar ni escalar a
                 // ciegas (ver el comentario de OFERTA_TRASPASO_TTL_MS). Sin ofrecidaAt
@@ -5817,7 +5817,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 && (detectConsultaValoracion(sanitized)
                     // Un «sí y no a la vez» no selecciona el bloque de 300 min; la oferta
                     // sigue en pie (consultaOfrecida no se toca) y el próximo sí limpio sí.
-                    || (session.consultaOfrecida && isAffirmative(sanitized) && !esAmbiguo(sanitized)))) {
+                    || (session.consultaOfrecida && isAffirmative(sanitized, { lang: session.language }) && !esAmbiguo(sanitized, { lang: session.language })))) {
                 const consultaSvc = catalogoOfertable.find(isReactiveOnlyService);
                 if (consultaSvc) {
                     session.selectedService = consultaSvc;
@@ -6378,7 +6378,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         if (orgType === 'salon' && aiResponse.accion === 'escalar_humano'
             && aiResponse.motivo_escalado === 'dato_no_disponible'
             && !session.pendingEscalation && !session._ofertaDeclarada
-            && isAffirmative(sanitized)) {
+            && isAffirmative(sanitized, { lang: session.language })) {
             logger.warn('escalada_dato_no_disponible_tras_afirmativo_no_convertida', {
                 orgId, telefono: userPhone,
             });

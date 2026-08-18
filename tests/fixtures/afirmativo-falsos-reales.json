@@ -1,0 +1,135 @@
+{
+  "_meta": "Los 26 entrantes REALES de Sante (messages, 01-17/08/2026) que la lista de subcadenas de isAffirmative leía como «sí» sin serlo. Congelados el 18/08/2026 al poner frontera de palabra: cada uno debe dar FALSE para siempre. La subcadena_culpable es la entrada de la lista que disparaba dentro de otra palabra (nece-SI-to, повреж-ДА-ются, VALE-ria).",
+  "falsos": [
+    {
+      "fecha": "2026-08-01",
+      "subcadena_culpable": "si",
+      "texto": "Hola! Tenemos cita hoy a las 10, queria avisarte que llegaré 10 minutos en retraso lo siento"
+    },
+    {
+      "fecha": "2026-08-01",
+      "subcadena_culpable": "vale",
+      "texto": "Mi nombre es Valeria rivera"
+    },
+    {
+      "fecha": "2026-08-01",
+      "subcadena_culpable": "si",
+      "texto": "Qué datos necesita?"
+    },
+    {
+      "fecha": "2026-08-03",
+      "subcadena_culpable": "si",
+      "texto": "Está súper así.. yo llego y me dicen que debo hacer :) gracias"
+    },
+    {
+      "fecha": "2026-08-03",
+      "subcadena_culpable": "si",
+      "texto": "Hay una posibilidad hoy ?"
+    },
+    {
+      "fecha": "2026-08-03",
+      "subcadena_culpable": "si",
+      "texto": "Tengo el pelo largo.\nPero barajo la posibilidad de cortar.\nEstoy indecisa"
+    },
+    {
+      "fecha": "2026-08-03",
+      "subcadena_culpable": "si",
+      "texto": "Hola, hay una posibilidad que sea a las seis o un poquito antes lo que pasa es que yo salgo del trabajo a las cinco y entran pues se demoraré un poquito para llegar hasta donde ustedes están porque yo vivo por San Juan y trabajo por allá"
+    },
+    {
+      "fecha": "2026-08-03",
+      "subcadena_culpable": "si",
+      "texto": "No se que puede necesitar mi pelo"
+    },
+    {
+      "fecha": "2026-08-04",
+      "subcadena_culpable": "si",
+      "texto": "¿O mejor sábado por la mañana sería posible?"
+    },
+    {
+      "fecha": "2026-08-07",
+      "subcadena_culpable": "bueno",
+      "texto": "Hola buenos días \nQuería cita para la manicura el viernes 14 de agosto 10.30 h"
+    },
+    {
+      "fecha": "2026-08-07",
+      "subcadena_culpable": "si, да",
+      "texto": "Привет! На связи Оксана Телегуз 🎬\n\nПока я упаковываю чьи-то смыслы в золото, мой бот присмотрит за вами.\n\n*Куда путь держим?*\n\n⚡️ *В топ рынка*\nЕсли вы за личным брендом — вам сюда:\nhttps://teleguz.com/\n\n❤️ *В мир добра*\nПо вопросам благотворительности — сюда:\nhttps://asociaciondar.es/ru\n\n🤝 *В партнёрство*\nЕсть идея? Изложите суть в одном сообщении.\n\nА всё остальное подскажет мой ассистент: assistant@teleguz.com\nНе стесняйтесь, пишите.\n\nP.S. Не переключайтесь, скоро буду! 😉"
+    },
+    {
+      "fecha": "2026-08-08",
+      "subcadena_culpable": "si",
+      "texto": "I wanted to mention both of you in the reviews since both of you were wonderful thank you"
+    },
+    {
+      "fecha": "2026-08-09",
+      "subcadena_culpable": "да",
+      "texto": "После этого, у меня волосы будут полностью прямыми? Даже после мытья?"
+    },
+    {
+      "fecha": "2026-08-09",
+      "subcadena_culpable": "да",
+      "texto": "Это сильно волосы повреждает?"
+    },
+    {
+      "fecha": "2026-08-09",
+      "subcadena_culpable": "да",
+      "texto": "Точно не повреждает? И они после этого на долгое время прямые? Даже после мытья ни одной кудри?"
+    },
+    {
+      "fecha": "2026-08-09",
+      "subcadena_culpable": "да",
+      "texto": "Как это проходит и как можно гарантировать что волосы ни как не повреждаются"
+    },
+    {
+      "fecha": "2026-08-10",
+      "subcadena_culpable": "si, bueno",
+      "texto": "Buenos días ☺️ \nHoy tenéis hueco para tratamiento Orising?"
+    },
+    {
+      "fecha": "2026-08-13",
+      "subcadena_culpable": "да",
+      "texto": "Тогда буду через 2 часа"
+    },
+    {
+      "fecha": "2026-08-13",
+      "subcadena_culpable": "si",
+      "texto": "quisiera pasar de un rubio platino a un rubio dorado"
+    },
+    {
+      "fecha": "2026-08-13",
+      "subcadena_culpable": "si",
+      "texto": "sin que quede tonos verdes u opacos"
+    },
+    {
+      "fecha": "2026-08-14",
+      "subcadena_culpable": "да",
+      "texto": "Добрый день, прошу прощения, я не могу ответить сейчас. До обеда я на работе, а после у меня мероприятие. Поэтому мне не очень подходит ваше предложение."
+    },
+    {
+      "fecha": "2026-08-16",
+      "subcadena_culpable": "bueno",
+      "texto": "Hola buenos días. Tienes cita libre mañana a las 14-15 h por ejemplo? Para lavar."
+    },
+    {
+      "fecha": "2026-08-16",
+      "subcadena_culpable": "si",
+      "texto": "Lo siento!!"
+    },
+    {
+      "fecha": "2026-08-17",
+      "subcadena_culpable": "si",
+      "texto": "Color y que me recomienden un cambio positivo"
+    },
+    {
+      "fecha": "2026-08-17",
+      "subcadena_culpable": "si",
+      "texto": "Me lo cortaría antes, así que supongo que el corto"
+    },
+    {
+      "fecha": "2026-08-17",
+      "subcadena_culpable": "si",
+      "texto": "No tienes nada cita libre? No necesito cortar"
+    }
+  ]
+}

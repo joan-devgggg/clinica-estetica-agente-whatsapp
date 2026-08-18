@@ -33,10 +33,12 @@ const { isAffirmative } = require('../../services/helpers');
 // escribir este informe: «confu-SI-ón» y «повре-ЖДА-ются» la ponían a true, así que una queja
 // entera se leía como «ella ya había dicho que sí». Por eso un afirmativo SOLO cuenta si el
 // bot venía de OFRECER algo — que es la pregunta de verdad: ¿estaba contestando a una oferta?
-function contestaAUnaOferta(salientePrevio, entrante, esOferta) {
+function contestaAUnaOferta(salientePrevio, entrante, esOferta, idioma = null) {
     if (!salientePrevio || !entrante) return false;
     if (!esOferta(salientePrevio.content)) return false;
-    return isAffirmative(entrante.content);
+    // El idioma de la ficha decide el vocabulario: «так» es «sí» en ucraniano y un adverbio
+    // común en ruso — con ficha 'ru' no cuenta (mismo criterio que el bot).
+    return isAffirmative(entrante.content, { lang: idioma });
 }
 
 // Ventana por defecto para el bloque de decisión. Días NATURALES: ya no depende del uptime.
@@ -105,7 +107,7 @@ function auditEscaladas({
         } else if (!ultimo) {
             lectura = 'sin_entrante';
         } else {
-            lectura = contestaAUnaOferta(salientePrevio, ultimo, esOferta) ? 'tras_si' : 'sin_preguntar';
+            lectura = contestaAUnaOferta(salientePrevio, ultimo, esOferta, contacto?.language || null) ? 'tras_si' : 'sin_preguntar';
         }
 
         filas.push({

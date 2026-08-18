@@ -684,28 +684,59 @@ function extractTelefono(text) {
 // decir que sí y no pasar nada — la oferta se desarmaba en silencio. Lo cazó el escenario 23
 // (Esther Cediloo, que escribe en inglés) el 09/08/2026.
 //
-// Las nuevas van con \b y no con `includes`, que es como está escrita la lista de arriba: un
-// 'yes' por subcadena convertiría «yesterday I came» en un sí. El coste de un falso positivo
-// aquí es confirmar algo que la clienta no ha confirmado.
-// Y los DEMOSTRATIVOS salen de la lista de subcadenas por el mismo motivo, que es cómo se
-// descubrió lo anterior: «yesterday I came and it was bad» ya devolvía TRUE antes de tocar
-// nada, porque 'este' está dentro de «y-este-rday». Igual 'eso' en «peso» o «queso», 'esa' en
-// «mesa» y 'ese' en «meses». Son las cuatro palabras más cortas y más propensas de la lista,
-// y significan "ese hueco": con \b siguen funcionando sueltas y dejan de disparar dentro de
-// otra palabra.
-const AFIRMATIVOS_PALABRA = [
-    /\b(yes|yeah|yep|yup|sure|okay|of course|go ahead|please do|sounds great)\b/,
-    /\b(este|ese|esa|eso)\b/,
-    buildCyrillicRe(['добре', 'звичайно', 'згоден', 'згодна', 'конечно']),
-];
-function isAffirmative(text) {
+// El 18/08/2026 se midió la dirección CONTRARIA sobre los 411 entrantes reales de Sante:
+// la lista de subcadenas mentía en 26 — «nece-SI-ta», «po-SI-bilidad», «повреж-ДА-ются»,
+// «VALE-ria» (¡un nombre, contestando a «¿cómo te llamas?»!) y las cuatro preguntas de una
+// clienta preocupada por si el alisado daña el pelo, todas leídas como «sí». Por eso TODO va
+// ahora con frontera; la unicode (buildBoundedRe) donde \b no llega, que es todo lo que no
+// sea ASCII puro: \b no cierra nada pegado a una letra cirílica, y «да» son 5 de los 26.
+//
+// Lo que la frontera ROMPERÍA —y por eso se arregla EN EL MISMO CAMBIO, no después— es el
+// alargamiento, que es como se dice que sí por WhatsApp: «siii», «Perfectooo» (real, 16/08),
+// «дааа». Se casa contra el texto Y contra su colapso de letras repetidas. Y las variantes
+// que el colapso no alcanza van ENUMERADAS (doctrina largoKeywords: jamás un corrector
+// difuso): «Oki» es real (17/08). Medido tras el cambio: 102 → 76 síes sobre los 411, los
+// 26 perdidos son EXACTAMENTE los falsos y ni un sí real se pierde; gana 0.
+//
+// Los DEMOSTRATIVOS ya salieron de las subcadenas en su día («'este' está dentro de
+// y-este-rday», «eso» en «peso», «esa» en «mesa»); con \b siguen valiendo sueltos: son
+// ASCII y significan "ese hueco".
+//
+// «так» es el residuo que la frontera NO puede arreglar: en ucraniano es «sí» y en ruso es
+// un adverbio comunísimo («…я всегда к Веронике так записываюсь…», real del 04/08, dio
+// afirmativo en un turno que creó cita). Es la misma palabra suelta, así que se decide por
+// el IDIOMA de la sesión (opts.lang): con 'ru' no cuenta — el ruso tiene «да» y «давай» —
+// y con 'uk' o desconocido sí, que es el lado que no deja a una ucraniana sin su «так».
+const AFIRMATIVOS_EN_RE = /\b(yes|yeah|yep|yup|sure|okay|of course|go ahead|please do|sounds great)\b/;
+const AFIRMATIVOS_DEMOSTRATIVOS_RE = /\b(este|ese|esa|eso)\b/;
+const AFIRMATIVOS_FRONTERA = buildBoundedRe([
+    'si', 'mismo', 'vale', 'correcto', 'perfecto', 'ok',
+    'de acuerdo', 'confirmo', 'confirmado', 'genial', 'claro',
+    'dale', 'venga', 'listo', 'bueno', 'adelante',
+    'me viene bien', 'me va bien', 'quiero ese',
+    'that works', 'sounds good',
+    'да', 'давай',
+    'добре', 'звичайно', 'згоден', 'згодна', 'конечно',
+    // Variantes reales de WhatsApp que el colapso no alcanza, ENUMERADAS. El criterio de
+    // admisión es el de largoKeywords: que lo haya escrito alguien de verdad («Oki», 17/08)
+    // o sea forma común indiscutible, y una fila de test por cada una.
+    'oki', 'okey', 'sip', 'sipi',
+]);
+const TAK_FRONTERA = buildBoundedRe(['так']);
+// «siii» → «si», «Perfectooo» → «perfecto», «дааа» → «да». Solo para MIRAR: el texto que
+// se guarda o se reenvía no pasa por aquí.
+const colapsaAlargamiento = t => t.replace(/(\p{L})\1+/gu, '$1');
+function isAffirmative(text, { lang = null } = {}) {
     const t = normalizeText(text);
-    if (AFIRMATIVOS_PALABRA.some(re => re.test(t))) return true;
-    return ['si', 'sí', 'mismo', 'vale', 'correcto', 'perfecto', 'ok',
-        'de acuerdo', 'confirmo', 'confirmado', 'genial', 'claro',
-        'dale', 'venga', 'listo', 'bueno', 'adelante',
-        'me viene bien', 'me va bien', 'quiero ese',
-        'that works', 'sounds good', 'да', 'давай', 'так'].some(w => t.includes(w));
+    if (!t) return false;
+    const tc = colapsaAlargamiento(t);
+    for (const s of (tc === t ? [t] : [t, tc])) {
+        if (AFIRMATIVOS_EN_RE.test(s)) return true;
+        if (AFIRMATIVOS_DEMOSTRATIVOS_RE.test(s)) return true;
+        if (AFIRMATIVOS_FRONTERA.test(s)) return true;
+        if (lang !== 'ru' && TAK_FRONTERA.test(s)) return true;
+    }
+    return false;
 }
 
 function isNegative(text) {
@@ -732,8 +763,8 @@ const NEGACIONES_FRONTERA = buildBoundedRe([
     'no', 'nope', 'no me va', 'no puedo', 'no me viene', 'otro',
     'otra hora', 'otro dia', 'diferente', 'cambia', 'нет', 'ні',
 ]);
-function esAmbiguo(text) {
-    if (!isAffirmative(text)) return false;
+function esAmbiguo(text, opts = {}) {
+    if (!isAffirmative(text, opts)) return false;
     return NEGACIONES_FRONTERA.test(normalizeText(text));
 }
 
