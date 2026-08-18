@@ -39,6 +39,19 @@ function buildCyrillicRe(literales) {
     return new RegExp(alternativas.map(escapar).join('|'));
 }
 
+// La variante CON frontera, para listas donde una palabra corta dentro de otra no puede
+// contar: «да» vive dentro de «повреж-да-ются» y «no» dentro de «Nos vemos». buildCyrillicRe
+// no pone frontera A PROPÓSITO (ver arriba: sus consumidores buscan frases largas donde la
+// subcadena es la conducta deseada); aquí la frontera ES el arreglo, y no puede ser \b
+// porque \b es ASCII y no cierra nada pegado a una letra cirílica. Se usa lookaround
+// unicode: la palabra cuenta solo si no la toca otra letra o dígito por ninguno de los dos
+// lados. Mismos literales normalizados y escapados que buildCyrillicRe.
+function buildBoundedRe(literales) {
+    const escapar = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const alternativas = [...new Set(literales.map(normalizeText).filter(Boolean))];
+    return new RegExp('(?<![\\p{L}\\p{N}])(?:' + alternativas.map(escapar).join('|') + ')(?![\\p{L}\\p{N}])', 'u');
+}
+
 // Prefijo de los teléfonos del ARNÉS DE PRUEBAS. Todo lo que empiece por aquí es de una
 // conversación simulada y NO puede recibir un mensaje de campaña.
 //
@@ -699,6 +712,29 @@ function isNegative(text) {
     const t = normalizeText(text);
     return ['no', 'nope', 'no me va', 'no puedo', 'no me viene', 'otro',
         'otra hora', 'otro dia', 'diferente', 'cambia'].some(w => t.includes(w));
+}
+
+// ─── esAmbiguo: «sí y no a la vez» no ejecuta nada ───────────────────────────
+//
+// Medido sobre los 411 entrantes reales de Sante (18/08/2026): 34 mensajes daban afirmativo
+// Y negativo a la vez, y en los dos sitios que preguntan isAffirmative antes que isNegative
+// (cancelar una cita, autorizar la segunda) los 34 salían como SÍ — «No tienes nada cita
+// libre? No necesito cortar» habría CANCELADO. La regla: ante la duda se pregunta o se deja
+// el turno al LLM, nunca se actúa.
+//
+// La negación va con FRONTERA y con lista PROPIA — isNegative no se toca (sus otros
+// llamadores conservan semántica) y no sirve tal cual: casa 'no' por subcadena, así que
+// «Si, perfecto. Muchas gracias. NOs vemos mañana» —un sí real— quedaría congelado en la
+// puerta de la segunda cita. Con frontera son 16 ambiguos y ese sí sigue actuando; con
+// subcadena serían 26 e incluirían síes de verdad. «нет»/«ні» se añaden porque el rechazo
+// cirílico no lo veía nadie (isNegative no tiene ni una entrada cirílica).
+const NEGACIONES_FRONTERA = buildBoundedRe([
+    'no', 'nope', 'no me va', 'no puedo', 'no me viene', 'otro',
+    'otra hora', 'otro dia', 'diferente', 'cambia', 'нет', 'ні',
+]);
+function esAmbiguo(text) {
+    if (!isAffirmative(text)) return false;
+    return NEGACIONES_FRONTERA.test(normalizeText(text));
 }
 
 // ─── Validación de nombre ─────────────────────────────────────────────────────
@@ -4890,6 +4926,8 @@ module.exports = {
     extractPreferenciaHoraria,
     isAffirmative,
     isNegative,
+    esAmbiguo,
+    buildBoundedRe,
     isValidName,
     isNameToken,
     isUsableName,

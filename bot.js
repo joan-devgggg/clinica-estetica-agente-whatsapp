@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -3201,8 +3201,13 @@ async function handleCitasExistentes(client, orgId, session, sanitized, _send, u
         session.pendingCitaAccion = null;
 
         if (pend.estado === 'confirmar') {
-            if (isAffirmative(sanitized)) return ejecutarCancelacion(orgId, session, pend.cita, _send, userPhone);
-            if (isNegative(sanitized)) {
+            // «Sí y no a la vez» ni cancela ni descarta: cae al re-ask de abajo (techo 1).
+            // isAffirmative se preguntaba primero, así que un mensaje ambiguo salía como SÍ
+            // y CANCELABA — medido 18/08/2026: «No tienes nada cita libre? No necesito
+            // cortar» (real, 17/08) daba las dos cosas y aquí habría ejecutado.
+            const ambiguo = esAmbiguo(sanitized);
+            if (!ambiguo && isAffirmative(sanitized)) return ejecutarCancelacion(orgId, session, pend.cita, _send, userPhone);
+            if (!ambiguo && isNegative(sanitized)) {
                 logger.info('cita_cancelacion_rechazada', { orgId, telefono: userPhone, appointmentId: pend.cita.id });
                 await _send(CANCEL_NO_MSGS[lang] || CANCEL_NO_MSGS.es);
                 return true;
@@ -3442,12 +3447,18 @@ function resolveSalonConfirmation(session, aiResponse, sanitized, frozenProposed
         if (slot) return { slot, motivo: 'match_hora' };
     }
 
-    if (session.slotsProposed && isAffirmative(sanitized)) {
+    // «Sí y no a la vez» no elige hueco — ni por afirmativo ni por la prosa del modelo
+    // (texto_llm_confirma reservaría por el say-so del LLM sobre un turno que la clienta no
+    // ha cerrado; el claim sin escritura lo come la red anti-fantasma, que verifica contra
+    // BD). Las ramas de hora/fecha de ARRIBA no se gatean a propósito: «sí pero a las 18»
+    // lo resuelve la hora, que es la señal buena.
+    const ambiguo = esAmbiguo(sanitized);
+    if (session.slotsProposed && !ambiguo && isAffirmative(sanitized)) {
         const slot = pickChosenSlot(session, aiResponse.datos, proposed);
         if (slot) return { slot, motivo: 'afirmativo_tras_propuesta' };
     }
 
-    if (session.slotsProposed && llmClaimsBooked(aiResponse.respuesta)) {
+    if (session.slotsProposed && !ambiguo && llmClaimsBooked(aiResponse.respuesta)) {
         const slot = pickChosenSlot(session, aiResponse.datos, proposed);
         if (slot) return { slot, motivo: 'texto_llm_confirma' };
     }
@@ -3937,7 +3948,11 @@ async function handleSegundaCitaPendiente(client, orgId, session, sanitized, _se
     if (!pend || !pend.slot) return false;
     session.pendingSegundaCita = null;
 
-    if (isAffirmative(sanitized)) {
+    // «Sí y no a la vez» ni autoriza ni suelta con acuse: cae al camino documentado de
+    // «cualquier otra cosa» (la pregunta muere en silencio y el turno sigue su curso).
+    // isAffirmative iba primero, así que «Si pero no puedo decirte cuando» RESERVABA.
+    const ambiguo = esAmbiguo(sanitized);
+    if (!ambiguo && isAffirmative(sanitized)) {
         session.segundaReservaAutorizada = true;
         logger.info('cita_sante_segunda_autorizada', {
             orgId, telefono: userPhone, fecha: pend.slot.fecha, hora: pend.slot.hora,
@@ -3961,7 +3976,7 @@ async function handleSegundaCitaPendiente(client, orgId, session, sanitized, _se
         return true;
     }
 
-    if (isNegative(sanitized)) {
+    if (!ambiguo && isNegative(sanitized)) {
         logger.info('cita_sante_segunda_rechazada', { orgId, telefono: userPhone });
         await _send(buildSegundaCitaNoMsg({ citaExistente: pend.citaExistente, language: session.language }));
         return true;
@@ -5340,7 +5355,16 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // acuse. Antes la triple iba inline en un try/catch que se tragaba el fallo y el
         // acuse salía igual: un «le paso tu mensaje al equipo» sobre cero filas — la
         // mentira exacta que el contrato C7 cierra.
-        if (orgType === 'salon' && session.pendingEscalation) {
+        if (orgType === 'salon' && session.pendingEscalation && esAmbiguo(sanitized)) {
+            // «Sí y no a la vez»: ni consume el sí, ni desarma la espera, ni escala. La
+            // espera queda ARMADA (el TTL y la re-oferta ya la gobiernan) y el turno sigue
+            // su curso hacia el LLM — no se come el turno (lección de Ihab): el próximo
+            // «sí» limpio escala por la vía canónica. Antes, un no-afirmativo desarmaba en
+            // silencio, así que «Si pero no puedo decirte cuando» tiraba la oferta entera.
+            logger.info('traspaso_respuesta_ambigua', {
+                orgId, telefono: userPhone, type: session.pendingEscalationService,
+            });
+        } else if (orgType === 'salon' && session.pendingEscalation) {
             const pendingType = session.pendingEscalationService;
             if (isAffirmative(sanitized)) {
                 const lang = session.language || 'es';
@@ -5791,7 +5815,9 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 !session.pendingCorteGenero && !session.pendingCorteMujerTipo &&
                 !session.pendingCorteNinoTipo
                 && (detectConsultaValoracion(sanitized)
-                    || (session.consultaOfrecida && isAffirmative(sanitized)))) {
+                    // Un «sí y no a la vez» no selecciona el bloque de 300 min; la oferta
+                    // sigue en pie (consultaOfrecida no se toca) y el próximo sí limpio sí.
+                    || (session.consultaOfrecida && isAffirmative(sanitized) && !esAmbiguo(sanitized)))) {
                 const consultaSvc = catalogoOfertable.find(isReactiveOnlyService);
                 if (consultaSvc) {
                     session.selectedService = consultaSvc;
