@@ -181,9 +181,11 @@ function cobertura() {
         + 'person» sería absurdo— y para `tono_agresivo` lo manda el prompt. Donde importa es en '
         + '`queja_cita`, que según el prompt debería preguntar antes.',
         'Un afirmativo solo cuenta como «ella ya había dicho que sí» si el saliente ANTERIOR '
-        + 'era una oferta. isAffirmative casa por subcadena y sobre un mensaje largo miente '
-        + '(«confu-SI-ón», «повре-ЖДА-ются»): sin ese gate, tres de las siete filas reales se '
-        + 'leían al revés y una queja entera pasaba por un «sí».',
+        + 'era una oferta. El gate nació cuando isAffirmative casaba por subcadena y mentía '
+        + 'sobre mensajes largos («confu-SI-ón», «повре-ЖДА-ются»): tres de las siete filas '
+        + 'reales se leían al revés. Desde el 18/08/2026 la función lleva frontera de palabra '
+        + 'y el gate se queda de cinturón y tirantes — la pregunta de verdad sigue siendo '
+        + '«¿estaba contestando a una oferta?», no «¿dijo una palabra afirmativa?».',
         'El coda se cuenta por el SALTO DE LÍNEA que lo pega, no por la pregunta suelta: las '
         + 'plantillas fijas (CONSULTA_ASK, menú de rescate) hacen la misma pregunta en una '
         + 'sola línea y si no, se cuelan.',
