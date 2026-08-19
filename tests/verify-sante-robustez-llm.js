@@ -341,6 +341,29 @@ async function escenario(nombre, meta, fn) {
     if (corteProveedor.registra(r.fallbackLLM && r.estado !== 'OK')) abortarPorProveedor();
 }
 
+// Primer día de los próximos 14 SIN ninguna cita real, para que la red de solape —que mira
+// la agenda de verdad— no choque con la agenda sintética que propone los huecos. Sale de la
+// BD en cada corrida: nada escrito a mano que caduque.
+async function primerDiaSinCitas() {
+    const hoy = new Date();
+    const hasta = new Date(hoy.getTime() + 15 * 86400000);
+    const { data, error } = await supabase
+        .from('appointments')
+        .select('starts_at')
+        .eq('organization_id', ORG)
+        .gte('starts_at', hoy.toISOString())
+        .lte('starts_at', hasta.toISOString());
+    if (error) return null;
+    const ocupados = new Set((data || []).map(a => String(a.starts_at).slice(0, 10)));
+    for (let i = 2; i <= 14; i++) {
+        const d = new Date(hoy.getTime() + i * 86400000);
+        const iso = d.toISOString().slice(0, 10);
+        if (ocupados.has(iso)) continue;
+        return { iso, texto: d.toLocaleDateString('es-ES', { day: 'numeric', month: 'long', timeZone: 'Europe/Madrid' }) };
+    }
+    return null;
+}
+
 // Envía y clasifica en un solo paso: comprueba silencio y genéricos.
 async function turno(c, texto) {
     const msgs = await c.send(texto);
@@ -1067,6 +1090,100 @@ async function turno(c, texto) {
         const svc = elegido();
         if (!svc) return rec('DEGRADADO', `no quedó ningún peinado que elegir · "${r4.txt.slice(0, 60)}"`);
         rec('OK', `eligió «${svc.nombre}», y ningún turno cayó en un complemento`);
+    });
+
+    // ─── 33 · El complemento SÍ llega por upsell, y la cita crece 15 min ──────────────
+    // La otra mitad del 32: el filtro no puede haberlo dejado inalcanzable. Se reserva un
+    // tratamiento de la lista y se comprueba el circuito entero contra la BD — el `service`
+    // unido por " + " y el `ends_at` alargado exactamente lo que dura el complemento.
+    //
+    // VIGÍA (DEGRADADO, no BUG): que el modelo saque el upsell en ESTA corrida no está
+    // garantizado, y una rama «no aplicable» explícita es más honesta que un rojo que
+    // baila. Quien prueba la maquinaria del upsell son los tests deterministas; lo que
+    // esto añade es que la entrada REAL, con su precio y su duración reales, hace el viaje
+    // de ida y vuelta.
+    const complementoReal = catalog.find(helpers.isComplementOnlyService) || null;
+    const anclaUpsell = complementoReal
+        ? (cfg?.business_info?.upselling || []).find(r =>
+            (r.sugerencias || []).some(x => helpers.normalizeText(x) === helpers.normalizeText(complementoReal.nombre)))
+        : null;
+    const servicioAncla = anclaUpsell
+        ? catalog.find(sv => helpers.normalizeText(sv.categoria) === helpers.normalizeText(anclaUpsell.servicio)
+                          || helpers.normalizeText(sv.nombre) === helpers.normalizeText(anclaUpsell.servicio))
+        : null;
+    await escenario(`el complemento llega por upsell y alarga la cita${complementoReal ? '' : ' (no hay ninguno)'}`, { familia: 'C', idioma: 'es' }, async (c, rec) => {
+        if (!complementoReal || !servicioAncla) {
+            return rec('OK', 'no aplicable: el catálogo vivo no tiene complemento con regla de upsell');
+        }
+        await turno(c, 'hola, soy Nuria Pons');
+        await turno(c, `quiero ${servicioAncla.nombre}`);
+        // Se pide un día SIN citas reales, calculado en el momento y no escrito aquí. Sin
+        // esto el escenario es un rojo permanente: la agenda que propone huecos es
+        // SINTÉTICA (stubAgenda) pero `ampliacionSolapa` mira la agenda REAL, porque bot.js
+        // desestructura `getAppointmentsByStylistAndRange` al cargar y el stub no le llega.
+        // Las dos discrepan por construcción, así que el arnés ofrecía un hueco encima de
+        // una clienta de verdad y la red de solape —con razón— frenaba la ampliación.
+        // Medido el 19/08/2026: el lunes 24 lo tenía Elena Rotaru con Irina de 8 a 16.
+        const diaLibre = await primerDiaSinCitas();
+        if (!diaLibre) return rec('OK', 'no aplicable: no hay ningún día libre en los próximos 14');
+        let propuesta = await turno(c, `el ${diaLibre.texto}`);
+        let horas = propuesta.txt.match(/\b\d{1,2}:\d{2}\b/g) || [];
+        if (!horas.length) {
+            propuesta = await turno(c, '¿a qué horas tienes?');
+            horas = propuesta.txt.match(/\b\d{1,2}:\d{2}\b/g) || [];
+        }
+        if (!horas.length) return rec('DEGRADADO', `no propuso huecos · "${propuesta.txt.slice(0, 70)}"`);
+
+        // Mismo bucle acotado que el escenario 18: el camino hasta la reserva lo decide el
+        // modelo y unas veces pide aprobación antes.
+        let r = await turno(c, horas[0]);
+        for (let i = 0; i < 3 && !r.vacio; i++) {
+            if (bot._internals.getSession(ORG, c.phone)?.reservaConfirmada) break;
+            if (/[¿?]/.test(r.txt)) { r = await turno(c, 'sí'); continue; }
+            break;
+        }
+        if (r.vacio) return rec('SILENCIO', 'se calló al reservar');
+        const s = bot._internals.getSession(ORG, c.phone) || {};
+        if (!s.reservaConfirmada || !s.appointmentId) {
+            return rec('DEGRADADO', `no llegó a reservar · "${r.txt.slice(0, 70)}"`);
+        }
+
+        // ¿Ofreció el complemento en el mensaje de confirmación?
+        const nombreRe = new RegExp(complementoReal.nombre.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+        if (!nombreRe.test(r.txt)) {
+            return rec('DEGRADADO', `reservó pero no ofreció el complemento · "${r.txt.slice(-90)}"`);
+        }
+
+        const antes = await db.getAppointmentById(ORG, s.appointmentId);
+        const finAntes = antes?.ends_at ? new Date(antes.ends_at).getTime() : null;
+
+        const r2 = await turno(c, 'sí, añádemelo');
+        if (r2.vacio) return rec('SILENCIO', 'se calló al aceptar el complemento');
+
+        // El veredicto sale de la BD, no del texto.
+        const apt = await db.getAppointmentById(ORG, s.appointmentId);
+        if (!apt) return rec('DEGRADADO', 'la cita desapareció de la BD');
+        // La red de solape es CONDUCTA CORRECTA, no un fallo: si alargar la cita se comiera
+        // la siguiente de esa estilista, NO se escribe, se avisa y se escala. Que salte aquí
+        // significa que el complemento se resolvió y se calculó el nuevo fin — el circuito
+        // entero menos la escritura — y que había una cita de verdad delante.
+        if (!nombreRe.test(apt.service || '')) {
+            const solape = bot._internals.getSession(ORG, c.phone)?.botActivo === false;
+            if (solape) {
+                return rec('OK', 'no aplicable: la red de ampliacion_cita_solapa frenó la escritura contra una cita real (conducta correcta)');
+            }
+            return rec('DEGRADADO', `aceptó y el service no lo lleva: "${apt.service}"`);
+        }
+        if (!/ \+ /.test(apt.service || '')) {
+            return rec('DEGRADADO', `el service no está unido por " + ": "${apt.service}"`);
+        }
+        const finDespues = apt.ends_at ? new Date(apt.ends_at).getTime() : null;
+        const crecioMin = (finAntes && finDespues) ? Math.round((finDespues - finAntes) / 60000) : null;
+        if (crecioMin !== complementoReal.duracion) {
+            return rec('DEGRADADO', `ends_at creció ${crecioMin} min, no ${complementoReal.duracion}`);
+        }
+        void anclaUpsell;
+        rec('OK', `"${apt.service}" · +${crecioMin} min en agenda`);
     });
 
     restore();
