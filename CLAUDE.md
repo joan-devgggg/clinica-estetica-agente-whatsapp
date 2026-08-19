@@ -1108,10 +1108,11 @@ test, no del sistema: 3 horarios copiados de la migración y un plural — ver a
 ### `verify:robustez:llm` — línea base y cómo leer un DEGRADADO
 
 Llama al LLM de verdad: **no es determinista y su línea base es un rango**. Desde el 19/08/2026
-son **32 escenarios** (26–28: precio presencial, «Keratina», objeto olvidado; 29: el anillo C7
-de punta a punta; 30–31: el francés y su CONTROL en ruso, los idiomas del salón; 32: que un
-servicio `solo_complemento` no sea nunca el elegido); línea base medida el 19/08: **OK 32 ·
-todo lo demás 0**, y sin un solo reintento. La del 15/08 fue OK 29
+son **33 escenarios** (26–28: precio presencial, «Keratina», objeto olvidado; 29: el anillo C7
+de punta a punta; 30–31: el francés y su CONTROL en ruso, los idiomas del salón; 32–33: que un
+servicio `solo_complemento` no sea nunca el elegido, y que sí llegue por upsell alargando la
+cita); línea base medida el 19/08: **OK 33 · todo lo demás 0**, sin un solo reintento y sin un
+solo 402. La del 15/08 fue OK 29
 con un degradado transitorio del modelo en el 21 absorbido por el reintento automático del
 arnés, que es su trabajo.
 
