@@ -3,7 +3,7 @@ require('dotenv').config();
 const config = require('../../config.json');
 const db = require('../db');
 const { getOrgType } = require('../org-registry');
-const { normalizeText, classifyLargoVariant, hasApellido, isReactiveOnlyCategory, offerableCatalog, IDIOMAS_SOPORTADOS, MOTIVOS_LLM, MOTIVOS_OFRECIBLES, resolveDiasDeApertura, DIAS_SEMANA_ES, DIAS_SEMANA_ES_PLURAL, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX } = require('../helpers');
+const { normalizeText, classifyLargoVariant, hasApellido, isReactiveOnlyCategory, offerableCatalog, botOfferableCatalog, isComplementOnlyService, IDIOMAS_SOPORTADOS, MOTIVOS_LLM, MOTIVOS_OFRECIBLES, resolveDiasDeApertura, DIAS_SEMANA_ES, DIAS_SEMANA_ES_PLURAL, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX } = require('../helpers');
 // Observador de la salud del proveedor del modelo. No decide nada del flujo: solo cuenta.
 // summarizeHistory NO se instrumenta — no recibe orgId, y que falle un resumen no le llega
 // a ninguna clienta. El embudo que importa es este.
@@ -279,7 +279,12 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
     // menú de categorías, y las variantes de largo del próximo paso) hereda el filtro.
     // La resolución del histórico NO pasa por aquí: vive en computeServiceBilling y
     // compañía, que siguen leyendo el catálogo entero.
-    const services = offerableCatalog(agentCfg?.services);
+    // `botOfferableCatalog` y no `offerableCatalog`: además de los servicios dados de baja
+    // quita los que SOLO se venden como complemento («Peinado con tratamientos», 15 €, que
+    // no se puede peinar sin lavar). Aquí está el 90 % de la garantía de que no se ofrezca
+    // suelto — lo que el modelo no tiene en el contexto no lo puede proponer. La prosa sola
+    // no basta: es exactamente lo que pasó con la Consulta de valoración el 02/08/2026.
+    const services = botOfferableCatalog(agentCfg?.services);
     const handoffMessage = agentCfg?.handoff_message || 'Un momento, te paso con alguien del equipo.';
 
     const salonName = info.companyName || 'Sante Healthy Hair Salon';
@@ -734,6 +739,43 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
         ? `MECHAS CONTOURING:\nEl precio no depende del largo del pelo: es el mismo para todos los largos y está en el catálogo de arriba. NO preguntes el largo del pelo.\n\n`
         : '';
 
+    // ── Los complementos que NO se venden sueltos ────────────────────────────────────
+    //
+    // «Peinado con tratamientos» (15 €, 15 min) no está en el CATÁLOGO de arriba —lo quita
+    // `botOfferableCatalog`, y ésa es la garantía— pero el modelo tiene que SABER que
+    // existe: si no, a «¿me peinas después del tratamiento?» contesta que no lo hacemos.
+    // Prompt para saber, filtro para garantizar; son dos cosas distintas y la segunda no
+    // depende de la primera.
+    //
+    // Los tratamientos a los que se ata NO se escriben aquí: salen de las reglas de
+    // `business_info.upselling` que apuntan a este servicio, que es la MISMA lista con la
+    // que el bot lo ofrece de verdad. Con dos listas, el día que la dueña quite una regla
+    // el prompt seguiría prometiéndolo (y al revés) — es la lección de formatReminderWhen.
+    // Sin reglas que lo nombren no se dice a qué se ata, solo que no va suelto (regla 3).
+    const complementos = (Array.isArray(agentCfg?.services) ? agentCfg.services : [])
+        .filter(isComplementOnlyService);
+    const bloqueComplementos = complementos.map(c => {
+        const anclas = (agentCfg?.business_info?.upselling || [])
+            .filter(r => (r.sugerencias || []).some(sug => normalizeText(sug) === normalizeText(c.nombre)))
+            .map(r => String(r.servicio || '').trim())
+            .filter(Boolean);
+        const precio = (c.precio == null) ? 'precio a confirmar en el salón' : `${c.precio}€`;
+        const conQue = anclas.length
+            ? `Solo se añade a estos servicios: ${anclas.join(', ')}.`
+            : 'Solo se añade a otro servicio; hoy no hay ninguno configurado, así que no digas a cuáles.';
+        // El MOTIVO sale de la entrada (`nota`), no del código. «No se puede peinar sin
+        // lavar» es cierto de ESTE complemento y de ninguno más: escrito aquí, el día que
+        // la dueña añada otro —un diseño de uñas, pongamos— el prompt se lo explicaría con
+        // el motivo del peinado. Sin `nota` no se da motivo (regla 3): la prohibición se
+        // sostiene sola.
+        const motivo = String(c.nota || '').trim();
+        return `${c.nombre.toUpperCase()} (${precio}, ${c.duracion} min) — COMPLEMENTO, NUNCA SUELTO:\n`
+            + `No es un servicio que se pueda reservar por su cuenta, y por eso no está en el catálogo de arriba. ${conQue}`
+            + (motivo ? ` El porqué, por si viene a cuento: ${motivo}` : '') + `\n`
+            + `Si la clienta pide algo parecido por su cuenta, NO es esto: ofrécele lo que sí está en el catálogo de arriba.\n`
+            + `Y NO lo ofrezcas tú por iniciativa propia: cuando toque, el sistema te lo pone en el mensaje de confirmación.\n\n`;
+    }).join('');
+
     // Los días que abre y cierra el salón salen de business_hours (día ausente = cerrado),
     // que edita la dueña. La MISMA lista alimenta la red anti-cierre-falso de bot.js: con
     // dos fuentes, el día que abriera un domingo el prompt diría la verdad y la red la
@@ -876,7 +918,7 @@ Si la clienta pregunta por productos para comprar (champú, mascarilla, tratamie
 
 # ── SERVICIOS CON INSTRUCCIONES ESPECIALES ────────────────────────────────
 
-${bloqueMechasClasicas}${bloqueContouring}PEINADO ESPECIAL:
+${bloqueMechasClasicas}${bloqueContouring}${bloqueComplementos}PEINADO ESPECIAL:
 Descríbelo como: "Incluye levantar la raíz, ondas grandes con fijación y mucha laca. Perfecto para ocasiones especiales."
 
 SI LA CLIENTA DICE SOLO "MECHAS" (sin especificar tipo):

@@ -275,17 +275,26 @@ test('oferta · el catálogo del prompt no enseña el servicio de baja al modelo
 // 5. Chokepoint: que no se añada un sitio de oferta que lea el catálogo a pelo
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('chokepoint · los ficheros de oferta pasan por offerableCatalog', () => {
+test('chokepoint · los ficheros de oferta pasan por el catálogo FILTRADO', () => {
     // Grep, con lo que eso vale: no atrapa un call site nuevo escrito de otra forma, sí
     // atrapa el copy-paste de uno existente, que es como se añaden en la práctica.
+    //
+    // 19/08/2026: los sitios de OFERTA DEL BOT pasaron de `offerableCatalog` a
+    // `botOfferableCatalog`, que quita además los servicios que solo se venden como
+    // complemento. Sigue siendo el mismo invariante —el bot no propone lo que no puede
+    // proponer— con un filtro más ancho; `offerableCatalog` sigue vivo para el panel.
     const raiz = path.join(__dirname, '..');
     const openai = fs.readFileSync(path.join(raiz, 'services/providers/openai.js'), 'utf8');
     const bot = fs.readFileSync(path.join(raiz, 'bot.js'), 'utf8');
 
-    assert.ok(/const services = offerableCatalog\(agentCfg\?\.services\)/.test(openai),
-        'el catálogo del prompt de Sante tiene que salir de offerableCatalog');
-    assert.ok(/const catalogoOfertable = offerableCatalog\(agentCfgPre\?\.services\)/.test(bot),
-        'el bloque determinista de selección de servicio tiene que tener su catálogo ofertable');
+    assert.ok(/const services = botOfferableCatalog\(agentCfg\?\.services\)/.test(openai),
+        'el catálogo del prompt de Sante tiene que salir de botOfferableCatalog');
+    assert.ok(/const catalogoOfertable = botOfferableCatalog\(agentCfgPre\?\.services\)/.test(bot),
+        'el bloque determinista de selección de servicio tiene que tener su catálogo filtrado');
+    // Ni un solo `offerableCatalog(` suelto en bot.js: todos sus call sites son de oferta
+    // del bot, así que uno sin el prefijo `bot` es un filtro que se ha quedado corto.
+    assert.ok(!/[^t]offerableCatalog\(/.test(bot),
+        'queda un offerableCatalog( en bot.js: ahí el filtro tiene que ser botOfferableCatalog');
 
     // Los detectores que ELIGEN servicio no pueden recibir el catálogo crudo.
     for (const detector of ['findCorteService', 'detectLargoCategory', 'resolveK18ServiceFromText']) {

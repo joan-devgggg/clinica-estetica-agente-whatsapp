@@ -3616,6 +3616,39 @@ function offerableCatalog(catalog) {
     return (Array.isArray(catalog) ? catalog : []).filter(isServiceActive);
 }
 
+// ─── Servicios que SOLO se venden como complemento (`solo_complemento: true`) ─
+//
+// «Peinado con tratamientos» (15 €, 15 min): la clienta llega con la cabeza ya lavada del
+// tratamiento y se le añaden plancha u ondas. NO se puede vender suelto — no se puede
+// peinar sin lavar — así que el bot no puede proponerlo NUNCA como servicio principal.
+//
+// La marca vive en la ENTRADA y no en un Set de categorías en el código. La diferencia no
+// es de estilo: la categoría la edita la dueña sobre el JSONB, y un Set contra su nombre
+// deja de casar el día que la renombre — el servicio se volvería ofertable EN SILENCIO
+// (regla 5). Es la fragilidad que hoy tiene `REACTIVE_ONLY_CATEGORIES` con «Consulta», y
+// que aquí no se hereda. `activo` ya resolvió esto mismo así, y por lo mismo.
+//
+// Ausente = servicio normal, igual que `activo`: sin backfill, y solo el `true` explícito
+// marca. Un `solo_complemento: null` de un editor a medio escribir no esconde nada.
+function isComplementOnlyService(svc) {
+    return svc?.solo_complemento === true;
+}
+
+// El catálogo que el BOT puede PROPONER. Es `offerableCatalog` menos los complementos, y
+// son dos listas distintas a propósito:
+//
+//   · `offerableCatalog`   → lo que EXISTE y se puede vender. Lo usa el panel
+//     (`GET /api/service-catalog`), donde decide una PERSONA: la dueña tiene que poder
+//     añadir el complemento a mano a una cita de tratamiento, o la caja no cuadra.
+//   · `botOfferableCatalog` → lo que el bot puede ofrecer y seleccionar solo.
+//
+// Y por debajo de las dos, la de siempre: lo que se RESUELVE va contra el catálogo
+// COMPLETO — facturación, duración de una cita viva, `buildFullServiceName`, las etiquetas
+// de upselling. El filtro va en el CALL SITE, jamás dentro de un helper de resolución.
+function botOfferableCatalog(catalog) {
+    return offerableCatalog(catalog).filter(svc => !isComplementOnlyService(svc));
+}
+
 // Detecta la intención REACTIVA de "quiero que me asesoren / no sé qué servicio quiero".
 // Solo intención de ELECCIÓN DE SERVICIO — NUNCA de largo de pelo. El gating (que solo
 // se llame cuando no hay servicio concreto detectado ni flujo de largo/corte pendiente)
@@ -5055,6 +5088,8 @@ module.exports = {
     isReactiveOnlyService,
     isServiceActive,
     offerableCatalog,
+    isComplementOnlyService,
+    botOfferableCatalog,
     // Facturación por estilista
     resolveServiceCatalogEntry,
     findCatalogEntriesExact,

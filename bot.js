@@ -12,7 +12,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, offerableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, botOfferableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -3793,7 +3793,7 @@ async function handleNombreParaCita(client, orgId, session, sanitized, _send, us
     // OFERTA: el residuo se mide contra lo ofertable, que es lo que el turno podría acabar
     // proponiendo. Un servicio de baja no abre un turno.
     const otra = mensajeTraeOtraCosa(residuoTrasNombre(sanitized, nombre),
-        { catalogo: offerableCatalog(catalogo) });
+        { catalogo: botOfferableCatalog(catalogo) });
 
     if (nombre) {
         session.partialData.nombre = nombre;
@@ -3869,7 +3869,7 @@ function residuoCambiaLaCita(texto, senal, session, slot, catalogo = []) {
     }
     if (senal === 'servicio') {
         // Nombrar el MISMO servicio que ya está elegido no cambia nada; otro, sí.
-        const cat = offerableCatalog(catalogo);
+        const cat = botOfferableCatalog(catalogo);
         const svc = cat.length ? extractServiceFromText(texto, cat) : null;
         return !!svc && svc.nombre !== session.selectedService?.nombre;
     }
@@ -5258,7 +5258,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                         const cfgSecond = await getAgentConfig(orgId);
                         // OFERTA: esto abre una SEGUNDA reserva, así que un servicio dado
                         // de baja no puede dispararla.
-                        const catalogSecond = offerableCatalog(cfgSecond?.services);
+                        const catalogSecond = botOfferableCatalog(cfgSecond?.services);
                         const svcNuevo = extractServiceFromText(sanitized, catalogSecond);
                         // Guard: si el servicio detectado es el upselling que el bot ACABA de
                         // ofrecer (o uno ya aceptado en esta cita), la clienta lo está aceptando
@@ -5550,7 +5550,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // rango de tratamientos. Nombrar un servicio de baja no cuenta como haberlo
             // elegido — si contara, el flujo seguiría hacia un servicio que no se puede
             // seleccionar y se quedaría sin salida.
-            const catalogoPre = problema ? offerableCatalog((await getAgentConfig(orgId))?.services) : [];
+            const catalogoPre = problema ? botOfferableCatalog((await getAgentConfig(orgId))?.services) : [];
             // El residual es el mensaje sin los tramos de síntoma: si ahí queda un servicio
             // o categoría del catálogo, la clienta SÍ nombró lo que quiere ("tengo el pelo
             // seco, quiero una hidratación") y sigue el flujo normal de reserva.
@@ -5592,7 +5592,12 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // OFERTA y va contra el catálogo ofertable. Las dos excepciones se marcan donde
             // están: las variantes indexadas por posición (arriba) y las guardas que solo
             // usan el catálogo para descartar un nombre propio (abajo).
-            const catalogoOfertable = offerableCatalog(agentCfgPre?.services);
+            // `botOfferableCatalog`, no `offerableCatalog`: quita además los servicios que
+            // SOLO se venden como complemento. Es lo que impide que «Peinado con
+            // tratamientos» (15 €/15 min) llegue a ser `selectedService` — ni por detección
+            // libre, ni por el token suelto «tratamientos», que sí resuelve contra el
+            // catálogo completo y ahí es correcto que resuelva.
+            const catalogoOfertable = botOfferableCatalog(agentCfgPre?.services);
 
             // ── Segunda reserva: resolver el servicio DENTRO de la categoría pedida ──
             // La clienta pidió "un masaje" (categoría ambigua), el bot preguntó el tipo y
@@ -6538,7 +6543,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 // OFERTA: el modelo ya no ve los servicios de baja en el catálogo del
                 // prompt, pero puede repetir uno leyéndolo del historial de la conversación
                 // (o del resumen). Este filtro es el que impide que eso lo reactive.
-                const servicesCatalog = offerableCatalog(agentCfg?.services);
+                const servicesCatalog = botOfferableCatalog(agentCfg?.services);
                 // Desambiguar usando categoria_servicio que el LLM puede haber devuelto,
                 // o la categoría guardada en partialData. Evita coger la primera entrada
                 // cuando el nombre (ej. "Largo 3") existe en varias categorías.
@@ -7223,7 +7228,7 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // respuesta buena del turno siguiente.
         if (orgType === 'salon' && Number.isFinite(session.precioPedido)) {
             // OFERTA: esto propone servicios, así que un servicio de baja no puede salir aquí.
-            const catPrecio = offerableCatalog((await getAgentConfig(orgId))?.services);
+            const catPrecio = botOfferableCatalog((await getAgentConfig(orgId))?.services);
             const veredicto = respondsWithUnbackedPrice(aiResponse.respuesta, session.precioPedido, catPrecio);
             if (veredicto.accion === 'rectificar') {
                 logger.warn('cita_sante_precio_sin_respaldo_bloqueado', {
