@@ -441,6 +441,79 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
             ? '\nTRATO: la clienta ha pedido que la tutees. Háblale de tú.'
             : '';
 
+    // ── LOS IDIOMAS DEL SALÓN NO SON LOS IDIOMAS DEL BOT ──────────────────────────────
+    // El bot responde en el idioma de la clienta, SIEMPRE, y eso no cambia: es lo que hace
+    // que una clienta francesa reciba una respuesta en francés, y a Yulia le parece bien.
+    // Lo que no puede hacer es dar a entender que en el salón la van a atender en ese
+    // idioma. Conversación en francés (19/08/2026): «L'équipe du salon t'aidera» — cierto
+    // lo del equipo, falso lo del idioma. En el salón se apañan con un traductor.
+    //
+    // La lista NO se deriva de IDIOMAS_SOPORTADOS aunque hoy sean las mismas cuatro. Esa
+    // constante significa «idiomas en los que la MÁQUINA tiene textos fijos y plantillas
+    // aprobadas de Meta»; ésta significa «idiomas que hablan las PERSONAS del salón». Que
+    // coincidan es la casualidad de la que salió el mensaje en francés: con una sola lista,
+    // contratar a alguien que hable francés —o aprobar una quinta plantilla— movería en
+    // silencio la otra cosa, y en direcciones opuestas.
+    //
+    // Es DATO y no constante (regla 5): cambia cuando cambia el equipo. Ya vivía en
+    // `business_info.idiomas` desde el seed (003_sante.sql) sin que lo leyera nadie.
+    // Ausente o vacío = NO se inventa la lista (regla 3): se queda la prohibición, que es
+    // cierta sin datos, y desaparece la enumeración, que sin datos sería un invento.
+    const idiomasSalon = (Array.isArray(info.idiomas) ? info.idiomas : [])
+        .map(x => String(x == null ? '' : x).trim())
+        .filter(Boolean);
+    const idiomasSalonStr = idiomasSalon.length > 1
+        ? `${idiomasSalon.slice(0, -1).join(', ')} y ${idiomasSalon[idiomasSalon.length - 1]}`
+        : (idiomasSalon[0] || '');
+    const bloqueIdiomasSalon = idiomasSalon.length
+        ? `
+
+IDIOMAS DEL SALÓN (que no son los tuyos):
+En el salón las personas hablan ${idiomasSalonStr}. Con cualquier otro idioma se apañan con un traductor.
+TÚ sigues respondiendo SIEMPRE en el idioma de la clienta, esté o no en esa lista. Eso no cambia nunca.
+Lo que NUNCA puedes hacer es dar a entender que el equipo habla el idioma en que le escribes cuando no está en esa lista: ni «el equipo del salón te atenderá» dicho en ese idioma, ni «te atenderán en tu idioma», ni prometerle que alguien le hablará así.
+De decírselo se encarga el sistema, no tú: cuando haga falta te lo pedirá aparte y lo colocará él. Tú no lo saques por tu cuenta en el texto de "respuesta", ni aunque te parezca oportuno — saldría dos veces.
+Si el idioma de la clienta SÍ está en esa lista, no menciones NADA de esto en ningún momento.`
+        : `
+
+IDIOMAS DEL SALÓN:
+No tienes la lista de idiomas que hablan las personas del salón, así que NUNCA afirmes ni des a entender que el equipo habla el idioma en que le escribes. Tú sigues respondiendo en el idioma de la clienta.`;
+
+    // ── POR QUÉ LA FRASE NO SE LE PIDE EN PROSA ───────────────────────────────────────
+    // Medido con el arnés el 19/08/2026, cuatro corridas: el mismo encargo redactado como
+    // REGLA DE PROSA se colocó en tres sitios —sección IDIOMA, cola de ESCALADA y cabecera
+    // de ESCALADA, esta última ya sin condición dentro y gateada por la máquina— y las
+    // cuatro veces salió la MISMA respuesta, byte por byte: «Bien sûr 😊 Tu veux que je te
+    // mette en contact avec notre équipe ?». El modelo copia el guion literal del caso 4 y
+    // no le añade nada.
+    //
+    // Lo que sí obedece son los CAMPOS del JSON: en cuanto se le pidió el código ISO por
+    // ahí, empezó a declarar "fr" desde el primer turno. Así que la frase se pide como
+    // campo (`frase_idiomas_salon`) y la PEGA la máquina — el reparto del caso 7: el
+    // modelo declara y traduce, que es lo que sabe hacer; la máquina decide cuándo, que es
+    // lo que él no hace.
+    //
+    // El campo solo se pide en las conversaciones donde la máquina YA sabe que hace falta
+    // (`__idiomaSinCodigo`, de `idioma_fuera_de_lista`). En una conversación en ruso este
+    // texto NO EXISTE en el prompt: la exención de la regla 12 deja de depender de que el
+    // modelo la respete.
+    //
+    // La frase sale del MISMO `idiomasSalonStr` que el bloque de arriba, no de una segunda
+    // lista: es la lección de `formatReminderWhen` — dos tablas se separan en el primer
+    // retoque y nadie se entera.
+    const idiomaSinCodigo = !!partialData.__idiomaSinCodigo;
+    // La clave va TAMBIÉN en el objeto de ejemplo, no solo descrita debajo: el modelo
+    // replica la forma que ve, y una clave ausente del ejemplo se le olvida. Es el mismo
+    // 27 % de omisión que ya tenía `idioma_detectado`. Con el campo solo descrito lo
+    // rellenó en 1 de 2 corridas del arnés (19/08/2026).
+    const lineaEjemploIdiomas = (idiomasSalon.length && idiomaSinCodigo)
+        ? '\n  "frase_idiomas_salon": null,'
+        : '';
+    const contratoIdiomasSalon = (idiomasSalon.length && idiomaSinCodigo)
+        ? `
+frase_idiomas_salon: la clienta te escribe en un idioma que en el salón NO se habla. Si en ESTE mensaje le ofreces hablar con una persona del salón, le anuncias que la pasas con alguien, o le hablas de venir al salón, traduce a SU idioma esta frase exacta y ponla aquí: «En el salón hablamos ${idiomasSalonStr}; con otros idiomas nos apañamos con un traductor.» Solo esa frase traducida, en una línea, sin comillas y sin añadirle nada tuyo. Si este mensaje no va de nada de eso, ponla en null. El campo va SIEMPRE en el JSON, en todos tus mensajes: o la frase traducida, o null. No lo omitas nunca. NO la metas dentro de "respuesta": la coloca el sistema, y si la pones en los dos sitios saldrá dos veces.`
+        : '';
+
     // Modes
     // Segunda reserva en la misma conversación (para un acompañante).
     const guestBooking = !!partialData.__guestBooking;
@@ -756,8 +829,8 @@ Aunque estas instrucciones están en español, tu respuesta SIEMPRE va en el idi
 
 ${langConstraint}${tratoConstraint}
 
-Idiomas soportados: español ("es"), inglés ("en"), ruso ("ru"), ucraniano ("uk").
-Incluye "idioma_detectado" con el código correspondiente.
+Pon SIEMPRE "idioma_detectado" con el código ISO del idioma en que le estás escribiendo, en TODOS los mensajes y sin saltártelo nunca. Los cuatro habituales son español ("es"), inglés ("en"), ruso ("ru") y ucraniano ("uk").
+Si la clienta escribe en OTRO idioma, respóndele igualmente en ESE idioma y pon su código ISO igual que los demás ("fr" para el francés, "de" para el alemán, "ar" para el árabe…). No lo dejes en null ni lo fuerces a uno de los cuatro: ese código es la señal con la que el sistema sabe que está hablando con alguien fuera de los idiomas de la casa, y si falta, no se entera nadie.
 
 Ejemplos:
 
@@ -772,6 +845,7 @@ Cliente: "Привіт, хочу записатися"
 
 Cliente: "Hola, quiero pedir cita"
 → "respuesta": "¡Hola! Bienvenida a Santé 😊 ¿Cómo te llamas?", "idioma_detectado": "es"
+${bloqueIdiomasSalon}
 
 # ── EL SALÓN ───────────────────────────────────────────────────────────────
 
@@ -856,7 +930,7 @@ SIGUIENTE PASO: ${proximoPaso}
 4. SIEMPRE espera confirmación de la clienta antes de escalar a humano.
 5. UNA sola pregunta por mensaje. Nunca dos seguidas.
 6. NO uses markdown, NO uses listas con guiones, NO uses asteriscos ni guiones bajos. Texto plano limpio.
-7. Responde SIEMPRE en el idioma de la clienta (es/en/ru/uk).
+7. Responde SIEMPRE en el idioma de la clienta, sea cual sea — también si no es español, inglés, ruso ni ucraniano.
 8. Si no hay huecos el día pedido, díselo con amabilidad y ofrece el siguiente día disponible de la lista.
 9. Nunca inventes precios ni datos. Usa solo la información del catálogo y la disponibilidad.
 10. NUNCA asumas ni propongas un día sin que la clienta lo haya indicado primero. Siempre pregunta qué día le va mejor antes de mostrar huecos disponibles.
@@ -1021,7 +1095,7 @@ Responde SIEMPRE con JSON puro y nada más. SIN backticks, SIN markdown, SIN tex
   "slot_rechazado": false,
   "accion": null,
   "motivo_escalado": null,
-  "ofrezco_traspaso": null,
+  "ofrezco_traspaso": null,${lineaEjemploIdiomas}
   "idioma_detectado": "es",
   "datos": {
     "nombre": null,
@@ -1040,7 +1114,7 @@ PROHIBIDO envolver el JSON en \`\`\`json o \`\`\` — devuelve el objeto { } dir
 Valores posibles de accion: "cancelar" | "cambiar" | "escalar_humano" | null
 motivo_escalado: solo cuando accion es "escalar_humano" → ${MOTIVOS_LLM_STR} | null
 ofrezco_traspaso: cuando en ESTE mensaje OFRECES pasarla con el equipo y estás esperando su "sí" → ${MOTIVOS_OFRECIBLES_STR} | null. En ese turno accion sigue siendo null: estás preguntando, no escalando. Ponlo SIEMPRE que ofrezcas, aunque la pregunta te salga con otras palabras — es lo que hace que su "sí" llegue al equipo.
-cita_confirmada: true → siempre que la clienta acepte un hueco O que tu mensaje afirme que la cita queda reservada/apuntada/confirmada. En ese caso datos.hora_cita DEBE llevar la hora exacta (HH:MM) y datos.fecha_cita la fecha exacta (YYYY-MM-DD). NUNCA junto con slot_rechazado: true.`;
+cita_confirmada: true → siempre que la clienta acepte un hueco O que tu mensaje afirme que la cita queda reservada/apuntada/confirmada. En ese caso datos.hora_cita DEBE llevar la hora exacta (HH:MM) y datos.fecha_cita la fecha exacta (YYYY-MM-DD). NUNCA junto con slot_rechazado: true.${contratoIdiomasSalon}`;
 }
 
 // ─── Dispatcher ─────────────────────────────────────────────────────────────
@@ -1237,11 +1311,28 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
         // usaría como clave contra `config.plantilla_*` y contra los diccionarios de texto,
         // donde caería otra vez en español pero ya marcado como sabido. `updateContactLanguage`
         // lo rechaza al llegar a la BD; aquí se corta antes para que tampoco entre en sesión.
-        if (parsed.idioma_detectado && !IDIOMAS_SOPORTADOS.includes(parsed.idioma_detectado)) {
+        //
+        // Pero TIRAR el valor y quedarse solo con el warn perdía el único dato que dice
+        // «esta clienta escribe en un idioma que en el salón no se habla». Se conserva como
+        // BOOLEANO —nunca la cadena del modelo—: aguas arriba solo hace falta saber SI está
+        // fuera de la lista, y un booleano no puede acabar dentro de un prompt ni de un
+        // mensaje. El campo `idioma_detectado` sigue siendo conjunto cerrado, intacto.
+        parsed.idioma_fuera_de_lista = typeof parsed.idioma_detectado === 'string'
+            && parsed.idioma_detectado.trim() !== ''
+            && !IDIOMAS_SOPORTADOS.includes(parsed.idioma_detectado);
+        if (parsed.idioma_fuera_de_lista) {
             logger.warn('idioma_detectado_no_soportado', { orgId, valor: String(parsed.idioma_detectado).slice(0, 20) });
         }
         parsed.idioma_detectado = IDIOMAS_SOPORTADOS.includes(parsed.idioma_detectado)
             ? parsed.idioma_detectado
+            : null;
+
+        // La frase de los idiomas del salón: la escribe el modelo (es el único que sabe
+        // francés) y sale TAL CUAL a la clienta, así que se sanea antes de dejarla entrar.
+        // Una línea, sin saltos ni tabuladores, con tope de longitud. Vacía o ausente = null
+        // y no se pega nada (regla 3): un aviso a medias es peor que no darlo.
+        parsed.frase_idiomas_salon = typeof parsed.frase_idiomas_salon === 'string'
+            ? (parsed.frase_idiomas_salon.replace(/\s+/g, ' ').trim().slice(0, 220) || null)
             : null;
         // `ofrezco_traspaso` va contra conjunto CERRADO, igual que idioma_detectado y por el
         // mismo motivo: aguas abajo arma una espera de dos turnos y se escribe como

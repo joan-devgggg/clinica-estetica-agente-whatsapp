@@ -734,6 +734,10 @@ function buildSessionExtra(session) {
         precioPedido:      Number.isFinite(session.precioPedido) ? session.precioPedido : null,
         variasPersonas:    !!session.variasPersonas,
         variasPersonasAvisado: !!session.variasPersonasAvisado,
+        // Sin viajar aquí, una conversación en francés que cruce un timeout vuelve a
+        // leerse como si fuera de un idioma de la casa y el aviso deja de darse.
+        idiomaSinCodigo:   !!session.idiomaSinCodigo,
+        idiomasSalonAvisado: !!session.idiomasSalonAvisado,
         proposedSlots: Array.isArray(session.proposedSlots) ? session.proposedSlots : [],
         spaPromoOffered:   !!session.spaPromoOffered,
         spaPromoNote:      session.spaPromoNote || null,
@@ -6086,6 +6090,8 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // pesar lo mismo que uno que la clienta ha demostrado escribiendo: la heurística
             // por nombre no separa ruso de ucraniano y falla con los nombres neutros.
             partialDataWithCtx.__clientLanguageSource = session.languageSource || null;
+            // La condición ya resuelta: el prompt no tiene que decidir nada sobre idiomas.
+            partialDataWithCtx.__idiomaSinCodigo = !!session.idiomaSinCodigo;
             partialDataWithCtx.__tratamiento = session.tratamiento || null;
             if (session.preferredStylistId) {
                 const stylists = await getStylistsByOrg(orgId);
@@ -6483,6 +6489,28 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             //
             // El campo llega a null cuando el modelo no lo declara (27 % de los turnos), y
             // entonces aquí no se entra: la ficha se queda como estaba, que es lo correcto.
+
+            // ── El idioma que el salón NO habla ──────────────────────────────────
+            //
+            // `idioma_fuera_de_lista` lo emite el normalizador cuando el modelo declaró un
+            // idioma que no es ninguno de los cuatro (declaró "fr" en los cuatro turnos
+            // franceses medidos el 19/08/2026).
+            // Es la CONDICIÓN que el modelo no sabe evaluar mientras redacta, resuelta por
+            // la máquina y pasada al prompt del turno siguiente ya resuelta.
+            //
+            // PEGAJOSA como `variasPersonas`, y por lo mismo: basta acertar una vez. El
+            // campo se omite en el 27 % de los turnos, así que un flag que se recalculara
+            // cada turno se apagaría solo en el primer turno mudo. Se apaga únicamente
+            // cuando el modelo declara uno de los cuatro, que es una afirmación, no un
+            // silencio.
+            if (aiResponse.idioma_fuera_de_lista && !session.idiomaSinCodigo) {
+                session.idiomaSinCodigo = true;
+                logger.info('idioma_fuera_de_lista_del_salon', { orgId, telefono: userPhone });
+            } else if (IDIOMAS_SOPORTADOS.includes(aiResponse.idioma_detectado) && session.idiomaSinCodigo) {
+                session.idiomaSinCodigo = false;
+                logger.info('idioma_vuelve_a_la_lista', { orgId, telefono: userPhone, language: aiResponse.idioma_detectado });
+            }
+
             if (IDIOMAS_SOPORTADOS.includes(aiResponse.idioma_detectado)
                 && aiResponse.idioma_detectado !== session.language) {
                 session.language = aiResponse.idioma_detectado;
@@ -7331,6 +7359,39 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 }
             }
             delete session._codaNombre;
+        }
+
+        // ─── El coda de los idiomas del salón (Yulia, 19/08/2026) ────────────────
+        //
+        // «L'équipe du salon t'aidera»: verdad que el equipo la atiende, mentira que la
+        // atiendan en francés. En el salón se habla lo que diga `business_info.idiomas` y
+        // con el resto se apañan con un traductor.
+        //
+        // El reparto es el del caso 7, y aquí no había alternativa: los detectores de
+        // traspaso (`HANDOVER_TRASPASO` / `HANDOVER_DESTINO`) son castellano normalizado y
+        // no ven «je te mette en contact avec notre équipe», así que la máquina NO puede
+        // saber por sí sola que este mensaje ofrece una persona. Quien lo sabe es el modelo,
+        // y lo dice llenando `frase_idiomas_salon` — que además es lo único capaz de
+        // escribir la frase en francés. Lo que decide la MÁQUINA, porque el modelo no supo
+        // hacerlo en cuatro corridas medidas del arnés, es si esta conversación lo necesita
+        // (`idiomaSinCodigo`) y si ya se dijo (`idiomasSalonAvisado`).
+        //
+        // AÑADE, nunca sustituye: la respuesta del modelo sale entera, así que la pregunta
+        // de la regla 12 —qué mensaje bueno se come— tiene respuesta «ninguno». Lo único
+        // que puede pasar es que se pegue de más, y de eso se ocupa el control ruso del
+        // arnés (escenario 31), donde el campo ni siquiera existe en el prompt.
+        //
+        // Sin frase no se pega nada (regla 3): un aviso a medias, o escrito en castellano
+        // dentro de una conversación en francés, es peor que no darlo.
+        if (orgType === 'salon' && session.idiomaSinCodigo && !session.idiomasSalonAvisado
+                && aiResponse.frase_idiomas_salon && !isFallbackText(aiResponse.respuesta)) {
+            const frase = aiResponse.frase_idiomas_salon;
+            const base = aiResponse.respuesta.trim();
+            const margen = 1000 - frase.length - 1;
+            aiResponse.respuesta = (base.length > margen ? `${base.slice(0, Math.max(0, margen - 3))}...` : base)
+                + `\n${frase}`;
+            session.idiomasSalonAvisado = true;
+            logger.info('idiomas_salon_avisado', { orgId, telefono: userPhone });
         }
 
         session.history.push({ role: 'assistant', content: aiResponse.respuesta, ts: Date.now() });
