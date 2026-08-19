@@ -822,12 +822,41 @@ De ahí la línea que sostiene todo esto, y que es lo único que hay que recorda
 
 | | Catálogo |
 |---|---|
-| se **OFRECE** | `offerableCatalog(cfg.services)` |
-| se **RESUELVE** | `cfg.services` COMPLETO, siempre |
+| lo que el **BOT propone** | `botOfferableCatalog(cfg.services)` |
+| lo que **OFRECE el panel** | `offerableCatalog(cfg.services)` |
+| lo que se **RESUELVE** | `cfg.services` COMPLETO, siempre |
 
 `activo` **ausente = activo** (sin backfill; solo el `false` explícito da de baja).
 `isServiceActive` / `offerableCatalog` viven en `helpers.js`, al lado de
 `isReactiveOnlyService`, que es el mismo patrón para otro motivo.
+
+**Las dos primeras filas se separaron el 19/08/2026** y no son un matiz: `solo_complemento:
+true` marca un servicio que NUNCA se vende suelto —«Peinado con tratamientos», 15 €/15 min,
+porque no se puede peinar sin lavar y la clienta llega con la cabeza lavada del
+tratamiento—. El bot no puede proponerlo (no está en su prompt ni en los detectores, y ahí
+está la garantía: la prosa no basta, es la lección de la Consulta de valoración) pero la
+dueña **sí** tiene que poder añadirlo a mano desde el panel a una cita de tratamiento, o la
+caja no cuadra. Por eso `GET /api/service-catalog` se queda en `offerableCatalog`.
+
+**La marca vive en la ENTRADA, no en un `Set` de categorías en el código.** La categoría la
+edita la dueña sobre el JSONB: un `Set` contra su nombre deja de casar el día que la
+renombre y el servicio se vuelve ofertable **en silencio** (regla 5). Es la fragilidad que
+`REACTIVE_ONLY_CATEGORIES` sí tiene hoy con «Consulta», anotada y no arreglada.
+`solo_complemento` **ausente = servicio normal**, igual que `activo`.
+
+Dos cosas medidas que no hay que redescubrir al tocar esto:
+
+- **La sonda que llega al complemento es el PLURAL suelto**, no «un peinado» (que da null
+  con filtro y sin él). La contención veta los tokens que son identidad de otra categoría,
+  y la categoría es «Tratamiento **Orgánico**» —singular—, así que `tratamientos` no queda
+  vetado y la pasada 2 lo resuelve. Y una vez elegido **se queda**: el bloque de detección
+  libre está gateado por `if (!session.selectedService)`, así que ningún turno posterior lo
+  deshace.
+- **El arnés no puede medir esto inyectando la entrada**: `bot.js` desestructura
+  `require('./services/db')` en su línea 10, así que parchear `db.getAgentConfig` después de
+  requerir el bot se lo enseña al arnés y no al sistema. La prueba es
+  `tests/complemento-no-se-elige.test.js` (3 rojos al quitar el filtro); el escenario 32 del
+  arnés es un VIGÍA sobre la conversación real.
 
 **El filtro va en el CALL SITE, jamás dentro de un helper.** `extractServiceFromText` es a la
 vez un detector (oferta) y el resolutor de las etiquetas de upselling al persistir y al
@@ -1079,9 +1108,10 @@ test, no del sistema: 3 horarios copiados de la migración y un plural — ver a
 ### `verify:robustez:llm` — línea base y cómo leer un DEGRADADO
 
 Llama al LLM de verdad: **no es determinista y su línea base es un rango**. Desde el 19/08/2026
-son **31 escenarios** (26–28: precio presencial, «Keratina», objeto olvidado; 29: el anillo C7
-de punta a punta; 30–31: el francés y su CONTROL en ruso, los idiomas del salón); línea base
-medida el 19/08: **OK 31 · todo lo demás 0**, y sin un solo reintento. La del 15/08 fue OK 29
+son **32 escenarios** (26–28: precio presencial, «Keratina», objeto olvidado; 29: el anillo C7
+de punta a punta; 30–31: el francés y su CONTROL en ruso, los idiomas del salón; 32: que un
+servicio `solo_complemento` no sea nunca el elegido); línea base medida el 19/08: **OK 32 ·
+todo lo demás 0**, y sin un solo reintento. La del 15/08 fue OK 29
 con un degradado transitorio del modelo en el 21 absorbido por el reintento automático del
 arnés, que es su trabajo.
 

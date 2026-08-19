@@ -992,6 +992,83 @@ async function turno(c, texto) {
         rec('OK', 'contesta en ruso y no menciona idiomas');
     });
 
+    // ─── 32 · un complemento NUNCA es el servicio elegido (Yulia, 19/08/2026) ────────
+    // «Peinado con tratamientos» (15 €, 15 min) es un COMPLEMENTO: la clienta llega con la
+    // cabeza ya lavada del tratamiento y se le añaden plancha u ondas. No se puede vender
+    // suelto — no se puede peinar sin lavar.
+    //
+    // BUG y no DEGRADADO, el único de este fichero clasificado así por diseño: no es una
+    // degradación de prosa, es el sistema vendiendo 15 minutos de peinado a quien vino a
+    // otra cosa. Se afirma por ESTADO (`session.selectedService`): lo que el modelo escriba
+    // da igual.
+    //
+    // LA SONDA ES «quiero tratamientos», Y VA LA PRIMERA. Las dos cosas están medidas, y las
+    // dos costaron una corrida:
+    //
+    //   · La primera versión pedía «un peinado» y luego «el de ondas». Verde también con el
+    //     filtro QUITADO: «el de ondas» casa exacto contra «Peinado ondas» y nunca llega al
+    //     complemento. No protegía nada (regla 2). La frase que SÍ llega es el plural
+    //     suelto: la contención veta los tokens que son identidad de otra categoría, y la
+    //     categoría es «Tratamiento ORGÁNICO» —singular—, así que `tratamientos` no queda
+    //     vetado y resuelve contra el complemento.
+    //   · Y aun con la sonda buena, puesta la TERCERA seguía verde. El turno anterior sin
+    //     servicio manda el flujo por el rescate genérico de tratamientos, que selecciona la
+    //     Consulta y con `selectedService` ya puesto el bloque de detección libre ni corre.
+    //     Medido aparte, turno a turno y con sesión limpia: sin filtro, «quiero
+    //     tratamientos» / «tratamientos» / «peinado con tratamientos» eligen los tres el
+    //     complemento; con filtro, los tres dan null.
+    //
+    // Por eso la sonda va justo detrás del nombre. «un peinado» y «el de ondas» quedan
+    // DETRÁS: el primero porque es literalmente el caso que pidió Yulia, el segundo como
+    // CONTROL — si el filtro se hubiera comido la categoría entera no quedaría ningún
+    // peinado que elegir, y ese bloque lo diría.
+    //
+    // ES UN VIGÍA, NO LA PRUEBA, y hay que decirlo con el número delante: hoy el catálogo
+    // vivo NO tiene ninguna entrada con `solo_complemento: true` —el cambio está escrito y
+    // sin aplicar en data/peinado-con-tratamientos.json—, así que este escenario no puede
+    // fallar todavía y mide la conducta de hoy, que también tiene que ser verde. En cuanto
+    // la entrada esté en `agent_configs.services` pasa a ejercerlo sin tocar una línea: la
+    // lista de complementos sale del catálogo REAL en cada corrida.
+    //
+    // Quien lo PRUEBA es tests/complemento-no-se-elige.test.js, que conduce estos mismos
+    // turnos con un fixture propio y cae en 3 rojos al quitar el filtro. Se intentó medir
+    // aquí primero y NO se pudo: `bot.js` desestructura `require('./services/db')` en su
+    // línea 10, así que inyectar la entrada parcheando `db.getAgentConfig` después de
+    // requerir el bot la ve el arnés y no el sistema — dos corridas A/B salieron idénticas
+    // sin estar midiendo nada. Queda escrito para no repetir el experimento.
+    const complementos = catalog.filter(helpers.isComplementOnlyService);
+    const esComplemento = svc => !!svc && complementos.some(c =>
+        helpers.normalizeText(c.nombre) === helpers.normalizeText(svc.nombre || ''));
+    await escenario(`un complemento nunca es el servicio elegido (${complementos.length} en catálogo)`, { familia: 'C', idioma: 'es' }, async (c, rec) => {
+        const elegido = () => (bot._internals.getSession(ORG, c.phone) || {}).selectedService;
+        const mirar = etapa => {
+            const svc = elegido();
+            return esComplemento(svc) ? `${etapa}: eligió el complemento «${svc.nombre}»` : null;
+        };
+        await turno(c, 'hola, soy Nuria');
+
+        // La sonda que de verdad llega al complemento, y va aquí por eso.
+        const r2 = await turno(c, 'quiero tratamientos');
+        if (r2.vacio) return rec('SILENCIO', 'se calló al pedir tratamientos');
+        let mal = mirar('«quiero tratamientos»');
+        if (mal) return rec('BUG', mal);
+
+        const r3 = await turno(c, 'mejor quiero un peinado');
+        if (r3.vacio) return rec('SILENCIO', 'se calló al pedir un peinado');
+        mal = mirar('«un peinado»');
+        if (mal) return rec('BUG', mal);
+
+        // CONTROL: la categoría sigue teniendo peinados que elegir.
+        const r4 = await turno(c, 'el de ondas');
+        if (r4.vacio) return rec('SILENCIO', 'se calló al concretar el peinado');
+        mal = mirar('«el de ondas»');
+        if (mal) return rec('BUG', mal);
+
+        const svc = elegido();
+        if (!svc) return rec('DEGRADADO', `no quedó ningún peinado que elegir · "${r4.txt.slice(0, 60)}"`);
+        rec('OK', `eligió «${svc.nombre}», y ningún turno cayó en un complemento`);
+    });
+
     restore();
 
     // ─── Barrido final: ninguna cita a nombre de nadie ────────────────────────────────
