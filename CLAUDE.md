@@ -199,6 +199,9 @@ server.js              ← Punto de entrada: crea N clientes WA, arranca workers
         └── threesixty-dialog.js  ← Adapter 360dialog: webhook entrante + cliente saliente (Sante)
 ```
 
+El diseño del **enlace público de reserva** (en construcción; la migración 043 —claim
+atómico— ya está aplicada, el resto no existe): [docs/enlace-publico-reserva.md](docs/enlace-publico-reserva.md).
+
 ## Canal de WhatsApp por organización
 
 Cada org tiene UN canal, declarado en `services/org-registry.js` (`getOrgChannel(orgId)`):
