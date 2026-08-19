@@ -1,0 +1,94 @@
+{
+  "_meta": {
+    "QUE_ES": "El cambio de catálogo de «Peinado con tratamientos», ESCRITO Y SIN APLICAR.",
+    "estado": "PENDIENTE — no se ha escrito nada en Supabase (regla 6).",
+    "bloqueado_por": "Que Yulia confirme la lista de 15 tratamientos de .tratamientos_que_lo_admiten.",
+    "escrito_el": "2026-08-19",
+    "commit": "1244f18",
+    "pedido_por": "Yulia: «Peinado con tratamientos» (dice que «peinado sin lavar» es lo mismo), 15 €, 15 min. NUNCA suelto: no se puede peinar sin lavar, la clienta ya viene con la cabeza lavada del tratamiento.",
+    "como_se_aplica": [
+      "1. Copia de seguridad: data/sante-catalogo-backup-2026-08-19.json (ya hecha).",
+      "2. PATCH /api/agent-config con services = [...los 81 de la copia, ...entrada_de_catalogo]. Reemplaza el ARRAY ENTERO.",
+      "3. PATCH /api/agent-config con business_info.upselling = [...las 8 vivas, ...reglas_de_upselling]. Las nuevas van AL FINAL: matchUpsellRule devuelve la PRIMERA regla que casa.",
+      "4. Verificar: npm run verify:sante (Fases 1, 3 y 5) y npm run verify:robustez:llm -- 32-33."
+    ],
+    "preguntas_abiertas_para_yulia": [
+      "Su ejemplo dice «reconstrucción molecular 45 €», y eso NO existe en el catálogo: las tres entradas de Reconstrucción son Pro Miracle 60 €, «K18 + lavar y peinar» 60 € y K18 35 €. «Reconstrucción molecular» es hoy una FRASE de upselling de «Color raíz», no un servicio. ¿Precio de memoria, o falta un servicio?",
+      "Al color también se le lava la cabeza. Si ahí también se cobra el peinado aparte, hay que decidir QUÉ upsell gana: el sistema ofrece UNO solo y hoy es la Reconstrucción K18.",
+      "«Matiz» y «Matiz plus» quedan fuera por una razón de máquina, no de salón: su categoría lleva dentro «Mascarilla violeta» (10 €/15 min), que es otro complemento, y matchUpsellRule casa por subcadena de categoría. Si los quiere dentro, hay que separarlos."
+    ],
+    "sobre_la_nota": "`nota` es opcional y la lee el prompt para poder explicar el porqué con naturalidad. Sin ella, el bot dice que no se vende suelto y no da motivo (regla 3). No se escribe en el código: el motivo del peinado no vale para otro complemento."
+  },
+  "entrada_de_catalogo": {
+    "nombre": "Peinado con tratamientos",
+    "precio": 15,
+    "duracion": 15,
+    "categoria": "Lavar y peinar",
+    "solo_complemento": true,
+    "nota": "no se puede peinar sin lavar, y en esos servicios la clienta ya sale del lavado"
+  },
+  "reglas_de_upselling": [
+    {
+      "servicio": "Tratamiento Orgánico",
+      "sugerencias": [
+        "Peinado con tratamientos"
+      ]
+    },
+    {
+      "servicio": "Spa Hair",
+      "sugerencias": [
+        "Peinado con tratamientos"
+      ]
+    },
+    {
+      "servicio": "Reconstrucción Pro Miracle",
+      "sugerencias": [
+        "Peinado con tratamientos"
+      ]
+    },
+    {
+      "servicio": "Brillo Glow",
+      "sugerencias": [
+        "Peinado con tratamientos"
+      ]
+    }
+  ],
+  "tratamientos_que_lo_admiten": {
+    "_nota": "Calculado con matchUpsellRule sobre el catálogo vivo del 19/08/2026: son EXACTAMENTE las entradas que dispararían la oferta. Ninguna regla viva cambia de destino.",
+    "total": 15,
+    "Tratamiento Orgánico": [
+      "Orising hidratación intensa",
+      "Orising express",
+      "Orising anticaída",
+      "Orising anticaspa",
+      "Green Purity Detox",
+      "Fresh Hidratación",
+      "Miracle Elixir",
+      "Pure Defense",
+      "Nature Boost",
+      "Botanical Glow Pure Blond"
+    ],
+    "Spa Hair": [
+      "Spa Hair Relax",
+      "Spa Hair Detox",
+      "Spa Hair Hidratación"
+    ],
+    "Reconstrucción": [
+      "Reconstrucción Pro Miracle"
+    ],
+    "Brillo Glow": [
+      "Brillo intensivo"
+    ]
+  },
+  "fuera_y_por_que": {
+    "Reconstrucción K18 + lavar y peinar (60 €)": "Ya lleva el lavar y peinar dentro del nombre y del precio. Cobrarlo otra vez son 15 € de más.",
+    "Reconstrucción K18 (35 €/15 min)": "Es él mismo un complemento, y va sobre color: ahí la cabeza ya se lava con el color.",
+    "Alisado vegano · Anti-encrespamiento": "El alisado TERMINA con plancha por definición: el +15 € cobraría lo que ya está dentro.",
+    "Color Premium · Mechas (Airtouch, clásicas, Contouring, Balayage) · Deco Total Blond": "Son color, no tratamiento, y su upsell vivo ya es la Reconstrucción K18. Ver pregunta abierta.",
+    "Matiz mujer (Matiz, Matiz plus)": "Fuera por razón de máquina, no de salón. Ver pregunta abierta.",
+    "Exfoliación/pilling (10 €) · Mascarilla violeta (10 €)": "Son complementos, no anclas.",
+    "Dermapen Hair Loss · Consulta tricológica · Consulta": "Diagnóstico: no lavan.",
+    "Cortes · Lavar y peinar · Retocar mujer": "Ya incluyen peinado o secado.",
+    "Manicura/Pedicura · Masajes y SPA": "No tocan el pelo."
+  }
+}
