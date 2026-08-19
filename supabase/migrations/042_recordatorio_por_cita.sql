@@ -1,7 +1,18 @@
 -- 042_recordatorio_por_cita.sql
 --
--- ⚠️ ESCRITA EN LA SESIÓN NOCTURNA DEL 14/08/2026 Y **NO APLICADA** (regla de la noche:
--- ninguna migración se aplica sin permiso). Revisar entera antes de aplicar.
+-- ✅ APLICADA EN LA BD REMOTA EL 14/08/2026 A LAS 11:29 UTC, con permiso del dueño
+-- (supabase_migrations.schema_migrations, version 20260814112900). El texto que corrió es
+-- una versión CONDENSADA de este fichero (mismo UPDATE byte por byte, cabecera más corta) y
+-- afectó a 3 filas —Victoria 14/08 14:30, Tatiana Krol 14/08 15:00, Mafe Alayon 15/08
+-- 10:00—, no a las 6 medidas abajo: entre la medición (~01:00) y la aplicación (11:29) esas
+-- citas dejaron de ser futuras. Verificado el 19/08: residuo 0 (ninguna cita futura con la
+-- marca solo en ficha).
+--
+-- Esta cabecera decía «NO APLICADA» hasta el 19/08/2026 y esa frase congelada produjo un
+-- diagnóstico falso ese mismo día: la verdad de qué corrió está SIEMPRE en
+-- schema_migrations, nunca en la cabecera de un fichero. Se corrige y se deja dicho.
+--
+-- (Escrita en la sesión nocturna del 14/08/2026; la medición de abajo es de esa noche.)
 --
 -- CONTEXTO. El recordatorio de 24 h del salón colgaba de la FICHA
 -- (contacts.estado='confirmado' + contacts.recordatorio_enviado + contacts.fecha_cita),

@@ -1,0 +1,390 @@
+#!/usr/bin/env node
+/**
+ * prueba-claim-concurrente.js — la prueba de verdad de la migración 043.
+ *
+ * N reservas SIMULTÁNEAS sobre el MISMO hueco → gana exactamente 1 y las demás reciben
+ * `hueco_ocupado`. Y como un test que pasa con y sin el arreglo no protege nada (regla 2),
+ * la misma corrida EJECUTA las dos mutaciones y exige verlas fallar:
+ *
+ *   FASE 1 · normal      1 ganadora, N−1 `hueco_ocupado`, 1 fila en la tabla.
+ *   FASE 2 · mutación A  sin EXCLUDE + sin cerrojo (+ pg_sleep que mantiene abierta la
+ *                        ventana del check-then-insert): tienen que ganar ≥2 — la
+ *                        catástrofe que la 043 impide. Si aquí gana 1, la prueba no
+ *                        demuestra nada y sale en rojo POR ESO.
+ *   FASE 3 · mutación B  con EXCLUDE + sin cerrojo (+ sin el handler de 23P01): tiene que
+ *                        quedar EXACTAMENTE 1 fila (el EXCLUDE es la garantía de verdad) y
+ *                        ≥1 perdedora tiene que reventar con 23P01 CRUDO — que es lo que el
+ *                        cerrojo y el handler convierten en motivo limpio.
+ *
+ * Entre fases se restaura el estado original (la función se captura con
+ * pg_get_functiondef antes de tocar nada) y al final se comprueba que quedó restaurado.
+ *
+ * ── CONTRA QUÉ CORRE ─────────────────────────────────────────────────────────────────────
+ *
+ * NUNCA contra producción. El destino se pasa EXPLÍCITO:
+ *
+ *   PRUEBA_DB_URL='postgres://…' node scripts/prueba-claim-concurrente.js
+ *
+ * Tres guardas, todas duras:
+ *   1. Sin PRUEBA_DB_URL no corre. No hay default: un default aquí sería producción.
+ *   2. Si el host de PRUEBA_DB_URL contiene el ref del proyecto de PRODUCCIÓN (leído en
+ *      vivo del SUPABASE_URL de .env, no de una constante), aborta. Una rama de Supabase
+ *      tiene su propio project_ref, así que la guarda no molesta al caso legítimo.
+ *   3. Si `appointments` tiene filas de CUALQUIER org distinta de la sembrada, aborta:
+ *      eso no es una base desechable.
+ *
+ * `--bootstrap-esquema`: para un Postgres vacío (docker desechable), crea el MÍNIMO de
+ * tablas que la función toca y aplica la 043 desde su fichero. Solo si `appointments` NO
+ * existe. Es una copia mínima del esquema para una BD que se tira al terminar — el esquema
+ * de verdad sigue siendo el de las migraciones.
+ */
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const { Pool } = require('pg');
+
+const N = 12;            // reservas simultáneas por fase
+const ORG = '00000000-0000-4000-8000-0000000c0430'; // uuid propio de la prueba, reconocible
+const STYLIST = '00000000-0000-4000-8000-0000000c0431';
+
+const MIGRACION_043 = path.join(__dirname, '..', 'supabase', 'migrations', '043_reserva_web_claim.sql');
+
+let fallos = 0;
+function ok(cond, msg, extra) {
+    if (cond) { console.log(`ok - ${msg}`); return; }
+    fallos++;
+    console.error(`fail - ${msg}${extra ? ` :: ${JSON.stringify(extra)}` : ''}`);
+}
+
+// ── Guardas de destino ───────────────────────────────────────────────────────────────────
+
+function resolverDestino() {
+    const url = process.env.PRUEBA_DB_URL;
+    if (!url) {
+        console.error('fail - PRUEBA_DB_URL no está puesta. Esta prueba ESCRIBE y MUTA el esquema:');
+        console.error('       solo corre contra una rama de Supabase o un Postgres desechable, nunca');
+        console.error('       contra producción, y por eso el destino no tiene default.');
+        process.exit(1);
+    }
+    // El ref de producción se lee EN VIVO de .env — una constante escrita aquí caducaría
+    // en la primera migración de proyecto y dejaría la guarda mirando al sitio equivocado.
+    try {
+        const env = fs.readFileSync(path.join(__dirname, '..', '.env'), 'utf8');
+        const m = env.match(/^SUPABASE_URL\s*=\s*https?:\/\/([a-z0-9]+)\.supabase\.co/m);
+        if (m && url.includes(m[1])) {
+            console.error(`fail - PRUEBA_DB_URL apunta al proyecto de PRODUCCIÓN (${m[1]}). Abortado.`);
+            process.exit(1);
+        }
+    } catch { /* sin .env legible no hay ref que comparar; quedan las otras dos guardas */ }
+    return url;
+}
+
+// ── Bootstrap para un Postgres vacío (solo docker desechable) ───────────────────────────
+
+const ESQUEMA_MINIMO = `
+CREATE TABLE organizations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name text NOT NULL,
+    slug text NOT NULL
+);
+CREATE TABLE stylists (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name text NOT NULL,
+    role text NOT NULL
+);
+CREATE TABLE contacts (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    wa_phone text NOT NULL
+);
+CREATE TABLE stylist_schedules (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id uuid NOT NULL,
+    stylist_id uuid NOT NULL REFERENCES stylists(id) ON DELETE CASCADE,
+    day_of_week integer NOT NULL,
+    start_time time NOT NULL,
+    end_time time NOT NULL
+);
+CREATE TABLE schedule_blocks (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id uuid NOT NULL,
+    stylist_id uuid NOT NULL,
+    starts_at timestamptz NOT NULL,
+    ends_at timestamptz NOT NULL,
+    reason text
+);
+CREATE TABLE blocked_days (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id uuid NOT NULL,
+    stylist_id uuid,
+    fecha date NOT NULL,
+    motivo text NOT NULL DEFAULT 'otro'
+);
+CREATE TABLE appointments (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    contact_id uuid NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+    service text NOT NULL,
+    starts_at timestamptz NOT NULL,
+    ends_at timestamptz NOT NULL,
+    status text DEFAULT 'confirmed',
+    full_name text NOT NULL,
+    phone text NOT NULL,
+    notes text,
+    recordatorio_enviado boolean DEFAULT false,
+    stylist_id uuid REFERENCES stylists(id) ON DELETE SET NULL,
+    source text DEFAULT 'bot',
+    updated_by text,
+    created_at timestamptz DEFAULT now()
+);`;
+
+async function bootstrapSiHaceFalta(pool) {
+    const { rows } = await pool.query(`SELECT to_regclass('public.appointments') IS NOT NULL AS existe`);
+    if (rows[0].existe) return false;
+    if (!process.argv.includes('--bootstrap-esquema')) {
+        console.error('fail - la BD destino no tiene `appointments`. Si es un Postgres desechable,');
+        console.error('       vuelve a lanzar con --bootstrap-esquema; si es una rama, sus migraciones');
+        console.error('       no se han aplicado y eso hay que mirarlo, no taparlo aquí.');
+        process.exit(1);
+    }
+    await pool.query(ESQUEMA_MINIMO);
+    // La 043 se aplica DESDE SU FICHERO, no desde una copia pegada aquí: si el fichero
+    // cambia, la prueba prueba lo nuevo. Los GRANT/REVOKE de roles de Supabase no existen
+    // en un Postgres pelado y se omiten (aquí no hay `anon` del que protegerse).
+    let sql = fs.readFileSync(MIGRACION_043, 'utf8');
+    sql = sql.split('\n').filter(l => !/^\s*(REVOKE|GRANT)\s/i.test(l)).join('\n');
+    await pool.query(sql);
+    console.log('ok - esquema mínimo + 043 aplicados sobre BD vacía (--bootstrap-esquema)');
+    return true;
+}
+
+// ── Siembra ──────────────────────────────────────────────────────────────────────────────
+
+async function sembrar(pool) {
+    // Guarda 3: una BD con citas de otra org NO es desechable.
+    const { rows } = await pool.query(
+        `SELECT count(*)::int AS n FROM appointments WHERE organization_id <> $1`, [ORG]);
+    if (rows[0].n > 0) {
+        console.error(`fail - la BD destino tiene ${rows[0].n} citas de otras orgs. Esto no es una`);
+        console.error('       base desechable. Abortado sin escribir nada.');
+        process.exit(1);
+    }
+    // Idempotente: la org de la prueba se limpia y se resiembra entera.
+    await pool.query(`DELETE FROM organizations WHERE id = $1`, [ORG]);
+    await pool.query(`INSERT INTO organizations (id, name, slug) VALUES ($1, 'Prueba claim 043', 'prueba-claim-043')`, [ORG]);
+    await pool.query(`INSERT INTO stylists (id, organization_id, name, role) VALUES ($1, $2, 'Estilista Prueba', 'test')`, [STYLIST, ORG]);
+    // Horario 10:00–19:00 los 7 días: la fecha del hueco no depende del día que corra la prueba.
+    for (let d = 0; d <= 6; d++) {
+        await pool.query(
+            `INSERT INTO stylist_schedules (organization_id, stylist_id, day_of_week, start_time, end_time)
+             VALUES ($1, $2, $3, '10:00', '19:00')`, [ORG, STYLIST, d]);
+    }
+    const contactos = [];
+    for (let i = 0; i < N + 4; i++) {
+        const { rows: r } = await pool.query(
+            `INSERT INTO contacts (organization_id, wa_phone) VALUES ($1, $2) RETURNING id`,
+            [ORG, `34600${String(100000 + i)}`]);
+        contactos.push(r[0].id);
+    }
+    // El hueco: mañana (fecha UTC +1, siempre futura en Madrid) a las 12:00 de PARED Madrid.
+    const { rows: slot } = await pool.query(
+        `SELECT ((current_date + 1) + time '12:00') AT TIME ZONE 'Europe/Madrid' AS ini,
+                ((current_date + 1) + time '13:00') AT TIME ZONE 'Europe/Madrid' AS fin,
+                (current_date + 1) AS fecha`);
+    return { contactos, ini: slot[0].ini, fin: slot[0].fin, fecha: slot[0].fecha };
+}
+
+// ── Las tres formas de disparar ──────────────────────────────────────────────────────────
+
+function llamada(pool, contactId, s) {
+    return pool.query(
+        `SELECT * FROM reservar_hueco($1,$2,$3,$4,$5,'Servicio Prueba','Clienta Prueba','34600000000',NULL,2)`,
+        [ORG, contactId, STYLIST, s.ini, s.fin]
+    ).then(r => ({ tipo: 'fila', ...r.rows[0] }))
+     .catch(e => ({ tipo: 'excepcion', code: e.code || null, message: e.message }));
+}
+
+async function andanada(pool, contactos, s) {
+    const res = await Promise.all(contactos.slice(0, N).map(c => llamada(pool, c, s)));
+    const { rows } = await pool.query(
+        `SELECT count(*)::int AS n FROM appointments
+          WHERE organization_id = $1 AND stylist_id = $2 AND starts_at = $3
+            AND status IS DISTINCT FROM 'cancelled'`, [ORG, STYLIST, s.ini]);
+    return {
+        ganadoras:  res.filter(r => r.tipo === 'fila' && r.ok === true).length,
+        ocupado:    res.filter(r => r.tipo === 'fila' && r.motivo === 'hueco_ocupado').length,
+        crudas23P01: res.filter(r => r.tipo === 'excepcion' && r.code === '23P01').length,
+        otrasExcepciones: res.filter(r => r.tipo === 'excepcion' && r.code !== '23P01'),
+        filas: rows[0].n,
+    };
+}
+
+async function limpiarHueco(pool, s) {
+    await pool.query(
+        `DELETE FROM appointments WHERE organization_id = $1 AND stylist_id = $2 AND starts_at = $3`,
+        [ORG, STYLIST, s.ini]);
+}
+
+// ── Mutaciones: la función SIN cerrojo y SIN handler, con la ventana abierta a propósito ──
+//
+// pg_sleep(0.25) entre el check y el INSERT no es trampa: es el reloj parado en el hueco
+// TOCTOU que en producción dura microsegundos. Sin él, la mutación A fallaría "a veces",
+// y una prueba que falla a veces no demuestra nada.
+const FUNCION_SIN_CERROJO = `
+CREATE OR REPLACE FUNCTION reservar_hueco(
+    p_org uuid, p_contact uuid, p_stylist uuid,
+    p_starts_at timestamptz, p_ends_at timestamptz,
+    p_servicio text, p_full_name text, p_phone text,
+    p_notas text DEFAULT NULL, p_max_futuras integer DEFAULT 2
+)
+RETURNS TABLE (ok boolean, motivo text, cita_id uuid)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $mut$
+DECLARE v_id uuid;
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM appointments
+         WHERE organization_id = p_org AND stylist_id = p_stylist
+           AND status IS DISTINCT FROM 'cancelled'
+           AND tstzrange(starts_at, ends_at) && tstzrange(p_starts_at, p_ends_at)
+    ) THEN
+        RETURN QUERY SELECT false, 'hueco_ocupado', NULL::uuid; RETURN;
+    END IF;
+    PERFORM pg_sleep(0.25);  -- la ventana TOCTOU, mantenida abierta
+    INSERT INTO appointments (organization_id, contact_id, stylist_id, service,
+        starts_at, ends_at, status, source, updated_by, full_name, phone, notes, recordatorio_enviado)
+    VALUES (p_org, p_contact, p_stylist, p_servicio, p_starts_at, p_ends_at,
+        'confirmed', 'web', 'web', p_full_name, p_phone, p_notas, false)
+    RETURNING id INTO v_id;
+    RETURN QUERY SELECT true, 'ok', v_id;
+END;
+$mut$;`;
+
+// ── Main ─────────────────────────────────────────────────────────────────────────────────
+
+(async () => {
+    const url = resolverDestino();
+    // Una rama de Supabase exige TLS en la conexión directa; un docker local no lo tiene.
+    const ssl = /supabase\.(co|com)|sslmode=require/.test(url) ? { rejectUnauthorized: false } : undefined;
+    const pool = new Pool({ connectionString: url, max: N + 2, ssl });
+    try {
+        await bootstrapSiHaceFalta(pool);
+
+        // La 043 tiene que estar puesta ANTES de probarla.
+        const { rows: pre } = await pool.query(`
+            SELECT (SELECT count(*)::int FROM pg_proc WHERE proname = 'reservar_hueco') AS fn,
+                   (SELECT count(*)::int FROM pg_constraint WHERE conname = 'appointments_sin_solape_automatico') AS con`);
+        if (!pre[0].fn || !pre[0].con) {
+            console.error(`fail - la 043 no está en la BD destino (funcion=${pre[0].fn}, constraint=${pre[0].con}).`);
+            process.exit(1);
+        }
+        // Se captura la definición REAL antes de mutar nada: la restauración repone esto,
+        // no una copia pegada que podría divergir.
+        const { rows: def } = await pool.query(
+            `SELECT pg_get_functiondef(oid) AS src FROM pg_proc WHERE proname = 'reservar_hueco'`);
+        const FUNCION_ORIGINAL = def[0].src;
+
+        const s = await sembrar(pool);
+        console.log(`ok - sembrado: org de prueba, estilista, ${N + 4} contactos, hueco ${s.fecha} 12:00 Madrid`);
+
+        // ── Motivos del conjunto cerrado (deterministas, baratos, documentan el contrato) ─
+        {
+            const mal = await pool.query(
+                `SELECT * FROM reservar_hueco($1,$2,$3,$4,$5,'x','x','x')`,
+                [ORG, s.contactos[N], STYLIST, s.fin, s.ini]);
+            ok(mal.rows[0].motivo === 'rango_invalido', 'fin <= inicio → rango_invalido', mal.rows[0]);
+
+            const fuera = await pool.query(
+                `SELECT * FROM reservar_hueco($1,$2,$3,
+                    ((current_date + 1) + time '21:00') AT TIME ZONE 'Europe/Madrid',
+                    ((current_date + 1) + time '22:00') AT TIME ZONE 'Europe/Madrid','x','x','x')`,
+                [ORG, s.contactos[N], STYLIST]);
+            ok(fuera.rows[0].motivo === 'fuera_de_horario', '21:00 con cierre a las 19:00 → fuera_de_horario', fuera.rows[0]);
+
+            await pool.query(`INSERT INTO blocked_days (organization_id, stylist_id, fecha, motivo)
+                              VALUES ($1, $2, current_date + 2, 'prueba')`, [ORG, STYLIST]);
+            const bloq = await pool.query(
+                `SELECT * FROM reservar_hueco($1,$2,$3,
+                    ((current_date + 2) + time '12:00') AT TIME ZONE 'Europe/Madrid',
+                    ((current_date + 2) + time '13:00') AT TIME ZONE 'Europe/Madrid','x','x','x')`,
+                [ORG, s.contactos[N], STYLIST]);
+            ok(bloq.rows[0].motivo === 'bloqueado', 'blocked_days (día entero) → bloqueado', bloq.rows[0]);
+
+            const c = s.contactos[N + 1];
+            for (const dia of [3, 4]) {
+                await pool.query(
+                    `SELECT * FROM reservar_hueco($1,$2,$3,
+                        ((current_date + ${dia}) + time '12:00') AT TIME ZONE 'Europe/Madrid',
+                        ((current_date + ${dia}) + time '13:00') AT TIME ZONE 'Europe/Madrid','x','x','x')`,
+                    [ORG, c, STYLIST]);
+            }
+            const tope = await pool.query(
+                `SELECT * FROM reservar_hueco($1,$2,$3,
+                    ((current_date + 5) + time '12:00') AT TIME ZONE 'Europe/Madrid',
+                    ((current_date + 5) + time '13:00') AT TIME ZONE 'Europe/Madrid','x','x','x')`,
+                [ORG, c, STYLIST]);
+            ok(tope.rows[0].motivo === 'tope_citas', 'tercera cita web futura del mismo contacto → tope_citas', tope.rows[0]);
+        }
+
+        // ── FASE 1 · normal ────────────────────────────────────────────────────────────
+        {
+            const r = await andanada(pool, s.contactos, s);
+            ok(r.ganadoras === 1, `FASE 1 (normal): gana exactamente 1 de ${N}`, r);
+            ok(r.filas === 1, 'FASE 1: exactamente 1 fila escrita sobre el hueco', r);
+            ok(r.ocupado === N - 1, `FASE 1: las ${N - 1} perdedoras reciben hueco_ocupado limpio`, r);
+            ok(r.crudas23P01 === 0 && r.otrasExcepciones.length === 0, 'FASE 1: cero excepciones crudas', r);
+            await limpiarHueco(pool, s);
+        }
+
+        // ── FASE 2 · mutación A: sin EXCLUDE, sin cerrojo — tiene que ROMPERSE ────────────
+        {
+            await pool.query(`ALTER TABLE appointments DROP CONSTRAINT appointments_sin_solape_automatico`);
+            await pool.query(FUNCION_SIN_CERROJO);
+            const r = await andanada(pool, s.contactos, s);
+            ok(r.ganadoras >= 2, `FASE 2 (mutación A): sin protección ganan ≥2 (ganaron ${r.ganadoras}) — la catástrofe existe`, r);
+            ok(r.filas === r.ganadoras, 'FASE 2: cada ganadora es una fila real duplicada sobre el hueco', r);
+            await limpiarHueco(pool, s);
+            // restaurar
+            await pool.query(FUNCION_ORIGINAL);
+            await pool.query(`ALTER TABLE appointments
+                ADD CONSTRAINT appointments_sin_solape_automatico
+                EXCLUDE USING gist (organization_id WITH =, stylist_id WITH =,
+                                    tstzrange(starts_at, ends_at) WITH &&)
+                WHERE (source IN ('bot','web') AND status IS DISTINCT FROM 'cancelled'
+                       AND stylist_id IS NOT NULL)`);
+        }
+
+        // ── FASE 3 · mutación B: EXCLUDE puesto, sin cerrojo ni handler ────────────────────
+        {
+            await pool.query(FUNCION_SIN_CERROJO);
+            const r = await andanada(pool, s.contactos, s);
+            ok(r.filas === 1, 'FASE 3 (mutación B): el EXCLUDE solo mantiene la tabla en 1 fila — es la garantía de verdad', r);
+            ok(r.ganadoras === 1, 'FASE 3: sigue ganando exactamente 1', r);
+            ok(r.crudas23P01 >= 1, `FASE 3: ≥1 perdedora revienta con 23P01 CRUDO (${r.crudas23P01}) — lo que el cerrojo y el handler convierten en motivo limpio`, r);
+            await limpiarHueco(pool, s);
+            await pool.query(FUNCION_ORIGINAL);
+        }
+
+        // ── Estado final: todo restaurado ──────────────────────────────────────────────
+        {
+            const { rows: post } = await pool.query(`
+                SELECT (SELECT count(*)::int FROM pg_constraint WHERE conname = 'appointments_sin_solape_automatico') AS con,
+                       (SELECT pg_get_functiondef(oid) FROM pg_proc WHERE proname = 'reservar_hueco') AS src`);
+            ok(post[0].con === 1, 'restaurado: el EXCLUDE vuelve a estar puesto');
+            ok(post[0].src === FUNCION_ORIGINAL, 'restaurado: la función es byte a byte la original');
+        }
+
+        console.log(fallos === 0
+            ? `\nPRUEBA CLAIM 043 · COMPLETA · ${N} concurrentes · 3 fases · mutaciones vistas en rojo`
+            : `\nPRUEBA CLAIM 043 · ${fallos} FALLO(S)`);
+        process.exit(fallos === 0 ? 0 : 1);
+    } catch (e) {
+        console.error('fail - error no capturado:', e.message);
+        process.exit(1);
+    } finally {
+        await pool.end().catch(() => {});
+    }
+})();
