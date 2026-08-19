@@ -56,9 +56,16 @@
 --
 --    Quien cubre ese caso es la re-verificación de dentro de `reservar_hueco()` (paso 6),
 --    que mira las citas de CUALQUIER origen. Pero el panel no toma el cerrojo consultivo
---    (no debe: tiene derecho a solapar), así que ese caso queda ESTRECHADO A MILISEGUNDOS,
---    NO ELIMINADO. Es un residuo consciente, y lo recoge el aviso del panel («Veronika ya
---    tiene a alguien a esa hora, ¿la pones igual?»), que va aparte.
+--    (no debe: tiene derecho a solapar), así que ese caso queda ESTRECHADO, NO ELIMINADO.
+--    MEDIDO el 20/08/2026 (fase 4c de scripts/prueba-claim-concurrente.js, n=40 sobre
+--    Postgres 17 local): la ventana interna check→INSERT es de 0,08–0,28 ms (mediana
+--    0,09, p95 0,20) y la llamada entera —la cota superior, con commit— de 0,45–1,09 ms
+--    (mediana 0,53). La parte interna es del servidor y representativa; en producción la
+--    cota de cliente crece con la red hasta Supabase, la interna no. Una cita manual que
+--    comitee DENTRO de esa ventana produce el solape sin que nadie lo vea — demostrado en
+--    la misma fase con la ventana mantenida abierta. Es un residuo consciente, y lo
+--    recoge el aviso del panel («Veronika ya tiene a alguien a esa hora, ¿la pones
+--    igual?»), que va aparte.
 --
 -- ── ANTES DE APLICAR: comprobación que revierte ─────────────────────────────────────────
 --
