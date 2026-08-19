@@ -488,6 +488,52 @@ Historia completa (autocontestadores, DarYsol, la clienta de EEUU):
   — sin esa segunda regla «Доброго дня» caía en `'ru'`. Los patrones cirílicos van SIEMPRE por
   `buildCyrillicRe` contra `normalizeText` (NFD descompone й/ё/ї, y `\b` es ASCII).
 
+## Los idiomas del BOT no son los idiomas del SALÓN (`business_info.idiomas`)
+
+El bot contesta en el idioma de la clienta, sea cual sea, y eso NO se toca: es lo que hace que
+una francesa reciba una respuesta en francés. Lo que no puede hacer es dar a entender que en el
+salón la atienden en ese idioma. Conversación en francés del 19/08/2026: **«L'équipe du salon
+t'aidera»** — cierto lo del equipo, falso lo del idioma.
+
+- **La lista vive en `agent_configs.business_info.idiomas`** y estaba ahí desde el seed
+  (`003_sante.sql`, `["español","inglés","ruso","ucraniano"]`) sin un solo lector. Es DATO
+  (regla 5): cambia cuando cambia el equipo. **Sin la clave no se inventa la lista** (regla 3):
+  se queda la prohibición, que es cierta sin datos, y desaparece la enumeración.
+- **NO se deriva de `IDIOMAS_SOPORTADOS` aunque hoy sean las mismas cuatro.** Esa constante
+  significa «idiomas en los que la MÁQUINA tiene textos fijos y plantillas de Meta»; ésta,
+  «idiomas que hablan las PERSONAS». Que coincidan es la casualidad de la que salió el mensaje
+  en francés: con una sola lista, contratar a alguien que hable francés movería la otra cosa.
+- **El prompt SOLO no lo arregla, y está medido**: el mismo encargo redactado como regla de
+  prosa se colocó en TRES sitios (sección IDIOMA, cola de ESCALADA, cabecera de ESCALADA ya sin
+  condición dentro y gateada por la máquina) y las CUATRO corridas del arnés dieron la MISMA
+  respuesta byte por byte: «Bien sûr 😊 Tu veux que je te mette en contact avec notre équipe ?».
+  El modelo copia el guion literal del caso 4 y no le añade nada.
+- **Reparto del caso 7: el modelo DECLARA y TRADUCE, la máquina DECIDE.** Él pone el código ISO
+  en `idioma_detectado` (el normalizador lo sigue dejando en null —conjunto cerrado— pero
+  conserva la señal en `idioma_fuera_de_lista`, booleano, nunca su cadena) y traduce la frase en
+  `frase_idiomas_salon`. La máquina decide si esta conversación lo necesita
+  (`session.idiomaSinCodigo`, **pegajosa** como `variasPersonas` porque el campo se omite el
+  27 % de los turnos) y si ya se dijo (`idiomasSalonAvisado`). Las dos viajan en
+  `buildSessionExtra`.
+- **La frase la escribe él porque no hay alternativa**: `HANDOVER_TRASPASO` / `HANDOVER_DESTINO`
+  son castellano normalizado y no ven «je te mette en contact avec notre équipe», así que la
+  máquina no puede detectar la oferta sola; y no existe ninguna constante en francés que pegar.
+  Sale saneada (una línea, tope de 220) y **AÑADE, nunca sustituye** — la respuesta del `else`
+  de la regla 12: no se come ningún mensaje bueno.
+- **El campo solo se le pide cuando la marca está puesta**, y va TAMBIÉN en el objeto de ejemplo
+  del JSON: sin la clave en el ejemplo lo rellenó en 1 de 2 corridas. Consecuencia estructural:
+  en una conversación en ruso ese campo NO EXISTE en el prompt, así que la exención deja de
+  depender de que el modelo la respete.
+- **Las plantillas fijas siguen en cuatro idiomas y una francesa las recibe en CASTELLANO**
+  (`buildSanteConfirmationMessage` cae a `'es'`, `contacts.language` se queda en el `'es'` del
+  INSERT porque `updateContactLanguage` rechaza lo que no esté en `IDIOMAS_SOPORTADOS`). No
+  miente —el castellano SÍ se habla en el salón— pero es un cambio de idioma a media
+  conversación. Trabajo aparte, no hecho.
+
+Red: `tests/idiomas-del-salon.test.js` (prompt) y `tests/idiomas-del-salon-coda.test.js`
+(maquinaria, 5 sabotajes medidos), más los escenarios 30 y 31 del arnés — el francés y su
+CONTROL en ruso, que es el que vigila que no se pegue de más.
+
 ## Las redes anti-mentira del salón: qué vigila cada una y qué NO puede comerse
 
 Sustituyen la respuesta del modelo por una fija, así que cada una se define por su EXENCIÓN:
@@ -1032,11 +1078,12 @@ test, no del sistema: 3 horarios copiados de la migración y un plural — ver a
 
 ### `verify:robustez:llm` — línea base y cómo leer un DEGRADADO
 
-Llama al LLM de verdad: **no es determinista y su línea base es un rango**. Desde el 15/08/2026
-son **29 escenarios** (26–28: precio presencial, «Keratina», objeto olvidado; 29: el anillo C7
-de punta a punta); línea base medida el 15/08: **OK 29 · todo lo demás 0** — con un degradado
-transitorio del modelo en el 21 absorbido por el reintento automático del arnés, que es su
-trabajo.
+Llama al LLM de verdad: **no es determinista y su línea base es un rango**. Desde el 19/08/2026
+son **31 escenarios** (26–28: precio presencial, «Keratina», objeto olvidado; 29: el anillo C7
+de punta a punta; 30–31: el francés y su CONTROL en ruso, los idiomas del salón); línea base
+medida el 19/08: **OK 31 · todo lo demás 0**, y sin un solo reintento. La del 15/08 fue OK 29
+con un degradado transitorio del modelo en el 21 absorbido por el reintento automático del
+arnés, que es su trabajo.
 
 - **La fila dura es `BUG` · `SILENCIO` · `BUCLE` · `ERROR` = 0**: cualquiera por encima de 0 es
   un hallazgo, siempre.

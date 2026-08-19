@@ -926,6 +926,72 @@ async function turno(c, texto) {
         rec('OK', 'ficha en manual + consulta_extensiones, acuse sin plazo');
     });
 
+    // ─── 30 · Un idioma que en el salón NO se habla (19/08/2026) ──────────────────────
+    // Conversación en francés: «L'équipe du salon t'aidera». La mitad verdadera es que el
+    // equipo la atiende; la que llega es que la atienden EN FRANCÉS, y es falsa — en el
+    // salón se habla español, inglés, ruso y ucraniano, y con el resto se apañan con un
+    // traductor.
+    //
+    // Dos cosas se miden aquí, y la primera es la que hay que NO romper: el bot sigue
+    // contestando en francés. Yulia quiere eso exactamente igual que está.
+    //
+    // MIDE TEXTO a propósito, como el de avería y el del precio: la afirmación sobre el
+    // idioma del equipo ES texto, no hay estado que consultar. VIGÍA (DEGRADADO, no BUG):
+    // quien prueba el arreglo es tests/idiomas-del-salon.test.js, que es determinista y se
+    // cae con sus dos mutaciones. Aquí lo que se comprueba es que el bloque del prompt
+    // llega vivo hasta la boca del modelo.
+    // «Responde en francés» se mide contando marcadores EXCLUSIVOS del francés, no con una
+    // palabra suelta: la primera versión exigía «vous» y se puso en rojo con «Bonjour !
+    // Bienvenue chez Santé 😊 Comment t'appelles-tu ?», que es francés impecable. Dos
+    // marcadores distintos porque uno solo lo puede traer una fórmula de cortesía dentro de
+    // una frase en español.
+    const MARCAS_FR = [
+        /\bbonjour\b/i, /\bbienvenue\b/i, /\bmerci\b/i, /\bvous\b/i, /\bvotre\b/i,
+        /\bnous\b/i, /\bje\b/i, /\bc'est\b/i, /\bd'accord\b/i, /\brendez-vous\b/i,
+        /\bfrançais\b/i, /\bcomment\b/i, /\bquelle?\b/i, /\bpr[ée]nom\b/i,
+        /\bappell?e/i, /\bavec\b/i, /\bpour\b/i, /\bchez\b/i, /s'il vous pla/i,
+    ];
+    const marcasFrances = t => MARCAS_FR.filter(re => re.test(t || '')).length;
+    const DICE_IDIOMAS = /traduct|espagnol|anglais|russe|ukrainien/i;
+    await escenario('Idioma que el salón no habla (francés) → no promete atención en francés', { familia: 'D', idioma: 'fr' }, async (c, rec) => {
+        // El nombre va en el primer mensaje a propósito: la puerta del nombre se come
+        // turnos (Ihab, 16/08) y aquí lo que se mide es otra cosa.
+        const r1 = await turno(c, "Bonjour, je m'appelle Camille, je voudrais prendre rendez-vous pour une coupe");
+        if (r1.vacio) return rec('SILENCIO', 'se calló ante el francés');
+        if (marcasFrances(r1.txt) < 2) {
+            return rec('DEGRADADO', `dejó de contestar en francés, que es lo que NO había que tocar · "${r1.txt.slice(0, 60)}"`);
+        }
+        const r2 = await turno(c, "Est-ce que je peux parler à quelqu'un du salon ?");
+        if (r2.vacio) return rec('SILENCIO', 'se calló al pedir hablar con una persona');
+        const txt = `${r1.txt} ${r2.txt}`;
+        if (!DICE_IDIOMAS.test(txt)) {
+            return rec('DEGRADADO', `ofrece el salón sin decir en qué idiomas la atienden · "${r2.txt.slice(0, 70)}"`);
+        }
+        if (marcasFrances(r2.txt) < 2) {
+            return rec('DEGRADADO', `dijo los idiomas pero se salió del francés para decirlo · "${r2.txt.slice(0, 60)}"`);
+        }
+        rec('OK', `contesta en francés y dice los idiomas del salón · "${r2.txt.slice(0, 55)}"`);
+    });
+
+    // ─── 31 · CONTROL · un idioma que el salón SÍ habla ───────────────────────────────
+    // La otra mitad de la regla 12, que en un bloque de prompt es igual de real que en una
+    // red: lo que se añade puede comerse el mensaje bueno. Aquí el mensaje bueno es la
+    // conversación normal de una clienta rusa, que NO tiene por qué enterarse de nada de
+    // esto. Si este escenario se pone en rojo, el bloque está saliendo de más y hay que
+    // estrecharlo, no ensancharlo.
+    await escenario('CONTROL · idioma que el salón SÍ habla (ruso): no saca el tema', { familia: 'control', idioma: 'ru' }, async (c, rec) => {
+        const r1 = await turno(c, 'Здравствуйте, хочу записаться на стрижку');
+        if (r1.vacio) return rec('SILENCIO');
+        const r2 = await turno(c, 'А можно поговорить с кем-то из салона?');
+        if (r2.vacio) return rec('SILENCIO', 'se calló al pedir hablar con una persona');
+        const txt = `${r1.txt} ${r2.txt}`;
+        if (/переводчик|перекладач|traductor/i.test(txt)) {
+            return rec('DEGRADADO', `saca el traductor con una clienta rusa, que sí hablan · "${r2.txt.slice(0, 70)}"`);
+        }
+        if (!/[а-яё]/i.test(txt)) return rec('DEGRADADO', 'dejó de contestar en ruso');
+        rec('OK', 'contesta en ruso y no menciona idiomas');
+    });
+
     restore();
 
     // ─── Barrido final: ninguna cita a nombre de nadie ────────────────────────────────
