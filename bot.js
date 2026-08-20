@@ -7621,22 +7621,42 @@ async function flushBuffer(sKey) {
     }
 }
 
-// ¿Está el contacto en lista negra AHORA MISMO? El guard de lista negra vive dentro de
-// processMessageCore, pero handleIncomingMessage responde por su cuenta antes de llegar allí
-// (audio que no se puede transcribir, foto/sticker/documento sin texto): un contacto
-// bloqueado seguía recibiendo esas respuestas automáticas, en los dos canales, sin escalada
-// ni alerta. La BD es la fuente de verdad; la sesión viva solo se usa como atajo cuando ya
-// sabe que está bloqueado. Si la lectura falla no se bloquea a nadie por sospecha: se
-// registra y se sigue, que es el comportamiento que ya tenía este camino.
-async function isBlacklistedNow(orgId, dbPhone, sKey) {
-    if (userSessions.get(sKey)?.isBlacklisted) return true;
-    if (!dbPhone) return false;
+// ─── Las dos razones para NO contestar automáticamente a un media ────────────────────────
+//
+// `handleIncomingMessage` responde por su cuenta y hace `return` ANTES de processMessageCore
+// —audio que no se puede transcribir, foto/sticker/documento sin texto—, así que se salta
+// las dos guardas que viven allí dentro: la de lista negra (bot.js:4903) y la de
+// `botActivo` (bot.js:4996, el `bot_mode='manual'` que pone el panel al tomar el control).
+//
+// La primera se tapó el 13/08/2026. La segunda seguía abierta y se midió el 20/08: las TRES
+// fotos que llegaron esa semana a una conversación en manual recibieron respuesta
+// automática, 3 de 3 — una de ellas tres minutos después de que el bot dijera «le paso tu
+// mensaje a nuestro equipo». Y el texto que sale encima pide un servicio («¿Me describes qué
+// te quieres hacer? Así te busco hueco») en mitad de una conversación que lleva una persona.
+//
+// Una sola función y una sola lectura para las dos preguntas: son la misma —«¿puedo
+// contestar yo a esto?»— y con dos `findByPhone` seguidos se pagaría el viaje dos veces.
+//
+// La BD es la fuente de verdad y la sesión viva solo vale como ATAJO cuando ya dice que no
+// se contesta: al revés no sirve, porque el panel escribe en Supabase y no puede tocar una
+// sesión en RAM (es justo el motivo de que exista la reconciliación de processMessageCore).
+// Si la lectura falla no se silencia a nadie por sospecha: se registra y se contesta, que es
+// el comportamiento que ya tenía este camino.
+//
+// @returns {'lista_negra' | 'manual' | null}
+async function motivoParaNoContestarMedia(orgId, dbPhone, sKey) {
+    const sesion = userSessions.get(sKey);
+    if (sesion?.isBlacklisted) return 'lista_negra';
+    if (sesion && sesion.botActivo === false) return 'manual';
+    if (!dbPhone) return null;
     try {
         const contact = await findByPhone(orgId, dbPhone);
-        return !!contact?.is_blacklisted;
+        if (contact?.is_blacklisted) return 'lista_negra';
+        if (contact?.bot_mode === 'manual') return 'manual';
+        return null;
     } catch (e) {
         logger.error('error_check_blacklist_media', { orgId, telefono: dbPhone, error: e.message });
-        return false;
+        return null;
     }
 }
 
@@ -7694,10 +7714,14 @@ async function handleIncomingMessage(client, message, orgId) {
             } catch (e) {
                 logger.error('error_transcripcion', { telefono: userPhone, error: e.message });
                 // Solo salón: este camino es código compartido y la regla de oro exige que el
-                // comportamiento observable de San Remo no cambie ni para un contacto bloqueado.
-                if (getOrgType(orgId) === 'salon' && await isBlacklistedNow(orgId, dbPhone, sKey)) {
-                    logger.info('media_ignorada_lista_negra', { orgId, telefono: userPhone, kind: 'audio' });
-                    return;
+                // comportamiento observable de San Remo no cambie ni para un contacto bloqueado
+                // ni para una conversación que lleve una persona.
+                if (getOrgType(orgId) === 'salon') {
+                    const motivo = await motivoParaNoContestarMedia(orgId, dbPhone, sKey);
+                    if (motivo) {
+                        logger.info('media_sin_respuesta_automatica', { orgId, telefono: userPhone, kind: 'audio', motivo });
+                        return;
+                    }
                 }
                 await sendWithDelay(client, userPhone, 'No pude escuchar el audio 😅 ¿Puedes escribirme lo que necesitas?', orgId, dbPhone);
                 // El texto que ella escriba a continuación ES la respuesta a este aviso, y el
@@ -7743,10 +7767,17 @@ async function handleIncomingMessage(client, message, orgId) {
                     telefono: dbPhone, contenido: `[${kind}]`, direccion: 'entrante',
                     waMessageId: getMessageKey(message), raw: rawFromProvider(message),
                 }).catch(() => {});
-                // El rastro en el panel sí se guarda, la respuesta no sale: un contacto
-                // bloqueado no vuelve a hablar con el bot con normalidad.
-                if (await isBlacklistedNow(orgId, dbPhone, sKey)) {
-                    logger.info('media_ignorada_lista_negra', { orgId, telefono: userPhone, kind });
+                // El rastro en el panel sí se guarda, la respuesta no sale. Y el orden importa:
+                // la fila `[image]` es lo que le dice a quien lleva la conversación que la
+                // clienta ha mandado una foto, así que se escribe SIEMPRE — lo que se calla es
+                // el mensaje automático.
+                //
+                // Tampoco se anota en el buzón de pending-media: esa nota existe para que el
+                // modelo no dé por vista una foto que nadie ha visto, y aquí no va a haber
+                // ningún turno del modelo. Mismo criterio que la lista negra.
+                const motivoMudo = await motivoParaNoContestarMedia(orgId, dbPhone, sKey);
+                if (motivoMudo) {
+                    logger.info('media_sin_respuesta_automatica', { orgId, telefono: userPhone, kind, motivo: motivoMudo });
                     return;
                 }
                 // Si ya hay texto suyo esperando en el buffer, la foto NO se contesta aparte:
