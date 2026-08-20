@@ -78,7 +78,7 @@ async function withMockedNow(isoString, fn) {
 const HARD_CUTOFF = 19 * 60;   // 19:00 — tope de salón (mismo valor que bot.js)
 const WORK_START = 10 * 60;    // 10:00 — apertura sintética
 
-// Mismo criterio de skill que calendar-sante.js:46 (lowercase exacto, sin quitar acentos).
+// Mismo criterio de skill que calendar-sante.js (prepararMotor: lowercase exacto, sin quitar acentos).
 const skillMatches = (skills, categoria) =>
     (Array.isArray(skills) ? skills : []).some(sk => String(sk).toLowerCase() === String(categoria).toLowerCase());
 

@@ -305,7 +305,7 @@ const ANCHORS = [
         const prefHoy = applyDatePreference({}, sHoy, new Date());
         if (prefHoy.asap) ok('A2', '"hoy" permite arrancar la búsqueda en el día actual');
         else gap('A2', '"hoy" NUNCA puede devolver un hueco de hoy',
-            `preferencia=${JSON.stringify(prefHoy)} → startDate=mañana (calendar-sante.js:67)`);
+            `preferencia=${JSON.stringify(prefHoy)} → startDate=mañana (calendar-sante.js, prepararMotor → startDateStr)`);
     });
 
     // Ventana "esta semana" en los 7 días de la semana: el reducer no tiene guard de

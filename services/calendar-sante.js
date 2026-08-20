@@ -40,22 +40,62 @@ function conCausa(slots, causa) {
     return slots;
 }
 
+// Horizonte por defecto: cuántos días de calendario recorre el motor. Es el valor que usa
+// el BOT, y por eso 14 sigue siendo el default: una conversación propone dos o tres huecos
+// próximos, no un calendario. El ENLACE público pide 90 (tres meses, decisión de Yulia,
+// 19/08/2026) y lo pasa por parámetro. Que el bot no lo pase es lo que garantiza que no se
+// entera de este cambio.
+//
+// NO tiene nada que ver con el «CALENDARIO DE REFERENCIA (próximos 14 días)» del prompt
+// (providers/openai.js): aquello es una tabla de consulta para que el modelo no calcule
+// fechas de cabeza, y subirla metería 90 líneas en cada turno de las DOS organizaciones
+// para siempre, además de invitarle a proponer fechas lejanas sin datos detrás. Son dos
+// catorces distintos y solo se mueve este.
+const HORIZONTE_DIAS_DEFAULT = 14;
+// Techo del horizonte. No es una política del salón —eso lo decide quien llama— sino el
+// límite a partir del cual un valor deja de ser una decisión y es un bug: un año de
+// calendario ya cubre cualquier cosa que un salón pueda querer decir. Se ASERTA, no se
+// recorta en silencio (regla 3): recortar 100000 a 366 devolvería huecos correctos para una
+// pregunta que nadie hizo.
+const HORIZONTE_DIAS_MAX = 366;
+
+// Valida el horizonte. LANZA, y eso es deliberado: es un contrato de programación, como
+// assertDuracion. Solo puede dispararlo un llamador que PASE el parámetro — los del bot no
+// lo pasan, así que para ellos es inalcanzable. Los dos call sites del bot envuelven la
+// llamada en try/catch (`error_slots` / `error_reload_confirmacion`), así que ni siquiera un
+// llamador nuevo equivocado tumba el turno: sale como fallo, que es lo que es.
+function resolverHorizonte(horizonteDias) {
+    if (horizonteDias === undefined || horizonteDias === null) return HORIZONTE_DIAS_DEFAULT;
+    // Número de verdad, no una cadena: un query param llega como texto y convertirlo AQUÍ
+    // sería adivinar por quien lo leyó — `Number('')` es 0 y `Number(true)` es 1, y los dos
+    // pasarían como horizontes plausibles. Quien lee el parámetro es quien sabe qué
+    // significa que venga vacío.
+    if (!Number.isInteger(horizonteDias) || horizonteDias < 1 || horizonteDias > HORIZONTE_DIAS_MAX) {
+        throw new TypeError(`horizonteDias invalido: ${JSON.stringify(horizonteDias)} (entero entre 1 y ${HORIZONTE_DIAS_MAX})`);
+    }
+    return horizonteDias;
+}
+
 /**
- * Devuelve huecos disponibles para un servicio en los próximos 14 días.
- * @param {string} orgId
- * @param {object} options
- * @param {number} options.serviceDuration — duración en minutos
- * @param {string} options.serviceCategory — categoría del servicio (para filtrar estilistas por skill)
- * @param {string} [options.preferredStylistId] — si la clienta pide una estilista concreta
- * @param {object} [options.preferencia] — { periodo: 'mañana'|'tarde', semana: 'esta'|'siguiente' }
- * @param {string|null} [options.lang] — idioma de la clienta ('es'|'en'|'ru'|'uk'); decide el
- *   idioma de `texto`. Null o desconocido caen a castellano (mismo criterio que el
- *   recordatorio). Los llamadores que no lo pasan (scripts de verificación) reciben es.
- * @returns {Array} — top slots con { fecha, hora, diaNombre, stylistId, stylistName, texto }
+ * Prepara el motor UNA vez: estilistas elegibles, rango de fechas y prefetch de
+ * horarios/bloqueos/citas. Devuelve un contexto con `buildSlots(pref)`, que genera las filas
+ * (estilista × día × hora) sin volver a la base de datos.
+ *
+ * Existe para que el bot y el enlace público salgan del MISMO sitio. Con dos motores, la
+ * vista de mes del enlace acabaría enseñando un día en verde que al abrirlo no tiene huecos,
+ * y nadie sabría cuál de los dos miente. Lo que cada uno haga con esas filas SÍ puede ser
+ * distinto —el bot deduplica, ordena, tiene fallbacks y un tope— y por eso la raya está aquí.
+ *
+ * @returns {{causa: string}|{buildSlots: Function, diagnosticarCero: Function,
+ *            eligible: Array, weekPreferenceRelaxed: boolean}}
  */
-async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory, preferredStylistId, preferencia = {}, lang = null } = {}) {
+async function prepararMotor(orgId, { serviceDuration = 60, serviceCategory, preferredStylistId, horizonteDias, asap = false, lang = null } = {}) {
+    const dias = resolverHorizonte(horizonteDias);
     const allStylists = await db.getStylistsByOrg(orgId);
-    if (!allStylists.length) return conCausa([], 'sin_estilistas');
+    // Las dos salidas tempranas devuelven SOLO la causa, sin contexto: quien llama no puede
+    // confundirlas con "hay motor y no ha salido ningún hueco", que es un estado distinto y
+    // se diagnostica al final, con diagnosticarCero().
+    if (!allStylists.length) return { causa: CAUSAS_CERO.SIN_ESTILISTAS };
 
     // Filtrar por skill: SOLO estilistas cuyo `skills` incluye exactamente la categoría
     // del servicio. Antes había un fallback a TODAS las estilistas si ninguna hacía match,
@@ -70,7 +110,7 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
         });
         if (!eligible.length) {
             logger.warn('sante_sin_estilista_para_categoria', { orgId, serviceCategory });
-            return conCausa([], 'sin_skill');
+            return { causa: CAUSAS_CERO.SIN_SKILL };
         }
     }
 
@@ -90,17 +130,56 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     const nowMinutes = toMinutes(now);      // minuto-del-día de AHORA en TZ de negocio
 
     // Fecha-calendario de inicio (TZ de negocio): hoy si asap, mañana por defecto. Todo el
-    // recorrido de 14 días se hace sobre strings YYYY-MM-DD, independiente de la TZ del proceso.
-    const startDateStr = preferencia.asap ? todayStr : addDaysStr(todayStr, 1);
-    const endDateStr = addDaysStr(startDateStr, 14);
+    // recorrido se hace sobre strings YYYY-MM-DD, independiente de la TZ del proceso.
+    const startDateStr = asap ? todayStr : addDaysStr(todayStr, 1);
+    const endDateStr = addDaysStr(startDateStr, dias);
     const fromDateStr = startDateStr;
     const toDateStr = endDateStr;
 
-    // Rango para las consultas a BD: cubre los 14 días de negocio con ±1 día de holgura
+    // Rango para las consultas a BD: cubre los días de negocio del horizonte con ±1 día de holgura
     // (el filtrado fino se hace luego re-agrupando cada cita/bloqueo por su fecha de negocio).
     const fromStr = new Date(new Date(startDateStr + 'T00:00:00Z').getTime() - 24 * 3600 * 1000).toISOString();
     const toStr = new Date(new Date(endDateStr + 'T00:00:00Z').getTime() + 24 * 3600 * 1000).toISOString();
-    const allBlockedDays = await db.getBlockedDays(orgId, { from: fromDateStr, to: toDateStr });
+    // Prefetch del horario/bloqueos/citas de cada estilista UNA sola vez. Así podemos recorrer
+    // los días dos veces (con el filtro de día pedido y, si no hay nada, sin él) sin volver a
+    // pegarle a la base de datos.
+    //
+    // ── D7, y por qué la respuesta es PARALELIZAR y no agrupar ──────────────────────────
+    // Esto eran 3 lecturas EN SERIE por estilista más la de días bloqueados: con las cuatro
+    // generalistas de Sante, 14 viajes encadenados. Medido el 20/08/2026 contra la Supabase
+    // real (`npm run medir:prefetch -- sante`): 14 tandas, 1027 ms de mediana, de los cuales
+    // 993 eran ESPERA — o sea, el coste era la PROFUNDIDAD (viajes encadenados), no el
+    // volumen. Encadenar catorce esperas de ~71 ms se disimula en una conversación, donde
+    // ya se está esperando al modelo; en un formulario público que llama a esto en cada
+    // clic, y a 90 días, no.
+    //
+    // La alternativa era agrupar las tres lecturas en tres consultas con `.in(stylist_id)`.
+    // Se descartó y conviene no reabrirlo sin releer esto: bajaría de 14 viajes a 5 pero
+    // seguirían siendo las mismas 2 tandas, o sea prácticamente el mismo reloj — y a cambio
+    // (a) rompería los dobles de ~25 ficheros de test que stubean estas tres funciones por
+    // estilista, unos ruidosamente y otros dejando al motor hablar con la Supabase REAL, y
+    // (b) metería una lectura sin trocear cuyo truncado por límite de filas se leería como
+    // "esta estilista no tiene citas", que es la lectura más peligrosa de las cinco.
+    //
+    // El abanico está acotado por el tamaño del equipo del salón (hoy 8, y 4 tras el filtro
+    // de skill): no es una fan-out que crezca con los datos.
+    const [allBlockedDays, stylistData] = await Promise.all([
+        db.getBlockedDays(orgId, { from: fromDateStr, to: toDateStr }),
+        // Promise.all CONSERVA EL ORDEN de entrada, y eso aquí no es un detalle: `eligible`
+        // viene ordenado por nombre desde getStylistsByOrg y de ese orden depende quién gana
+        // cada empate en el dedupe por (fecha,hora). Con un `for await` que fuera resolviendo
+        // por llegada, la ganadora la decidiría la latencia de la red.
+        Promise.all(eligible.map(async (stylist) => {
+            const [schedule, blocks, appointments] = await Promise.all([
+                db.getStylistSchedule(orgId, stylist.id),
+                db.getScheduleBlocks(orgId, stylist.id, fromStr, toStr),
+                db.getAppointmentsByStylistAndRange(orgId, stylist.id, fromStr, toStr),
+            ]);
+            const scheduleByDay = new Map();
+            for (const s of schedule) scheduleByDay.set(s.day_of_week, s);
+            return { stylist, scheduleByDay, blocks, appointments };
+        })),
+    ]);
     const salonBlockedDates = new Set(allBlockedDays.filter(b => !b.stylist_id).map(b => b.fecha));
     const stylistBlockedDates = new Map();
     for (const b of allBlockedDays) {
@@ -109,26 +188,13 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
         stylistBlockedDates.get(b.stylist_id).add(b.fecha);
     }
 
-    // Prefetch del horario/bloqueos/citas de cada estilista UNA sola vez. Así podemos
-    // recorrer los días dos veces (con el filtro de día pedido y, si no hay nada, sin él)
-    // sin volver a pegarle a la base de datos.
-    const stylistData = [];
-    for (const stylist of eligible) {
-        const schedule = await db.getStylistSchedule(orgId, stylist.id);
-        const blocks = await db.getScheduleBlocks(orgId, stylist.id, fromStr, toStr);
-        const appointments = await db.getAppointmentsByStylistAndRange(orgId, stylist.id, fromStr, toStr);
-        const scheduleByDay = new Map();
-        for (const s of schedule) scheduleByDay.set(s.day_of_week, s);
-        stylistData.push({ stylist, scheduleByDay, blocks, appointments });
-    }
-
-    // Recorre los próximos 14 días y construye los huecos reales según horario, citas y
+    // Recorre los días del horizonte y construye los huecos reales según horario, citas y
     // bloqueos. `pref` puede traer filtros de día/semana/franja. NUNCA inventa huecos:
     // si la estilista no trabaja ese día (no hay daySchedule), simplemente no se generan.
-    // Los 14 días de calendario a recorrer, en TZ de negocio, con su día de la semana
+    // Los días de calendario a recorrer, en TZ de negocio, con su día de la semana
     // (0=lunes). Aritmética pura de fechas → idéntico en cualquier TZ del proceso.
     const calendarDays = [];
-    for (let d = 0; d < 14; d++) {
+    for (let d = 0; d < dias; d++) {
         const dateStr = addDaysStr(startDateStr, d);
         calendarDays.push({ dateStr, dayOfWeek: mondayDow(dateStr) });
     }
@@ -137,7 +203,9 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     // ¿Se ha tenido que soltar (total o parcialmente) el filtro de semana que pidió la
     // clienta? El bot lo usa para DECIRLO en voz alta en vez de proponer en silencio días de
     // otra semana. Lo escribe buildSlots (ventana blanda) y la ETAPA A del fallback.
-    let weekPreferenceRelaxed = false;
+    // Vive en el contexto y no en una local: buildSlots la ESCRIBE y el llamador la LEE
+    // después, y los dos llamadores (huecos y días) están ya fuera de esta función.
+    const ctx = { weekPreferenceRelaxed: false };
 
     function buildSlots(pref) {
         // Límites de semana como strings YYYY-MM-DD (comparables con < y >).
@@ -164,7 +232,7 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
             const diasEnVentana = (6 - startDow) + 1;
             if (diasEnVentana < MIN_DIAS_VENTANA_SEMANA) {
                 ventanaSemanaBlanda = true;
-                weekPreferenceRelaxed = true;
+                ctx.weekPreferenceRelaxed = true;
                 logger.info('sante_ventana_semana_relajada', { orgId, startDateStr, endOfThisWeekStr, diasEnVentana });
             }
         }
@@ -239,6 +307,65 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
         return out;
     }
 
+    // Por qué el motor daría CERO. Se calcula sobre lo que ya está en memoria y lo usan los
+    // DOS llamadores: si el enlace tuviera su propio diagnóstico, una agenda llena podría
+    // salir como "sin horario" en la web y como "agenda llena" en el bot, y la clienta que
+    // pregunta las dos cosas recibiría dos verdades distintas.
+    function diagnosticarCero() {
+        let hayAlgunaJornada = false;    // ¿alguien trabaja algún día del rango?
+        let cabeEnAlgunaJornada = false; // ¿el servicio cabe en alguna de esas jornadas?
+        for (const { scheduleByDay } of stylistData) {
+            for (const { dayOfWeek } of calendarDays) {
+                const ds = scheduleByDay.get(dayOfWeek);
+                if (!ds) continue;
+                hayAlgunaJornada = true;
+                const [sH, sM] = ds.start_time.split(':').map(Number);
+                const [eH, eM] = ds.end_time.split(':').map(Number);
+                // Mismo criterio estricto que computeFreeSlots: la cita debe TERMINAR antes
+                // del cierre, no justo al cierre.
+                if ((sH * 60 + sM) + serviceDuration < (eH * 60 + eM)) { cabeEnAlgunaJornada = true; break; }
+            }
+            if (cabeEnAlgunaJornada) break;
+        }
+        return !hayAlgunaJornada ? CAUSAS_CERO.SIN_HORARIO
+            : !cabeEnAlgunaJornada ? CAUSAS_CERO.NO_CABE
+            : CAUSAS_CERO.AGENDA_LLENA;
+    }
+
+    // Lo que sale del motor es lo MÍNIMO para construir filas y explicar un cero. Ni
+    // `stylistData` ni `calendarDays` se exponen a propósito: quien los tuviera podría
+    // montarse su propio recorrido de días a mano, que es exactamente el segundo motor que
+    // este contexto existe para evitar.
+    ctx.buildSlots = buildSlots;
+    ctx.diagnosticarCero = diagnosticarCero;
+    ctx.eligible = eligible;
+    return ctx;
+}
+
+/**
+ * Devuelve huecos disponibles para un servicio dentro del horizonte (14 días por defecto).
+ * @param {string} orgId
+ * @param {object} options
+ * @param {number} options.serviceDuration — duración en minutos
+ * @param {string} options.serviceCategory — categoría del servicio (para filtrar estilistas por skill)
+ * @param {string} [options.preferredStylistId] — si la clienta pide una estilista concreta
+ * @param {object} [options.preferencia] — { periodo: 'mañana'|'tarde', semana: 'esta'|'siguiente' }
+ * @param {string|null} [options.lang] — idioma de la clienta ('es'|'en'|'ru'|'uk'); decide el
+ *   idioma de `texto`. Null o desconocido caen a castellano (mismo criterio que el
+ *   recordatorio). Los llamadores que no lo pasan (scripts de verificación) reciben es.
+ * @param {number} [options.horizonteDias] — días de calendario a recorrer. Default 14, que es
+ *   lo que pide el bot; el enlace público pasa 90. Ver HORIZONTE_DIAS_DEFAULT.
+ * @returns {Array} — top slots con { fecha, hora, diaNombre, stylistId, stylistName, texto }
+ */
+async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory, preferredStylistId, preferencia = {}, lang = null, horizonteDias } = {}) {
+    const motor = await prepararMotor(orgId, {
+        serviceDuration, serviceCategory, preferredStylistId, lang,
+        horizonteDias,
+        asap: !!preferencia.asap,
+    });
+    if (motor.causa) return conCausa([], motor.causa);
+    const { buildSlots, eligible } = motor;
+
     let slots = buildSlots(preferencia);
 
     // Fallback anti-invención (BUG 1/2/3): si se pidió un DÍA concreto en el que la(s)
@@ -259,7 +386,7 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
             slots = buildSlots(sinSemana);
             // Si estos huecos salen de haber soltado la semana, la clienta pidió una semana
             // que no podemos honrar: hay que decírselo, no proponer otra en silencio.
-            if (slots.length) weekPreferenceRelaxed = true;
+            if (slots.length) motor.weekPreferenceRelaxed = true;
         }
         // ETAPA B — si sigue vacío, es el DÍA pedido el que no tiene hueco. Soltamos también
         // día/fecha para proponer las alternativas reales más cercanas, nunca inventadas, y
@@ -333,33 +460,15 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     //  - weekPreferenceRelaxed: la SEMANA pedida no se ha podido honrar (ventana agotada o
     //    sin huecos) y estos huecos caen fuera de ella.
     unique.requestedDayUnavailable = pedidoDiaSinHueco;
-    unique.weekPreferenceRelaxed = weekPreferenceRelaxed && unique.length > 0;
+    unique.weekPreferenceRelaxed = motor.weekPreferenceRelaxed && unique.length > 0;
 
     if (unique.length) return conCausa(unique, null);
 
-    // Cero real tras haberlo intentado todo (incluidas ETAPA A y B). Se diagnostica el
-    // PORQUÉ recorriendo lo que ya está en memoria — sin volver a la BD — para que el bot
-    // pueda decir la verdad ("está completo" / "no cabe en la jornada") en vez del
-    // "no hay huecos cargados" genérico que el LLM interpreta como avería.
-    let hayAlgunaJornada = false;   // ¿alguien trabaja algún día del rango?
-    let cabeEnAlgunaJornada = false; // ¿el servicio cabe en alguna de esas jornadas?
-    for (const { scheduleByDay } of stylistData) {
-        for (const { dayOfWeek } of calendarDays) {
-            const ds = scheduleByDay.get(dayOfWeek);
-            if (!ds) continue;
-            hayAlgunaJornada = true;
-            const [sH, sM] = ds.start_time.split(':').map(Number);
-            const [eH, eM] = ds.end_time.split(':').map(Number);
-            // Mismo criterio estricto que computeFreeSlots: la cita debe TERMINAR antes del
-            // cierre, no justo al cierre.
-            if ((sH * 60 + sM) + serviceDuration < (eH * 60 + eM)) { cabeEnAlgunaJornada = true; break; }
-        }
-        if (cabeEnAlgunaJornada) break;
-    }
-
-    const causa = !hayAlgunaJornada ? CAUSAS_CERO.SIN_HORARIO
-        : !cabeEnAlgunaJornada ? CAUSAS_CERO.NO_CABE
-        : CAUSAS_CERO.AGENDA_LLENA;
+    // Cero real tras haberlo intentado todo (incluidas ETAPA A y B). El PORQUÉ lo calcula
+    // el motor, sin volver a la BD, para que el bot pueda decir la verdad ("está completo" /
+    // "no cabe en la jornada") en vez del "no hay huecos cargados" genérico que el LLM
+    // interpreta como avería.
+    const causa = motor.diagnosticarCero();
 
     logger.warn('sante_cero_huecos_diagnosticado', {
         orgId, causa, serviceCategory, serviceDuration,
@@ -548,7 +657,7 @@ async function rescheduleAppointment(orgId, appointmentId, slot, { servicio, dur
     return { success: true, appointmentId: result.id, appointment: result };
 }
 
-module.exports = { getAvailableSlots, bookAppointment, cancelAppointment, rescheduleAppointment, formatSlotForMessage, CAUSAS_CERO };
+module.exports = { getAvailableSlots, bookAppointment, cancelAppointment, rescheduleAppointment, formatSlotForMessage, CAUSAS_CERO, HORIZONTE_DIAS_DEFAULT, HORIZONTE_DIAS_MAX };
 // Expuesto para tests de regresión (huecos + TZ-independencia + idioma del texto del
 // hueco), no para uso en producción.
 module.exports._internals = { computeFreeSlots, recortarAlDia, addSlot, toLocalDateStr, toMinutes, addDaysStr, mondayDow, resolveWeekdayToDate, BUSINESS_TZ };
