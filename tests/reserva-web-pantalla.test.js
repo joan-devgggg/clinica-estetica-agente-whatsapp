@@ -33,6 +33,15 @@
  *   · que `construirMeses` marque elegible cualquier día no pasado .............. 2 rojos
  *   · que `hoyEnElSalon` use la hora del navegador (probado con TZ=UTC) ......... 1 rojo
  *   · que `agruparCatalogo` ordene los grupos alfabéticamente ................... 2 rojos
+ *
+ * Y los de los CUATRO IDIOMAS (21/08/2026), cada uno con su bloque y ninguno solapado:
+ *   · dejar una cadena del ruso en castellano ................................... 1 rojo
+ *     (y el rojo dice la ruta y el valor: «ru: confirmar = "Confirmar la cita"»)
+ *   · copiar la tabla rusa entera en la ucraniana ............................... 1 rojo
+ *   · quitarle una clave al inglés .............................................. 1 rojo
+ *   · perder el `{salon}` al traducir el título de la confirmación .............. 1 rojo
+ *   · escribir un mensaje de WhatsApp en la tabla de textos ..................... 1 rojo
+ *   · que el navegador gane a la `?lang=` de la URL ............................. 1 rojo
  */
 const assert = require('assert');
 const path = require('path');
@@ -77,7 +86,7 @@ test('cada texto de motivo está completo: título, cuerpo y a dónde vuelve', (
     for (const [motivo, texto] of Object.entries(T.motivos)) {
         assert.ok(texto.titulo && texto.titulo.trim(), `${motivo} sin título`);
         assert.ok(texto.cuerpo && texto.cuerpo.trim(), `${motivo} sin cuerpo`);
-        assert.ok(VUELTAS.includes(texto.vuelta), `${motivo} vuelve a un paso que no existe: ${texto.vuelta}`);
+        assert.ok(VUELTAS.includes(N.vueltaDe(motivo)), `${motivo} vuelve a un paso que no existe`);
     }
 });
 
@@ -87,7 +96,7 @@ test('si la política RECARGA, la pantalla devuelve a un paso que se recarga', (
     // Recargar y quedarse en la pantalla de datos sería pedir los huecos y no enseñarlos.
     const mal = Object.entries(POLITICA)
         .filter(([, p]) => p.recargar)
-        .filter(([m]) => T.motivos[m] && !['huecos', 'dias'].includes(T.motivos[m].vuelta));
+        .filter(([m]) => T.motivos[m] && !['huecos', 'dias'].includes(N.vueltaDe(m)));
     assert.deepStrictEqual(mal.map(([m]) => m), [],
         'la respuesta manda recargar huecos y la pantalla no lleva a ningún paso que los enseñe');
 });
@@ -96,15 +105,14 @@ test('si la política NO recarga, la pantalla no la manda a los huecos', () => {
     // Es el caso `tope_citas`: enseñarle otra vez las horas que acaba de no poder reservar.
     const mal = Object.entries(POLITICA)
         .filter(([, p]) => !p.recargar)
-        .filter(([m]) => T.motivos[m] && T.motivos[m].vuelta === 'huecos');
+        .filter(([m]) => T.motivos[m] && N.vueltaDe(m) === 'huecos');
     assert.deepStrictEqual(mal.map(([m]) => m), [],
         'la pantalla enseñaría de nuevo unos huecos que la respuesta ha dicho que no recargue');
 });
 
 test('un aviso SIN SALIDA solo se permite donde hay WhatsApp', () => {
-    const sinSalida = Object.entries(T.motivos)
-        .filter(([, t]) => t.vuelta === 'ninguna')
-        .map(([m]) => m)
+    const sinSalida = Object.keys(T.motivos)
+        .filter(m => N.vueltaDe(m) === 'ninguna')
         // `no_encontrado` es la excepción declarada: a esa altura no se sabe ni de qué salón
         // se hablaba, así que no hay número al que mandarla.
         .filter(m => m !== 'no_encontrado');
@@ -118,7 +126,7 @@ test('el tope de citas: no recarga, y la salida es WhatsApp', () => {
     // no es un error de agenda, y por eso es la que se pinta distinto.
     assert.strictEqual(POLITICA[MOTIVOS.TOPE_CITAS].recargar, false);
     assert.strictEqual(POLITICA[MOTIVOS.TOPE_CITAS].whatsapp, true);
-    assert.strictEqual(T.motivos.tope_citas.vuelta, 'ninguna');
+    assert.strictEqual(N.vueltaDe('tope_citas'), 'ninguna');
 });
 
 test('los cuatro motivos de `reservar_hueco()` se pintan cada uno a su manera', () => {
@@ -152,7 +160,7 @@ test('el fetch que no llega a contestar tiene su propio motivo, con texto', () =
     assert.strictEqual(f.motivo, 'sin_conexion');
     assert.strictEqual(f.recargarHuecos, false);
     assert.ok(T.motivos.sin_conexion.titulo, 'la pantalla se quedaría en blanco al caerse la red');
-    assert.strictEqual(T.motivos.sin_conexion.vuelta, 'reintentar');
+    assert.strictEqual(N.vueltaDe('sin_conexion'), 'reintentar');
 });
 
 test('recargarHuecos solo es true si la respuesta lo dice con un true', () => {
@@ -468,6 +476,171 @@ test('el rótulo del día lleva día de la semana, número y mes; y null si no s
     assert.ok(/2026/.test(N.etiquetaMes(2026, 7, 'es')));
 });
 
+// ─── 6 ter · LOS CUATRO IDIOMAS, cadena por cadena ───────────────────────────────────────
+//
+// El fallo que esto caza no es una traducción mala: es una que NO SE HIZO. Cuatro tablas de
+// ~60 cadenas, una debajo de otra, y la que se quedó en castellano no la ve nadie leyendo —
+// la ve una clienta rusa en la pantalla de error, que es el peor momento posible.
+
+/** Aplana una tabla a pares [ruta, cadena], entrando en objetos y arrays. */
+function cadenasDe(obj, prefijo = '') {
+    const out = [];
+    for (const [k, v] of Object.entries(obj)) {
+        const ruta = prefijo ? `${prefijo}.${k}` : k;
+        if (typeof v === 'string') out.push([ruta, v]);
+        else if (Array.isArray(v)) v.forEach((x, i) => out.push([`${ruta}[${i}]`, x]));
+        else if (v && typeof v === 'object') out.push(...cadenasDe(v, ruta));
+    }
+    return out;
+}
+
+// Las que PUEDEN coincidir con el castellano sin que sea un descuido. Cada una declarada:
+// fuera y en silencio es como se cuela la que sí lo es.
+const COINCIDEN_A_PROPOSITO = {
+    en: new Set([
+        'minutos',            // 'min' se abrevia igual
+        'horas',              // 'h' también
+        'inicialesDias[5]',   // sábado y Saturday empiezan por S
+    ]),
+    ru: new Set(),
+    uk: new Set(),
+};
+
+test('los cuatro idiomas tienen EXACTAMENTE las mismas claves', () => {
+    const rutasEs = cadenasDe(N.TEXTOS.es).map(([r]) => r).sort();
+    for (const lang of ['en', 'ru', 'uk']) {
+        const rutas = cadenasDe(N.TEXTOS[lang]).map(([r]) => r).sort();
+        const faltan = rutasEs.filter(r => !rutas.includes(r));
+        const sobran = rutas.filter(r => !rutasEs.includes(r));
+        assert.deepStrictEqual(faltan, [], `${lang}: faltan ${faltan.join(', ')}`);
+        assert.deepStrictEqual(sobran, [], `${lang}: sobran ${sobran.join(', ')}`);
+    }
+});
+
+test('ni una cadena vacía en ninguno de los cuatro', () => {
+    for (const lang of N.IDIOMAS) {
+        const vacias = cadenasDe(N.TEXTOS[lang]).filter(([, v]) => !String(v).trim()).map(([r]) => r);
+        assert.deepStrictEqual(vacias, [], `${lang}: saldría un hueco en pantalla (${vacias.join(', ')})`);
+    }
+});
+
+test('NINGUNA cadena se ha quedado en castellano', () => {
+    const es = new Map(cadenasDe(N.TEXTOS.es));
+    for (const lang of ['en', 'ru', 'uk']) {
+        const sinTraducir = cadenasDe(N.TEXTOS[lang])
+            .filter(([ruta, v]) => v === es.get(ruta) && !COINCIDEN_A_PROPOSITO[lang].has(ruta))
+            .map(([ruta, v]) => `${ruta} = ${JSON.stringify(v)}`);
+        assert.deepStrictEqual(sinTraducir, [],
+            `${lang}: se quedaron en castellano →\n     ${sinTraducir.join('\n     ')}`);
+    }
+});
+
+test('el ucraniano no es el ruso copiado, y se demuestra por las letras', () => {
+    // Misma técnica que `detectLanguage`: `і ї є ґ` existen en ucraniano y NO en ruso. Un
+    // copia-pega de una tabla en la otra —en cualquiera de las dos direcciones— se cae aquí,
+    // y no hace falta ningún umbral ni comparar cadena a cadena las que legítimamente
+    // coinciden («Назад», «Пн», «День»…).
+    const exclusivas = /[іїєґ]/i;
+    const uk = cadenasDe(N.TEXTOS.uk).filter(([, v]) => exclusivas.test(v));
+    assert.ok(uk.length > 15, `solo ${uk.length} cadenas ucranianas llevan і/ї/є/ґ: ¿es ruso?`);
+    const ru = cadenasDe(N.TEXTOS.ru).filter(([, v]) => exclusivas.test(v)).map(([r]) => r);
+    assert.deepStrictEqual(ru, [], `el ruso lleva letras ucranianas: ${ru.join(', ')}`);
+    // Y el cirílico no se cuela en las dos latinas.
+    for (const lang of ['es', 'en']) {
+        const cirilico = cadenasDe(N.TEXTOS[lang]).filter(([, v]) => /[а-яёіїєґ]/i.test(v)).map(([r]) => r);
+        assert.deepStrictEqual(cirilico, [], `${lang} lleva cirílico: ${cirilico.join(', ')}`);
+    }
+});
+
+test('los marcadores de plantilla sobreviven a la traducción', () => {
+    // Un `{salon}` perdido al traducir deja «Tu cita ha sido confirmada en» y punto.
+    for (const lang of N.IDIOMAS) {
+        const t = N.TEXTOS[lang];
+        assert.ok(t.confirmadaTitulo.includes('{salon}'), `${lang}: confirmadaTitulo sin {salon}`);
+        assert.ok(t.esperaMinutos.includes('{min}'), `${lang}: esperaMinutos sin {min}`);
+        assert.ok(t.esperaSegundos.includes('{seg}'), `${lang}: esperaSegundos sin {seg}`);
+        assert.ok(!t.confirmadaSinSalon.includes('{'), `${lang}: confirmadaSinSalon con marcador`);
+        // Y ningún marcador huérfano en el resto: un `{min}` en una cadena que nadie rellena
+        // sale tal cual en pantalla.
+        const conLlaves = cadenasDe(t)
+            .filter(([ruta, v]) => /\{\w+\}/.test(v)
+                && !['confirmadaTitulo', 'esperaMinutos', 'esperaSegundos'].includes(ruta))
+            .map(([ruta]) => ruta);
+        assert.deepStrictEqual(conLlaves, [], `${lang}: marcadores que nadie rellena en ${conLlaves.join(', ')}`);
+    }
+});
+
+test('la pantalla NO escribe ni un mensaje de WhatsApp: los redacta el servidor', () => {
+    // Los de las dos puertas y los de cada motivo viven en `services/reserva-web.js`, ya en
+    // cuatro idiomas, y llegan como URL montada. Una frase aquí sería la quinta traducción
+    // de lo mismo, y la que nadie revisaría.
+    for (const lang of N.IDIOMAS) {
+        const sospechosas = cadenasDe(N.TEXTOS[lang])
+            .filter(([, v]) => /wa\.me|https?:\/\//.test(v)).map(([r]) => r);
+        assert.deepStrictEqual(sospechosas, [], `${lang}: la pantalla fabrica un enlace (${sospechosas.join(', ')})`);
+    }
+    // Y el único sitio del fichero donde aparece wa.me es la COMPROBACIÓN de lo que llega.
+    const src = require('fs').readFileSync(
+        path.join(__dirname, '..', 'dashboard-app', 'src', 'lib', 'reservar', 'nucleo.ts'), 'utf8');
+    const apariciones = (src.match(/wa\.me/g) || []).length;
+    assert.strictEqual(apariciones, 2,
+        `wa.me aparece ${apariciones} veces en nucleo.ts: debería estar solo en las dos guardas de href`);
+});
+
+test('la conducta NO depende del idioma: `vuelta` vive en una sola tabla', () => {
+    // Si `vuelta` estuviera dentro de cada tabla de idioma, cambiar una y no las otras haría
+    // que la pantalla se COMPORTARA distinto en ruso. Eso ya no se puede escribir: no hay
+    // dónde ponerlo.
+    for (const lang of N.IDIOMAS) {
+        const conVuelta = cadenasDe(N.TEXTOS[lang]).filter(([r]) => r.endsWith('.vuelta'));
+        assert.deepStrictEqual(conVuelta, [], `${lang}: la conducta ha vuelto a la tabla de textos`);
+    }
+    assert.strictEqual(N.vueltaDe('hueco_ocupado'), 'huecos');
+    assert.strictEqual(N.vueltaDe('un_motivo_que_no_existe'), 'reintentar',
+        'un motivo desconocido tiene que caer en el mismo sitio que error_interno');
+});
+
+// ─── 6 quater · De dónde sale el idioma ──────────────────────────────────────────────────
+
+test('la URL manda sobre el navegador: una ucraniana con el móvil en ruso', () => {
+    // Es el caso que ordena toda la cascada. Si el navegador ganara, esa clienta no tendría
+    // forma de leer la pantalla en su idioma, y existe.
+    const r = N.elegirIdioma({ url: 'uk', aceptaIdiomas: 'ru-RU,ru;q=0.9' });
+    assert.deepStrictEqual(r, { idioma: 'uk', origen: 'url' });
+});
+
+test('sin `lang` se usa el navegador, con su orden de preferencia', () => {
+    assert.strictEqual(N.elegirIdioma({ aceptaIdiomas: 'uk-UA,uk;q=0.9,ru;q=0.8' }).idioma, 'uk');
+    assert.strictEqual(N.elegirIdioma({ aceptaIdiomas: 'en-US,en;q=0.9' }).idioma, 'en');
+    // `ru,uk;q=0.9` es lo que manda Chrome cuando el sistema está en ruso: gana ruso.
+    assert.strictEqual(N.elegirIdioma({ aceptaIdiomas: 'ru,uk;q=0.9' }).idioma, 'ru');
+    // Y la `q` manda sobre el orden: el francés no lo hablamos, el inglés sí.
+    assert.strictEqual(N.elegirIdioma({ aceptaIdiomas: 'fr-FR,fr;q=0.9,en;q=0.5' }).idioma, 'en');
+    assert.strictEqual(N.elegirIdioma({ aceptaIdiomas: 'uk-UA,uk;q=0.9,ru;q=0.8' }).origen, 'navegador');
+});
+
+test('un `lang` que no existe NO cae a castellano: sigue la cascada', () => {
+    // Un enlace mal copiado («?lang=rus») no puede dejar a una rusa en castellano teniendo
+    // el navegador en ruso.
+    assert.strictEqual(N.elegirIdioma({ url: 'rus', aceptaIdiomas: 'ru-RU,ru;q=0.9' }).idioma, 'ru');
+    assert.strictEqual(N.elegirIdioma({ url: '', aceptaIdiomas: 'uk' }).idioma, 'uk');
+    assert.strictEqual(N.elegirIdioma({ url: 42, aceptaIdiomas: 'en' }).idioma, 'en');
+});
+
+test('sin ninguna señal, castellano — y se dice que es el default', () => {
+    assert.deepStrictEqual(N.elegirIdioma({}), { idioma: 'es', origen: 'defecto' });
+    assert.deepStrictEqual(N.elegirIdioma(), { idioma: 'es', origen: 'defecto' });
+    assert.strictEqual(N.elegirIdioma({ aceptaIdiomas: 'zh-CN,zh;q=0.9,ja;q=0.8' }).idioma, 'es');
+    // Una cabecera basura no revienta la página.
+    assert.strictEqual(N.elegirIdioma({ aceptaIdiomas: ';;;q=' }).idioma, 'es');
+    assert.strictEqual(N.elegirIdioma({ aceptaIdiomas: 'ru;q=0' }).idioma, 'es', 'q=0 significa «no quiero éste»');
+});
+
+test('el nombre de cada idioma va en SU idioma, y no se traduce', () => {
+    assert.deepStrictEqual(N.NOMBRES_IDIOMA,
+        { es: 'Español', en: 'English', ru: 'Русский', uk: 'Українська' });
+});
+
 // ─── 7 · Lo que teclea la clienta ────────────────────────────────────────────────────────
 
 test('el teléfono se comprueba flojo a propósito: el servidor tiene la última palabra', () => {
@@ -523,6 +696,16 @@ test('la pantalla pública no arrastra NADA del panel con sesión', () => {
             assert.ok(!src.includes(mal), `${f.join('/')} importa ${mal}: la página deja de ser pública`);
         }
     }
+});
+
+test('la pantalla de avería NO se queda clavada en castellano', () => {
+    // `error.tsx` lo monta React cuando el árbol ya se ha caído y no le llegan props. Si
+    // resolviera «es» a pelo, una clienta rusa vería la única pantalla que no puede evitar
+    // —la de avería— en un idioma que no lee, y justo en el peor momento.
+    const src = leer('app', 'reservar', '[slug]', 'error.tsx');
+    assert.ok(src.includes('elegirIdioma'),
+        'error.tsx no recupera el idioma: revisa que no haya vuelto a un textos("es")');
+    assert.ok(!/textos\("es"\)/.test(src), 'error.tsx tiene el castellano cableado');
 });
 
 test('el núcleo de la pantalla no importa nada: es lo que lo hace ejecutable aquí', () => {

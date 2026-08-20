@@ -40,8 +40,58 @@ export type Idioma = 'es' | 'en' | 'ru' | 'uk';
 export const IDIOMAS: Idioma[] = ['es', 'en', 'ru', 'uk'];
 export const IDIOMA_POR_DEFECTO: Idioma = 'es';
 
+/**
+ * El nombre de cada idioma, EN SU PROPIO IDIOMA. No entra en `Textos` y no se traduce: quien
+ * busca su idioma en una lista busca la palabra que reconoce, no su traducción. Es la razón
+ * por la que ningún selector del mundo pone «Ruso» en la versión castellana.
+ */
+export const NOMBRES_IDIOMA: Record<Idioma, string> = {
+    es: 'Español', en: 'English', ru: 'Русский', uk: 'Українська',
+};
+
 export function idiomaValido(lang: unknown): Idioma {
     return IDIOMAS.includes(lang as Idioma) ? (lang as Idioma) : IDIOMA_POR_DEFECTO;
+}
+
+/**
+ * De dónde sale el idioma de la pantalla, en este orden y solo este:
+ *
+ *   1. **La URL** (`?lang=ru`). Manda siempre, porque es lo único que la clienta puede
+ *      cambiar a mano — y hace falta poder: una ucraniana con el móvil configurado en ruso
+ *      existe, y es exactamente a quien el navegador engañaría.
+ *   2. **El navegador** (`Accept-Language`), respetando el orden de preferencia y su `q`.
+ *      Se compara solo la subetiqueta principal: `ru-RU`, `ru-UA` y `ru` son el mismo ruso.
+ *   3. **Castellano.** Sin señal no se adivina, y es el idioma del salón.
+ *
+ * Un `?lang=` que no existe NO cae directo a castellano: se ignora y sigue la cascada, que
+ * es lo que hace que un enlace mal copiado («?lang=rus») siga dando el idioma del navegador
+ * en vez de castellano a una rusa.
+ *
+ * Devuelve también el ORIGEN. No cambia lo que se pinta; sirve para que la decisión se pueda
+ * probar y para saber, al mirar un caso raro, si el idioma lo eligió ella o lo dedujimos.
+ */
+export function elegirIdioma(
+    { url, aceptaIdiomas }: { url?: unknown; aceptaIdiomas?: unknown } = {},
+): { idioma: Idioma; origen: 'url' | 'navegador' | 'defecto' } {
+    if (typeof url === 'string' && IDIOMAS.includes(url.trim().toLowerCase() as Idioma)) {
+        return { idioma: url.trim().toLowerCase() as Idioma, origen: 'url' };
+    }
+    const cabecera = typeof aceptaIdiomas === 'string' ? aceptaIdiomas : '';
+    const preferencias = cabecera
+        .split(',')
+        .map((trozo, i) => {
+            const [etiqueta, ...params] = trozo.trim().split(';');
+            const q = params.map(x => /^q=([\d.]+)$/.exec(x.trim())).find(Boolean);
+            // El orden de aparición desempata cuando dos tienen la misma q, que es lo que
+            // hace Chrome: manda `ru,uk;q=0.9` y espera ruso.
+            return { base: etiqueta.trim().toLowerCase().split('-')[0], q: q ? Number(q[1]) : 1, i };
+        })
+        .filter(x => Number.isFinite(x.q) && x.q > 0)
+        .sort((a, b) => (b.q - a.q) || (a.i - b.i));
+    for (const p of preferencias) {
+        if (IDIOMAS.includes(p.base as Idioma)) return { idioma: p.base as Idioma, origen: 'navegador' };
+    }
+    return { idioma: IDIOMA_POR_DEFECTO, origen: 'defecto' };
 }
 
 // ─── Los motivos que la pantalla puede recibir ───────────────────────────────────────────
@@ -69,7 +119,40 @@ export type Vuelta =
     | 'reintentar' // se queda donde está y puede volver a darle
     | 'ninguna';   // no hay nada que pueda hacer sola: WhatsApp o nada
 
-export type TextoMotivo = { titulo: string; cuerpo: string; vuelta: Vuelta };
+export type TextoMotivo = { titulo: string; cuerpo: string };
+
+/**
+ * A dónde vuelve la clienta después de cada aviso. **Una sola tabla, sin idioma**, y eso es
+ * lo importante: si `vuelta` viviera dentro de la tabla de textos, habría cuatro copias y
+ * cambiar una sin las otras haría que la pantalla se COMPORTARA distinto en ruso que en
+ * castellano — un fallo que no se ve leyendo, porque las cuatro tablas están una debajo de
+ * otra y parecen lo mismo. El texto se traduce; la conducta no.
+ */
+const VUELTAS: Record<Motivo, Vuelta> = {
+    // La agenda ha cambiado: se recargan los huecos y se vuelve a elegir hora.
+    hueco_ocupado: 'huecos',
+    fuera_de_horario: 'huecos',
+    hueco_no_existe: 'huecos',
+    // El día entero se ha cerrado: al calendario, no a una lista vacía.
+    bloqueado: 'dias',
+    // El tope NO recarga: enseñarle otra vez lo que acaba de no poder reservar no la ayuda.
+    tope_citas: 'ninguna',
+    demasiadas_peticiones: 'ninguna',
+    salon_saturado: 'ninguna',
+    no_confirmable_online: 'ninguna',
+    cerrado: 'ninguna',
+    no_encontrado: 'ninguna',
+    // Culpa nuestra: no se le pide que arregle algo que no ha hecho.
+    rango_invalido: 'ninguna',
+    servicio_no_disponible: 'servicio',
+    datos_invalidos: 'datos',
+    error_interno: 'reintentar',
+    sin_conexion: 'reintentar',
+};
+
+export function vueltaDe(motivo: Motivo): Vuelta {
+    return VUELTAS[motivo] ?? VUELTAS.error_interno;
+}
 
 // ─── La tabla de textos ──────────────────────────────────────────────────────────────────
 
@@ -121,7 +204,11 @@ export type Textos = {
     // Confirmación
     confirmadaTitulo: string;         // lleva {salon}
     confirmadaSinSalon: string;
-    conQuien: string;                 // «con Irina»
+    // ETIQUETA, no preposición. «con Irina» exigiría un conector por idioma, y ese conector
+    // ya existe DOS veces en helpers.js y NO coinciden: `SLOT_TEXTO_PARTES` dice «с/з» y
+    // `_lineaCita` dice «у/у» para lo mismo. Una tercera copia aquí, encima en un sitio que
+    // no puede importar helpers, es la forma segura de equivocarse. Una etiqueta no declina.
+    estilistaEtiqueta: string;        // «Estilista: Irina»
     avisoRecordatorio: string;
     // Cuando lo que falla es ABRIR la página, no reservar
     noSeHaPodidoAbrir: { titulo: string; cuerpo: string };
@@ -178,7 +265,7 @@ const ES: Textos = {
 
     confirmadaTitulo: 'Tu cita ha sido confirmada en {salon}',
     confirmadaSinSalon: 'Tu cita ha sido confirmada',
-    conQuien: 'con',
+    estilistaEtiqueta: 'Estilista',
     avisoRecordatorio: 'Te llegará un recordatorio por WhatsApp 24 horas antes.',
 
     noSeHaPodidoAbrir: {
@@ -196,41 +283,34 @@ const ES: Textos = {
         hueco_ocupado: {
             titulo: 'Ese hueco se acaba de ocupar',
             cuerpo: 'Alguien lo ha cogido mientras elegías. Estas son las horas que quedan libres ese día.',
-            vuelta: 'huecos',
         },
         fuera_de_horario: {
             titulo: 'Esa hora ya no está disponible',
             cuerpo: 'El horario ha cambiado mientras reservabas. Estas son las horas que quedan libres.',
-            vuelta: 'huecos',
         },
         bloqueado: {
             titulo: 'Ese día ya no está disponible',
             cuerpo: 'El salón ha cerrado esa franja. Elige otro día y te enseñamos las horas.',
-            vuelta: 'dias',
         },
         // NO recarga huecos, y eso es una decisión: enseñarle otra vez lo mismo que acaba de
         // no poder reservar no la ayuda. Lo que la ayuda es hablar con el salón.
         tope_citas: {
             titulo: 'Ya tienes dos citas pedidas',
             cuerpo: 'Por aquí no podemos apuntarte una tercera. Escríbenos por WhatsApp y te la reservamos nosotras.',
-            vuelta: 'ninguna',
         },
 
         // ── El resto ────────────────────────────────────────────────────────────────────
         hueco_no_existe: {
             titulo: 'Esa hora ya no está libre',
             cuerpo: 'Elige otra entre las que quedan.',
-            vuelta: 'huecos',
         },
         demasiadas_peticiones: {
             titulo: 'Demasiados intentos seguidos',
             cuerpo: 'Espera un poco y vuelve a probar. Si tienes prisa, escríbenos por WhatsApp.',
-            vuelta: 'ninguna',
         },
         salon_saturado: {
             titulo: 'Ahora mismo no podemos confirmar más citas',
             cuerpo: 'Inténtalo dentro de un rato o escríbenos por WhatsApp.',
-            vuelta: 'ninguna',
         },
         // Lista negra. NEUTRO a propósito: en el salón bloquear es silencio, pero una página
         // tiene que pintar algo, y ese algo no puede ser «estás bloqueada». Comparte forma
@@ -238,53 +318,429 @@ const ES: Textos = {
         no_confirmable_online: {
             titulo: 'No podemos confirmar esta cita por internet',
             cuerpo: 'Escríbenos por WhatsApp y lo vemos contigo.',
-            vuelta: 'ninguna',
         },
         cerrado: {
             titulo: 'Las citas por internet están cerradas',
             cuerpo: 'Escríbenos por WhatsApp y te damos hora.',
-            vuelta: 'ninguna',
         },
         servicio_no_disponible: {
             titulo: 'Ese servicio no se puede reservar por aquí',
             cuerpo: 'Elige otro de la lista, o escríbenos por WhatsApp y te asesoramos.',
-            vuelta: 'servicio',
         },
         datos_invalidos: {
             titulo: 'Repasa tus datos',
             cuerpo: 'Hay algo que no cuadra en el nombre o en el teléfono.',
-            vuelta: 'datos',
         },
         // `rango_invalido` es culpa NUESTRA (el javascript construyó mal el rango). No se le
         // pide a la clienta que arregle algo que no ha hecho.
         rango_invalido: {
             titulo: 'No hemos podido confirmar la cita',
             cuerpo: 'Ha sido un fallo nuestro. Escríbenos por WhatsApp y te la apuntamos a mano.',
-            vuelta: 'ninguna',
         },
         error_interno: {
             titulo: 'No hemos podido confirmar la cita',
             cuerpo: 'Vuelve a intentarlo en un momento. Si sigue sin funcionar, escríbenos por WhatsApp.',
-            vuelta: 'reintentar',
         },
         sin_conexion: {
             titulo: 'No hemos podido conectar',
             cuerpo: 'Comprueba tu conexión y vuelve a intentarlo.',
-            vuelta: 'reintentar',
         },
         no_encontrado: {
             titulo: 'Esta página no existe',
             cuerpo: 'Puede que el enlace esté mal copiado o que ya no esté activo.',
-            vuelta: 'ninguna',
         },
     },
 };
 
+
 /**
- * Las tablas por idioma. Hoy solo 'es' — y que las otras tres FALTEN es información, no un
- * descuido: `textos()` cae a castellano entero y la pantalla nunca queda con huecos.
+ * ── Las otras tres tablas ────────────────────────────────────────────────────────────────
+ *
+ * Lo que NO se traduce aquí, y no por olvido:
+ *
+ *   · **La fecha en palabras.** «12:30 del sábado 22 de agosto» llega HECHA del servidor en
+ *     `cita.cuando` (`formatReminderWhen`), que es el mismo formateador del recordatorio de
+ *     24 h y el único sitio del sistema con el acusativo ruso y ucraniano resuelto («во
+ *     вторник», no «вторник»). El rótulo suelto de la rejilla sale de `Intl`, que da
+ *     nominativo, que es lo que un título necesita. Escribir aquí una tercera forma de decir
+ *     la misma fecha es exactamente lo que CLAUDE.md prohíbe.
+ *   · **Los mensajes de WhatsApp.** Los de las dos puertas y los de cada motivo los redacta
+ *     `services/reserva-web.js` en los cuatro idiomas y llegan como URL ya montada. La
+ *     pantalla no escribe ni uno.
+ *   · **Los nombres de servicio.** El catálogo está en castellano y así lo lee la clienta en
+ *     el salón, en la factura y en el WhatsApp de la dueña. Traducir «Mechas Balayage» sería
+ *     que no lo reconociera al llegar.
+ *
+ * Y el TRATO es de tú en los cuatro, como el resto de lo que el salón le dice a una clienta:
+ * el bot ya le escribe «Опиши, пожалуйста, что ты хочешь сделать» a una desconocida en su
+ * primer mensaje. Una pantalla en «вы» y un WhatsApp en «ты» del mismo salón, el mismo día,
+ * suenan a dos sitios distintos.
  */
-export const TEXTOS: Partial<Record<Idioma, Textos>> = { es: ES };
+const EN: Textos = {
+    titulo: 'Book an appointment',
+    cargando: 'One moment…',
+    volver: 'Back',
+    pasoServicio: 'Service',
+    pasoVariante: 'Option',
+    pasoDia: 'Day',
+    pasoHora: 'Time',
+    pasoDatos: 'Your details',
+    de: 'of',
+    paso: 'Step',
+
+    elegirServicio: 'What would you like done?',
+    otrasOpciones: 'Not quite your case?',
+    puertaAsesoramiento: 'I am not sure — I would like advice',
+    puertaVariasPersonas: 'There are two or more of us',
+    elegirVariante: 'Pick the option that fits you',
+    desde: 'from',
+    precioEnSalon: 'confirmed at the salon',
+    minutos: 'min',
+    horas: 'h',
+    opciones: 'options',
+
+    elegirDia: 'Which day suits you?',
+    elegirHora: 'What time?',
+    sinDias: 'There are no free slots in the coming months. Message us and we will find you a time.',
+    sinHoras: 'That day has no slots left. Try another one.',
+    otroDia: 'Choose another day',
+    mesAnterior: 'Previous month',
+    mesSiguiente: 'Next month',
+    inicialesDias: ['M', 'T', 'W', 'T', 'F', 'S', 'S'],
+
+    tuNombre: 'Your name',
+    tuNombreAyuda: 'So we know who to expect',
+    tuTelefono: 'Your mobile',
+    tuTelefonoAyuda: 'We will remind you on WhatsApp the day before',
+    nombreCorto: 'Please write your name',
+    telefonoRaro: 'Check the number — a digit seems to be missing',
+    confirmar: 'Confirm the appointment',
+    confirmando: 'Confirming…',
+    resumen: 'Your appointment',
+
+    confirmadaTitulo: 'Your appointment at {salon} is confirmed',
+    confirmadaSinSalon: 'Your appointment is confirmed',
+    estilistaEtiqueta: 'Stylist',
+    avisoRecordatorio: 'You will get a WhatsApp reminder 24 hours before.',
+
+    noSeHaPodidoAbrir: {
+        titulo: 'We could not open the booking page',
+        cuerpo: 'It may be your connection. Please try again in a moment.',
+    },
+
+    escribirWhatsApp: 'Message us on WhatsApp',
+    reintentar: 'Try again',
+    esperaMinutos: 'Try again in {min} min.',
+    esperaSegundos: 'Try again in {seg} seconds.',
+
+    motivos: {
+        hueco_ocupado: {
+            titulo: 'That slot has just been taken',
+            cuerpo: 'Someone booked it while you were choosing. These are the times still free that day.',
+        },
+        fuera_de_horario: {
+            titulo: 'That time is no longer available',
+            cuerpo: 'The schedule changed while you were booking. These are the times still free.',
+        },
+        bloqueado: {
+            titulo: 'That day is no longer available',
+            cuerpo: 'The salon has closed that slot. Choose another day and we will show you the times.',
+        },
+        tope_citas: {
+            titulo: 'You already have two appointments',
+            cuerpo: 'We cannot add a third one here. Message us on WhatsApp and we will book it for you.',
+        },
+        hueco_no_existe: {
+            titulo: 'That time is no longer free',
+            cuerpo: 'Pick another one from those left.',
+        },
+        demasiadas_peticiones: {
+            titulo: 'Too many attempts in a row',
+            cuerpo: 'Wait a little and try again. If you are in a hurry, message us on WhatsApp.',
+        },
+        salon_saturado: {
+            titulo: 'We cannot confirm more bookings right now',
+            cuerpo: 'Try again in a while, or message us on WhatsApp.',
+        },
+        no_confirmable_online: {
+            titulo: 'We cannot confirm this booking online',
+            cuerpo: 'Message us on WhatsApp and we will sort it out with you.',
+        },
+        cerrado: {
+            titulo: 'Online booking is closed',
+            cuerpo: 'Message us on WhatsApp and we will find you a time.',
+        },
+        servicio_no_disponible: {
+            titulo: 'That service cannot be booked here',
+            cuerpo: 'Pick another one from the list, or message us on WhatsApp for advice.',
+        },
+        datos_invalidos: {
+            titulo: 'Check your details',
+            cuerpo: 'Something does not look right in the name or the phone number.',
+        },
+        rango_invalido: {
+            titulo: 'We could not confirm the appointment',
+            cuerpo: 'That one was on us. Message us on WhatsApp and we will book it by hand.',
+        },
+        error_interno: {
+            titulo: 'We could not confirm the appointment',
+            cuerpo: 'Please try again in a moment. If it keeps failing, message us on WhatsApp.',
+        },
+        sin_conexion: {
+            titulo: 'We could not connect',
+            cuerpo: 'Check your connection and try again.',
+        },
+        no_encontrado: {
+            titulo: 'This page does not exist',
+            cuerpo: 'The link may have been copied wrong, or it may no longer be active.',
+        },
+    },
+};
+
+const RU: Textos = {
+    titulo: 'Записаться',
+    cargando: 'Одну минуту…',
+    volver: 'Назад',
+    pasoServicio: 'Услуга',
+    pasoVariante: 'Вариант',
+    pasoDia: 'День',
+    pasoHora: 'Время',
+    pasoDatos: 'Твои данные',
+    de: 'из',
+    paso: 'Шаг',
+
+    elegirServicio: 'Что ты хочешь сделать?',
+    otrasOpciones: 'Не твой случай?',
+    puertaAsesoramiento: 'Не знаю, что выбрать — нужен совет',
+    puertaVariasPersonas: 'Нас двое или больше',
+    elegirVariante: 'Выбери подходящий вариант',
+    desde: 'от',
+    precioEnSalon: 'уточняется в салоне',
+    minutos: 'мин',
+    horas: 'ч',
+    opciones: 'вариантов',
+
+    elegirDia: 'Какой день тебе удобен?',
+    elegirHora: 'Во сколько?',
+    sinDias: 'В ближайшие месяцы свободных окон нет. Напиши нам, и мы подберём время.',
+    sinHoras: 'На этот день свободных окон не осталось. Попробуй другой.',
+    otroDia: 'Выбрать другой день',
+    mesAnterior: 'Предыдущий месяц',
+    mesSiguiente: 'Следующий месяц',
+    inicialesDias: ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'],
+
+    tuNombre: 'Твоё имя',
+    tuNombreAyuda: 'Чтобы знать, кого ждём',
+    tuTelefono: 'Твой телефон',
+    tuTelefonoAyuda: 'Напомним в WhatsApp за день до визита',
+    nombreCorto: 'Напиши своё имя',
+    telefonoRaro: 'Проверь номер: кажется, не хватает цифры',
+    confirmar: 'Подтвердить запись',
+    confirmando: 'Подтверждаем…',
+    resumen: 'Твоя запись',
+
+    confirmadaTitulo: 'Твоя запись в {salon} подтверждена',
+    confirmadaSinSalon: 'Твоя запись подтверждена',
+    estilistaEtiqueta: 'Мастер',
+    avisoRecordatorio: 'За 24 часа до визита придёт напоминание в WhatsApp.',
+
+    noSeHaPodidoAbrir: {
+        titulo: 'Не удалось открыть запись',
+        cuerpo: 'Возможно, дело в соединении. Попробуй ещё раз через минуту.',
+    },
+
+    escribirWhatsApp: 'Написать нам в WhatsApp',
+    reintentar: 'Попробовать ещё раз',
+    esperaMinutos: 'Попробуй снова через {min} мин.',
+    esperaSegundos: 'Попробуй снова через {seg} сек.',
+
+    motivos: {
+        hueco_ocupado: {
+            titulo: 'Это время только что заняли',
+            cuerpo: 'Кто-то записался, пока ты выбирала. Вот часы, которые ещё свободны в этот день.',
+        },
+        fuera_de_horario: {
+            titulo: 'Это время больше недоступно',
+            cuerpo: 'Расписание изменилось, пока ты записывалась. Вот часы, которые остались свободными.',
+        },
+        bloqueado: {
+            titulo: 'Этот день больше недоступен',
+            cuerpo: 'Салон закрыл это время. Выбери другой день, и мы покажем свободные часы.',
+        },
+        tope_citas: {
+            titulo: 'У тебя уже две записи',
+            cuerpo: 'Третью здесь оформить нельзя. Напиши нам в WhatsApp, и мы запишем тебя сами.',
+        },
+        hueco_no_existe: {
+            titulo: 'Это время уже занято',
+            cuerpo: 'Выбери другое из оставшихся.',
+        },
+        demasiadas_peticiones: {
+            titulo: 'Слишком много попыток подряд',
+            cuerpo: 'Подожди немного и попробуй снова. Если срочно — напиши нам в WhatsApp.',
+        },
+        salon_saturado: {
+            titulo: 'Сейчас мы не можем подтвердить больше записей',
+            cuerpo: 'Попробуй чуть позже или напиши нам в WhatsApp.',
+        },
+        no_confirmable_online: {
+            titulo: 'Эту запись нельзя подтвердить онлайн',
+            cuerpo: 'Напиши нам в WhatsApp, и мы всё решим.',
+        },
+        cerrado: {
+            titulo: 'Онлайн-запись закрыта',
+            cuerpo: 'Напиши нам в WhatsApp, и мы подберём время.',
+        },
+        servicio_no_disponible: {
+            titulo: 'Эту услугу здесь записать нельзя',
+            cuerpo: 'Выбери другую из списка или напиши нам в WhatsApp за советом.',
+        },
+        datos_invalidos: {
+            titulo: 'Проверь свои данные',
+            cuerpo: 'Что-то не так с именем или номером телефона.',
+        },
+        rango_invalido: {
+            titulo: 'Не удалось подтвердить запись',
+            cuerpo: 'Это наша ошибка. Напиши нам в WhatsApp, и мы запишем тебя вручную.',
+        },
+        error_interno: {
+            titulo: 'Не удалось подтвердить запись',
+            cuerpo: 'Попробуй ещё раз через минуту. Если не получается — напиши нам в WhatsApp.',
+        },
+        sin_conexion: {
+            titulo: 'Не удалось подключиться',
+            cuerpo: 'Проверь соединение и попробуй снова.',
+        },
+        no_encontrado: {
+            titulo: 'Такой страницы нет',
+            cuerpo: 'Возможно, ссылка скопирована неверно или больше не работает.',
+        },
+    },
+};
+
+const UK: Textos = {
+    titulo: 'Записатися',
+    cargando: 'Одну хвилинку…',
+    volver: 'Назад',
+    pasoServicio: 'Послуга',
+    pasoVariante: 'Варіант',
+    pasoDia: 'День',
+    pasoHora: 'Час',
+    pasoDatos: 'Твої дані',
+    de: 'з',
+    paso: 'Крок',
+
+    elegirServicio: 'Що ти хочеш зробити?',
+    otrasOpciones: 'Не твій випадок?',
+    puertaAsesoramiento: 'Не знаю, що обрати — потрібна порада',
+    puertaVariasPersonas: 'Нас двоє або більше',
+    elegirVariante: 'Обери відповідний варіант',
+    desde: 'від',
+    precioEnSalon: 'уточнюється в салоні',
+    minutos: 'хв',
+    horas: 'год',
+    opciones: 'варіантів',
+
+    elegirDia: 'Який день тобі зручний?',
+    elegirHora: 'О котрій годині?',
+    sinDias: 'У найближчі місяці вільних місць немає. Напиши нам, і ми підберемо час.',
+    sinHoras: 'На цей день вільних місць не залишилося. Спробуй інший.',
+    otroDia: 'Обрати інший день',
+    mesAnterior: 'Попередній місяць',
+    mesSiguiente: 'Наступний місяць',
+    inicialesDias: ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'],
+
+    tuNombre: 'Твоє імʼя',
+    tuNombreAyuda: 'Щоб знати, кого чекаємо',
+    tuTelefono: 'Твій телефон',
+    tuTelefonoAyuda: 'Нагадаємо у WhatsApp за день до візиту',
+    nombreCorto: 'Напиши своє імʼя',
+    telefonoRaro: 'Перевір номер: здається, бракує цифри',
+    confirmar: 'Підтвердити запис',
+    confirmando: 'Підтверджуємо…',
+    resumen: 'Твій запис',
+
+    confirmadaTitulo: 'Твій запис у {salon} підтверджено',
+    confirmadaSinSalon: 'Твій запис підтверджено',
+    estilistaEtiqueta: 'Майстер',
+    avisoRecordatorio: 'За 24 години до візиту надійде нагадування у WhatsApp.',
+
+    noSeHaPodidoAbrir: {
+        titulo: 'Не вдалося відкрити запис',
+        cuerpo: 'Можливо, справа у зʼєднанні. Спробуй ще раз за хвилину.',
+    },
+
+    escribirWhatsApp: 'Написати нам у WhatsApp',
+    reintentar: 'Спробувати ще раз',
+    esperaMinutos: 'Спробуй знову за {min} хв.',
+    esperaSegundos: 'Спробуй знову за {seg} сек.',
+
+    motivos: {
+        hueco_ocupado: {
+            titulo: 'Цей час щойно зайняли',
+            cuerpo: 'Хтось записався, поки ти обирала. Ось години, які ще вільні цього дня.',
+        },
+        fuera_de_horario: {
+            titulo: 'Цей час більше недоступний',
+            cuerpo: 'Розклад змінився, поки ти записувалася. Ось години, які залишилися вільними.',
+        },
+        bloqueado: {
+            titulo: 'Цей день більше недоступний',
+            cuerpo: 'Салон закрив цей час. Обери інший день, і ми покажемо вільні години.',
+        },
+        tope_citas: {
+            titulo: 'У тебе вже два записи',
+            cuerpo: 'Третій тут оформити не можна. Напиши нам у WhatsApp, і ми запишемо тебе самі.',
+        },
+        hueco_no_existe: {
+            titulo: 'Цей час уже зайнятий',
+            cuerpo: 'Обери інший із тих, що залишилися.',
+        },
+        demasiadas_peticiones: {
+            titulo: 'Забагато спроб поспіль',
+            cuerpo: 'Зачекай трохи і спробуй знову. Якщо терміново — напиши нам у WhatsApp.',
+        },
+        salon_saturado: {
+            titulo: 'Зараз ми не можемо підтвердити більше записів',
+            cuerpo: 'Спробуй трохи пізніше або напиши нам у WhatsApp.',
+        },
+        no_confirmable_online: {
+            titulo: 'Цей запис не можна підтвердити онлайн',
+            cuerpo: 'Напиши нам у WhatsApp, і ми все вирішимо.',
+        },
+        cerrado: {
+            titulo: 'Онлайн-запис закрито',
+            cuerpo: 'Напиши нам у WhatsApp, і ми підберемо час.',
+        },
+        servicio_no_disponible: {
+            titulo: 'Цю послугу тут записати не можна',
+            cuerpo: 'Обери іншу зі списку або напиши нам у WhatsApp по пораду.',
+        },
+        datos_invalidos: {
+            titulo: 'Перевір свої дані',
+            cuerpo: 'Щось не так з імʼям або номером телефону.',
+        },
+        rango_invalido: {
+            titulo: 'Не вдалося підтвердити запис',
+            cuerpo: 'Це наша помилка. Напиши нам у WhatsApp, і ми запишемо тебе вручну.',
+        },
+        error_interno: {
+            titulo: 'Не вдалося підтвердити запис',
+            cuerpo: 'Спробуй ще раз за хвилину. Якщо не виходить — напиши нам у WhatsApp.',
+        },
+        sin_conexion: {
+            titulo: 'Не вдалося підключитися',
+            cuerpo: 'Перевір зʼєднання і спробуй знову.',
+        },
+        no_encontrado: {
+            titulo: 'Такої сторінки немає',
+            cuerpo: 'Можливо, посилання скопійовано неправильно або воно більше не працює.',
+        },
+    },
+};
+
+/** Los cuatro, completos. Un idioma que falte se nota: el tipo es `Record`, no `Partial`. */
+export const TEXTOS: Record<Idioma, Textos> = { es: ES, en: EN, ru: RU, uk: UK };
 
 export function textos(lang: unknown): Textos {
     return TEXTOS[idiomaValido(lang)] ?? ES;

@@ -16,16 +16,20 @@
  */
 "use client";
 
+import { useState } from "react";
 import { ArrowLeft, Check, ChevronLeft, ChevronRight, LoaderCircle, MessageCircle, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   type Casilla,
   type EntradaCatalogo,
+  type Idioma,
   type Fallo,
   type GrupoServicio,
   type Mes,
   type Salon,
   type Textos,
+  IDIOMAS,
+  NOMBRES_IDIOMA,
   enlaceDelAviso,
   etiquetaMes,
   formatearDuracion,
@@ -38,14 +42,17 @@ import {
 // ─── Chrome: cabecera, progreso, esqueleto ───────────────────────────────────────────────
 
 export function Cabecera({
-  t, salon, atras, paso, total,
+  t, salon, atras, paso, total, idioma, cambiarIdioma,
 }: {
   t: Textos;
   salon: string | null;
   atras: (() => void) | null;
   paso: number | null;
   total: number;
+  idioma: Idioma;
+  cambiarIdioma: (i: Idioma) => void;
 }) {
+  const [abierto, setAbierto] = useState(false);
   return (
     <header className="sticky top-0 z-10 -mx-4 mb-5 border-b border-border/60 bg-background/95 px-4 pt-3 pb-3 backdrop-blur">
       <div className="flex min-h-11 items-center gap-2">
@@ -71,7 +78,40 @@ export function Cabecera({
             </p>
           )}
         </div>
+        {/* El código de dos letras y no una bandera: una bandera dice país, no idioma, y el
+            ruso de esta pantalla lo lee tanto quien vive en Ucrania como quien no. */}
+        <button
+          type="button"
+          onClick={() => setAbierto((v) => !v)}
+          aria-expanded={abierto}
+          aria-label={NOMBRES_IDIOMA[idioma]}
+          className="flex size-11 shrink-0 items-center justify-center rounded-full text-xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:bg-muted"
+        >
+          {idioma}
+        </button>
       </div>
+
+      {/* Se abre DEBAJO y a lo ancho: cuatro dianas de 44 px no caben en la fila del título a
+          375 px, y el idioma se elige una vez. */}
+      {abierto && (
+        <ul className="mt-2 flex flex-col gap-1 rounded-2xl border border-border bg-card p-1">
+          {IDIOMAS.map((i) => (
+            <li key={i}>
+              <button
+                type="button"
+                onClick={() => { setAbierto(false); cambiarIdioma(i); }}
+                aria-current={i === idioma ? "true" : undefined}
+                className={cn(
+                  "min-h-11 w-full rounded-xl px-3 text-left text-sm",
+                  i === idioma ? "bg-primary/10 font-semibold text-primary" : "hover:bg-muted",
+                )}
+              >
+                {NOMBRES_IDIOMA[i]}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {paso !== null && (
         <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-muted" aria-hidden>
           <div
@@ -629,7 +669,7 @@ export function Confirmada({
         <p className="mt-1 text-lg first-letter:uppercase">{cuando}</p>
         {cita.estilista && (
           <p className="mt-1 text-sm text-muted-foreground">
-            {t.conQuien} {cita.estilista}
+            {t.estilistaEtiqueta}: {cita.estilista}
           </p>
         )}
         {/* Quien acaba de reservar necesita saber dónde va. Si la dueña no la ha escrito no

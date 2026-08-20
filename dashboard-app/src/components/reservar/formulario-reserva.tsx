@@ -42,6 +42,7 @@ import {
   type EntradaCatalogo,
   type Fallo,
   type GrupoServicio,
+  type Idioma,
   type Salon,
   SALON_VACIO,
   agruparCatalogo,
@@ -51,6 +52,7 @@ import {
   idiomaValido,
   interpretarFallo,
   leerSalon,
+  vueltaDe,
   mesesConDisponibilidad,
   nombreUsable,
   primerMesConHueco,
@@ -109,7 +111,10 @@ async function pedir<T>(url: string, init?: RequestInit): Promise<Resultado<T>> 
 }
 
 export function FormularioReserva({ slug, lang }: { slug: string; lang: string }) {
-  const idioma = idiomaValido(lang);
+  // El idioma llega RESUELTO del servidor (URL → navegador → castellano) y aquí es estado
+  // porque la clienta puede cambiarlo: el navegador se equivoca con una ucraniana que tiene
+  // el móvil en ruso, y ése es justo el caso que no se puede dejar sin salida.
+  const [idioma, setIdioma] = useState<Idioma>(idiomaValido(lang));
   const t = textos(idioma);
   const base = `/api/reservar/${encodeURIComponent(slug)}`;
 
@@ -173,7 +178,25 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
       setCargando(false);
     })();
     return () => { vivo = false; };
+    // `idioma` está en las dependencias A PROPÓSITO: al cambiarlo hay que volver a pedir el
+    // catálogo, porque los enlaces de WhatsApp —las dos puertas y el de respaldo— los redacta
+    // el SERVIDOR en el idioma pedido. Los nombres de los servicios no cambian: el catálogo
+    // está en castellano y así lo lee la clienta en el salón.
   }, [base, idioma]);
+
+  /**
+   * Cambiar de idioma a mano. Además del estado, se reescribe la URL sin navegar: así
+   * recargar o compartir el enlace conserva el idioma que ELLA eligió, no el que dedujimos
+   * de su navegador.
+   */
+  const cambiarIdioma = useCallback((nuevo: Idioma) => {
+    setIdioma(nuevo);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("lang", nuevo);
+      window.history.replaceState(null, "", url.toString());
+    }
+  }, []);
 
   const cargarDias = useCallback(async (clave: string) => {
     const mio = ++nDias.current;
@@ -281,7 +304,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
 
   const aplicarFallo = useCallback((f: Fallo, reintentar: (() => void) | null) => {
     setAviso({ fallo: f, reintentar });
-    const vuelta = (t.motivos[f.motivo] ?? t.motivos.error_interno).vuelta;
+    const vuelta = vueltaDe(f.motivo);
     setSinSalida(vuelta === "ninguna");
 
     // La agenda ha cambiado bajo sus pies: se recarga SOLA. Se piden las dos cosas —el día y
@@ -315,7 +338,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
     }
     // 'datos', 'reintentar' y 'ninguna' se quedan donde están: el aviso sale encima del
     // formulario, con sus datos escritos intactos.
-  }, [t, entrada, fecha, cargarDias, cargarHoras]);
+  }, [entrada, fecha, cargarDias, cargarHoras]);
 
   const erroresDatos = { nombre: !nombreUsable(nombre), telefono: !telefonoUsable(telefono) };
 
@@ -357,7 +380,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
     cerrojo.current = false;
     // Un 200 sin cita no debería existir; si pasa, se trata como avería y no como éxito.
     const fallo = r.ok ? interpretarFallo(200, null) : r.fallo;
-    const puedeReintentar = (t.motivos[fallo.motivo] ?? t.motivos.error_interno).vuelta === "reintentar";
+    const puedeReintentar = vueltaDe(fallo.motivo) === "reintentar";
     aplicarFallo(fallo, puedeReintentar ? () => void confirmar() : null);
   }
 
@@ -366,7 +389,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
   if (cargando) {
     return (
       <Marco>
-        <Cabecera t={t} salon={null} atras={null} paso={null} total={0} />
+        <Cabecera t={t} salon={null} atras={null} paso={null} total={0} idioma={idioma} cambiarIdioma={cambiarIdioma} />
         <Cargando t={t} />
       </Marco>
     );
@@ -377,7 +400,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
     // lo trae la respuesta, es lo único que le queda.
     return (
       <Marco>
-        <Cabecera t={t} salon={null} atras={null} paso={null} total={0} />
+        <Cabecera t={t} salon={null} atras={null} paso={null} total={0} idioma={idioma} cambiarIdioma={cambiarIdioma} />
         <AvisoAPantalla
           t={t}
           fallo={falloInicial}
@@ -386,11 +409,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
           // Solo se ofrece recargar donde recargar puede cambiar algo. Con el enlace
           // apagado o con un slug que no existe, el botón devolvería la misma pantalla y
           // parecería que no funciona: la salida buena es el WhatsApp de al lado.
-          reintentar={
-            (t.motivos[falloInicial.motivo] ?? t.motivos.error_interno).vuelta === "reintentar"
-              ? () => window.location.reload()
-              : null
-          }
+          reintentar={vueltaDe(falloInicial.motivo) === "reintentar" ? () => window.location.reload() : null}
         />
       </Marco>
     );
@@ -399,7 +418,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
   if (paso === "hecha" && cita) {
     return (
       <Marco>
-        <Cabecera t={t} salon={salon.nombre} atras={null} paso={null} total={0} />
+        <Cabecera t={t} salon={salon.nombre} atras={null} paso={null} total={0} idioma={idioma} cambiarIdioma={cambiarIdioma} />
         <Confirmada t={t} salon={salon.nombre} direccion={salon.direccion} cita={cita} />
       </Marco>
     );
@@ -415,6 +434,8 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
         atras={paso === "servicio" ? null : atras}
         paso={numeroPaso > 0 ? numeroPaso : null}
         total={secuencia.length}
+        idioma={idioma}
+        cambiarIdioma={cambiarIdioma}
       />
 
       {aviso && (

@@ -327,14 +327,34 @@ async function test(name, fn) {
             assert.notStrictEqual(dos, res.body.salon.whatsapp);
         });
 
-        await test('las puertas van en los CUATRO idiomas', async () => {
+        await test('los nombres de los SERVICIOS no se traducen: el catálogo es el del salón', async () => {
+            // La clienta lee «Mechas Balayage» aquí, en la puerta del salón, en la factura y
+            // en el WhatsApp de la dueña. Traducirlo sería que no lo reconociera al llegar.
+            // Lo que cambia con el idioma son los enlaces de WhatsApp, no el catálogo.
+            const es = await request(server, {
+                path: `/reserva-web/${SLUG}/catalogo?lang=es`, headers: desde(ipNueva()),
+            });
+            const ru = await request(server, {
+                path: `/reserva-web/${SLUG}/catalogo?lang=ru`, headers: desde(ipNueva()),
+            });
+            assert.deepStrictEqual(ru.body.servicios, es.body.servicios,
+                'el catálogo ha cambiado con el idioma');
+            assert.notStrictEqual(ru.body.salon.whatsapp, es.body.salon.whatsapp,
+                'los enlaces sí tienen que cambiar de idioma');
+        });
+
+        await test('las puertas van en los CUATRO idiomas, y en cuatro DISTINTOS', async () => {
+            const vistos = new Set();
             for (const lang of ['es', 'en', 'ru', 'uk']) {
                 const res = await request(server, {
                     path: `/reserva-web/${SLUG}/catalogo?lang=${lang}`, headers: desde(ipNueva()),
                 });
                 const texto = decodeURIComponent(res.body.salon.puertas.varias_personas);
                 assert.ok(texto.length > 20, `${lang} sin texto de puerta`);
+                vistos.add(texto);
             }
+            assert.strictEqual(vistos.size, 4,
+                'dos idiomas mandan el MISMO mensaje: alguno se quedó sin traducir');
         });
 
         await test('sin companyName el nombre es null: la página dirá la frase sin nombre', async () => {

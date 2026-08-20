@@ -12,12 +12,22 @@
 "use client";
 
 import { RefreshCw } from "lucide-react";
-import { textos } from "@/lib/reservar/nucleo";
+import { elegirIdioma, textos } from "@/lib/reservar/nucleo";
 
 export default function ErrorReserva({ reset }: { error: Error; reset: () => void }) {
-  // Sin sesión ni contexto no se sabe el idioma elegido: castellano, el mismo criterio de
-  // caída que el resto del sistema.
-  const t = textos("es");
+  // Aquí no llegan props: este componente lo monta React cuando el árbol ya se ha caído. Pero
+  // el idioma sí se puede recuperar, y hay que hacerlo — una pantalla de avería en castellano
+  // para una clienta rusa es el peor momento posible para cambiar de idioma. Misma cascada que
+  // la página: la URL que ella eligió, luego el navegador, luego castellano.
+  const { idioma } = elegirIdioma(
+    typeof window === "undefined"
+      ? {}
+      : {
+          url: new URLSearchParams(window.location.search).get("lang"),
+          aceptaIdiomas: (navigator.languages ?? [navigator.language]).join(","),
+        },
+  );
+  const t = textos(idioma);
   const texto = t.motivos.error_interno;
 
   return (
