@@ -322,9 +322,12 @@ async function prepararMotor(orgId, { serviceDuration = 60, serviceCategory, pre
                 hayAlgunaJornada = true;
                 const [sH, sM] = ds.start_time.split(':').map(Number);
                 const [eH, eM] = ds.end_time.split(':').map(Number);
-                // Mismo criterio estricto que computeFreeSlots: la cita debe TERMINAR antes
-                // del cierre, no justo al cierre.
-                if ((sH * 60 + sM) + serviceDuration < (eH * 60 + eM)) { cabeEnAlgunaJornada = true; break; }
+                // MISMO criterio que computeFreeSlots, y por eso es `<=` desde el arreglo de
+                // D3: con `<` estricto, un servicio que llena la jornada justa (una jornada
+                // de 5 h y un alisado de 5 h) produciría huecos y a la vez se diagnosticaría
+                // como «no cabe». El diagnóstico tiene que medir lo mismo que el motor o
+                // explica un cero que no es el que ha pasado.
+                if ((sH * 60 + sM) + serviceDuration <= (eH * 60 + eM)) { cabeEnAlgunaJornada = true; break; }
             }
             if (cabeEnAlgunaJornada) break;
         }
@@ -647,12 +650,33 @@ function computeFreeSlots({ workStart, workEnd, occupied = [], serviceDuration, 
     }
     if (cursor < workEnd) freeWindows.push([cursor, workEnd]);
 
-    // t + serviceDuration <= winEnd: no solapar la siguiente cita ni salir de la ventana.
-    // Además t + serviceDuration < workEnd: nunca ofrecer un hueco cuya cita terminaría
-    // exactamente al cierre o después (sin margen).
+    // `t + serviceDuration <= winEnd`, y NADA MÁS. No hace falta comparar también contra
+    // `workEnd`: las ventanas ya vienen capadas ahí arriba —`Math.min(occ.start, workEnd)` y
+    // la última es `[cursor, workEnd]`—, así que la condición de la ventana ya garantiza que
+    // la cita cabe en la jornada.
+    //
+    // ── D3, arreglado el 20/08/2026 ─────────────────────────────────────────────────────
+    // Aquí había además `&& t + serviceDuration < workEnd`, estricto, y lo único que hacía
+    // era tirar el hueco cuya cita termina EXACTAMENTE al cierre: uno por jornada, por
+    // estilista y por servicio. En una conversación lo tapaba una persona; en una página
+    // pública es dinero todos los días.
+    //
+    // Y el sistema llevaba desde el 19/08 desalineado consigo mismo a propósito:
+    // `reservar_hueco()` (migración 043, APLICADA) valida con `v_fin <= end_time` y su
+    // comentario dice, con estas palabras, que se dejó permisiva esperando este arreglo —
+    // «al revés, función estricta y motor permisivo, sería una reserva ofrecida y luego
+    // rechazada con un mensaje incomprensible». `tests/lib/agenda-audit.js` también lo tiene
+    // inclusivo («ends_at incluido»). El motor era el único que decía `<`.
+    //
+    // MEDIDO contra la agenda real antes de tocarlo (`npm run medir:borde -- sante`, 90
+    // días): 9.380 filas de más y 4.405 horas visibles de más en el catálogo entero; un
+    // servicio de 30′ gana UNA hora al final de 76 de los próximos 90 días. Y las tres
+    // comprobaciones a cero: ninguno empieza antes de abrir, ninguno pasa del cierre,
+    // ninguno pisa una cita ni un bloqueo. Los 9.380 terminan JUSTO al cierre, que es
+    // exactamente lo que se estaba tirando.
     const starts = [];
     for (const [winStart, winEnd] of freeWindows) {
-        for (let t = winStart; t + serviceDuration <= winEnd && t + serviceDuration < workEnd; t += step) {
+        for (let t = winStart; t + serviceDuration <= winEnd; t += step) {
             if (t < minStart) continue;
             starts.push(t);
         }

@@ -271,9 +271,14 @@ function mockEquipoSante() {
                 preferredStylistId: null, preferencia: pd.preferencia_horaria,
             });
             const sabado = slots.filter(s => s.fecha === '2026-08-01');
-            assert.strictEqual(sabado.length, 8, 'los 8 huecos que Eva nunca llegó a ver');
+            // Eran 8 hasta el 20/08/2026 y ahora son 9: el noveno es 14:00, que con 300' cierra
+            // la jornada CLAVADO a las 19:00 y hasta el arreglo de D3 se tiraba. Lo que este
+            // test fija sigue siendo el PARSEO de «El sabado» + «El mas cercano» —que la
+            // preferencia salga limpia y el sábado tenga huecos—, no cuántos son; el hueco
+            // nuevo es del motor y está congelado en calendar-sante-slots.
+            assert.strictEqual(sabado.length, 9, 'los huecos que Eva nunca llegó a ver');
             assert.deepStrictEqual(sabado.map(s => s.hora),
-                ['10:00', '10:30', '11:00', '11:30', '12:00', '12:30', '13:00', '13:30']);
+                ['10:00', '10:30', '11:00', '11:30', '12:00', '12:30', '13:00', '13:30', '14:00']);
             assert.ok(sabado.every(s => s.stylistName === 'Irina'), 'el sábado solo trabaja Irina');
         });
     });

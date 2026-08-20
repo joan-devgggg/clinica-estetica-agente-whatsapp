@@ -117,6 +117,32 @@ async function lanza(fn, etiqueta) {
         assert.strictEqual(slots.causa, 'no_cabe_antes_del_cierre', `recibida ${slots.causa}`);
     });
 
+    await test('un servicio que cabe CLAVADO en la jornada no se diagnostica como «no cabe»', async () => {
+        // La jornada es 10:00–19:00 (540'). Un servicio de 540' cabe exacto y desde el
+        // arreglo de D3 el motor SÍ lo ofrece. `diagnosticarCero` tiene que medir con el
+        // mismo criterio: con el `<` estricto que tenía, si además la agenda estuviera llena
+        // la clienta oiría «no cabe en la jornada» cuando lo cierto es «está todo cogido».
+        control.rows.appointments = [];
+        const cabe = await calendarSante.getAvailableSlots(ORG, { serviceDuration: 540, serviceCategory: 'Cortes' });
+        assert.ok(cabe.length > 0, 'un servicio que cabe clavado tiene que dar hueco (D3)');
+        assert.strictEqual(cabe.causa, null);
+
+        // Y ahora el mismo servicio con la agenda tapada: la causa es agenda_llena.
+        const hoy = new Date();
+        control.rows.appointments = Array.from({ length: 20 }, (_, i) => {
+            const d = new Date(hoy.getTime() + (i - 1) * 86400000).toISOString().slice(0, 10);
+            return {
+                id: `b${i}`, stylist_id: 'sty-1', status: 'confirmed', service: 'x',
+                starts_at: `${d}T05:00:00.000Z`, ends_at: `${d}T21:00:00.000Z`,
+            };
+        });
+        const lleno = await calendarSante.getAvailableSlots(ORG, { serviceDuration: 540, serviceCategory: 'Cortes' });
+        assert.strictEqual(lleno.length, 0);
+        assert.strictEqual(lleno.causa, 'agenda_llena',
+            `el diagnóstico mide con otro criterio que el motor: recibida ${lleno.causa}`);
+        control.rows.appointments = [];   // los bloques de abajo cuentan con la agenda vacía
+    });
+
     await test('cero por categoría sin estilista → causa "sin_skill"', async () => {
         const slots = await calendarSante.getAvailableSlots(ORG, { serviceDuration: 60, serviceCategory: 'Categoria Inexistente' });
         assert.strictEqual(slots.causa, 'sin_skill', `recibida ${slots.causa}`);

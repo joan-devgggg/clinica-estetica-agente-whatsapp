@@ -146,7 +146,10 @@ test('CONTROL: un bloqueo de un solo día se comporta EXACTAMENTE igual que ante
     const horas = await horasDe({ starts_at: `${D1}T15:00:00+02:00`, ends_at: `${D1}T18:00:00+02:00` }, D1);
     assert.deepStrictEqual(horas, [
         '10:00', '10:30', '11:00', '11:30', '12:00', '12:30', '13:00', '13:30', '14:00', '14:30',
-        '18:00',  // tras el bloqueo; 18:30 no cabe antes del cierre (guard deliberado)
+        // Tras el bloqueo quedan DOS, no uno: 18:30→19:00 termina justo al cierre y es un
+        // hueco legítimo. Hasta el 20/08/2026 aquí ponía «18:30 no cabe antes del cierre
+        // (guard deliberado)» — el guard era el defecto D3, y este test lo congelaba.
+        '18:00', '18:30',
     ]);
 });
 

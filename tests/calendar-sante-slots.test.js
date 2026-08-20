@@ -51,13 +51,100 @@ test('TRES CITAS: huecos en cada tramo libre entre 10–11, 13–14 y 16–17', 
         occupied: [{ start: M(10), end: M(11) }, { start: M(13), end: M(14) }, { start: M(16), end: M(17) }],
         serviceDuration: 30,
     });
-    // Tramos libres: 11–13, 14–16, 17–18 (este último sin margen antes del cierre 18:00
-    // para un servicio de 30': 17:00→17:30 vale, 17:30→18:00 NO por el guard < workEnd).
+    // Tramos libres: 11–13, 14–16, 17–18. El último da DOS huecos, no uno: 17:30→18:00
+    // termina justo al cierre y es un hueco legítimo. Hasta el 20/08/2026 esta línea decía
+    // «17:30 NO por el guard < workEnd» — o sea que el test congelaba el defecto D3.
     assert.deepStrictEqual(asHours(starts), [
         '11:00', '11:30', '12:00', '12:30',   // 11–13
         '14:00', '14:30', '15:00', '15:30',   // 14–16
-        '17:00',                              // 17–18 (solo 17:00; 17:30 tocaría el cierre)
+        '17:00', '17:30',                     // 17–18, cerrando la jornada exacta
     ]);
+});
+
+// ─── D3 · el último hueco de la jornada ───────────────────────────────────────────────
+//
+// El defecto vivió aquí desde el principio y lo tapaba una persona: en una conversación,
+// que el bot no ofrezca las 18:30 no se nota. En una página pública es dinero todos los
+// días. MEDIDO contra la agenda real antes de arreglarlo (`npm run medir:borde -- sante`,
+// 90 días, 20/08/2026): 9.380 filas de más en el catálogo entero, 4.405 horas visibles, y
+// un servicio de 30′ gana UNA hora al final de 76 de los próximos 90 días. Las tres
+// comprobaciones salieron a cero: ninguno empieza antes de abrir, ninguno pasa del cierre,
+// ninguno pisa una cita.
+//
+// Lo que estos bloques congelan no es el número —que cambia con la agenda— sino las dos
+// mitades de la regla: que el hueco que ACABA en el cierre se ofrece, y que el que lo PASA
+// no. Sin el segundo, «arreglar» D3 sería abrir el agujero contrario.
+
+test('D3: el hueco que termina EXACTAMENTE al cierre se ofrece', () => {
+    const starts = computeFreeSlots({
+        workStart: M(10), workEnd: M(19), occupied: [], serviceDuration: 30,
+    });
+    assert.strictEqual(asHours(starts).pop(), '18:30',
+        'se ha vuelto a perder el último hueco de la jornada (D3)');
+});
+
+test('D3: y el que PASA del cierre sigue sin ofrecerse', () => {
+    // La otra mitad. Jornada de 10 a 19 y un servicio de 45′: 18:30 acabaría a las 19:15.
+    const starts = computeFreeSlots({
+        workStart: M(10), workEnd: M(19), occupied: [], serviceDuration: 45,
+    });
+    assert.strictEqual(asHours(starts).pop(), '18:00',
+        'se está ofreciendo una cita que se sale del horario');
+});
+
+test('D3: una jornada que cabe JUSTA da exactamente un hueco', () => {
+    // Alisado de 5 h en una jornada de 5 h. Antes daba cero, y `diagnosticarCero` lo llamaba
+    // «no cabe» — que era mentira: cabe, clavado.
+    const starts = computeFreeSlots({
+        workStart: M(14), workEnd: M(19), occupied: [], serviceDuration: 300,
+    });
+    assert.deepStrictEqual(asHours(starts), ['14:00']);
+});
+
+test('D3: el hueco del final NO se cuela encima de la cita siguiente', () => {
+    // La ventana se capa en el inicio de lo ocupado, no en el cierre. Si alguien «arregla»
+    // D3 comparando solo contra workEnd, esto se llena de huecos encima de una clienta.
+    const starts = computeFreeSlots({
+        workStart: M(10), workEnd: M(19),
+        occupied: [{ start: M(12), end: M(13) }],
+        serviceDuration: 60,
+    });
+    assert.ok(!asHours(starts).includes('11:30'), 'ofrece un hueco que pisa la cita de las 12:00');
+    assert.ok(asHours(starts).includes('11:00'), 'y el que termina justo cuando empieza la cita, sí');
+    assert.ok(asHours(starts).includes('18:00'), 'el último de la jornada sigue estando');
+});
+
+test('D3 · EL INVARIANTE: nada empieza antes de abrir, nada pasa del cierre, nada pisa', () => {
+    // Lo que el medidor comprueba contra la agenda real, aquí contra 3.000 combinaciones.
+    // Es la forma de que «no se sale del horario» deje de ser una medida de un día y pase a
+    // ser una propiedad: se sostiene con CUALQUIER horario, duración y ocupación.
+    let casos = 0;
+    for (let ini = 8; ini <= 11; ini++) {
+        for (let fin = ini + 1; fin <= 21; fin++) {
+            for (const dur of [15, 30, 45, 60, 90, 120, 300]) {
+                for (const occupied of [
+                    [],
+                    [{ start: M(ini), end: M(ini) + 60 }],
+                    [{ start: M(fin) - 60, end: M(fin) }],
+                    [{ start: M(ini) + 90, end: M(ini) + 150 }, { start: M(fin) - 45, end: M(fin) }],
+                ]) {
+                    const workStart = M(ini), workEnd = M(fin);
+                    const starts = computeFreeSlots({ workStart, workEnd, occupied, serviceDuration: dur });
+                    for (const t of starts) {
+                        casos++;
+                        assert.ok(t >= workStart, `${HH(t)} empieza antes de abrir (${HH(workStart)})`);
+                        assert.ok(t + dur <= workEnd,
+                            `${HH(t)}+${dur}′ pasa del cierre ${HH(workEnd)}`);
+                        for (const o of occupied) {
+                            assert.ok(!(t < o.end && t + dur > o.start),
+                                `${HH(t)}+${dur}′ pisa ${HH(o.start)}–${HH(o.end)}`);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert.ok(casos > 3000, `solo se han comprobado ${casos} huecos: el barrido se ha quedado corto`);
 });
 
 // ─── Citas en el borde inicial y final del turno → hueco central grande ───────────────

@@ -22,7 +22,8 @@
     "informe:escaladas": "node scripts/informe-escaladas.js",
     "medir:prefetch": "node scripts/medir-prefetch-huecos.js",
     "exportar:conversacion": "node scripts/exportar-conversacion.js",
-    "test:cobertura": "node scripts/suite-completa.js"
+    "test:cobertura": "node scripts/suite-completa.js",
+    "medir:borde": "node scripts/medir-borde-jornada.js"
   },
   "type": "commonjs",
   "dependencies": {
