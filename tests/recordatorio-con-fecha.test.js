@@ -286,10 +286,15 @@ function resetState() {
     };
 }
 
-// Cita a 2 h vista: dentro de la ventana de 24 h de disparo, y con fecha REAL de calendario
+// Cita a 6 h vista: dentro de la ventana de 24 h de disparo, y con fecha REAL de calendario
 // (no una fija) para que el test no caduque.
-function citaEnDosHoras() {
-    const d = new Date(Date.now() + 2 * 3600 * 1000);
+//
+// Eran 2 h, y desde el 20/08/2026 el worker tiene un SUELO de 120 minutos: el fixture quedaba
+// pegado al borde y —como la hora se guarda en 'HH:MM'— los segundos perdidos lo dejaban por
+// debajo. Lo que estos bloques afirman es que el recordatorio lleva la FECHA, no lo cerca que
+// está la cita, así que la distancia solo tiene que caer holgadamente dentro de la ventana.
+function citaEnSeisHoras() {
+    const d = new Date(Date.now() + 6 * 3600 * 1000);
     const p = n => String(n).padStart(2, '0');
     return {
         fecha_cita: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`,
@@ -298,7 +303,7 @@ function citaEnDosHoras() {
 }
 
 function pendiente({ telefono = '34600111222', nombre = 'Anna', language = 'es' } = {}) {
-    return { id: 'contact-1', telefono, nombre, language, wa_jid: null, ...citaEnDosHoras() };
+    return { id: 'contact-1', telefono, nombre, language, wa_jid: null, ...citaEnSeisHoras() };
 }
 
 function fakeWwebjsClient(sink) {

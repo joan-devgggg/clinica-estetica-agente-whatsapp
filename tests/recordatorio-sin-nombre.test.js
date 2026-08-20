@@ -103,7 +103,11 @@ function citaEnHoras(h) {
 function pendiente(over = {}) {
     return {
         id: 'contact-1', telefono: '34624184532', nombre: null, language: 'es',
-        wa_jid: null, ...citaEnHoras(2), ...over,
+        // 6 h y no 2: lo que se prueba aquí es la puerta de CALIDAD del recordatorio (sin
+        // nombre no sale, sin teléfono se avisa), no lo cerca que está la cita. Con 2 h el
+        // fixture quedaba pegado al SUELO de 120 min del worker (20/08/2026) y los bloques
+        // dejaban de disparar por un motivo ajeno a lo que afirman.
+        wa_jid: null, ...citaEnHoras(6), ...over,
     };
 }
 

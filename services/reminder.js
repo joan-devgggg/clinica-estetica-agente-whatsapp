@@ -16,6 +16,27 @@ const logger = require('../lib/logger');
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 let waClients = null; // Map<orgId, { client, orgId, ... }>
 
+// ─── El SUELO de la ventana: por debajo de esto ya no es un recordatorio ──────────────────
+//
+// La ventana tenía techo (`minutos_recordatorio`, 24 h) y no tenía suelo: cualquier cita de
+// las próximas 24 h con `recordatorio_enviado = false` recibía el mensaje, faltaran 20 horas
+// o 20 minutos. Con el rearme arreglado (db.js, 20/08/2026) eso deja de tener causa conocida,
+// así que esto es un BACKSTOP y no un cambio de política — y está medido antes de ponerlo:
+// de los 21 recordatorios de Sante desde el 01/07, los TRES que salieron a menos de tres
+// horas son los tres duplicados que aquel arreglo elimina. Hoy este suelo no corta nada.
+//
+// Por qué 120 y no 30: los servicios del salón duran hasta 5-6 h y la clienta sale de casa
+// con tiempo. Media hora antes el mensaje llega cuando ya está de camino —o después de la
+// hora, que Meta no garantiza el instante—, y ahí «te recordamos tu cita a las 15:00» no
+// avisa de nada: solo confirma que el aviso llegó tarde.
+//
+// SOLO SALÓN, gateado por tipo de org. No es cautela de más: San Remo tiene HOY cero citas y
+// cero recordatorios en la base (medido el 20/08/2026), o sea que no hay con qué afirmar que
+// un suelo no le rompe nada — y un cero no es una ausencia, es una lectura sin datos. Además
+// una reserva de restaurante para esta misma noche es su caso NORMAL, no el raro. Cuando San
+// Remo tenga tráfico, esto se mide con sus números y se decide con ellos.
+const SUELO_RECORDATORIO_MIN = 120;
+
 // Mismo patrón que REVIEW_TEMPLATES en review.js: la clienta habla en su idioma durante
 // toda la conversación (bot.js detecta ES/EN/RU/UK), así que el recordatorio no puede ser
 // el único mensaje que le llega siempre en español.
@@ -441,6 +462,19 @@ async function checkAndSendReminders() {
 
                     const minutosRestantes = minutosHastaCita(record.fecha_cita, record.hora_cita);
                     if (minutosRestantes < 0 || minutosRestantes > minutosAntes) continue;
+
+                    // SUELO. La ventana tenía techo y no tenía suelo, así que cualquier cita
+                    // dentro de las próximas 24 h con el flag a false recibía «recordatorio»,
+                    // aunque faltaran veinte minutos. NO se marca como enviado: marcar lo que
+                    // no ha salido es exactamente lo que este worker no hace en ningún otro
+                    // sitio. Se salta y se dice, igual que el `minutosRestantes < 0` de arriba.
+                    if (getOrgType(orgId) === 'salon' && minutosRestantes < SUELO_RECORDATORIO_MIN) {
+                        logger.info('recordatorio_fuera_de_plazo', {
+                            orgId, id: record.id, esCita: !!record.esCita,
+                            minutosRestantes, suelo: SUELO_RECORDATORIO_MIN,
+                        });
+                        continue;
+                    }
 
                     // Ya se le mandó y solo faltó apuntarlo: se reintenta el MARCADO, jamás el
                     // envío. Sin esto la ficha sigue "pendiente" en BD y la clienta recibe el

@@ -107,7 +107,12 @@ function citaEnHoras(h) {
 }
 
 function contactoPendiente({ telefono = '34600111222', nombre = 'María López', language = 'es' } = {}) {
-    return { id: 'contact-1', telefono, nombre, language, wa_jid: null, ...citaEnHoras(2) };
+    // 6 h y no 2. Este fichero prueba PLANTILLA vs TEXTO LIBRE, no lo cerca que está la cita,
+    // así que la distancia solo tiene que caer holgadamente dentro de la ventana de disparo.
+    // Con 2 h estaba pegada al SUELO de 120 min que el worker tiene desde el 20/08/2026 —y,
+    // como la hora se guarda en 'HH:MM', los segundos perdidos la dejaban por debajo—, o sea
+    // que estos siete bloques dejaban de disparar por un motivo que no es el suyo.
+    return { id: 'contact-1', telefono, nombre, language, wa_jid: null, ...citaEnHoras(6) };
 }
 
 function citaCompletada({ telefono = '34600111222', nombre = 'María López', language = 'es' } = {}) {
