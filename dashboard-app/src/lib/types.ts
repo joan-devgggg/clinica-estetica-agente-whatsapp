@@ -50,7 +50,15 @@ export interface Reserva {
   telefono: string;
   personas?: number;
   ocasion?: string;
+  /** `contacts.origen`: de dónde salió la FICHA de esa persona. */
   origen?: string;
+  /**
+   * `appointments.source`: quién escribió ESTA cita ('web' | 'bot' | 'manual'), en crudo.
+   * Se traduce en `@/lib/origen-cita` — nunca aquí, y nunca se confunde con `origen`: una
+   * clienta cuya ficha nació por WhatsApp puede haber reservado por el enlace.
+   * `null` en una cita antigua sin dato, y entonces NO se pinta nada.
+   */
+  origen_cita?: string | null;
   bot_mode?: "auto" | "manual";
   is_vip: boolean;
   is_blacklisted: boolean;

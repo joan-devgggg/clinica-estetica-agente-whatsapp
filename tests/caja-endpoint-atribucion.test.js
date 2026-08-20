@@ -18,7 +18,7 @@ const http = require('http');
 const telegramPath = require.resolve('../services/telegram');
 require.cache[telegramPath] = {
     id: telegramPath, filename: telegramPath, loaded: true,
-    exports: { notifyBlacklistAlert: async () => {}, startTelegramBot: () => {}, notifyEscalation: async () => {} },
+    exports: { notifyReservaWeb: async () => {}, notifyBlacklistAlert: async () => {}, startTelegramBot: () => {}, notifyEscalation: async () => {} },
 };
 
 // Logger capturado para poder afirmar que el desajuste QUEDA REGISTRADO.

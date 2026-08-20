@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { PageHeader } from "@/components/layout/page-header";
+import { LeyendaOrigenes } from "@/components/citas/origen-cita";
 import { StylistAgenda } from "@/components/agenda/stylist-agenda";
 import { CreateAppointmentDialog } from "@/components/agenda/create-appointment-dialog";
 import { CreateBlockDialog } from "@/components/agenda/create-block-dialog";
@@ -181,6 +182,15 @@ export default function AgendaEstilistasPage() {
                   {s.name}
                 </button>
               ))}
+            </div>
+          )}
+
+          {/* La leyenda de los iconos de origen. Sin ella, tres dibujos de 10 px dentro de
+              las celdas son un jeroglífico — y se pinta SOLO con los orígenes que hay esta
+              semana, así que no explica nada que no esté en pantalla. */}
+          {!loading && stylistAppointments.length > 0 && (
+            <div className="mb-2 flex justify-end">
+              <LeyendaOrigenes fuentes={stylistAppointments.map((a) => a.origen_cita)} />
             </div>
           )}
 

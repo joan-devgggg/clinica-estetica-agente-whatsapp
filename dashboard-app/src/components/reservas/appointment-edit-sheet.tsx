@@ -26,6 +26,7 @@ import { toast } from "sonner";
 import { API, apiHeaders } from "@/lib/api";
 import { ServiceListField } from "@/components/agenda/service-list-field";
 import { useServiceCatalog, stylistsForCategoria, splitServiceNames, catalogDurationTotal } from "@/lib/service-catalog";
+import { origenDeCita } from "@/lib/origen-cita";
 
 interface Props {
   reserva: Reserva | null;
@@ -189,6 +190,13 @@ export function AppointmentEditSheet({
           <p className="text-[12px] text-muted-foreground">
             {reserva.nombre || "Sin nombre"} · {reserva.telefono}
           </p>
+          {/* Aquí SÍ cabe la frase entera, y por eso va la frase y no el distintivo corto:
+              quien abre la cita ya no está barriendo una lista, está mirando ésta. */}
+          {isSalon && origenDeCita(reserva.origen_cita) && (
+            <p className="text-[12px] text-muted-foreground/80">
+              {origenDeCita(reserva.origen_cita)?.frase}
+            </p>
+          )}
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">

@@ -1848,7 +1848,15 @@ async function getAppointmentsByDateRange(orgId, desde, hasta) {
             telefono:       row.contacts?.wa_phone,
             personas:       row.party_size,
             ocasion:        row.occasion,
+            // OJO: `origen` y `origen_cita` son DOS cosas y se parecen demasiado.
+            //   · `origen`      → `contacts.origen`: de dónde salió la FICHA de esa persona.
+            //   · `origen_cita` → `appointments.source`: quién escribió ESTA cita.
+            // No coinciden y no tienen por qué: una clienta cuya ficha nació por WhatsApp
+            // puede reservar por el enlace. Se manda en CRUDO ('web'|'bot'|'manual'); el
+            // panel es quien lo traduce a lo que lee la dueña (lib/origen-cita.ts), porque
+            // una etiqueta escrita aquí sería una segunda copia del vocabulario.
             origen:         row.contacts?.origen,
+            origen_cita:    row.source ?? null,
             bot_mode:       row.contacts?.bot_mode,
             is_vip:         !!row.contacts?.is_vip,
             is_blacklisted: !!row.contacts?.is_blacklisted,

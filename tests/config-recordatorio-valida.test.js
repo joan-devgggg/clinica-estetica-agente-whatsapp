@@ -36,6 +36,7 @@ require.cache[telegramPath] = {
     id: telegramPath, filename: telegramPath, loaded: true,
     exports: {
         notifyOrgAdmin: (o, m) => notificar(o, m),
+        notifyReservaWeb: async () => {},
         notifyBlacklistAlert: async () => {},
         startTelegramBot: () => {},
         notifyEscalation: async () => {},

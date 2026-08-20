@@ -9,7 +9,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const db = require('./services/db');
 const config = require('./config.json');
-const { notifyBlacklistAlert } = require('./services/telegram');
+const { notifyBlacklistAlert, notifyReservaWeb } = require('./services/telegram');
 const { alertOnce } = require('./services/admin-alerts');
 const { validateConfigValue } = require('./services/helpers');
 const logger = require('./lib/logger');
@@ -2161,6 +2161,27 @@ async function procesarReservaWeb(ctx, datos) {
                     orgId: org.orgId, citaId: cita.id, fecha, hora,
                     servicio: servicio.nombreCompleto, estilistaId: candidata.id,
                 });
+                // El aviso a la dueña. SIN ESPERARLO y con su propio catch, y las dos cosas
+                // por el mismo motivo: a esta altura la cita YA ESTÁ ESCRITA. Un Telegram
+                // caído no puede retrasar la confirmación de la clienta ni convertirse en un
+                // «no se ha podido reservar» sobre una cita que existe.
+                //
+                // Un aviso POR RESERVA, no una alarma agrupada: ver notifyReservaWeb. Y va
+                // aquí dentro, detrás del claim, así que un doble envío —que el candado
+                // responde con la respuesta guardada sin volver a ejecutar esto— no manda
+                // dos avisos.
+                //
+                // El NOMBRE sale de la fila, no de lo que se tecleó: `saveLead` no pisa el
+                // nombre que ya tuviera la ficha, así que la fila lleva el que la dueña va a
+                // ver en el panel. Que el aviso diga otro sería mandarla a buscar a alguien
+                // que no aparece.
+                notifyReservaWeb(org.orgId, {
+                    nombre: cita.full_name || nombre,
+                    telefono: cita.phone || telefono,
+                    servicio: servicio.nombreCompleto,
+                    fecha, hora,
+                    estilista: candidata.name,
+                }).catch(e => logger.error('reserva_web_aviso_error', { orgId: org.orgId, error: e.message }));
                 // El «cuándo» de la confirmación sale de `formatReminderWhen`, el MISMO que
                 // el recordatorio de 24 h. No se escribe un segundo formateador ni se deja
                 // que lo pinte el navegador: la tabla de días existe porque el ruso y el

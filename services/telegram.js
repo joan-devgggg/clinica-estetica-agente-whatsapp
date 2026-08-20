@@ -168,6 +168,51 @@ async function notifyEscalation(orgId, contacto, mensaje, reason) {
     notifyOrgAdmin(orgId, msg);
 }
 
+/**
+ * Una cita que acaba de entrar por el enlace público. UN aviso por reserva.
+ *
+ * VA CON notify Y NO CON alertOnce, y la diferencia no es de estilo: `alertOnce` existe para
+ * que una MISMA avería no repita el mismo aviso cada tic —agrupa por clave y calla hasta que
+ * se resuelve—. Aquí cada reserva es un hecho nuevo y distinto; agruparlas haría que la
+ * segunda clienta del día no se anunciara. Es el mismo criterio que `notifyEscalation`.
+ *
+ * LLEVA LO QUE ELLA NECESITA PARA NO ABRIR NADA: quién, con qué teléfono, qué servicio, qué
+ * día y hora, y con quién. El teléfono va porque es lo único accionable desde el propio
+ * aviso: si algo no cuadra, se la llama.
+ *
+ * El «cuándo» sale de `formatReminderWhen`, el MISMO formateador que el recordatorio de 24 h
+ * —no una segunda tabla de días de la semana (ver el bloque de CLAUDE.md sobre eso)—. Efecto
+ * de lado que conviene: la dueña lee exactamente la misma frase que le llegará a la clienta.
+ * Si la fecha no se puede formatear NO se calla la cita: salen fecha y hora en crudo.
+ *
+ * NO LANZA NUNCA, y aquí eso es un requisito y no una cortesía: cuando esto corre, la cita YA
+ * ESTÁ ESCRITA en la base de datos. Lo que puede fallar es el aviso, y un aviso que falla no
+ * puede llevarse por delante una reserva confirmada. Quien llama además la dispara sin
+ * esperarla.
+ *
+ * @returns {Promise<boolean>} true solo si algún admin lo recibió.
+ */
+async function notifyReservaWeb(orgId, cita = {}) {
+    try {
+        const { formatReminderWhen } = require('./helpers');
+        const cuando = formatReminderWhen(cita.fecha, cita.hora, 'es')
+            || [cita.fecha, cita.hora].filter(Boolean).join(' ')
+            || 'sin fecha';
+        const msg = `🌐 <b>Nueva cita por internet</b>\n\n` +
+            `👤 ${esc(cita.nombre || 'Sin nombre')}\n` +
+            `📞 ${esc(cita.telefono || 'Sin teléfono')}\n` +
+            `✂️ ${esc(cita.servicio || 'Cita')}\n` +
+            `📅 ${esc(cuando)}\n` +
+            `💇 ${esc(cita.estilista || 'Sin estilista asignada')}`;
+        return await notifyOrgAdmin(orgId, msg);
+    } catch (e) {
+        // La cita ya está escrita. Que el aviso reviente no puede cambiar eso ni asomar por
+        // el endpoint: se registra y se devuelve false.
+        logger.error('telegram_reserva_web_error', { orgId, error: e.message });
+        return false;
+    }
+}
+
 async function notifyVipSuggestion(orgId, contacto) {
     const msg = `⭐ <b>Sugerencia VIP</b>\n\n` +
         `${esc(contacto.nombre || 'Este cliente')} (${esc(contacto.telefono)}) ha venido ya ${esc(contacto.visit_count)} veces.\n` +
@@ -756,6 +801,7 @@ function startTelegramBot(options = {}) {
 }
 
 module.exports = {
+    notifyReservaWeb,
     startTelegramBot, notifyBizumPending, notifyEscalation, notifyVipSuggestion,
     notifyBlacklistAlert, notifyOrgAdmin, initSendOnlyBot,
     // Expuesto para tests: el handler de acciones del admin, sin polling ni red. Lo usa

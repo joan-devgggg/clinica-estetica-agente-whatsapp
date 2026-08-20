@@ -3,6 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { StatusBadge } from "@/components/clientes/status-badge";
 import { Badge } from "@/components/ui/badge";
+import { OrigenBadge } from "@/components/citas/origen-cita";
 import type { Reserva, OrgType } from "@/lib/types";
 
 interface ReservaCardProps {
@@ -92,6 +93,10 @@ export function ReservaCard({ reserva, orgType = "restaurant", onClick }: Reserv
                 {bizum.label}
               </Badge>
             )}
+            {/* De dónde vino la cita. Solo el salón: en San Remo no se ha tocado nada.
+                Va en esta fila, junto a la hora y el teléfono, para que se vea SIN abrir
+                la cita — que es la queja que lo trajo. */}
+            {isSalon && <OrigenBadge source={reserva.origen_cita} />}
           </div>
           {reserva.notas && (
             <p className="flex items-start gap-1 mt-1.5 text-[11.5px] text-muted-foreground/80 italic line-clamp-1">

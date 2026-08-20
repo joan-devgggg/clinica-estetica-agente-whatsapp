@@ -3,6 +3,8 @@
 import { Card } from "@/components/ui/card";
 import type { Stylist, Reserva, ScheduleBlock, StylistSchedule, BlockedDay } from "@/lib/types";
 import { ymd, parseYmd, addDays, madridDateKey, madridTime } from "@/lib/date";
+import { OrigenIcono } from "@/components/citas/origen-cita";
+import { origenDeCita } from "@/lib/origen-cita";
 
 interface StylistAgendaProps {
   weekStart: string;
@@ -278,9 +280,16 @@ export function StylistAgenda({
                     gridRow: `${pos.startSlot + 2} / span ${pos.span}`,
                     zIndex: 10,
                   }}
+                  // El origen va en el `title` ENTERO además del icono: una celda de la
+                  // rejilla son tres líneas de 10 px y ahí no cabe la frase, pero el dato
+                  // tiene que poder leerse en palabras sin abrir la cita.
+                  title={origenDeCita(a.origen_cita)?.frase}
                   className="bg-primary/15 border border-primary/30 rounded mx-0.5 px-1 py-0.5 text-[10px] leading-tight overflow-hidden text-left cursor-pointer hover:bg-primary/25 hover:border-primary/50 transition-colors"
                 >
-                  <p className="font-medium text-primary truncate">{a.nombre}</p>
+                  <p className="font-medium text-primary truncate flex items-center gap-1">
+                    <OrigenIcono source={a.origen_cita} />
+                    <span className="truncate">{a.nombre}</span>
+                  </p>
                   <p className="text-muted-foreground truncate">{a.service || "Cita"}</p>
                   {a.starts_at && a.ends_at && (
                     <p className="text-[9px] text-muted-foreground/60 truncate">
