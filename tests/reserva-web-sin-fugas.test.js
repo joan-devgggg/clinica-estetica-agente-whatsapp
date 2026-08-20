@@ -48,7 +48,7 @@ require.cache[telegramPath] = {
 
 const db = require('../services/db');
 const calendarSante = require('../services/calendar-sante');
-const { app, _limitadorReservas } = require('../webhook');
+const { app, _limitadorReservas, _candadoReserva } = require('../webhook');
 
 const SLUG = 'sante-healthy-hair-salon';
 const TOKEN = process.env.RESERVA_WEB_TOKEN;
@@ -92,6 +92,11 @@ const CONFIG_AGENTE = {
 let ESTADO;
 function reset() {
     _limitadorReservas._reset();
+    // El candado del doble envío también es un singleton del proceso: sin esto, el segundo
+    // bloque que reserve el MISMO hueco con el MISMO teléfono recibe la respuesta guardada
+    // del primero y no llega a ejecutarse. Es la conducta buena, y por eso hay que limpiarla
+    // entre bloques igual que la del limitador.
+    _candadoReserva._reset();
     ESTADO = {
         contacto: { id: 'c-1', blacklisted: false, tieneNombre: true },
         romper: null,

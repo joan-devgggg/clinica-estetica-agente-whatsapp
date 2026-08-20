@@ -1696,6 +1696,7 @@ app.post('/api/reviews/:appointmentId/send', async (req, res) => {
 
 const {
     MOTIVOS, respuestaNo, resolverLimites, crearLimitador, interpretarMotivoSql,
+    crearCandadoReserva, claveDeReserva,
     catalogoPublico, diasPublicos, huecosPublicos, reservaPublica, salonPublico,
     limpiarUnaLinea, idiomaValido, MAX_NOTAS, MAX_NOMBRE, FECHA_RE, HORA_RE, UUID_RE,
 } = require('./services/reserva-web');
@@ -1715,6 +1716,11 @@ const RESERVA_WEB_TOKEN = process.env.RESERVA_WEB_TOKEN || '';
 // reinicio perdona a quien estuviera pegando. Lo que NO puede irse con el deploy es el tope
 // de citas por clienta, y por eso ése lo cuenta Postgres dentro de `reservar_hueco()`.
 const limitadorReservas = crearLimitador();
+
+// El candado del doble envío. Igual que el limitador: UN objeto para todo el proceso, en la
+// RAM de Railway, porque en Vercel no contaría nada. Por qué la clave es (org, teléfono,
+// fecha, hora) y por qué solo se guarda el éxito, en la cabecera de services/reserva-web.js.
+const candadoReserva = crearCandadoReserva();
 
 // 404 idéntico para TODO lo que no se puede atender: slug que no existe, org que no es
 // salón (San Remo), y token ausente o equivocado. Si distinguiéramos unos de otros,
@@ -1987,13 +1993,69 @@ async function resolverServicioPublico(orgId, clave) {
 app.post('/reserva-web/:slug/reserva', async (req, res) => {
     const ctx = await contextoPublico(req, res);
     if (!ctx) return;
-    const { org, limites, lang } = ctx;
-    const no = (motivo, extra) => {
-        const { estado, cuerpo } = respuestaNo(motivo, { waPhone: org.waPhone, lang, ...extra });
-        return res.status(estado).json(cuerpo);
-    };
+    const { org, lang } = ctx;
 
     try {
+        // (0) LA FORMA, y va ANTES del limitador por una razón concreta: de aquí sale la
+        // clave del candado, y un doble envío no puede gastar dos de las tres reservas por
+        // hora que tiene esa IP. No lee nada, así que adelantarlo no cuesta.
+        //
+        // Todo lo que entra es texto de internet: se valida, se acota y se limpia a una
+        // línea antes de tocar nada.
+        const body = req.body || {};
+        const fecha = String(body.fecha || '');
+        const hora = String(body.hora || '');
+        const telefono = db.sanitizePhone(String(body.telefono || ''));
+        const nombre = limpiarUnaLinea(body.nombre || '', MAX_NOMBRE);
+        const notas = body.notas ? limpiarUnaLinea(body.notas, MAX_NOTAS) : null;
+        const estilistaPedida = typeof body.estilista === 'string' && UUID_RE.test(body.estilista)
+            ? body.estilista : null;
+        if (!FECHA_RE.test(fecha) || !HORA_RE.test(hora) || !telefono || nombre.length < 2) {
+            const { estado, cuerpo } = respuestaNo(MOTIVOS.DATOS_INVALIDOS, { waPhone: org.waPhone, lang });
+            return res.status(estado).json(cuerpo);
+        }
+
+        // (0 bis) EL CANDADO DEL DOBLE ENVÍO. Dos POST idénticos —dos pestañas, un «atrás» y
+        // volver a darle, un reenvío tras cortarse la conexión— producían DOS CITAS: la
+        // segunda pierde el claim contra la estilista de la primera y el bucle de abajo
+        // reintenta con la siguiente, que está libre. La repetida recibe la MISMA respuesta
+        // que la primera, así que la clienta ve su tic verde otra vez.
+        const r = await candadoReserva.ejecutar(
+            claveDeReserva(org.orgId, telefono, fecha, hora),
+            () => procesarReservaWeb(ctx, { fecha, hora, telefono, nombre, notas, estilistaPedida, servicio: body.servicio }),
+        );
+        if (r.repetida) {
+            logger.info('reserva_web_doble_envio_ignorado', { orgId: org.orgId, fecha, hora, exito: !!r.ok });
+        }
+        return res.status(r.estado).json(r.cuerpo);
+    } catch (e) { return fallo(res, 'reserva_web_error', ctx, e); }
+});
+
+/**
+ * El trabajo de una reserva, ya validada la forma. Devuelve `{estado, cuerpo, ok}` en vez de
+ * escribir en `res`: es lo que permite que el candado guarde la respuesta y se la dé tal cual
+ * a un envío repetido.
+ *
+ * El orden de las comprobaciones no es casual, y cada paso está antes que el siguiente por
+ * una razón concreta:
+ *
+ *   1. limitador por IP    — antes de tocar la base de datos, que es lo que cuesta.
+ *   2. limitador por ORG   — el techo del salón; protege de un ataque repartido entre IPs.
+ *   4. servicio            — contra el catálogo ofertable.
+ *   5. LISTA NEGRA         — antes de escribir NADA. Ni ficha, ni cita.
+ *   6. ficha (saveLead)    — crea o actualiza, SIN pisar el nombre guardado.
+ *   7. verificación del hueco contra el motor REAL — es lo único que sabe de skills.
+ *   8. el claim atómico    — `reservar_hueco()`, que es quien decide de verdad.
+ */
+async function procesarReservaWeb(ctx, datos) {
+    const { org, limites, lang } = ctx;
+    const { fecha, hora, telefono, nombre, notas, estilistaPedida } = datos;
+    const no = (motivo, extra) => {
+        const { estado, cuerpo } = respuestaNo(motivo, { waPhone: org.waPhone, lang, ...extra });
+        return { estado, cuerpo, ok: false };
+    };
+
+    {
         // (1) y (2) — los dos limitadores. El de la org va DESPUÉS del de IP a propósito:
         // así una sola IP pegando no consume el techo del salón y deja fuera a las clientas
         // de verdad; primero se la para a ella.
@@ -2011,22 +2073,9 @@ app.post('/reserva-web/:slug/reserva', async (req, res) => {
             return no(MOTIVOS.SALON_SATURADO, { esperaSegundos: porOrg.esperaSegundos });
         }
 
-        // (3) La forma. Todo lo que entra es texto de internet: se valida, se acota y se
-        // limpia a una línea antes de tocar nada.
-        const body = req.body || {};
-        const fecha = String(body.fecha || '');
-        const hora = String(body.hora || '');
-        const telefono = db.sanitizePhone(String(body.telefono || ''));
-        const nombre = limpiarUnaLinea(body.nombre || '', MAX_NOMBRE);
-        const notas = body.notas ? limpiarUnaLinea(body.notas, MAX_NOTAS) : null;
-        const estilistaPedida = typeof body.estilista === 'string' && UUID_RE.test(body.estilista)
-            ? body.estilista : null;
-        if (!FECHA_RE.test(fecha) || !HORA_RE.test(hora) || !telefono || nombre.length < 2) {
-            return no(MOTIVOS.DATOS_INVALIDOS);
-        }
-
-        // (4) El servicio.
-        const servicio = await resolverServicioPublico(org.orgId, body.servicio);
+        // (4) El servicio. La forma ya viene validada del handler: hace falta antes que
+        // esto porque de ahí sale la clave del candado.
+        const servicio = await resolverServicioPublico(org.orgId, datos.servicio);
         if (!servicio.ok) return no(servicio.motivo);
 
         // (5) LISTA NEGRA, antes de escribir nada.
@@ -2112,13 +2161,17 @@ app.post('/reserva-web/:slug/reserva', async (req, res) => {
                 // fecha no se entiende, y entonces la página enseña fecha y hora sueltas —
                 // una fecha ilegible no puede tumbar una cita que ya está escrita.
                 const { formatReminderWhen } = require('./services/helpers');
-                return res.json(reservaPublica({
-                    fecha, hora,
-                    cuando: formatReminderWhen(fecha, hora, lang),
-                    servicio: servicio.nombreCompleto,
-                    estilistaNombre: candidata.name,
-                    duracionMin: servicio.duracionMin,
-                }));
+                return {
+                    estado: 200,
+                    ok: true,
+                    cuerpo: reservaPublica({
+                        fecha, hora,
+                        cuando: formatReminderWhen(fecha, hora, lang),
+                        servicio: servicio.nombreCompleto,
+                        estilistaNombre: candidata.name,
+                        duracionMin: servicio.duracionMin,
+                    }),
+                };
             } catch (e) {
                 if (!(e instanceof db.ReservaWebRechazada)) throw e;
                 ultimoMotivo = interpretarMotivoSql(e.motivo);
@@ -2130,8 +2183,8 @@ app.post('/reserva-web/:slug/reserva', async (req, res) => {
         }
         logger.warn('reserva_web_no_confirmada', { orgId: org.orgId, motivo: ultimoMotivo, fecha, hora });
         return no(ultimoMotivo);
-    } catch (e) { return fallo(res, 'reserva_web_error', ctx, e); }
-});
+    }
+}
 
 function startWebhookServer(port) {
     const PORT = port || process.env.PORT || 3000;
@@ -2142,4 +2195,8 @@ function startWebhookServer(port) {
 
 // `app` se exporta para tests de integración de rutas (no se usa en producción; el arranque
 // real pasa por startWebhookServer). Exponerlo no cambia ningún comportamiento.
-module.exports = { startWebhookServer, setWAClient, app, _limitadorReservas: limitadorReservas };
+module.exports = {
+    startWebhookServer, setWAClient, app,
+    _limitadorReservas: limitadorReservas,
+    _candadoReserva: candadoReserva,
+};

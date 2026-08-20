@@ -297,6 +297,100 @@ function crearLimitador({ ahora = () => Date.now(), maxClaves = MAX_CLAVES } = {
     };
 }
 
+// ─── El candado del doble envío ──────────────────────────────────────────────────────────
+//
+// La pantalla ya tiene su cerrojo síncrono, y con eso basta para dos toques en el mismo
+// móvil y la misma pestaña. Lo que no puede tapar desde el navegador es lo otro: dos
+// pestañas, un «atrás» y volver a darle, o un reenvío del formulario cuando la conexión se
+// cortó justo al confirmar. Esos llegan aquí como dos POST idénticos.
+//
+// **Y sin esto salen DOS citas, no una.** El claim de `reservar_hueco()` protege el HUECO,
+// no la petición: la segunda pierde la carrera contra la estilista de la primera, pero el
+// handler —cuando la clienta no eligió estilista— reintenta con la SIGUIENTE del hueco, que
+// está libre. Resultado: la misma persona, a la misma hora, con dos estilistas. Y el tope de
+// citas futuras no lo para, porque la primera solo suma una.
+//
+// LA CLAVE ES (org, teléfono, fecha, hora) Y NO LLEVA EL SERVICIO. Es a propósito: la misma
+// persona no puede estar a la misma hora haciéndose dos cosas en sitios distintos, así que
+// dos peticiones que coinciden en esos cuatro campos son la misma reserva, diga lo que diga
+// el resto del cuerpo. Con el servicio dentro, cambiar de idea entre toque y toque abriría
+// una clave nueva y volveríamos a tener dos citas.
+//
+// ── Lo que este candado NO es ────────────────────────────────────────────────────────────
+//
+// Vive en la RAM del proceso, así que se va con cada despliegue y no cubre dos instancias.
+// Es aceptable aquí y no lo era para el tope de citas —que por eso lo cuenta Postgres—
+// porque lo que se protege dura segundos, no días: un doble envío ocurre dentro de la misma
+// sesión de una clienta. Lo que quedaría descubierto es un reenvío justo en el segundo del
+// deploy, y para eso está el EXCLUDE de la 043 cuando coincide la estilista.
+//
+// SOLO SE GUARDA EL ÉXITO. Un «no» no se cachea: si el hueco estaba ocupado y ella vuelve a
+// darle, tiene derecho a que se mire otra vez. Guardar los noes convertiría un fallo
+// pasajero en un fallo pegajoso durante el TTL.
+
+const CANDADO_TTL_MS = 90 * 1000;
+// Mismo motivo que MAX_CLAVES del limitador: sin tope, el candado ES el agujero.
+const CANDADO_MAX = 5000;
+
+/**
+ * @returns un objeto con `ejecutar(clave, trabajo)`, donde `trabajo` devuelve
+ *   `{ estado, cuerpo, ok }`. La respuesta que se devuelve lleva además `repetida`.
+ */
+function crearCandadoReserva({ ahora = () => Date.now(), ttlMs = CANDADO_TTL_MS, maxClaves = CANDADO_MAX } = {}) {
+    const enCurso = new Map();   // clave → Promise<{estado, cuerpo, ok}>
+    const hechas = new Map();    // clave → { valor, expira }
+
+    function podar(t) {
+        for (const [k, v] of hechas) if (v.expira <= t) hechas.delete(k);
+        while (hechas.size >= maxClaves) {
+            const masVieja = hechas.keys().next().value;
+            if (masVieja === undefined) break;
+            hechas.delete(masVieja);
+        }
+    }
+
+    return {
+        async ejecutar(clave, trabajo) {
+            const t = ahora();
+
+            // (1) ¿Ya salió bien hace un momento? Se devuelve LA MISMA respuesta: la clienta
+            // ve su tic verde otra vez, no una segunda cita ni un error incomprensible.
+            const hecha = hechas.get(clave);
+            if (hecha) {
+                if (hecha.expira > t) return { ...hecha.valor, repetida: true };
+                hechas.delete(clave);
+            }
+
+            // (2) ¿Hay una en vuelo? ESTA comprobación es síncrona respecto de sí misma —no
+            // hay ningún `await` entre mirar el Map y escribirlo— y es lo que hace que dos
+            // peticiones simultáneas no puedan pasar las dos.
+            const vuelo = enCurso.get(clave);
+            if (vuelo) return { ...(await vuelo), repetida: true };
+
+            const promesa = (async () => trabajo())();
+            enCurso.set(clave, promesa);
+            try {
+                const r = await promesa;
+                if (r && r.ok) {
+                    podar(ahora());
+                    hechas.set(clave, { valor: r, expira: ahora() + ttlMs });
+                }
+                return { ...r, repetida: false };
+            } finally {
+                enCurso.delete(clave);
+            }
+        },
+        _tamano: () => ({ enCurso: enCurso.size, hechas: hechas.size }),
+        /** Solo para tests: es un singleton del proceso, como el limitador. */
+        _reset: () => { enCurso.clear(); hechas.clear(); },
+    };
+}
+
+/** La clave del candado. Una función para que el test afirme QUÉ entra y qué no. */
+function claveDeReserva(orgId, telefono, fecha, hora) {
+    return `${orgId}:${telefono}:${fecha}:${hora}`;
+}
+
 // ─── Las proyecciones: qué sale a internet ───────────────────────────────────────────────
 //
 // LA REGLA, y es la que sostiene el test de fuga: **se enumeran los campos, jamás se
@@ -426,6 +520,7 @@ module.exports = {
     MOTIVOS, POLITICA, MOTIVOS_SQL, LIMITES_DEFAULT,
     interpretarMotivoSql, enlaceWhatsApp, respuestaNo,
     resolverLimites, crearLimitador,
+    crearCandadoReserva, claveDeReserva, CANDADO_TTL_MS,
     catalogoPublico, diasPublicos, huecosPublicos, reservaPublica, salonPublico,
     limpiarUnaLinea, idiomaValido,
     MAX_NOTAS, MAX_NOMBRE, FECHA_RE, HORA_RE, UUID_RE, HORA_MS,

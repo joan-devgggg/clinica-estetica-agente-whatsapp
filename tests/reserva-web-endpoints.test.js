@@ -32,6 +32,16 @@
  *   · formatear el «cuándo» con `toLocaleDateString` en vez de `formatReminderWhen`  3 rojos
  *     — y el rojo se lee solo: «10:00 четверг, 10 сентября», nominativo, que es
  *     literalmente el motivo por el que esa tabla existe.
+ *
+ * Y con el CANDADO del doble envío (20/08, seis bloques nuevos):
+ *   · el candado sin efecto (llamar al trabajo y ya) ............................. 3 rojos
+ *   · sin la memoria de éxitos (solo coalescencia en vuelo) ...................... 3 rojos
+ *   · sin la coalescencia en vuelo (solo memoria) ................................ 1 rojo
+ *     — y es justo el bloque del solape real, que es la única forma de saber que las dos
+ *     mitades hacen cosas distintas: la memoria tapa el reenvío tardío, la coalescencia
+ *     tapa las dos peticiones que se pisan.
+ *   · meter algo variable en la clave (equivale a no tener clave) ................ 3 rojos
+ *   · guardar también los NOES ................................................... 1 rojo
  */
 process.env.TZ = 'Europe/Madrid';
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
@@ -50,7 +60,7 @@ require.cache[telegramPath] = {
 
 const db = require('../services/db');
 const calendarSante = require('../services/calendar-sante');
-const { app, _limitadorReservas } = require('../webhook');
+const { app, _limitadorReservas, _candadoReserva } = require('../webhook');
 
 const SANTE = 'b2c3d4e5-f6a7-8901-bcde-f12345678901';
 const SLUG = 'sante-healthy-hair-salon';
@@ -77,6 +87,11 @@ function reset() {
     // que sin esto cada bloque heredaría lo gastado por el anterior y el techo por org
     // saldría agotado antes de empezar a probarlo.
     _limitadorReservas._reset();
+    // El candado del doble envío también es un singleton del proceso: sin esto, el segundo
+    // bloque que reserve el MISMO hueco con el MISMO teléfono recibe la respuesta guardada
+    // del primero y no llega a ejecutarse. Es la conducta buena, y por eso hay que limpiarla
+    // entre bloques igual que la del limitador.
+    _candadoReserva._reset();
     ESTADO = {
         config: {
             reservas_web_activo: true,
@@ -87,12 +102,18 @@ function reset() {
         },
         // `business_info` lo edita la dueña y lleva dentro cosas que no salen a internet.
         businessInfo: { companyName: 'Sante Healthy Hair Salon', notas_internas: 'no publicar' },
+        retrasoMs: 0,             // para forzar solape real en el candado
         contacto: null,           // lo que devuelve getContactoParaReservaWeb
         leadGuardado: null,       // lo que recibió saveLead
         citas: [],                // lo que recibió saveAppointment
         rechazos: [],             // motivos a lanzar, en orden, uno por intento
-        slots: [{ fecha: '2026-09-10', hora: '10:00', diaNombre: 'jueves', stylistId: IRINA, stylistName: 'Irina',
-                  alternativas: [{ id: IRINA, name: 'Irina' }, { id: NATALIA, name: 'Natalia' }] }],
+        // Cuatro horas y no una: desde que existe el candado del doble envío, repetir la
+        // MISMA reserva no es una reserva nueva, así que los bloques del limitador tienen
+        // que pedir huecos DISTINTOS o estarían midiendo el candado sin saberlo.
+        slots: ['10:00', '11:00', '12:00', '13:00'].map(hora => ({
+            fecha: '2026-09-10', hora, diaNombre: 'jueves', stylistId: IRINA, stylistName: 'Irina',
+            alternativas: [{ id: IRINA, name: 'Irina' }, { id: NATALIA, name: 'Natalia' }],
+        })),
         dias: [{ fecha: '2026-09-10', diaSemana: 3, huecos: 4,
                  estilistas: [{ id: IRINA, name: 'Irina' }, { id: NATALIA, name: 'Natalia' }] }],
     };
@@ -103,6 +124,10 @@ db.getAgentConfig = async () => ({ services: CATALOGO, business_info: ESTADO.bus
 db.getContactoParaReservaWeb = async () => ESTADO.contacto;
 db.saveLead = async (_org, datos) => { ESTADO.leadGuardado = datos; return 'contact-1'; };
 db.saveAppointment = async (_org, contactId, opts) => {
+    // Con retraso, dos peticiones se solapan DE VERDAD y se prueba la coalescencia en vuelo,
+    // que es otra cosa que la memoria de éxitos: con los dobles instantáneos de este fichero
+    // la segunda llega cuando la primera ya terminó, y entonces quien salva es la memoria.
+    if (ESTADO.retrasoMs) await new Promise(r => setTimeout(r, ESTADO.retrasoMs));
     ESTADO.citas.push({ contactId, ...opts });
     const motivo = ESTADO.rechazos.shift();
     if (motivo) throw new db.ReservaWebRechazada(motivo);
@@ -382,6 +407,91 @@ async function test(name, fn) {
             } finally { require('../services/helpers').formatReminderWhen = orig; }
         });
 
+        // ─── EL DOBLE ENVÍO ─────────────────────────────────────────────────────────────
+        //
+        // Sin el candado esto crea DOS CITAS, no una: la segunda pierde el claim contra la
+        // estilista de la primera y el bucle reintenta con la SIGUIENTE del hueco, que está
+        // libre. Misma clienta, misma hora, dos estilistas. Y el tope de citas futuras no lo
+        // ve, porque la primera solo suma una.
+        await test('dos POST IDÉNTICOS a la vez → UNA cita, y las dos respuestas iguales', async () => {
+            // La primera pierde el claim con Irina para que el bucle quiera reintentar con
+            // Natalia — que es exactamente el camino por el que salían dos citas.
+            const ip = ipNueva();
+            const [a, b] = await Promise.all([
+                request(server, { method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip), body: CUERPO_RESERVA }),
+                request(server, { method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip), body: CUERPO_RESERVA }),
+            ]);
+            assert.strictEqual(a.status, 200);
+            assert.strictEqual(b.status, 200);
+            assert.strictEqual(a.raw, b.raw, 'las dos respuestas tenían que ser la MISMA, byte por byte');
+            assert.strictEqual(ESTADO.citas.length, 1,
+                `el doble envío ha escrito ${ESTADO.citas.length} citas`);
+        });
+
+        await test('dos POST SOLAPADOS DE VERDAD: el trabajo corre UNA vez', async () => {
+            // Con la escritura tardando 60 ms, la segunda petición entra mientras la primera
+            // sigue dentro. Aquí no salva la memoria de éxitos —todavía no hay éxito que
+            // recordar—: salva que mirar y escribir el Map de «en vuelo» no tiene ningún
+            // `await` en medio.
+            ESTADO.retrasoMs = 60;
+            const ip = ipNueva();
+            const [a, b] = await Promise.all([
+                request(server, { method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip), body: CUERPO_RESERVA }),
+                request(server, { method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip), body: CUERPO_RESERVA }),
+            ]);
+            assert.strictEqual(a.status, 200);
+            assert.strictEqual(b.raw, a.raw);
+            assert.strictEqual(ESTADO.citas.length, 1,
+                `dos peticiones solapadas han escrito ${ESTADO.citas.length} citas`);
+        });
+
+        await test('el reenvío TARDÍO tampoco duplica: devuelve la misma confirmación', async () => {
+            // El caso de las dos pestañas o del «atrás y volver a darle»: la primera ya
+            // terminó. Sin la memoria de éxitos, esta segunda sí crearía una cita.
+            const ip = ipNueva();
+            const uno = await request(server, { method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip), body: CUERPO_RESERVA });
+            const dos = await request(server, { method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip), body: CUERPO_RESERVA });
+            assert.strictEqual(uno.raw, dos.raw);
+            assert.strictEqual(ESTADO.citas.length, 1);
+        });
+
+        await test('el candado NO se pasa de listo: otra hora del mismo móvil sí se reserva', async () => {
+            const ip = ipNueva();
+            await request(server, { method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip), body: CUERPO_RESERVA });
+            const otra = await request(server, {
+                method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip),
+                body: { ...CUERPO_RESERVA, hora: '11:00' },
+            });
+            assert.strictEqual(otra.status, 200);
+            assert.strictEqual(ESTADO.citas.length, 2, 'el candado ha bloqueado una reserva legítima');
+        });
+
+        await test('un «no» NO se guarda: si vuelve a darle, se mira otra vez', async () => {
+            // Guardar los noes convertiría un hueco ocupado en un no pegajoso durante el TTL,
+            // y la clienta que vuelve a intentarlo tiene derecho a que se mire la agenda.
+            const ip = ipNueva();
+            ESTADO.rechazos = ['hueco_ocupado', 'hueco_ocupado'];   // las dos estilistas
+            const malo = await request(server, { method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip), body: CUERPO_RESERVA });
+            assert.strictEqual(malo.status, 409);
+            const bueno = await request(server, { method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip), body: CUERPO_RESERVA });
+            assert.strictEqual(bueno.status, 200, 'el fallo se ha quedado pegado y ya no la deja reservar');
+        });
+
+        await test('un doble envío no gasta dos de las tres reservas por hora', async () => {
+            // Por eso la clave se calcula ANTES del limitador: con tres envíos idénticos, un
+            // triple toque se comía el cupo entero de esa clienta.
+            const ip = ipNueva();
+            for (let i = 0; i < 3; i++) {
+                await request(server, { method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip), body: CUERPO_RESERVA });
+            }
+            const otraHora = await request(server, {
+                method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip),
+                body: { ...CUERPO_RESERVA, hora: '12:00' },
+            });
+            assert.strictEqual(otraHora.status, 200, 'los repetidos han consumido el cupo de la clienta');
+            assert.strictEqual(ESTADO.citas.length, 2);
+        });
+
         await test('reservar por la clave de un SOLO_COMPLEMENTO escrita a mano → se rechaza', async () => {
             const res = await request(server, {
                 method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ipNueva()),
@@ -528,14 +638,17 @@ async function test(name, fn) {
         // ─── EL LIMITADOR ───────────────────────────────────────────────────────────────
         await test('LÍMITE POR IP: la cuarta reserva de la misma IP en una hora → 429', async () => {
             const ip = ipNueva();
+            const horas = ['10:00', '11:00', '12:00'];
             for (let i = 0; i < 3; i++) {
                 const ok = await request(server, {
-                    method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip), body: CUERPO_RESERVA,
+                    method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip),
+                    body: { ...CUERPO_RESERVA, hora: horas[i] },
                 });
                 assert.strictEqual(ok.status, 200, `la reserva ${i + 1} debería pasar`);
             }
             const cuarta = await request(server, {
-                method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip), body: CUERPO_RESERVA,
+                method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip),
+                body: { ...CUERPO_RESERVA, hora: '13:00' },
             });
             assert.strictEqual(cuarta.status, 429);
             assert.strictEqual(cuarta.body.motivo, 'demasiadas_peticiones');
@@ -546,8 +659,11 @@ async function test(name, fn) {
 
         await test('el límite es POR IP: otra clienta desde otra IP sigue pudiendo reservar', async () => {
             const ip = ipNueva();
-            for (let i = 0; i < 4; i++) {
-                await request(server, { method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip), body: CUERPO_RESERVA });
+            for (const hora of ['10:00', '11:00', '12:00', '13:00']) {
+                await request(server, {
+                    method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ip),
+                    body: { ...CUERPO_RESERVA, hora },
+                });
             }
             const otra = await request(server, {
                 method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ipNueva()), body: CUERPO_RESERVA,
@@ -578,10 +694,11 @@ async function test(name, fn) {
         await test('TECHO DE LA ORG: se agota aunque venga de IPs distintas', async () => {
             ESTADO.config.reservas_web_max_hora_org = 2;
             const vistos = [];
+            const horasOrg = ['10:00', '11:00', '12:00', '13:00'];
             for (let i = 0; i < 4; i++) {
                 const res = await request(server, {
                     method: 'POST', path: `/reserva-web/${SLUG}/reserva`,
-                    headers: desde(ipNueva()), body: CUERPO_RESERVA,
+                    headers: desde(ipNueva()), body: { ...CUERPO_RESERVA, hora: horasOrg[i] },
                 });
                 vistos.push(res.status === 200 ? 'ok' : res.body.motivo);
             }
