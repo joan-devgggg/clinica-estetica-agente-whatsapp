@@ -1669,19 +1669,46 @@ async function getContactoParaReservaWeb(orgId, telefono) {
 // mecánico y taparían el último cambio de verdad, que es lo único que guarda `last_change`.
 const CAMPOS_AUDITADOS = ['starts_at', 'ends_at', 'service', 'status', 'stylist_id', 'notes'];
 
-/**
- * El "de → a" del cambio que se está a punto de escribir, o null si no cambia nada de lo
- * que se audita. Hace UNA lectura extra, y solo cuando toca: editar una cita es una acción
- * manual y rara, no un camino caliente.
- *
- * Si la lectura falla se devuelve null en vez de propagar: perder la traza es malo, pero
- * impedir que se guarde el cambio de hora de una clienta por no poder auditarlo es peor.
- */
-async function buildLastChange(oid, appointmentId, updates, actor) {
-    const campos = CAMPOS_AUDITADOS.filter(c => updates[c] !== undefined);
-    if (!campos.length) return undefined;
+// Los dos campos de INSTANTE. Se comparan como momentos en el tiempo y no como cadenas,
+// porque la misma hora se escribe de dos formas y las dos conviven en la misma fila:
+// Supabase DEVUELVE '2026-08-17T15:00:00+00:00' y nosotros ESCRIBIMOS
+// '2026-08-17T15:00:00.000Z'. Con `String(a) === String(b)` eso es un cambio, y no lo es.
+//
+// Medido el 20/08/2026: 10 de las 47 filas de `last_change` de Sante (21 %) registran un
+// cambio de horario que nunca ocurrió — el panel reguardando una cita sin moverla. Y no era
+// solo ruido en la auditoría: ese mismo falso positivo es el que rearmaba el recordatorio
+// (ver updateAppointment), así que tres clientas recibieron uno duplicado.
+const CAMPOS_INSTANTE = new Set(['starts_at', 'ends_at']);
 
-    let previo = null;
+// ¿Es `ahora` el mismo valor que `antes` para este campo? Fuera de los instantes se
+// mantiene la comparación laxa de siempre: null y undefined son "no había nada", y un id que
+// llega como string no es un cambio respecto al mismo id guardado.
+//
+// Si un instante no se puede parsear NO se declara igual: se cae a la comparación de
+// cadenas, que es lo que había. Un dato ilegible no puede convertirse en "no ha cambiado"
+// (regla 3), porque de ahí colgaría un recordatorio que no sale.
+function mismoValorAuditado(campo, antes, ahora) {
+    if (CAMPOS_INSTANTE.has(campo)) {
+        const ta = new Date(antes ?? '').getTime();
+        const tb = new Date(ahora ?? '').getTime();
+        if (Number.isFinite(ta) && Number.isFinite(tb)) return ta === tb;
+    }
+    return String(antes ?? '') === String(ahora ?? '');
+}
+
+/**
+ * Lee el estado previo de los campos auditados que este UPDATE va a tocar.
+ *
+ * Va aparte de buildLastChange porque su resultado lo consumen DOS decisiones —la traza de
+ * auditoría y el rearme del recordatorio— y las dos necesitan distinguir «no cambió nada»
+ * de «no he podido mirarlo», que es justo lo que se perdía cuando esto devolvía `undefined`
+ * para las dos cosas. Una lectura, dos respuestas.
+ *
+ * @returns {{leido: boolean, previo: object|null, campos: string[]}}
+ */
+async function leerEstadoPrevioCita(oid, appointmentId, updates) {
+    const campos = CAMPOS_AUDITADOS.filter(c => updates[c] !== undefined);
+    if (!campos.length) return { leido: true, previo: null, campos };
     try {
         const { data, error } = await supabase
             .from('appointments')
@@ -1690,19 +1717,29 @@ async function buildLastChange(oid, appointmentId, updates, actor) {
             .eq('id', appointmentId)
             .maybeSingle();
         if (error) throw error;
-        previo = data;
+        // Sin fila no hay estado previo que comparar, pero la lectura SÍ funcionó: eso no es
+        // una ceguera, es una cita que no existe (y el UPDATE de abajo fallará por su cuenta).
+        return { leido: true, previo: data || null, campos };
     } catch (e) {
         logger.warn('auditoria_cita_sin_estado_previo', { appointmentId, error: e.message });
-        return undefined;
+        return { leido: false, previo: null, campos };
     }
-    if (!previo) return undefined;
+}
+
+/**
+ * El "de → a" del cambio que se está a punto de escribir, o undefined si no cambia nada de
+ * lo que se audita (o si no hay estado previo con el que comparar).
+ *
+ * PURA: recibe el estado previo ya leído. Así el criterio de «esto ha cambiado» —que es
+ * donde estaba el bug de las cadenas— se puede probar sin levantar media base de datos.
+ */
+function buildLastChange(previo, campos, updates, actor) {
+    if (!previo || !campos.length) return undefined;
 
     const de = {};
     const a = {};
     for (const campo of campos) {
-        // Comparación laxa a propósito: null y undefined son "no había nada", y un id que
-        // llega como string no es un cambio respecto al mismo id guardado.
-        if (String(previo[campo] ?? '') === String(updates[campo] ?? '')) continue;
+        if (mismoValorAuditado(campo, previo[campo], updates[campo])) continue;
         de[campo] = previo[campo] ?? null;
         a[campo] = updates[campo] ?? null;
     }
@@ -1714,6 +1751,10 @@ async function buildLastChange(oid, appointmentId, updates, actor) {
 async function updateAppointment(orgId, appointmentId, campos) {
     const oid = resolveOrg(orgId);
     const updates = {};
+    // ¿Este UPDATE reescribe starts_at/ends_at? Que los reescriba NO significa que la cita se
+    // mueva: el formulario del panel manda fecha y hora en TODOS sus guardados, así que
+    // cambiar la estilista o una nota los trae igual, con el mismo valor de siempre.
+    let horarioReescrito = false;
     if (campos.servicio    !== undefined) updates.service      = campos.servicio;
     if (campos.estado      !== undefined) updates.status       = campos.estado;
     if (campos.estado === 'no_show')     updates.no_show      = true;
@@ -1749,11 +1790,9 @@ async function updateAppointment(orgId, appointmentId, campos) {
         }
         updates.starts_at = startsAt.toISOString();
         updates.ends_at   = new Date(startsAt.getTime() + durMin * 60 * 1000).toISOString();
-        // Mover una cita es volver a deberle el recordatorio: el que salió (si salió)
-        // hablaba de otro momento. Solo si quien llama no fijó el flag explícitamente.
-        // San Remo no lee appointments.recordatorio_enviado (su recordatorio va por
-        // ficha), así que para él esta línea no cambia ninguna conducta.
-        if (campos.recordatorioEnviado === undefined) updates.recordatorio_enviado = false;
+        // El rearme del recordatorio se decide MÁS ABAJO, cuando ya sabemos si la cita se ha
+        // movido de verdad. Aquí solo se apunta que este UPDATE reescribe el horario.
+        horarioReescrito = true;
     }
     if (!Object.keys(updates).length) return null;
 
@@ -1764,8 +1803,38 @@ async function updateAppointment(orgId, appointmentId, campos) {
     // vez de atribuirle la escritura al bot por defecto, que es justo la clase de dato que
     // luego se lee como si fuera verdad.
     if (campos.actor !== undefined) updates.updated_by = campos.actor || null;
-    const cambio = await buildLastChange(oid, appointmentId, updates, campos.actor || null);
+    // UNA lectura para las dos decisiones que dependen del estado anterior: la traza y el
+    // rearme del recordatorio. Son la misma pregunta —«¿esto ha cambiado?»— y preguntarla
+    // dos veces es cómo acaban contestándose distinto.
+    const { leido, previo, campos: camposAuditados } = await leerEstadoPrevioCita(oid, appointmentId, updates);
+    const cambio = buildLastChange(previo, camposAuditados, updates, campos.actor || null);
     if (cambio) updates.last_change = cambio;
+
+    // ─── Rearme del recordatorio: solo si la cita se ha MOVIDO ───────────────────────────
+    //
+    // Mover una cita es volver a deberle el recordatorio: el que salió (si salió) hablaba de
+    // otro momento. Pero hasta el 20/08/2026 la condición era «el formulario trae fecha y
+    // hora», y el panel las trae SIEMPRE, así que cualquier retoque —la estilista, el
+    // servicio, abrir y guardar— reiniciaba el flag y el worker mandaba un «recordatorio»
+    // minutos después. Medido esa semana: 3 de 18 recordatorios de Sante fueron duplicados,
+    // dos de ellos a 27 y 49 minutos de la cita, y en dos de los tres el instante guardado
+    // era IDÉNTICO (solo cambiaba el formato de la cadena: '+00:00' vs '.000Z').
+    //
+    // Sin lectura previa NO se decide a ciegas hacia el lado cómodo: se rearma, que es lo
+    // que había. Entre un recordatorio de más y una clienta que se presenta a la hora vieja,
+    // el lado recuperable es el primero.
+    //
+    // Se mira `starts_at` y NO `ends_at`: el recordatorio dice a qué hora EMPIEZA («a las
+    // 15:00 del lunes 17»). Alargar una cita sin moverla no lo vuelve falso, así que ahí no
+    // hay nada que rearmar.
+    if (horarioReescrito && campos.recordatorioEnviado === undefined) {
+        const movida = leido && previo ? cambio?.a?.starts_at !== undefined : true;
+        if (movida) updates.recordatorio_enviado = false;
+        logger.info('cita_recordatorio_rearme', {
+            orgId: oid, appointmentId, rearmado: movida,
+            motivo: !leido ? 'sin_estado_previo' : !previo ? 'cita_no_encontrada' : movida ? 'instante_movido' : 'mismo_instante',
+        });
+    }
 
     const { data, error } = await supabase
         .from('appointments')

@@ -11,6 +11,29 @@
  *     "no consta" — en vez de atribuírselo al bot por defecto.
  *   · `last_change` guarda el de → a de los campos que le importan a alguien, y NO se
  *     ensucia con los interruptores mecánicos de los workers.
+ *
+ * ── 20/08/2026: el mismo instante contado como cambio, y lo que colgaba de eso ───────────
+ *
+ * La comparación era `String(previo) === String(nuevo)`, y los dos lados escriben la hora de
+ * forma distinta: Supabase devuelve '+00:00' y nosotros escribimos '.000Z'. Medido en
+ * producción: 10 de las 47 filas de last_change de Sante (21 %) registran un cambio de
+ * horario que nunca ocurrió.
+ *
+ * No era solo ruido. De ese mismo falso positivo colgaba `recordatorio_enviado`, que se
+ * reiniciaba «si el formulario trae fecha y hora» — y el panel las manda SIEMPRE. Resultado
+ * esa semana: 3 de los 18 recordatorios de Sante salieron dos veces, dos de ellos a 27 y 49
+ * minutos de la cita, por guardados que no movieron nada. Los seis bloques nuevos prueban
+ * las dos mitades y, sobre todo, sus CONTROLES: que una cita movida de verdad siga
+ * rearmando, y que sin estado previo se rearme igual (el lado recuperable).
+ *
+ * Sabotajes medidos (cp previo):
+ *   · volver a comparar instantes como cadenas ................................. 3 rojos
+ *   · rearmar siempre que el UPDATE reescriba el horario ....................... 2 rojos
+ *
+ * Que el primero tumbe TRES y el segundo DOS no es redundancia: son dos arreglos encadenados
+ * y el de arriba tapa al de abajo. Con las cadenas de vuelta, el rearme vuelve a dispararse
+ * aunque su condición esté bien escrita — que es exactamente cómo un bug de formato acabó
+ * mandando WhatsApps.
  */
 process.env.TZ = 'Europe/Madrid';
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
@@ -142,6 +165,95 @@ test('si no se puede leer el estado previo, el cambio se guarda igual', async ()
     assert.strictEqual(upd.status, 'cancelled');
     assert.ok(!('last_change' in upd));
     assert.ok(logs.some(l => l.evento === 'auditoria_cita_sin_estado_previo'));
+});
+
+// ─── El mismo instante escrito de dos formas, y lo que colgaba de confundirlo ────────────
+//
+// Supabase DEVUELVE '2026-08-20T10:00:00+00:00' y nosotros ESCRIBIMOS
+// '2026-08-20T10:00:00.000Z'. Son el mismo momento y `String(a) === String(b)` decía que no.
+// Medido el 20/08/2026: 10 de las 47 filas de last_change de Sante (21 %) registran un
+// cambio de horario que nunca ocurrió. Y de ese falso positivo colgaba el rearme del
+// recordatorio, así que tres clientas recibieron uno duplicado —dos de ellas a 27 y 49
+// minutos de la cita— por guardados del panel que no movieron nada.
+//
+// El fixture usa la forma de SUPABASE a propósito: con la nuestra el bug no se ve.
+const MISMO_INSTANTE = { fecha: '2026-08-20', hora: '12:00', duracionMin: 60 };  // = 10:00Z en agosto
+
+test('el mismo instante en otro formato NO es un cambio', async () => {
+    sqlCalls.length = 0;
+    const antes = { ...filaPrevia };
+    filaPrevia = { ...filaPrevia, starts_at: '2026-08-20T10:00:00+00:00', ends_at: '2026-08-20T11:00:00+00:00' };
+    try {
+        await db.updateAppointment(ORG, CITA, { ...MISMO_INSTANTE, actor: 'panel:x' });
+    } finally { filaPrevia = antes; }
+    const upd = updateDeCita().payload;
+    assert.strictEqual(upd.starts_at, '2026-08-20T10:00:00.000Z', 'el UPDATE sí reescribe el horario');
+    assert.ok(!('last_change' in upd),
+        `guardar la misma hora no es un cambio: ${JSON.stringify(upd.last_change)}`);
+});
+
+test('guardar sin mover la cita NO rearma el recordatorio', async () => {
+    // El caso real: el panel manda fecha y hora en TODOS sus guardados, así que cambiar la
+    // estilista traía el horario igual y el flag se reiniciaba lo mismo.
+    sqlCalls.length = 0;
+    const antes = { ...filaPrevia };
+    filaPrevia = { ...filaPrevia, starts_at: '2026-08-20T10:00:00+00:00', ends_at: '2026-08-20T11:00:00+00:00' };
+    try {
+        await db.updateAppointment(ORG, CITA, { ...MISMO_INSTANTE, stylistId: 'sty-2', actor: 'panel:x' });
+    } finally { filaPrevia = antes; }
+    const upd = updateDeCita().payload;
+    assert.strictEqual(upd.stylist_id, 'sty-2', 'el cambio que SÍ pidió el panel se guarda');
+    assert.ok(!('recordatorio_enviado' in upd),
+        'se rearmó el recordatorio de una cita que no se ha movido: eso es el duplicado');
+    assert.ok(logs.some(l => l.evento === 'cita_recordatorio_rearme' && l.rearmado === false),
+        'y la decisión queda registrada, no en silencio');
+});
+
+test('mover la cita de verdad SÍ rearma el recordatorio', async () => {
+    // El CONTROL del bloque anterior: si esto deja de rearmar, una clienta se planta a la
+    // hora vieja con el único aviso que recibió diciendo otra cosa.
+    sqlCalls.length = 0;
+    await db.updateAppointment(ORG, CITA, { fecha: '2026-08-21', hora: '17:30', duracionMin: 60, actor: 'panel:x' });
+    const upd = updateDeCita().payload;
+    assert.strictEqual(upd.recordatorio_enviado, false, 'una cita movida vuelve a deber su recordatorio');
+    assert.ok(upd.last_change?.a?.starts_at, 'y el movimiento queda en la traza');
+});
+
+test('alargar la cita sin moverla no rearma: el recordatorio dice la hora de EMPEZAR', async () => {
+    sqlCalls.length = 0;
+    const antes = { ...filaPrevia };
+    filaPrevia = { ...filaPrevia, starts_at: '2026-08-20T10:00:00+00:00', ends_at: '2026-08-20T11:00:00+00:00' };
+    try {
+        await db.updateAppointment(ORG, CITA, { ...MISMO_INSTANTE, duracionMin: 120, actor: 'panel:x' });
+    } finally { filaPrevia = antes; }
+    const upd = updateDeCita().payload;
+    assert.strictEqual(upd.ends_at, '2026-08-20T12:00:00.000Z', 'la duración sí cambia');
+    assert.ok(upd.last_change?.a?.ends_at, 'y se audita, que para eso está');
+    assert.ok(!('recordatorio_enviado' in upd),
+        '«a las 12:00 del jueves» sigue siendo verdad: no hay nada que rearmar');
+});
+
+test('sin estado previo se rearma: el lado recuperable es el recordatorio de más', async () => {
+    sqlCalls.length = 0;
+    logs.length = 0;
+    lecturaFalla = true;
+    try {
+        await db.updateAppointment(ORG, CITA, { ...MISMO_INSTANTE, actor: 'panel:x' });
+    } finally { lecturaFalla = false; }
+    const upd = updateDeCita().payload;
+    assert.strictEqual(upd.recordatorio_enviado, false,
+        'sin poder mirar, entre un recordatorio de más y una clienta a la hora vieja se elige el primero');
+    assert.ok(logs.some(l => l.evento === 'cita_recordatorio_rearme' && l.motivo === 'sin_estado_previo'),
+        'y se dice por qué, que es lo que distingue una decisión de un descuido');
+});
+
+test('CONTROL: si quien llama fija recordatorioEnviado, manda él', async () => {
+    sqlCalls.length = 0;
+    await db.updateAppointment(ORG, CITA, {
+        fecha: '2026-08-21', hora: '17:30', duracionMin: 60, recordatorioEnviado: true, actor: 'worker:reminder',
+    });
+    const upd = updateDeCita().payload;
+    assert.strictEqual(upd.recordatorio_enviado, true, 'un valor explícito no lo pisa la heurística');
 });
 
 test('el barrido que auto-completa citas firma su escritura', async () => {
