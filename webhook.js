@@ -91,28 +91,6 @@ app.get('/health', (_req, res) => res.json({
     startedAt: STARTED_AT, // cambia en cada reinicio → delata el redespliegue
 }));
 
-app.get('/api/wa-status', async (_req, res) => {
-    const statuses = {};
-    if (_waClients instanceof Map) {
-        for (const [orgId, entry] of _waClients) {
-            const key = entry.slug || orgId;
-            // Una org en Cloud API no tiene sesión de whatsapp-web.js: su cliente no expone
-            // getState(), así que la rama de abajo la reportaría DISCONNECTED de por vida.
-            // Eso es falso y esconde el estado real (el canal está operativo por webhook).
-            if (entry.channel && entry.channel !== CHANNEL_WWEBJS) {
-                statuses[key] = String(entry.channel).toUpperCase();
-                continue;
-            }
-            try {
-                const state = await entry.client.getState();
-                statuses[key] = state || 'DISCONNECTED';
-            } catch {
-                statuses[key] = 'DISCONNECTED';
-            }
-        }
-    }
-    res.json(statuses);
-});
 
 // ─── Webhook 360dialog (WhatsApp Cloud API) — SOLO Sante ─────────────────────
 // Fuera de /api → NO pasa por requireApiAuth (360dialog es server-to-server y no
@@ -212,6 +190,45 @@ function extractOrgId(req) {
 }
 
 app.use('/api', requireApiAuth);
+
+// ─── Estado del canal de WhatsApp (diagnóstico) ───────────────────────────────
+//
+// ESTABA REGISTRADO ARRIBA, por encima de `app.use('/api', requireApiAuth)`, así que era
+// PÚBLICO: cualquiera con la URL de Railway recibía el slug de TODAS las organizaciones y su
+// estado de conexión. Nació el 24/06/2026 como algo que mirar con un curl cuando el cliente
+// de Sante se caía en silencio, y esa comodidad de escribirlo antes del middleware se quedó.
+//
+// Se cierra ahora porque el enlace público de reserva pone al servidor en internet de verdad,
+// y éste era el único endpoint del sistema que le contestaba a un desconocido. Verificado
+// antes de moverlo: NADIE lo llama — ni el panel (que pide otras 50 rutas y ninguna es ésta),
+// ni un script, ni un test, ni un healthcheck. Su único consumidor era un humano con un curl,
+// que sigue pudiendo usarlo añadiendo su Bearer.
+//
+// Y ahora responde SOLO por la org del token, no por todas. Devolver el mapa entero a una
+// sesión autenticada seguiría siendo la misma fuga con un paso más: un usuario de Sante
+// leyendo el estado de San Remo es exactamente lo que `extractOrgId` existe para impedir.
+app.get('/api/wa-status', async (req, res) => {
+    const orgId = extractOrgId(req);
+    const statuses = {};
+    const entry = (_waClients instanceof Map) ? _waClients.get(orgId) : null;
+    if (entry) {
+        const key = entry.slug || orgId;
+        // Una org en Cloud API no tiene sesión de whatsapp-web.js: su cliente no expone
+        // getState(), así que la rama de abajo la reportaría DISCONNECTED de por vida.
+        // Eso es falso y esconde el estado real (el canal está operativo por webhook).
+        if (entry.channel && entry.channel !== CHANNEL_WWEBJS) {
+            statuses[key] = String(entry.channel).toUpperCase();
+        } else {
+            try {
+                const state = await entry.client.getState();
+                statuses[key] = state || 'DISCONNECTED';
+            } catch {
+                statuses[key] = 'DISCONNECTED';
+            }
+        }
+    }
+    res.json(statuses);
+});
 
 // ─── API: Leads ───────────────────────────────────────────────────────────────
 app.get('/api/leads', async (req, res) => {

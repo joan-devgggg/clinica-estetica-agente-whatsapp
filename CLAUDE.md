@@ -251,6 +251,14 @@ viven en `config` y nacen apagados (`reservas_web_activo`). Red:
 
 ⚠️ **Falta la PANTALLA**: hay endpoints, no hay formulario.
 
+**`GET /api/wa-status` ya NO es público** (20/08/2026). Estuvo dos meses registrado por
+encima de `app.use('/api', requireApiAuth)` y le daba a cualquiera con la URL el slug de
+TODAS las orgs y su estado de conexión; era el único endpoint del sistema que contestaba a
+un desconocido. Ahora exige token **y responde solo por la org de ese token** — devolver el
+mapa entero a una sesión autenticada sería la misma fuga con un paso más. Lo vigilan tres
+bloques de `tests/api-auth-isolation.test.js`, porque volver a registrarlo arriba es un
+error de UNA línea que no se ve en ninguna pantalla.
+
 
 Hecho a 20/08/2026: la migración **043** (claim atómico), el **horizonte como parámetro**
 —`horizonteDias`, default 14 para el bot y 90 para el enlace— y **`getAvailableDays`**, la

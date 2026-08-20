@@ -436,13 +436,14 @@ el mismo lote:
   (`webhook.js:89` vs `:209`) → hoy es **público** y filtra los slugs de las orgs y su
   estado de conexión.
 
-  > ⚠️ **[SIGUE ABIERTO a 20/08/2026]** Verificado otra vez al construir las rutas
-  > públicas: sigue estando antes de `app.use('/api', requireApiAuth)` y sigue
-  > respondiendo sin token. **No se ha tocado en este lote**: moverlo detrás del
-  > middleware cambia el comportamiento de una ruta que el panel ya usa, y eso es una
-  > decisión aparte con sus call sites mirados. Las rutas de reserva NO lo agravan —van
-  > por otro prefijo y con su propio secreto— pero es el único endpoint del sistema que
-  > hoy contesta a un desconocido, así que conviene cerrarlo antes de publicar el enlace.
+  > ✅ **[CERRADO 20/08/2026]** Movido detrás de `app.use('/api', requireApiAuth)` y
+  > acotado a la org del token. El miedo de «lo usa el panel» resultó infundado y estaba
+  > mal contado en este brief: **no lo llamaba NADIE** —ni el panel (que pide otras 50
+  > rutas y ninguna es ésta), ni un script, ni un test, ni un healthcheck—. Nació el
+  > 24/06/2026 (`4cc9faa`) como algo que mirar con un curl cuando el cliente de Sante se
+  > caía en silencio, y su único consumidor era un humano, que sigue pudiendo usarlo
+  > añadiendo su Bearer. Candado en `tests/api-auth-isolation.test.js`, probado con dos
+  > mutaciones (volver a registrarlo arriba: 3 rojos; devolver todas las orgs: 1 rojo).
 - **`PATCH /api/agent-config` escribe `req.body` sin validar** (`webhook.js:1345`),
   a diferencia de `PUT /api/config/:clave`, que sí valida. Es el endpoint que reemplaza
   el catálogo entero.

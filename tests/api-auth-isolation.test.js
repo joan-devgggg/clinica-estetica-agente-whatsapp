@@ -18,7 +18,7 @@ require.cache[telegramPath] = {
     exports: { notifyBlacklistAlert: async () => {}, startTelegramBot: () => {}, notifyEscalation: async () => {} },
 };
 
-const { app } = require('../webhook');
+const { app, setWAClient } = require('../webhook');
 const db = require('../services/db');
 
 const SANTE_ORG = 'b2c3d4e5-f6a7-8901-bcde-f12345678901';
@@ -33,6 +33,14 @@ db.authenticateToken = async (token) => {
 // Captura el orgId con el que el handler consulta la base de datos.
 let lastLeadsOrgId = null;
 db.getAllLeads = async (orgId) => { lastLeadsOrgId = orgId; return []; };
+
+// Los dos clientes de WhatsApp, como los monta server.js: uno por org, cada uno con su
+// canal. Hacen falta para que /api/wa-status tenga algo que contar.
+setWAClient(new Map([
+    [SANTE_ORG,   { slug: 'sante-healthy-hair-salon', channel: '360dialog', client: {} }],
+    [SANREMO_ORG, { slug: 'restaurante-san-remo', channel: 'wwebjs',
+                    client: { getState: async () => 'CONNECTED' } }],
+]), () => {}, () => {});
 
 function request(server, { method = 'GET', path = '/', headers = {} }) {
     const { port } = server.address();
@@ -91,6 +99,49 @@ async function test(name, fn) {
             });
             assert.strictEqual(res.status, 200);
             assert.strictEqual(lastLeadsOrgId, SANTE_ORG);
+        });
+
+        // ─── /api/wa-status: era el único endpoint que contestaba sin sesión ────────────
+        //
+        // Estuvo registrado POR ENCIMA de `app.use('/api', requireApiAuth)` desde el
+        // 24/06/2026 —nació como algo que mirar con un curl cuando el cliente de Sante se
+        // caía en silencio— y por eso le daba a cualquiera con la URL el slug de TODAS las
+        // organizaciones y su estado de conexión. Se cerró el 20/08/2026, antes de publicar
+        // el enlace público de reserva.
+        //
+        // Estos tres bloques son el candado: el primero impide que vuelva a registrarse
+        // antes del middleware (es un error de UNA línea y no se ve en ninguna pantalla), y
+        // los otros dos, que responder por todas las orgs no cuente como haberlo cerrado.
+
+        await test('wa-status SIN token → 401, ya no contesta a un desconocido', async () => {
+            const res = await request(server, { path: '/api/wa-status' });
+            assert.strictEqual(res.status, 401, 'sigue siendo público: se puede leer sin sesión');
+        });
+
+        await test('wa-status sin token NO filtra ni un slug de organización', async () => {
+            // La fuga concreta que tenía: los nombres de las orgs dadas de alta. Se afirma
+            // sobre el cuerpo CRUDO, no sobre las claves, para que dé igual cómo se
+            // reestructure la respuesta el día de mañana.
+            const res = await request(server, { path: '/api/wa-status' });
+            const crudo = JSON.stringify(res.body);
+            for (const aguja of ['sante', 'san-remo', 'CONNECTED', '360dialog', SANTE_ORG, SANREMO_ORG]) {
+                assert.ok(!crudo.toLowerCase().includes(aguja.toLowerCase()),
+                    `sin token todavía se filtra «${aguja}»: ${crudo}`);
+            }
+        });
+
+        await test('wa-status CON token responde solo por SU org, no por las dos', async () => {
+            const res = await request(server, {
+                path: '/api/wa-status',
+                headers: { Authorization: 'Bearer sante-token' },
+            });
+            assert.strictEqual(res.status, 200);
+            assert.deepStrictEqual(Object.keys(res.body), ['sante-healthy-hair-salon']);
+            // Devolver el mapa entero a una sesión autenticada sería la misma fuga con un
+            // paso más: un usuario de Sante leyendo el estado de San Remo es justo lo que
+            // `extractOrgId` existe para impedir.
+            assert.ok(!('restaurante-san-remo' in res.body), 'una org lee el estado de la otra');
+            assert.strictEqual(res.body['sante-healthy-hair-salon'], '360DIALOG');
         });
     } finally {
         server.close();
