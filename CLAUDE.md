@@ -199,7 +199,59 @@ server.js              ← Punto de entrada: crea N clientes WA, arranca workers
         └── threesixty-dialog.js  ← Adapter 360dialog: webhook entrante + cliente saliente (Sante)
 ```
 
-El diseño del **enlace público de reserva** (en construcción): [docs/enlace-publico-reserva.md](docs/enlace-publico-reserva.md).
+## El enlace público de reserva: la primera superficie SIN SESIÓN
+
+Diseño completo en [docs/enlace-publico-reserva.md](docs/enlace-publico-reserva.md). Hasta el
+20/08/2026 todo lo que no era el webhook de 360dialog colgaba de un JWT; ahora hay cuatro
+rutas que contesta cualquiera con la URL. Lo que hay que saber antes de tocarlas:
+
+**La forma es `navegador → Route Handler del Next (Vercel) → Express (Railway)`**, y no es
+estética. El navegador de la clienta nunca habla con Railway, así que el CORS de `webhook.js`
+sigue teniendo dentro solo al panel. Pero eso NO protege nada por sí solo: las rutas están en
+internet, y lo que las protege es un **secreto compartido** (`RESERVA_WEB_TOKEN`, mismo papel
+que `WHATSAPP_WEBHOOK_TOKEN`). **Sin la variable, las rutas responden 404 a todo**: una
+superficie pública a medio configurar se queda cerrada, nunca abierta.
+
+**Los tres anillos, y por qué cada uno vive donde vive:**
+
+| Anillo | Dónde | Por qué ahí |
+|---|---|---|
+| Secreto Next→Express | cabecera `X-Reserva-Token` | sin él no hay JWT que valga: la ruta es pública |
+| Límite por IP y por org | **RAM de Express** | Vercel es serverless: allí cada invocación puede caer en una instancia nueva y un contador en RAM no cuenta nada — una protección falsa es peor que ninguna |
+| Tope de citas futuras | **SQL, en `reservar_hueco()`** | un contador en RAM se va con cada deploy, y ese dato no puede |
+
+La **IP de la clienta** viaja en `X-Cliente-IP` y Express solo se la cree **después** de que la
+petición haya probado el secreto: `req.ip` allí es la de Vercel (todas las clientas
+compartirían un cupo), y leer `X-Forwarded-For` a pelo sin secreto sería el bypass del límite.
+
+**El catálogo público sale por `botOfferableCatalog`, no por `offerableCatalog`** — es la
+TERCERA fila de la tabla de más abajo y va con el bot, no con el panel: el panel puede
+enseñar un `solo_complemento` porque hay una persona que sabe que eso no se vende suelto, y
+aquí no hay nadie. Encima se filtra `isReactiveOnlyService` (la Consulta de valoración está
+prohibida al bot desde el 02/08 y un desplegable público es justo lo que esa regla prohíbe).
+
+**Qué NO puede salir, y cómo está garantizado:** todo lo que se devuelve pasa por una
+proyección de `services/reserva-web.js` que **ENUMERA campos, nunca esparce el objeto** — lo
+que hay en `agent_configs.services` lo edita la dueña, y un spread publicaría la nota interna
+que escriba mañana sin que nadie toque código. El acuse de una reserva devuelve lo que ELLA
+eligió y jamás el nombre guardado (`getContactoParaReservaWeb` está escrito para no
+devolverlo: la protección no es acordarse de no publicarlo, es no tenerlo). Un 404 de slug
+desconocido, de San Remo y de un token equivocado son **el mismo, byte por byte**, o se podría
+enumerar qué negocios hay dados de alta.
+
+**Los motivos son un conjunto CERRADO** y cada uno lleva su política (código HTTP, si la
+página recarga huecos, si se abre WhatsApp). **`tope_citas` NO es un error**: lleva WhatsApp
+con el mensaje escrito en los cuatro idiomas y NO manda recargar — recargar sería enseñarle
+otra vez lo mismo que acaba de no poder reservar, y una clienta que reserva para ella y su
+hija desde el mismo móvil es lo más normal del mundo.
+
+San Remo queda fuera **por tipo de org** en `resolveOrgBySlug`, no por config vacía. Los topes
+viven en `config` y nacen apagados (`reservas_web_activo`). Red:
+`tests/reserva-web-{limitador,endpoints,sin-fugas}.test.js`, 18 sabotajes medidos.
+
+⚠️ **Falta la PANTALLA**: hay endpoints, no hay formulario.
+
+
 Hecho a 20/08/2026: la migración **043** (claim atómico), el **horizonte como parámetro**
 —`horizonteDias`, default 14 para el bot y 90 para el enlace— y **`getAvailableDays`**, la
 rejilla de mes. Las dos salen de `prepararMotor` (un prefetch, un `buildSlots`): es lo que
@@ -831,8 +883,14 @@ De ahí la línea que sostiene todo esto, y que es lo único que hay que recorda
 | | Catálogo |
 |---|---|
 | lo que el **BOT propone** | `botOfferableCatalog(cfg.services)` |
+| lo que el **ENLACE público ofrece** | `botOfferableCatalog` **menos** `isReactiveOnlyService` |
 | lo que **OFRECE el panel** | `offerableCatalog(cfg.services)` |
 | lo que se **RESUELVE** | `cfg.services` COMPLETO, siempre |
+
+La fila del ENLACE va con la del BOT y no con la del panel, y el criterio es **quién está
+mirando**: el panel puede enseñar un `solo_complemento` porque hay una persona que sabe que
+«Peinado con tratamientos» no se vende suelto; una página pública no tiene a nadie. Lo suyo
+quita además la Consulta de valoración, que es `reactive-only` por diseño.
 
 `activo` **ausente = activo** (sin backfill; solo el `false` explícito da de baja).
 `isServiceActive` / `offerableCatalog` viven en `helpers.js`, al lado de
@@ -1033,6 +1091,10 @@ SEGUIMIENTOS_LIMITE  # tope por tic y org (default 25)
 VIGILANTE_ESPERAS # 'on' enciende el vigilante de esperas. NO lo enciendas (ver su sección)
 ESCALERA_REGENERAR # 'off' apaga SOLO el peldaño 3 de la escalera (todo cae al 4º con
                    # causa). Encendido por defecto — es el rollback sin deploy
+RESERVA_WEB_TOKEN # secreto compartido Next↔Express del enlace público. SIN ÉL las cuatro
+                  # rutas /reserva-web/* responden 404 a todo. Va en los dos sitios con el
+                  # mismo valor, y en el Next SIN prefijo NEXT_PUBLIC_ (lo inlinearía en el
+                  # bundle del navegador, o sea publicaría el secreto)
 ```
 
 ## Comandos de desarrollo

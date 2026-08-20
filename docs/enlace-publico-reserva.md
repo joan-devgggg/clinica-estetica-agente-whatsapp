@@ -424,6 +424,10 @@ que vivir fuera de `/api`**, con el precedente que ya existe:
 
 > ⚠️ **[SUPERADO 19/08/2026]** El control nº1 (código por WhatsApp) está descartado, así que esta tabla ya no describe el anillo real: se redimensionó entero en el plan del 19/08 (rate limit en RAM en Express, topes durables en SQL dentro de `reservar_hueco()`, techo global por org e interruptor `reservas_web_activo`). Los controles 4 y 5 los decidió Yulia: horizonte **3 meses** y antelación **1 hora**.
 
+> ⚠️ **[HECHO 20/08/2026 · el anillo, construido]** Cuatro rutas públicas en Express (`/reserva-web/:slug/{catalogo,dias,huecos,reserva}`) y sus Route Handlers en el Next (`/api/reservar/[slug]/*`), servidor a servidor. Los tres anillos y **dónde vive cada uno**, que es la parte que no se puede mover de sitio: (1) el **secreto compartido** Next→Express, mismo papel que `WHATSAPP_WEBHOOK_TOKEN` — sin él las rutas responden 404 a todo; (2) el **limitador por IP y por org**, en RAM de Express, porque Vercel es serverless y allí un contador no contaría nada; (3) el **tope de citas futuras**, en SQL dentro de `reservar_hueco()`, porque un contador en RAM se va con cada deploy y ese dato no puede. Los topes viven en `config` (`reservas_web_activo`, `reservas_web_max_hora_ip`, `..._org`, `..._futuras`, `..._lecturas_ip`) y nacen **apagados**. Detalle en `services/reserva-web.js`; red en `tests/reserva-web-{limitador,endpoints,sin-fugas}.test.js`.
+
+> ⚠️ **[NOTA 20/08/2026]** El **rate limit de LECTURAS es una clave nueva que no estaba en el plan** (`reservas_web_max_hora_lecturas_ip`, default 120/h). Los 3/h del plan son de RESERVAS: aplicados a las lecturas, pintar un mes y abrir un par de días rompería la página en el primer minuto de uso.
+
 
 **Tres agujeros que ya están abiertos hoy** y que este proyecto agrava, así que van en
 el mismo lote:
@@ -431,6 +435,14 @@ el mismo lote:
 - **`GET /api/wa-status` está registrado ANTES del middleware de auth**
   (`webhook.js:89` vs `:209`) → hoy es **público** y filtra los slugs de las orgs y su
   estado de conexión.
+
+  > ⚠️ **[SIGUE ABIERTO a 20/08/2026]** Verificado otra vez al construir las rutas
+  > públicas: sigue estando antes de `app.use('/api', requireApiAuth)` y sigue
+  > respondiendo sin token. **No se ha tocado en este lote**: moverlo detrás del
+  > middleware cambia el comportamiento de una ruta que el panel ya usa, y eso es una
+  > decisión aparte con sus call sites mirados. Las rutas de reserva NO lo agravan —van
+  > por otro prefijo y con su propio secreto— pero es el único endpoint del sistema que
+  > hoy contesta a un desconocido, así que conviene cerrarlo antes de publicar el enlace.
 - **`PATCH /api/agent-config` escribe `req.body` sin validar** (`webhook.js:1345`),
   a diferencia de `PUT /api/config/:clave`, que sí valida. Es el endpoint que reemplaza
   el catálogo entero.
