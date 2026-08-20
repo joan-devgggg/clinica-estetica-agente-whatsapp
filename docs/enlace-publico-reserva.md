@@ -302,6 +302,16 @@ plantada.
 
 > ⚠️ **[ARREGLADOS 13/08/2026]** D1 y D4 se arreglaron en `ed60d7b`, tres horas después de escribir este brief. D6 lo cubre la 043 para el camino web. D2, D3 y D7 siguen pendientes con su reparto en el plan del 19/08 (D7 pasó a obligatorio al subir el horizonte a 3 meses).
 
+> ⚠️ **[HECHO 21/08/2026 · D3]** El `<` estricto del borde de jornada quitado: `winEnd` ya
+> viene capado a `workEnd`, así que la condición sobraba y lo único que hacía era tirar el
+> hueco que termina EXACTAMENTE al cierre. **Medido contra la agenda real ANTES de tocarlo**
+> (`npm run medir:borde -- sante`, 90 días): 9.380 filas de más, 4.405 horas visibles de más,
+> 77 días de 90 con algo nuevo, y las tres comprobaciones a cero —ninguno empieza antes de
+> abrir, ninguno pasa del cierre, ninguno pisa una cita o un bloqueo; los 9.380 terminan
+> JUSTO al cierre—. Un servicio de 30′ gana una hora en 76 de los próximos 90 días.
+> `reservar_hueco()` ya era permisiva esperando esto, así que el arreglo ALINEA el motor con
+> el claim sin tocar una migración aplicada. **D2 sigue pendiente.**
+
 > ⚠️ **[HECHO 20/08/2026 · D7]** Arreglado paralelizando el prefetch, no agrupándolo: el coste era la PROFUNDIDAD (14 viajes ENCADENADOS), no el volumen. Medido con `npm run medir:prefetch -- sante` (9 corridas, mediana): **14 tandas / 1026 ms → 2 tandas / 204 ms** a 14 días y **1149 → 324 ms** a 90. Siguen siendo 14 consultas. Agrupar con `.in(stylist_id)` bajaría a 5 viajes pero seguirían siendo 2 tandas —el mismo reloj— a cambio de romper los dobles de ~25 ficheros de test y de meter una lectura sin trocear cuyo truncado se leería como «esta estilista no tiene citas»; el porqué entero está en el comentario de `prepararMotor`. **D2 y D3 siguen pendientes.**
 
 > ⚠️ **[HECHO 20/08/2026 · horizonte y rejilla]** El horizonte es `horizonteDias` (default **14**, el del bot; el enlace pasa 90) y existe `getAvailableDays(orgId, …)`, la rejilla de mes. Las dos salen de `prepararMotor`, que hace el prefetch UNA vez — la garantía de que no nacen dos motores. El test de paridad que pide la sección «Verificación» está escrito: `tests/paridad-motor-web-bot.test.js`, cinco sabotajes medidos. El «CALENDARIO DE REFERENCIA (próximos 14 días)» del prompt **NO se movió**: no es el horizonte, y hay un test que los mantiene separados.
@@ -567,3 +577,25 @@ Cuando se construya, así se comprueba:
    no se puede dimensionar el paso 1 del formulario.
 3. **El solape de mañana** (14/08, Olga, 15:00–15:30, dos clientas): ¿es
    intencionado? Es independiente de este proyecto pero conviene mirarlo hoy.
+
+> ⚠️ **[CERRADAS 21/08/2026]** La 2 ya no aplica: el alcance pasó a todo el catálogo
+> ofertable menos `solo_complemento` y la Consulta (19/08). La 1 tampoco, mientras no haya
+> selector de idioma en la pantalla. Y con la pantalla construida se cerraron siete más, por
+> decisión del dueño:
+>
+>     texto de la variante ....... NEUTRO y siempre el mismo. Un texto por categoría es
+>                                  lenguaje de Yulia y no bloquea.
+>     elegir estilista ........... FUERA de la v1 — y es lo que permite el reintento
+>                                  invisible con la siguiente del hueco.
+>     las dos puertas ............ DENTRO. Cazan los dos casos que si no acaban en una
+>                                  reserva mal hecha.
+>     precio congelado ........... FUERA de la v1. La dueña corrige a mano y lo prefiere así.
+>     dirección en el acuse ...... DENTRO. Quien acaba de reservar necesita saber dónde va.
+>     noindex .................... PUESTO. Se quita cuando el enlace esté vivo y decidido.
+>     aviso por Telegram ......... sigue sin hacer. Es de la fase de encender.
+>
+> Y una que apareció al mirar la agenda con `verify:sante:agenda` (21/08), que **no es de
+> este proyecto pero es real**: Elena Rotaru tiene cita el **lunes 24/08 de 10:00 a 18:00
+> con Irina**, e Irina ya no trabaja los lunes (hoy: martes, jueves y sábado). Es
+> exactamente el caso para el que se escribió ese verificador — la dueña quitó el día y la
+> cita ya reservada no se movió ni avisó. La decide una persona.

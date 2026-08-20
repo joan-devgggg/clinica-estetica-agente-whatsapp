@@ -296,6 +296,13 @@ del servidor en `cita.cuando` (`formatReminderWhen`, acusativo: «во втор�
 suelto encima de la rejilla sale de `Intl`, que da NOMINATIVO («вторник»), que es lo que un
 título necesita. No es la tabla duplicada: es que la tabla no sirve para esto.
 
+**Las dos PUERTAS del primer paso** («no lo tengo claro, que me asesoren» y «somos dos o
+más») son enlaces de WhatsApp con el mensaje escrito, conjunto CERRADO en la misma tabla de
+textos que los motivos. No son cortesía: la Consulta es `reactive-only` y el bot tiene
+prohibido ofrecerla, y el motor **ni siquiera puede ver** si hay dos estilistas libres a la
+misma hora, así que sin ellas esos dos casos acaban en una reserva mal hecha —la de dos
+personas, en UNA cita creyendo que son dos—.
+
 **Idiomas: la estructura está, las traducciones no.** `TEXTOS` es un mapa parcial con solo
 `es` y `textos()` cae a la tabla castellana ENTERA. Añadir inglés es rellenar una entrada;
 no se toca ni un componente. El idioma entra por `?lang=`.
@@ -1269,6 +1276,8 @@ npm run informe:nombres       # SOLO LECTURA: ¿a quién no sabemos cómo llamar
 npm run informe:seguimientos -- sante   # SOLO LECTURA: la tanda post-visita, sin enviarla
 npm run informe:escaladas -- sante      # SOLO LECTURA: ¿qué escaladas preguntaron antes?
                                         # (corre TAMBIÉN al final de barrido:promesas)
+npm run medir:borde -- sante            # SOLO LECTURA: cuántos huecos cambia el borde de
+                                        # jornada, día a día, y si alguno se sale del horario
 ```
 
 - **`verify:sante:agenda`** es la red que faltaba: cuando la dueña quita un día o recorta una
