@@ -16,6 +16,11 @@ const logger = require('./lib/logger');
 
 const DEFAULT_ORG = process.env.ORGANIZATION_ID || 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
+// Cuánto calendario ve el enlace público: TRES MESES, decisión de Yulia del 19/08/2026.
+// El motor lo recibe por parámetro (`horizonteDias`); su default sigue siendo 14, que es lo
+// que pide el bot, y por eso una conversación no se entera de este número.
+const HORIZONTE_RESERVA_WEB = 90;
+
 const app = express();
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
@@ -1639,6 +1644,461 @@ app.post('/api/reviews/:appointmentId/send', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// ENLACE PÚBLICO DE RESERVA — la primera superficie SIN SESIÓN del proyecto
+// ═══════════════════════════════════════════════════════════════════════════════════════
+//
+// Cuatro rutas, y ni una más: catálogo, días con hueco, huecos de un día, y la reserva.
+//
+// ── LA FORMA, que es la mitad de la seguridad ────────────────────────────────────────────
+//
+//   navegador → Route Handler del Next (Vercel) → ESTAS RUTAS (Railway)
+//
+// El navegador de la clienta NUNCA habla con Railway. Eso trae dos cosas gratis: no hay que
+// abrir el CORS de arriba a un origen público (la petición la hace un servidor, y CORS es
+// cosa de navegadores) y la URL de la API no aparece en el HTML de nadie.
+//
+// Pero «el navegador no la conoce» NO es una protección: estas rutas están en internet y
+// quien descubra el dominio de Railway puede llamarlas. Por eso hay un SECRETO compartido,
+// con el precedente que ya existe en este mismo fichero (`/webhook/360dialog/:token`, que es
+// server-to-server igual que esto y se protege igual).
+//
+// Van FUERA de `/api`, así que no pasan por `requireApiAuth` — que es justo lo que se quiere:
+// no hay usuario que autenticar. Y por estar fuera, el orden de registro respecto a
+// `app.use('/api', ...)` da igual.
+//
+// ── LO QUE NO PUEDE SALIR ────────────────────────────────────────────────────────────────
+//
+// Todo lo que se devuelve pasa por una proyección de `services/reserva-web.js` que ENUMERA
+// campos. Nunca se esparce un objeto de la base de datos ni una entrada del catálogo: lo que
+// hay dentro de `agent_configs.services` lo edita la dueña desde el panel, y el día que
+// apunte ahí una nota interna, un spread la publicaría sin que nadie tocara una línea.
+//
+// Y los errores se traducen: un `e.message` de Supabase a una página pública puede llevar el
+// nombre de una tabla, una constraint o un fragmento de fila.
+
+const {
+    MOTIVOS, respuestaNo, resolverLimites, crearLimitador, interpretarMotivoSql,
+    catalogoPublico, diasPublicos, huecosPublicos, reservaPublica,
+    limpiarUnaLinea, idiomaValido, MAX_NOTAS, MAX_NOMBRE, FECHA_RE, HORA_RE, UUID_RE,
+} = require('./services/reserva-web');
+const { resolveOrgBySlug } = require('./services/org-registry');
+
+// El secreto que prueba que la petición viene de NUESTRO Next y no de un curl. Sin él
+// configurado las rutas responden 404 a todo: una superficie pública a medio configurar se
+// queda cerrada, nunca abierta (mismo criterio que `require360Token`).
+const RESERVA_WEB_TOKEN = process.env.RESERVA_WEB_TOKEN || '';
+
+// UN limitador para todo el proceso. Vive aquí y no en el Next porque Vercel es serverless:
+// allí cada invocación puede caer en una instancia nueva y un contador en RAM no contaría
+// nada. Aquí es un proceso largo, el mismo que ya sostiene `authCache`.
+//
+// SE VA CON CADA DESPLIEGUE, y hay que saberlo: para una ventana de una hora es asumible
+// —el hueco mayor entre dos deploys en 30 días fue de 1,88 días— pero significa que un
+// reinicio perdona a quien estuviera pegando. Lo que NO puede irse con el deploy es el tope
+// de citas por clienta, y por eso ése lo cuenta Postgres dentro de `reservar_hueco()`.
+const limitadorReservas = crearLimitador();
+
+// 404 idéntico para TODO lo que no se puede atender: slug que no existe, org que no es
+// salón (San Remo), y token ausente o equivocado. Si distinguiéramos unos de otros,
+// cualquiera podría enumerar qué negocios hay en el sistema probando slugs — y sabría
+// además cuál tiene el enlace encendido.
+function noHayNada(res) {
+    return res.status(404).json({ ok: false, motivo: 'no_encontrado' });
+}
+
+function tokenReservaValido(req) {
+    if (!RESERVA_WEB_TOKEN) return false;
+    const enviado = req.headers['x-reserva-token'];
+    if (typeof enviado !== 'string' || !enviado) return false;
+    try {
+        const a = Buffer.from(enviado);
+        const b = Buffer.from(RESERVA_WEB_TOKEN);
+        return a.length === b.length && crypto.timingSafeEqual(a, b);
+    } catch { return false; }
+}
+
+/**
+ * La IP de la CLIENTA, que es la que hay que limitar.
+ *
+ * `req.ip` aquí es la de Vercel: todas las clientas compartirían un cupo de 3/h y la primera
+ * dejaría fuera a las demás. Así que el Next la reenvía en una cabecera.
+ *
+ * Y esa cabecera solo se cree DESPUÉS de que la petición haya probado el secreto — quien lo
+ * tenga puede falsear la IP, pero quien lo tenga puede hacer cosas peores, así que no añade
+ * superficie. Lo que sí sería un agujero es leer `X-Forwarded-For` a pelo sin secreto: ahí
+ * cualquiera se salta el límite cambiando una cabecera.
+ *
+ * Sin IP utilizable NO se inventa una clave: se usa una compartida, que es el lado seguro
+ * (limita de más, nunca de menos).
+ */
+function ipDeLaClienta(req) {
+    const cabecera = req.headers['x-cliente-ip'];
+    const ip = typeof cabecera === 'string' ? cabecera.trim().slice(0, 64) : '';
+    return ip || 'sin-ip';
+}
+
+/**
+ * Resuelve el contexto de una petición pública, o responde y devuelve null.
+ *
+ * Hace las tres puertas en el orden que importa: secreto → slug/tipo de org → interruptor.
+ * El interruptor va el ÚLTIMO porque su «no» es distinto: a esa altura ya sabemos que el
+ * salón existe, y la clienta merece un «ahora mismo no se puede reservar por aquí, escríbenos»
+ * en vez de un 404 mudo.
+ */
+async function contextoPublico(req, res) {
+    if (!tokenReservaValido(req)) { noHayNada(res); return null; }
+
+    const org = resolveOrgBySlug(req.params.slug);
+    if (!org) { noHayNada(res); return null; }
+
+    // `getAllConfig` no lanza: si la lectura falla devuelve {} y los topes caen a sus
+    // defaults, entre ellos `reservas_web_activo: false`. O sea que una config ilegible
+    // CIERRA el enlace en vez de abrirlo con valores inventados. Es el lado recuperable.
+    const configMap = await db.getAllConfig(org.orgId);
+    const limites = resolverLimites(configMap || {});
+    if (limites.invalidas.length) {
+        // Un tope escrito a mano y mal no se aplica, y sin esto nadie se enteraría de que
+        // el valor que la dueña cree haber puesto no está haciendo nada.
+        logger.warn('reserva_web_config_invalida', { orgId: org.orgId, claves: limites.invalidas });
+    }
+
+    const lang = idiomaValido(req.query.lang || (req.body && req.body.lang));
+    if (!limites.activo) {
+        const { estado, cuerpo } = respuestaNo(MOTIVOS.CERRADO, { waPhone: org.waPhone, lang });
+        res.status(estado).json(cuerpo);
+        return null;
+    }
+    return { org, limites, lang, ip: ipDeLaClienta(req) };
+}
+
+/** El limitador de LECTURAS. Generoso a propósito: pintar un mes y abrir varios días son
+ *  decenas de peticiones de una clienta que se está portando bien. Con el 3/h de las
+ *  reservas, la página se rompería sola en el primer minuto. */
+function limitarLectura(ctx, res) {
+    const r = limitadorReservas.consumir(`lectura:${ctx.org.orgId}:${ctx.ip}`, {
+        limite: ctx.limites.reservas_web_max_hora_lecturas_ip,
+    });
+    if (!r.permitido) {
+        logger.warn('reserva_web_lectura_limitada', { orgId: ctx.org.orgId });
+        const { estado, cuerpo } = respuestaNo(MOTIVOS.DEMASIADAS_PETICIONES,
+            { waPhone: ctx.org.waPhone, lang: ctx.lang, esperaSegundos: r.esperaSegundos });
+        res.status(estado).json(cuerpo);
+        return false;
+    }
+    return true;
+}
+
+// Un fallo interno NO sale con su mensaje: se registra entero —con la traza de Supabase, que
+// es donde sirve— y hacia fuera va un motivo pelado. Un `e.message` en una página pública
+// puede llevar el nombre de una tabla, de una constraint o un trozo de fila.
+//
+// Y sale CON el WhatsApp: si el sistema se ha roto, la clienta no puede hacer nada por su
+// cuenta y quedarse mirando un error sin salida es perderla. Por eso recibe el contexto
+// entero y no solo el orgId — sin el teléfono, `respuestaNo` omite el enlace en silencio y
+// la política de arriba quedaría incumplida sin que se notara.
+function fallo(res, evento, ctx, e) {
+    logger.error(evento, { orgId: ctx?.org?.orgId || null, error: e?.message || String(e) });
+    const { estado, cuerpo } = respuestaNo(MOTIVOS.ERROR_INTERNO, {
+        waPhone: ctx?.org?.waPhone, lang: ctx?.lang,
+    });
+    return res.status(estado).json(cuerpo);
+}
+
+// ─── 1 · El catálogo ofertable ───────────────────────────────────────────────────────────
+//
+// TRES filtros encadenados, y el orden de la composición es la decisión:
+//
+//   · `botOfferableCatalog` — quita los inactivos Y los `solo_complemento`. Es el catálogo
+//     del BOT y no el del panel (`offerableCatalog`), y esa es la elección importante: el
+//     panel se lo puede permitir porque hay una persona que sabe que «Peinado con
+//     tratamientos» no se vende suelto. Aquí no hay nadie. El enlace es la TERCERA fila de
+//     esa tabla y va con el bot, no con el panel.
+//   · `isReactiveOnlyService` — fuera la Consulta de valoración. El bot tiene PROHIBIDO
+//     ofrecerla por iniciativa propia desde el 02/08; ponerla en un desplegable público es
+//     exactamente lo que esa regla prohíbe.
+//
+// El filtro va AQUÍ, en el call site, nunca dentro de una proyección ni de un helper.
+app.get('/reserva-web/:slug/catalogo', async (req, res) => {
+    const ctx = await contextoPublico(req, res);
+    if (!ctx) return;
+    if (!limitarLectura(ctx, res)) return;
+    try {
+        const { botOfferableCatalog, isReactiveOnlyService, serviceCatalogKey } = require('./services/helpers');
+        const cfg = await db.getAgentConfig(ctx.org.orgId);
+        // Un catálogo que no se ha podido leer NO es un catálogo vacío. `getAgentConfig`
+        // devuelve null cuando falla la lectura, y publicar eso como `servicios: []` sería
+        // enseñar un salón sin servicios (regla 3 y hecho 2 de la cabecera).
+        if (!cfg || !Array.isArray(cfg.services)) {
+            logger.error('reserva_web_catalogo_ilegible', { orgId: ctx.org.orgId });
+            const { estado, cuerpo } = respuestaNo(MOTIVOS.ERROR_INTERNO, { waPhone: ctx.org.waPhone, lang: ctx.lang });
+            return res.status(estado).json(cuerpo);
+        }
+        const ofertables = botOfferableCatalog(cfg.services).filter(s => !isReactiveOnlyService(s));
+        res.json({ ok: true, servicios: catalogoPublico(ofertables, serviceCatalogKey) });
+    } catch (e) { fallo(res, 'reserva_web_catalogo_error', ctx, e); }
+});
+
+// ─── 2 · Los días con hueco (la rejilla del mes) ─────────────────────────────────────────
+app.get('/reserva-web/:slug/dias', async (req, res) => {
+    const ctx = await contextoPublico(req, res);
+    if (!ctx) return;
+    if (!limitarLectura(ctx, res)) return;
+    try {
+        const servicio = await resolverServicioPublico(ctx.org.orgId, req.query.servicio);
+        if (!servicio.ok) {
+            const { estado, cuerpo } = respuestaNo(servicio.motivo, { waPhone: ctx.org.waPhone, lang: ctx.lang });
+            return res.status(estado).json(cuerpo);
+        }
+        const estilistaId = typeof req.query.estilista === 'string' && UUID_RE.test(req.query.estilista)
+            ? req.query.estilista : undefined;
+        const calendarSante = require('./services/calendar-sante');
+        const dias = await calendarSante.getAvailableDays(ctx.org.orgId, {
+            serviceDuration: servicio.duracionMin,
+            serviceCategory: servicio.entrada.categoria,
+            preferredStylistId: estilistaId,
+            horizonteDias: HORIZONTE_RESERVA_WEB,
+        });
+        res.json({ ok: true, dias: diasPublicos(dias), causa: dias.causa || null });
+    } catch (e) { fallo(res, 'reserva_web_dias_error', ctx, e); }
+});
+
+// ─── 3 · Los huecos de un día concreto ───────────────────────────────────────────────────
+app.get('/reserva-web/:slug/huecos', async (req, res) => {
+    const ctx = await contextoPublico(req, res);
+    if (!ctx) return;
+    if (!limitarLectura(ctx, res)) return;
+    try {
+        const fecha = String(req.query.fecha || '');
+        if (!FECHA_RE.test(fecha)) {
+            const { estado, cuerpo } = respuestaNo(MOTIVOS.DATOS_INVALIDOS, { waPhone: ctx.org.waPhone, lang: ctx.lang });
+            return res.status(estado).json(cuerpo);
+        }
+        const servicio = await resolverServicioPublico(ctx.org.orgId, req.query.servicio);
+        if (!servicio.ok) {
+            const { estado, cuerpo } = respuestaNo(servicio.motivo, { waPhone: ctx.org.waPhone, lang: ctx.lang });
+            return res.status(estado).json(cuerpo);
+        }
+        const estilistaId = typeof req.query.estilista === 'string' && UUID_RE.test(req.query.estilista)
+            ? req.query.estilista : undefined;
+        const calendarSante = require('./services/calendar-sante');
+        // Con la fecha ANCLADA el motor devuelve todos los huecos de ese día (sin el tope de
+        // 20 que es una decisión de conversación) y cada hueco trae sus alternativas de
+        // estilista. Es la misma llamada que hace el bot: un solo motor.
+        const slots = await calendarSante.getAvailableSlots(ctx.org.orgId, {
+            serviceDuration: servicio.duracionMin,
+            serviceCategory: servicio.entrada.categoria,
+            preferredStylistId: estilistaId,
+            preferencia: { fecha },
+            horizonteDias: HORIZONTE_RESERVA_WEB,
+        });
+        // El motor, cuando el día pedido no tiene nada, propone los más cercanos y lo marca.
+        // Aquí eso NO se quiere: la clienta preguntó por un día. Devolver los de otro día
+        // sin decirlo pondría en pantalla huecos de una fecha que ella no eligió.
+        const delDia = slots.requestedDayUnavailable ? [] : slots.filter(s => s.fecha === fecha);
+        res.json({ ok: true, fecha, huecos: huecosPublicos(delDia), causa: slots.causa || null });
+    } catch (e) { fallo(res, 'reserva_web_huecos_error', ctx, e); }
+});
+
+// ─── El resolutor de servicio, compartido por las tres rutas que lo necesitan ────────────
+//
+// Resuelve la clave `categoria|nombre` que mandó el formulario contra el catálogo OFERTABLE
+// —el mismo filtro que la ruta del catálogo— y nunca contra el completo. Ésa es la garantía
+// de que alguien que teclee a mano la clave de un `solo_complemento`, de un inactivo o de la
+// Consulta reciba «ese servicio no se puede reservar por aquí» en vez de una cita.
+//
+// La DURACIÓN sale de `resolveAppointmentDurationMin`, y un `resuelto:false` BLOQUEA. En una
+// conversación una duración adivinada solo estropea una propuesta que alguien puede corregir;
+// aquí se escribiría en `ends_at` y publicaría agenda libre encima de una clienta.
+//
+// El NOMBRE con el que se guarda sale de `buildFullServiceName` con el catálogo COMPLETO,
+// porque cuenta homónimos: sobre la lista filtrada, dar de baja a un «Hombre» haría que el
+// otro dejara de prefijarse con su categoría, y el nombre con el que se guarda una cita no
+// puede depender de eso.
+async function resolverServicioPublico(orgId, clave) {
+    if (typeof clave !== 'string' || !clave.includes('|')) {
+        return { ok: false, motivo: MOTIVOS.DATOS_INVALIDOS };
+    }
+    const {
+        botOfferableCatalog, isReactiveOnlyService, findCatalogEntryByKey,
+        resolveAppointmentDurationMin, buildFullServiceName,
+    } = require('./services/helpers');
+
+    const cfg = await db.getAgentConfig(orgId);
+    if (!cfg || !Array.isArray(cfg.services)) {
+        logger.error('reserva_web_catalogo_ilegible', { orgId });
+        return { ok: false, motivo: MOTIVOS.ERROR_INTERNO };
+    }
+    const completo = cfg.services;
+    const ofertables = botOfferableCatalog(completo).filter(s => !isReactiveOnlyService(s));
+    const entrada = findCatalogEntryByKey(clave, ofertables);
+    if (!entrada) return { ok: false, motivo: MOTIVOS.SERVICIO_NO_DISPONIBLE };
+
+    const dur = resolveAppointmentDurationMin(entrada, completo);
+    if (!dur.resuelto) {
+        logger.error('reserva_web_duracion_no_resuelta', { orgId, servicio: entrada.nombre || null });
+        return { ok: false, motivo: MOTIVOS.SERVICIO_NO_DISPONIBLE };
+    }
+    return {
+        ok: true, entrada,
+        duracionMin: dur.minutos,
+        nombreCompleto: buildFullServiceName(entrada, completo),
+    };
+}
+
+// ─── 4 · La reserva ──────────────────────────────────────────────────────────────────────
+//
+// El orden de las comprobaciones NO es casual, y cada paso está antes que el siguiente por
+// una razón concreta:
+//
+//   1. limitador por IP    — antes de tocar la base de datos, que es lo que cuesta.
+//   2. limitador por ORG   — el techo del salón; protege de un ataque repartido entre IPs.
+//   3. forma de los datos  — barato y no lee nada.
+//   4. servicio            — contra el catálogo ofertable.
+//   5. LISTA NEGRA         — antes de escribir NADA. Ni ficha, ni cita.
+//   6. ficha (saveLead)    — crea o actualiza, SIN pisar el nombre guardado.
+//   7. verificación del hueco contra el motor REAL — es lo único que sabe de skills.
+//   8. el claim atómico    — `reservar_hueco()`, que es quien decide de verdad.
+app.post('/reserva-web/:slug/reserva', async (req, res) => {
+    const ctx = await contextoPublico(req, res);
+    if (!ctx) return;
+    const { org, limites, lang } = ctx;
+    const no = (motivo, extra) => {
+        const { estado, cuerpo } = respuestaNo(motivo, { waPhone: org.waPhone, lang, ...extra });
+        return res.status(estado).json(cuerpo);
+    };
+
+    try {
+        // (1) y (2) — los dos limitadores. El de la org va DESPUÉS del de IP a propósito:
+        // así una sola IP pegando no consume el techo del salón y deja fuera a las clientas
+        // de verdad; primero se la para a ella.
+        const porIp = limitadorReservas.consumir(`reserva:${org.orgId}:${ctx.ip}`,
+            { limite: limites.reservas_web_max_hora_ip });
+        if (!porIp.permitido) {
+            logger.warn('reserva_web_limite_ip', { orgId: org.orgId });
+            return no(MOTIVOS.DEMASIADAS_PETICIONES, { esperaSegundos: porIp.esperaSegundos });
+        }
+        const porOrg = limitadorReservas.consumir(`reserva-org:${org.orgId}`,
+            { limite: limites.reservas_web_max_hora_org });
+        if (!porOrg.permitido) {
+            // Esto sí merece mirarse: o hay un ataque, o el salón está teniendo su mejor día.
+            logger.warn('reserva_web_techo_org', { orgId: org.orgId, limite: limites.reservas_web_max_hora_org });
+            return no(MOTIVOS.SALON_SATURADO, { esperaSegundos: porOrg.esperaSegundos });
+        }
+
+        // (3) La forma. Todo lo que entra es texto de internet: se valida, se acota y se
+        // limpia a una línea antes de tocar nada.
+        const body = req.body || {};
+        const fecha = String(body.fecha || '');
+        const hora = String(body.hora || '');
+        const telefono = db.sanitizePhone(String(body.telefono || ''));
+        const nombre = limpiarUnaLinea(body.nombre || '', MAX_NOMBRE);
+        const notas = body.notas ? limpiarUnaLinea(body.notas, MAX_NOTAS) : null;
+        const estilistaPedida = typeof body.estilista === 'string' && UUID_RE.test(body.estilista)
+            ? body.estilista : null;
+        if (!FECHA_RE.test(fecha) || !HORA_RE.test(hora) || !telefono || nombre.length < 2) {
+            return no(MOTIVOS.DATOS_INVALIDOS);
+        }
+
+        // (4) El servicio.
+        const servicio = await resolverServicioPublico(org.orgId, body.servicio);
+        if (!servicio.ok) return no(servicio.motivo);
+
+        // (5) LISTA NEGRA, antes de escribir nada.
+        //
+        // El mensaje es NEUTRO y comparte forma con el resto de «esto no se cierra online»:
+        // en el salón bloquear es silencio, pero una página tiene que renderizar algo, y ese
+        // algo no puede ser «estás bloqueada». La lectura lleva assertRead, así que una
+        // consulta rota LANZA y cae en el catch — nunca se lee como «no está bloqueada».
+        const existente = await db.getContactoParaReservaWeb(org.orgId, telefono);
+        if (existente?.blacklisted) {
+            logger.info('reserva_web_bloqueada_lista_negra', { orgId: org.orgId });
+            return no(MOTIVOS.NO_CONFIRMABLE_ONLINE);
+        }
+
+        // (6) La ficha. `saveLead` crea o actualiza por teléfono.
+        //
+        // EL NOMBRE NO SE PISA si ya había uno, y en una superficie pública eso deja de ser
+        // cortesía y pasa a ser una defensa: sin esto, cualquiera que teclee el teléfono de
+        // otra persona le renombra la ficha, y el bot la saludaría con ese nombre. Es la
+        // misma guarda que ya tiene `POST /api/leads`.
+        const datosFicha = { telefono, origen: 'web' };
+        if (!existente?.tieneNombre) datosFicha.nombre = nombre;
+        const contactId = await db.saveLead(org.orgId, datosFicha);
+        if (!contactId) {
+            logger.error('reserva_web_sin_ficha', { orgId: org.orgId });
+            return no(MOTIVOS.ERROR_INTERNO);
+        }
+
+        // (7) ¿Ese hueco existe DE VERDAD, y quién puede atenderlo?
+        //
+        // `reservar_hueco()` mira horario, bloqueos y citas, pero NO sabe de skills — esa
+        // regla vive en JS y aquí es donde se aplica. Además es de donde sale la estilista
+        // cuando la clienta dijo «la primera que haya».
+        const calendarSante = require('./services/calendar-sante');
+        const slots = await calendarSante.getAvailableSlots(org.orgId, {
+            serviceDuration: servicio.duracionMin,
+            serviceCategory: servicio.entrada.categoria,
+            preferredStylistId: estilistaPedida || undefined,
+            preferencia: { fecha },
+            horizonteDias: HORIZONTE_RESERVA_WEB,
+        });
+        const hueco = slots.requestedDayUnavailable
+            ? null
+            : slots.find(s => s.fecha === fecha && s.hora === hora);
+        if (!hueco) return no(MOTIVOS.HUECO_NO_EXISTE);
+
+        // Las candidatas, en el orden en que el motor las da (alfabético, estable).
+        let candidatas = (hueco.alternativas || [{ id: hueco.stylistId, name: hueco.stylistName }]);
+        if (estilistaPedida) {
+            candidatas = candidatas.filter(c => c.id === estilistaPedida);
+            if (!candidatas.length) return no(MOTIVOS.HUECO_NO_EXISTE);
+        }
+
+        // (8) El claim. Si la clienta NO eligió estilista, se prueba con la siguiente cuando
+        // la primera pierde la carrera: ella pidió «la primera que haya», así que cambiar de
+        // nombre por dentro es invisible y le ahorra tener que volver a empezar.
+        //
+        // Si SÍ eligió, no se reintenta con otra: le llegaría una confirmación con un nombre
+        // distinto del que pulsó, y una sorpresa en la pantalla de confirmación de una
+        // reserva es peor que pedirle que elija otro hueco.
+        let ultimoMotivo = MOTIVOS.HUECO_OCUPADO;
+        for (const candidata of candidatas) {
+            try {
+                const cita = await db.saveAppointment(org.orgId, contactId, {
+                    servicio: servicio.nombreCompleto,
+                    fecha, hora,
+                    duracionMin: servicio.duracionMin,
+                    stylistId: candidata.id,
+                    notas,
+                    source: 'web',
+                    maxFuturas: limites.reservas_web_max_futuras,
+                });
+                if (!cita) { ultimoMotivo = MOTIVOS.ERROR_INTERNO; break; }
+                logger.info('reserva_web_creada', {
+                    orgId: org.orgId, citaId: cita.id, fecha, hora,
+                    servicio: servicio.nombreCompleto, estilistaId: candidata.id,
+                });
+                return res.json(reservaPublica({
+                    fecha, hora,
+                    servicio: servicio.nombreCompleto,
+                    estilistaNombre: candidata.name,
+                    duracionMin: servicio.duracionMin,
+                }));
+            } catch (e) {
+                if (!(e instanceof db.ReservaWebRechazada)) throw e;
+                ultimoMotivo = interpretarMotivoSql(e.motivo);
+                // El tope de citas y un rango mal construido no mejoran probando con otra
+                // estilista: son de la clienta y de nuestro código, no del hueco.
+                if (ultimoMotivo === MOTIVOS.TOPE_CITAS || ultimoMotivo === MOTIVOS.RANGO_INVALIDO) break;
+                if (estilistaPedida) break;
+            }
+        }
+        logger.warn('reserva_web_no_confirmada', { orgId: org.orgId, motivo: ultimoMotivo, fecha, hora });
+        return no(ultimoMotivo);
+    } catch (e) { return fallo(res, 'reserva_web_error', ctx, e); }
+});
+
 function startWebhookServer(port) {
     const PORT = port || process.env.PORT || 3000;
     app.listen(PORT, () => {
@@ -1648,4 +2108,4 @@ function startWebhookServer(port) {
 
 // `app` se exporta para tests de integración de rutas (no se usa en producción; el arranque
 // real pasa por startWebhookServer). Exponerlo no cambia ningún comportamiento.
-module.exports = { startWebhookServer, setWAClient, app };
+module.exports = { startWebhookServer, setWAClient, app, _limitadorReservas: limitadorReservas };
