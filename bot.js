@@ -13,7 +13,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, botOfferableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteMencion, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, botOfferableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -1102,6 +1102,56 @@ function findCorteService(catalog, includeAll, excludeAny = []) {
         const n = normalizeText(s.nombre || '');
         return includeAll.every(w => n.includes(w)) && !excludeAny.some(w => n.includes(w));
     }) || null;
+}
+
+// ─── El árbol de cortes: UNA sola tabla de ramas y UN solo avance ────────────
+//
+// Los tokens con los que se nombra cada rama del árbol viven aquí y en ningún otro sitio.
+// Son los mismos que consume findCorteService, así que renombrar una rama se hace en una
+// línea; con dos listas, la del árbol y la de la guarda de abajo dirían cosas distintas en
+// cuanto alguien tocara una (la lección de las dos tablas del día de la semana).
+const RAMAS_CORTE = { mujer: ['mujer'], hombre: ['hombre'], nino: ['nino'] };
+
+// ¿La entrada que ha casado el catálogo es la de OTRO género del que la clienta acaba de
+// decir? Existe por un caso medido el 20/08/2026: «corte femenino» resolvía a «Niño» (25 €)
+// porque `extractServiceFromText` casa por SUBCADENA y «femeNINO» contiene «nino». Una mujer
+// pidiendo un corte se llevaba un corte de niño apuntado, 15-25 € por debajo del suyo.
+//
+// Lee el nombre de la entrada YA casada, y eso es dato de la dueña (regla 5): si mañana
+// renombra «Niño», esta guarda deja de disparar y se vuelve al comportamiento de hoy. Falla
+// hacia el lado de no hacer nada, nunca hacia el de descartar un match bueno.
+function corteContradiceGenero(svc, genero) {
+    if (!svc || !genero) return false;
+    const n = normalizeText(svc.nombre || '');
+    const propios = RAMAS_CORTE[genero] || [];
+    if (propios.some(w => n.includes(w))) return false;
+    return Object.entries(RAMAS_CORTE)
+        .filter(([rama]) => rama !== genero)
+        .some(([, tokens]) => tokens.some(w => n.includes(w)));
+}
+
+// Avanza el árbol UN paso desde un género ya conocido. Lo llaman los DOS sitios que lo
+// necesitan —la rama `pendingCorteGenero` (la clienta contesta a «¿para quién?») y el punto
+// de entrada (la clienta lo dijo de entrada: «un corte de mujer»)— para que la respuesta a
+// «¿y ahora qué?» sea la misma en los dos. Duplicarla es cómo el punto de entrada acabaría
+// preguntando el género que la clienta ya había dicho.
+//
+// Devuelve el nombre del servicio si el género basta para resolverlo (hombre: hay una sola
+// entrada), o null si hace falta el paso 2 (mujer: secado o Dyson; niño: infantil o normal).
+function avanzarArbolCorte(session, genero, catalogo) {
+    session.pendingCorteGenero = false;
+    if (genero === 'hombre') {
+        const svc = findCorteService(catalogo, RAMAS_CORTE.hombre);
+        if (svc) { session.selectedService = svc; return svc.nombre; }
+        // Sin entrada de hombre en el catálogo no se inventa nada: se pregunta el género
+        // otra vez, que es lo que hacía antes de este helper.
+        session.pendingCorteGenero = true;
+        return null;
+    }
+    if (genero === 'mujer') { session.pendingCorteMujerTipo = true; return null; }
+    if (genero === 'nino') { session.pendingCorteNinoTipo = true; return null; }
+    session.pendingCorteGenero = true;
+    return null;
 }
 
 // Resuelve el hueco que la clienta acepta contra la lista EXACTA que se le propuso
@@ -5792,19 +5842,9 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 }
             } else if (session.pendingCorteGenero && !session.selectedService) {
                 const genero = detectCorteGenero(sanitized);
-                if (genero === 'hombre') {
-                    const svc = findCorteService(catalogoOfertable, ['hombre']);
-                    if (svc) {
-                        session.selectedService = svc;
-                        session.pendingCorteGenero = false;
-                        logger.info('corte_resuelto_hombre', { orgId, telefono: userPhone, servicio: svc.nombre });
-                    }
-                } else if (genero === 'mujer') {
-                    session.pendingCorteGenero = false;
-                    session.pendingCorteMujerTipo = true;
-                } else if (genero === 'nino') {
-                    session.pendingCorteGenero = false;
-                    session.pendingCorteNinoTipo = true;
+                if (genero) {
+                    const resuelto = avanzarArbolCorte(session, genero, catalogoOfertable);
+                    if (resuelto) logger.info('corte_resuelto_hombre', { orgId, telefono: userPhone, servicio: resuelto });
                 }
             }
 
@@ -5819,6 +5859,29 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 const k18Svc = resolveK18ServiceFromText(sanitized, session.selectedService?.categoria, catalogoOfertable);
                 if (k18Svc && (!matchedSvc || normalizeText(matchedSvc.categoria || '') === 'reconstruccion')) {
                     matchedSvc = k18Svc;
+                }
+                // ── La grieta del corte (20/08/2026) ──────────────────────────────────
+                // El género que la clienta ha dicho manda sobre un match por subcadena. Dos
+                // cosas medidas contra el catálogo real, y las dos acababan igual —con la
+                // clienta habiendo nombrado su servicio y la sesión sin guardar nada, o algo
+                // peor:
+                //
+                //   · «corte femenino» → «Niño» (25 €), porque «femeNINO» contiene «nino».
+                //   · «un corte de mujer» → NADA: no es genérico (dice el género) y no casa
+                //     el catálogo (las entradas se llaman «Mujer y secado» / «Mujer y peinado
+                //     Dyson»). Es el turno 2 del escenario 11 del arnés, del que salía el
+                //     embudo un turno después.
+                //
+                // El orden importa: el match del catálogo sigue mandando cuando NO contradice
+                // al género, así que «corte de hombre», «corte de niño», «corte con secado» y
+                // «corte mujer y secado» resuelven hoy exactamente como resolvían.
+                const mencionaCorte = detectCorteMencion(sanitized);
+                const generoCorte = mencionaCorte ? detectCorteGenero(sanitized) : null;
+                if (matchedSvc && generoCorte && corteContradiceGenero(matchedSvc, generoCorte)) {
+                    logger.info('corte_match_contradice_genero', {
+                        orgId, telefono: userPhone, servicioDescartado: matchedSvc.nombre, genero: generoCorte,
+                    });
+                    matchedSvc = null;
                 }
                 if (matchedSvc) {
                     session.selectedService = matchedSvc;
@@ -5838,7 +5901,17 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                 } else if (!session.pendingLargoCategory && !session.pendingCorteGenero && !session.pendingCorteMujerTipo && !session.pendingCorteNinoTipo) {
                     const largoCat = detectLargoCategory(sanitized, catalogoOfertable);
                     if (largoCat) session.pendingLargoCategory = largoCat;
-                    else if (detectCorteGenerico(sanitized)) session.pendingCorteGenero = true;
+                    // Un corte con el género YA dicho salta al paso 2 en vez de preguntar el
+                    // paso 1: repetirle «¿para hombre, mujer o niño?» a quien acaba de decir
+                    // «un corte de mujer» es cómo se construye el bucle que se le hizo a Olga
+                    // el 02/08. El mismo `avanzarArbolCorte` que usa la rama de arriba, para
+                    // que los dos caminos den el mismo siguiente paso.
+                    else if (mencionaCorte && generoCorte) {
+                        const resuelto = avanzarArbolCorte(session, generoCorte, catalogoOfertable);
+                        logger.info('corte_genero_de_entrada', {
+                            orgId, telefono: userPhone, genero: generoCorte, servicio: resuelto || null,
+                        });
+                    } else if (detectCorteGenerico(sanitized)) session.pendingCorteGenero = true;
                 }
             }
             // Consulta de valoración (REACTIVA): la clienta pide asesoramiento sin nombrar

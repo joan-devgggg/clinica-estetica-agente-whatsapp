@@ -3538,26 +3538,52 @@ function extractMechasClasicasTipo(text) {
 // deterministas permiten a bot.js resolver el servicio en el MISMO turno, sin el
 // desfase de depender de que el LLM devuelva datos.servicio. Espejo de detectLargoCategory.
 
-// "un corte" genérico SIN tipo especificado → dispara el árbol hombre/niño/mujer.
-function detectCorteGenerico(text) {
+// ¿El texto HABLA de un corte? Es la mitad de `detectCorteGenerico` que también necesita el
+// call site del árbol: allí hace falta saber que se ha mencionado un corte AUNQUE la clienta
+// ya haya dicho el género, que es justo el caso que `detectCorteGenerico` descarta.
+//
+// «me corto» va aparte de la lista de verbos y con su propio patrón, no metiendo `corto` en
+// ella: `corto` es además el ADJETIVO del largo del pelo («tengo el pelo corto», «cabello
+// corto»), que es lo que leen detectLargoCategory y extractLargoPelo. Un `\bcorto\b` suelto
+// convertiría cada descripción de melena corta en una petición de corte. Con el reflexivo
+// delante no hay ambigüedad: nadie dice «me corto» para describir su pelo.
+const CORTE_MENCION_RE = /\b(corte|cortar|cortarme|cortarte|cortarse|cortarlo|cortame|haircut|cut)\b|\bme\s+corto\b/;
+function detectCorteMencion(text) {
     if (!text) return false;
+    return CORTE_MENCION_RE.test(normalizeText(text));
+}
+
+// "un corte" genérico SIN tipo especificado → dispara el árbol hombre/niño/mujer.
+//
+// OJO con lo que significa el `false`: NO significa «esto lo resuelve extractServiceFromText»,
+// aunque el comentario de aquí lo dijera hasta el 20/08/2026. Medido contra el catálogo real:
+// «un corte de mujer» no es genérico (dice el género) y TAMPOCO casa el catálogo, porque las
+// entradas se llaman «Mujer y secado» y «Mujer y peinado Dyson». Resultado: no se guardaba
+// nada, ni servicio ni paso del árbol, y la clienta había nombrado su servicio. Quien tapa
+// esa grieta es el call site, con detectCorteMencion + detectCorteGenero.
+function detectCorteGenerico(text) {
+    if (!detectCorteMencion(text)) return false;
     const t = normalizeText(text);
-    const mencionaCorte = /\b(corte|cortar|cortarme|cortarte|cortarse|cortarlo|cortame|haircut|cut)\b/.test(t);
-    if (!mencionaCorte) return false;
-    // Si ya especifica el tipo, NO es genérico: lo resuelve extractServiceFromText.
-    const tipoEspecificado = /\b(hombre|caballero|mujer|femenin|ni[ñn]o|ni[ñn]a|infantil|secado|dyson)\b/.test(t);
+    const tipoEspecificado = /\b(hombre|caballero|masculin[oa]s?|mujer|femenin[oa]s?|ni[ñn]o|ni[ñn]a|infantil|secado|dyson)\b/.test(t);
     return !tipoEspecificado;
 }
 
 // Paso 1 del árbol: ¿hombre, niño o mujer? Devuelve 'hombre' | 'nino' | 'mujer' | null.
 // Se evalúa niño primero para que "para mi niño"/"para mi hijo" no caiga en la rama
 // mujer por el marcador "para mi".
+//
+// `femenin[oa]s?` y `masculin[oa]s?` y no `femenin` / `masculin` a secas: con el `\b` de
+// cierre detrás, un PREFIJO no puede casar nunca — «femenino» no termina donde acaba
+// «femenin». Los dos tokens llevaban ahí desde el principio sin poder dispararse una sola
+// vez, y no era inocuo: «corte femenino» se quedaba sin género y `extractServiceFromText`
+// lo resolvía a «Niño» (25 €) porque «femeNINO» contiene «nino» como subcadena. Una mujer
+// pidiendo un corte acababa con un corte de niño apuntado.
 function detectCorteGenero(text) {
     if (!text) return null;
     const t = normalizeText(text);
     if (/\b(ni[ñn]o|ni[ñn]a|nino|nina|infantil|peque|hijo|hija)\b/.test(t)) return 'nino';
-    if (/\b(hombre|caballero|chico|masculin|senor|varon)\b/.test(t)) return 'hombre';
-    if (/\b(mujer|femenin|chica|soy yo|yo misma|para mi|es para mi|para mi misma)\b/.test(t)) return 'mujer';
+    if (/\b(hombre|caballero|chico|masculin[oa]s?|senor|varon)\b/.test(t)) return 'hombre';
+    if (/\b(mujer|femenin[oa]s?|chica|soy yo|yo misma|para mi|es para mi|para mi misma)\b/.test(t)) return 'mujer';
     return null;
 }
 
@@ -5109,6 +5135,7 @@ module.exports = {
     extractLargoPelo,
     classifyLargoVariant,
     extractMechasClasicasTipo,
+    detectCorteMencion,
     detectCorteGenerico,
     detectCorteGenero,
     detectCorteMujerTipo,
