@@ -81,15 +81,16 @@ function resolverHorizonte(horizonteDias) {
  * horarios/bloqueos/citas. Devuelve un contexto con `buildSlots(pref)`, que genera las filas
  * (estilista × día × hora) sin volver a la base de datos.
  *
- * Existe para que el bot y el enlace público salgan del MISMO sitio. Con dos motores, la
- * vista de mes del enlace acabaría enseñando un día en verde que al abrirlo no tiene huecos,
- * y nadie sabría cuál de los dos miente. Lo que cada uno haga con esas filas SÍ puede ser
- * distinto —el bot deduplica, ordena, tiene fallbacks y un tope— y por eso la raya está aquí.
+ * Existe para que `getAvailableSlots` (el bot) y `getAvailableDays` (el enlace) salgan del
+ * MISMO sitio. Con dos motores, la vista de mes del enlace acabaría enseñando un día en
+ * verde que al abrirlo no tiene huecos, y nadie sabría cuál de los dos miente. Lo que cada
+ * uno hace con esas filas SÍ es distinto —el bot deduplica, ordena, tiene fallbacks y un
+ * tope; el enlace solo quiere saber qué días tienen algo— y por eso la raya está aquí.
  *
  * @returns {{causa: string}|{buildSlots: Function, diagnosticarCero: Function,
  *            eligible: Array, weekPreferenceRelaxed: boolean}}
  */
-async function prepararMotor(orgId, { serviceDuration = 60, serviceCategory, preferredStylistId, horizonteDias, asap = false, lang = null } = {}) {
+async function prepararMotor(orgId, { serviceDuration = 60, serviceCategory, preferredStylistId, horizonteDias, asap = false, lang = null, sinTexto = false } = {}) {
     const dias = resolverHorizonte(horizonteDias);
     const allStylists = await db.getStylistsByOrg(orgId);
     // Las dos salidas tempranas devuelven SOLO la causa, sin contexto: quien llama no puede
@@ -301,7 +302,7 @@ async function prepararMotor(orgId, { serviceDuration = 60, serviceCategory, pre
                     occupied: [...dayAppts, ...dayBlocks],
                     serviceDuration, minStart,
                 });
-                for (const t of starts) addSlot(out, dateStr, t, diaNombre, stylist, serviceDuration, pref, lang);
+                for (const t of starts) addSlot(out, dateStr, t, diaNombre, stylist, serviceDuration, pref, lang, sinTexto);
             }
         }
         return out;
@@ -478,7 +479,90 @@ async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory,
     return conCausa(unique, causa);
 }
 
-function addSlot(slots, dateStr, minuteOfDay, diaNombre, stylist, serviceDuration, preferencia, lang = null) {
+/**
+ * Qué DÍAS del horizonte tienen algún hueco para un servicio. Es lo que necesita la vista de
+ * mes del enlace público: pintar el calendario sin pedir las horas de cada día.
+ *
+ * Sale del MISMO prefetch que `getAvailableSlots` (prepararMotor → buildSlots), y esa es toda
+ * la garantía de paridad que hay: un día que aquí sale con huecos los tiene también al
+ * abrirlo. Lo prueba `tests/paridad-motor-web-bot.test.js` por mutación.
+ *
+ * Tres diferencias con `getAvailableSlots`, y las tres son a propósito:
+ *
+ *   1. **NO hay tope.** El `MAX_TOTAL` de 20 (5 con asap) es una decisión de CONVERSACIÓN:
+ *      no se le sueltan veinte horas a alguien por WhatsApp. Una rejilla de tres meses con
+ *      tope se quedaría en los primeros días y pintaría el resto del calendario en gris,
+ *      que es exactamente la mentira que este proyecto no puede permitirse.
+ *   2. **NO hay fallback (ETAPA A/B).** Esos rescates existen para no dejar muda una
+ *      conversación cuando la clienta pide un día imposible; una rejilla ya enseña los días
+ *      buenos, así que "soltar el filtro y proponer otra cosa" no significa nada aquí.
+ *   3. **NO se deduplica por hora.** El dedupe es presentación (una estilista por hueco); un
+ *      día se cuenta por sus horas distintas y por TODAS las estilistas libres en él, que es
+ *      lo que luego permite reintentar con otra cuando el claim pierda la carrera.
+ *
+ * `causa` viaja igual que en getAvailableSlots: una lista vacía nunca es un `[]` pelado.
+ *
+ * @param {string} orgId
+ * @param {object} options — mismos que getAvailableSlots salvo `lang` (aquí no hay texto que
+ *   traducir: un día no se verbaliza, se pinta).
+ * @returns {Array} — [{ fecha, diaSemana, huecos, estilistas: [{id, name}] }], en orden
+ *   cronológico y solo con los días que tienen algo.
+ */
+async function getAvailableDays(orgId, { serviceDuration = 60, serviceCategory, preferredStylistId, preferencia = {}, horizonteDias } = {}) {
+    const motor = await prepararMotor(orgId, {
+        serviceDuration, serviceCategory, preferredStylistId,
+        horizonteDias,
+        asap: !!preferencia.asap,
+        // Sin idioma y sin texto: aquí se descartarían miles de cadenas formateadas para
+        // nada. Ver `sinTexto` en prepararMotor.
+        sinTexto: true,
+    });
+    if (motor.causa) return conCausa([], motor.causa);
+
+    const filas = motor.buildSlots(preferencia);
+
+    const porDia = new Map();
+    for (const s of filas) {
+        let dia = porDia.get(s.fecha);
+        if (!dia) {
+            dia = { fecha: s.fecha, diaSemana: mondayDow(s.fecha), horas: new Set(), estilistas: new Map() };
+            porDia.set(s.fecha, dia);
+        }
+        dia.horas.add(s.hora);
+        // Map y no Set para conservar el nombre; la primera vez gana, y como `eligible` viene
+        // ordenado por nombre desde db.getStylistsByOrg, el orden es alfabético y estable.
+        if (!dia.estilistas.has(s.stylistId)) dia.estilistas.set(s.stylistId, s.stylistName);
+    }
+
+    // Orden cronológico por la cadena YYYY-MM-DD, que se compara como texto sin construir ni
+    // una Date — el mismo criterio que usa todo el recorrido de días de este fichero.
+    const dias = [...porDia.values()]
+        .sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0))
+        .map(d => ({
+            fecha: d.fecha,
+            diaSemana: d.diaSemana,
+            huecos: d.horas.size,
+            estilistas: [...d.estilistas].map(([id, name]) => ({ id, name })),
+        }));
+
+    if (dias.length) return conCausa(dias, null);
+
+    const causa = motor.diagnosticarCero();
+    logger.warn('sante_cero_dias_diagnosticado', {
+        orgId, causa, serviceCategory, serviceDuration,
+        horizonteDias: horizonteDias ?? HORIZONTE_DIAS_DEFAULT,
+        estilistasElegibles: motor.eligible.length,
+        preferencia,
+    });
+    return conCausa(dias, causa);
+}
+
+// `sinTexto` lo pone SOLO getAvailableDays, y no es una micro-optimización caprichosa: a 90
+// días son unos cuantos miles de cadenas formateadas que nadie va a leer, porque un día de la
+// rejilla se pinta con un número, no con «el miércoles a las 10:00 con Irina». Todo lo demás
+// —qué horas existen, de quién son, qué filtros se aplican— es IDÉNTICO en los dos caminos:
+// si el texto decidiera algo, este flag sería una divergencia y no un ahorro.
+function addSlot(slots, dateStr, minuteOfDay, diaNombre, stylist, serviceDuration, preferencia, lang = null, sinTexto = false) {
     const hora = `${String(Math.floor(minuteOfDay / 60)).padStart(2, '0')}:${String(minuteOfDay % 60).padStart(2, '0')}`;
     const hourNum = Math.floor(minuteOfDay / 60);
 
@@ -486,6 +570,11 @@ function addSlot(slots, dateStr, minuteOfDay, diaNombre, stylist, serviceDuratio
         if (hourNum >= 14) return;
     } else if (preferencia.periodo === 'tarde') {
         if (hourNum < 14) return;
+    }
+
+    if (sinTexto) {
+        slots.push({ fecha: dateStr, hora, diaNombre, stylistId: stylist.id, stylistName: stylist.name, texto: null });
+        return;
     }
 
     // En el idioma de la clienta, y con el día formateado EXACTAMENTE como en el
@@ -657,7 +746,7 @@ async function rescheduleAppointment(orgId, appointmentId, slot, { servicio, dur
     return { success: true, appointmentId: result.id, appointment: result };
 }
 
-module.exports = { getAvailableSlots, bookAppointment, cancelAppointment, rescheduleAppointment, formatSlotForMessage, CAUSAS_CERO, HORIZONTE_DIAS_DEFAULT, HORIZONTE_DIAS_MAX };
+module.exports = { getAvailableSlots, getAvailableDays, bookAppointment, cancelAppointment, rescheduleAppointment, formatSlotForMessage, CAUSAS_CERO, HORIZONTE_DIAS_DEFAULT, HORIZONTE_DIAS_MAX };
 // Expuesto para tests de regresión (huecos + TZ-independencia + idioma del texto del
 // hueco), no para uso en producción.
 module.exports._internals = { computeFreeSlots, recortarAlDia, addSlot, toLocalDateStr, toMinutes, addDaysStr, mondayDow, resolveWeekdayToDate, BUSINESS_TZ };
