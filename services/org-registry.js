@@ -74,6 +74,35 @@ function getOrgType(orgId) {
     return byOrgId.get(orgId)?.type || 'restaurant';
 }
 
+const bySlug = new Map(orgs.map(o => [o.slug, o]));
+
+/**
+ * Resuelve el slug de la URL pública (`/reservar/:slug`) a su organización, y SOLO si esa
+ * org puede tener enlace de reserva. Devuelve null en cualquier otro caso.
+ *
+ * Las tres formas de «no» devuelven EL MISMO null a propósito, y esto es la mitad del
+ * requisito de no filtrar nada:
+ *
+ *   · el slug no existe            → null
+ *   · el slug existe pero es San Remo (restaurante) → null
+ *   · el slug viene vacío o con basura → null
+ *
+ * Si distinguiéramos «no existe» de «existe pero no tiene enlace», cualquiera podría
+ * enumerar qué negocios hay dados de alta en el sistema probando slugs. Quien llama tiene
+ * que responder lo mismo a los tres — un 404 idéntico — y no mirar por qué fue null.
+ *
+ * San Remo queda fuera POR TIPO, no por una config vacía: aunque alguien le escribiera
+ * mañana un `reservas_web_activo` a true, este `!== 'salon'` sigue devolviendo null. Es la
+ * misma puerta estructural que usa el resto del sistema para no tocar el restaurante.
+ */
+function resolveOrgBySlug(slug) {
+    if (!slug || typeof slug !== 'string') return null;
+    const org = bySlug.get(slug.trim().toLowerCase());
+    if (!org) return null;
+    if (org.type !== 'salon') return null;
+    return org;
+}
+
 // Una org desconocida cae en 'wwebjs': es el comportamiento histórico y el único
 // seguro por defecto (no silencia mensajes de una org que no esté en el registry).
 function getOrgChannel(orgId) {
@@ -105,5 +134,6 @@ module.exports = {
     getAllOrgs,
     getOrgType,
     getOrgChannel,
+    resolveOrgBySlug,
     resolverOrgArg,
 };

@@ -194,7 +194,30 @@ const CONFIG_NUMERICAS = {
     horas_recordatorio:   { max: 24 * 30,      unidad: 'horas' },
     horas_resena:         { max: 24 * 30,      unidad: 'horas' },
     dias_retorno_auto:    { max: 365,          unidad: 'días' },
+    // ── Los topes del enlace público de reserva ──
+    // Un tope mal escrito aquí NO se nota: el lector (services/reserva-web.js) cae al
+    // default y la página sigue funcionando, así que la dueña creería haber cerrado el grifo
+    // y estaría abierto. Por eso se rechaza en la ESCRITURA, que es el único momento en que
+    // hay alguien mirando la pantalla.
+    reservas_web_max_hora_ip:          { max: 1000,  unidad: 'reservas por hora' },
+    reservas_web_max_hora_org:         { max: 1000,  unidad: 'reservas por hora' },
+    reservas_web_max_futuras:          { max: 50,    unidad: 'citas por clienta' },
+    reservas_web_max_hora_lecturas_ip: { max: 10000, unidad: 'consultas por hora' },
 };
+
+// Claves de `config` que son un interruptor. Un booleano mal escrito es peor que un número
+// mal escrito: «reservas_web_activo: "sí"» parece encendido y el lector lo entiende como
+// apagado, así que el enlace estaría cerrado sin que nadie supiera por qué.
+//
+// `bot_activo` NO entra aquí a propósito: lleva vivo desde el principio, lo escriben Telegram
+// y el panel con formas que no he medido, y meterlo en una validación nueva podría rechazar
+// una escritura que hoy funciona. Ampliarlo es una decisión aparte y con sus call sites
+// mirados (regla 11).
+const CONFIG_BOOLEANAS = new Set(['reservas_web_activo']);
+const BOOLEANOS_ACEPTADOS = new Map([
+    ['true', true], ['1', true], ['on', true], ['si', true], ['sí', true],
+    ['false', false], ['0', false], ['off', false], ['no', false],
+]);
 
 /**
  * Valida un valor que entra en `config`. Las claves que no son numéricas pasan sin tocar.
@@ -211,6 +234,21 @@ function validateConfigValue(clave, valor) {
     // que no esté en CONFIG_NUMERICAS — y por ese hueco entraría una regla con el destino
     // escrito a mano, que es exactamente lo que no puede pasar.
     if (clave === 'seguimientos') return validateSeguimientosConfig(valor);
+
+    if (CONFIG_BOOLEANAS.has(clave)) {
+        if (typeof valor === 'boolean') return { ok: true, valor };
+        const v = BOOLEANOS_ACEPTADOS.get(String(valor).trim().toLowerCase());
+        if (v === undefined) {
+            return {
+                ok: false,
+                motivo: 'no_booleano',
+                mensaje: `«${clave}» es un interruptor: solo acepta sí o no, no «${String(valor)}».`,
+            };
+        }
+        // Normalizado a booleano de verdad, igual que los numéricos se normalizan a número:
+        // así el lector no tiene que volver a adivinar de qué tipo era.
+        return { ok: true, valor: v };
+    }
 
     const regla = CONFIG_NUMERICAS[clave];
     if (!regla) return { ok: true, valor };

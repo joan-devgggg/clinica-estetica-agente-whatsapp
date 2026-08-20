@@ -1379,7 +1379,10 @@ function buildStartsAt(fecha, hora, defaultTime = '20:00') {
     return isNaN(d.getTime()) ? null : d;
 }
 
-async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duracionMin, estado = 'confirmed', notas, personas, ocasion, bizumStatus = 'not_required', bizumAmount, stylistId, source = 'bot', noFacturable = false } = {}) {
+async function saveAppointment(orgId, contactId, opciones = {}) {
+    const { servicio, fecha, hora, duracionMin, estado = 'confirmed', notas, personas, ocasion,
+            bizumStatus = 'not_required', bizumAmount, stylistId, source = 'bot',
+            noFacturable = false } = opciones;
     const oid = resolveOrg(orgId);
     if (!contactId) {
         console.error('[saveAppointment] contactId nulo — reserva no guardada');
@@ -1408,6 +1411,29 @@ async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duraci
         return null;
     }
     const endsAt = new Date(startsAt.getTime() + durMin * 60 * 1000);
+
+    // ── La rama del ENLACE PÚBLICO ──────────────────────────────────────────────────────
+    //
+    // Aquí, y no en una función aparte, porque lo pide la cabecera de la migración 043: el
+    // enlace escribe por `reservar_hueco()` y esa llamada vive DENTRO de saveAppointment
+    // para que siga habiendo UN camino de creación. Dos caminos es el patrón que ya costó
+    // caro (Celeste González).
+    //
+    // Lo de abajo —la guarda de duplicado por (org, contacto, hora) y el INSERT— NO se
+    // ejecuta para la web, y no es un olvido: las dos cosas las hace la función SQL, y
+    // mejor, porque las hace con un cerrojo y dentro de una transacción. Correrlas también
+    // aquí sería un SELECT de más y una segunda opinión sobre algo que Postgres ya decidió.
+    //
+    // EL CONTRATO NO CAMBIA: esta función sigue devolviendo SIEMPRE una fila (o null, o
+    // lanzando). Cuando el claim se pierde no se devuelve una forma distinta —eso sería un
+    // objeto truthy sin `.id` que el siguiente llamador leería como éxito— sino que se lanza
+    // `ReservaWebRechazada`, que lleva el motivo del conjunto cerrado.
+    if (source === 'web') {
+        return await reservarHuecoWeb(oid, contactId, {
+            contacto: contact, servicio, startsAt, endsAt, stylistId, notas,
+            maxFuturas: opciones.maxFuturas,
+        });
+    }
 
     // Idempotencia: nunca crear DOS veces la misma cita. Si ya existe una cita activa
     // (no cancelada) para este contacto a la MISMA hora de inicio, devolvemos la existente
@@ -1498,6 +1524,144 @@ async function saveAppointment(orgId, contactId, { servicio, fecha, hora, duraci
         throw new Error('Escritura (insert_cita) en appointments no devolvió fila: nada guardado');
     }
     return data;
+}
+
+
+// ─── El enlace público: claim atómico y lectura de lista negra ───────────────────────────
+
+/**
+ * El claim se perdió. NO es un fallo del sistema: es una respuesta legítima de
+ * `reservar_hueco()` («se acaba de ocupar», «ya tienes dos citas»), y por eso lleva el
+ * motivo del conjunto CERRADO de la migración 043 en vez de un texto.
+ *
+ * Se usa una excepción y no un valor de retorno distinto para que `saveAppointment` siga
+ * teniendo UN contrato: devuelve fila, o null, o lanza. Un cuarto llamador que mañana pase
+ * `source:'web'` esperando una fila se encuentra con un throw —ruidoso— y no con un objeto
+ * truthy sin `.id`, que es como se cuelan los bugs de este tipo.
+ */
+class ReservaWebRechazada extends Error {
+    constructor(motivo) {
+        super(`reserva web rechazada: ${motivo}`);
+        this.name = 'ReservaWebRechazada';
+        this.motivo = motivo;
+    }
+}
+
+// Los motivos que la 043 puede devolver. Se enumeran aquí ADEMÁS de en services/reserva-web.js
+// a propósito: esta capa tiene que poder distinguir «la función dijo que no» de «la función
+// devolvió algo que no entiendo», y lo segundo es un fallo nuestro que no puede disfrazarse
+// del primero (regla 3).
+const MOTIVOS_RESERVA_WEB = new Set([
+    'ok', 'hueco_ocupado', 'fuera_de_horario', 'bloqueado', 'tope_citas', 'rango_invalido',
+]);
+
+/**
+ * Llama a `reservar_hueco()` (migración 043) y devuelve la fila de la cita creada.
+ *
+ * Lo que esta función NO hace, y es tan importante como lo que hace: no comprueba skill, ni
+ * resuelve el servicio, ni decide la duración. Eso vive en JS ANTES de llegar aquí. Duplicar
+ * esas reglas en SQL sería la segunda versión del motor de disponibilidad, que es
+ * exactamente lo que el enlace no puede tener.
+ *
+ * @throws {ReservaWebRechazada} cuando el claim no prospera, con `motivo` del conjunto cerrado.
+ */
+async function reservarHuecoWeb(oid, contactId, { contacto, servicio, startsAt, endsAt, stylistId, notas, maxFuturas }) {
+    // Sin estilista no hay claim posible: el cerrojo y el EXCLUDE de la 043 se toman sobre
+    // (org, estilista, día). Una cita web sin estilista se escaparía de las dos protecciones,
+    // así que se rechaza aquí en vez de escribir una fila desprotegida.
+    if (!stylistId) {
+        logger.error('reserva_web_sin_estilista', { orgId: oid, contactId, servicio: servicio || null });
+        throw new ReservaWebRechazada('rango_invalido');
+    }
+
+    const { data, error } = await supabase.rpc('reservar_hueco', {
+        p_org: oid,
+        p_contact: contactId,
+        p_stylist: stylistId,
+        p_starts_at: startsAt.toISOString(),
+        p_ends_at: endsAt.toISOString(),
+        p_servicio: servicio || 'Reserva',
+        // La cita guarda el nombre y el teléfono de la FICHA, no lo que venga en la petición:
+        // son columnas NOT NULL y la ficha es la que el resto del sistema lee.
+        p_full_name: contacto?.nombre || '',
+        p_phone: contacto?.telefono || '',
+        p_notas: notas || null,
+        p_max_futuras: Number.isInteger(maxFuturas) ? maxFuturas : 2,
+    });
+    // Un error de la RPC es un fallo de verdad (permisos, red, la función no existe). Se
+    // trata como cualquier otra escritura rota: lanza. Devolver «no se pudo reservar» aquí
+    // haría que una avería se comunicara como un hueco ocupado.
+    assertWrite(error, 'appointments', 'reservar_hueco');
+
+    // `RETURNS TABLE` llega como array de una fila.
+    const fila = Array.isArray(data) ? data[0] : data;
+    if (!fila || !MOTIVOS_RESERVA_WEB.has(fila.motivo)) {
+        logger.error('reserva_web_motivo_desconocido', { orgId: oid, contactId, motivo: fila?.motivo ?? null });
+        throw new Error(`reservar_hueco devolvió un motivo que no está en el conjunto cerrado: ${fila?.motivo ?? 'null'}`);
+    }
+    if (!fila.ok) throw new ReservaWebRechazada(fila.motivo);
+    if (!fila.cita_id) {
+        // ok:true sin id no debería existir. Si pasa, NO es un éxito.
+        logger.error('reserva_web_ok_sin_id', { orgId: oid, contactId });
+        throw new Error('reservar_hueco devolvió ok sin cita_id: nada que confirmar');
+    }
+
+    // Se relee la fila para devolver el mismo tipo que el INSERT de saveAppointment. Si la
+    // relectura falla NO se dice que no se ha reservado —la cita EXISTE— sino que se
+    // devuelve lo mínimo con su id, y se avisa.
+    const { data: cita, error: errLeer } = await supabase
+        .from('appointments').select('*')
+        .eq('organization_id', oid).eq('id', fila.cita_id).maybeSingle();
+    if (errLeer || !cita) {
+        logger.warn('reserva_web_creada_sin_releer', { orgId: oid, citaId: fila.cita_id, error: errLeer?.message || null });
+        return { id: fila.cita_id, organization_id: oid, contact_id: contactId, starts_at: startsAt.toISOString() };
+    }
+    return cita;
+}
+
+/**
+ * Lo MÍNIMO que el enlace necesita saber de un teléfono: si hay ficha, cuál es, y si está
+ * bloqueada. Nada más — ni el nombre, ni el idioma, ni las notas.
+ *
+ * Tres decisiones, y las tres tienen su porqué:
+ *
+ * 1. **NO devuelve el nombre.** El enlace no puede saludar por el nombre de quien teclee un
+ *    número: eso filtraría el nombre de una clienta a cualquiera. Si el dato no sale de la
+ *    capa de datos, ningún handler puede publicarlo por descuido.
+ *
+ * 2. **Lleva `assertRead`, al revés que `findByPhone`.** Aquélla se traga el error y
+ *    devuelve null, y aquí un null significaría «no está bloqueada» — o sea que una lectura
+ *    rota dejaría entrar a alguien que la dueña bloqueó. Es el hecho 2 de la cabecera: un
+ *    cero no es una ausencia. No se ha tocado `findByPhone` porque cambiarla a lanzar mueve
+ *    el suelo de todo el bot (regla 11); esta es su versión estricta para el camino nuevo.
+ *
+ * 3. **Mira TODAS las variantes del teléfono** (`phoneVariants`). Hay duplicados vivos en
+ *    producción de antes de `sanitizePhone`, y si el bloqueo está en la fila duplicada, un
+ *    `.eq()` exacto sobre la canónica no lo vería.
+ */
+async function getContactoParaReservaWeb(orgId, telefono) {
+    const oid = resolveOrg(orgId);
+    const variantes = phoneVariants(telefono);
+    if (!variantes.length) return null;
+
+    const { data, error } = await supabase
+        .from('contacts')
+        .select('id, is_blacklisted, full_name')
+        .eq('organization_id', oid)
+        .in('wa_phone', variantes)
+        .order('created_at', { ascending: false });
+    assertRead(error, 'contacts');
+
+    const filas = data || [];
+    if (!filas.length) return null;
+    return {
+        id: filas[0].id,
+        // Basta con que UNA de las fichas del mismo teléfono esté bloqueada: si la dueña
+        // bloqueó a alguien, que su otra ficha duplicada le abra la puerta no es un matiz.
+        blacklisted: filas.some(f => f.is_blacklisted),
+        // Solo si TIENE nombre, nunca cuál: el formulario lo usa para no pisar el guardado.
+        tieneNombre: !!(filas[0].full_name && String(filas[0].full_name).trim()),
+    };
 }
 
 // Campos cuyo cambio le importa a alguien que audita una cita. Se dejan fuera a propósito
@@ -3887,6 +4051,9 @@ module.exports = {
     createStylist,
     updateStylist,
     getStylistSchedule,
+    reservarHuecoWeb,
+    ReservaWebRechazada,
+    getContactoParaReservaWeb,
     getAllStylistSchedules,
     upsertStylistSchedule,
     // Schedule blocks
