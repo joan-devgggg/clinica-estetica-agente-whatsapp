@@ -212,13 +212,27 @@ internet, y lo que las protege es un **secreto compartido** (`RESERVA_WEB_TOKEN`
 que `WHATSAPP_WEBHOOK_TOKEN`). **Sin la variable, las rutas responden 404 a todo**: una
 superficie pública a medio configurar se queda cerrada, nunca abierta.
 
-**Los tres anillos, y por qué cada uno vive donde vive:**
+**Los cuatro anillos, y por qué cada uno vive donde vive:**
 
 | Anillo | Dónde | Por qué ahí |
 |---|---|---|
 | Secreto Next→Express | cabecera `X-Reserva-Token` | sin él no hay JWT que valga: la ruta es pública |
 | Límite por IP y por org | **RAM de Express** | Vercel es serverless: allí cada invocación puede caer en una instancia nueva y un contador en RAM no cuenta nada — una protección falsa es peor que ninguna |
+| Candado del doble envío | **RAM de Express** | lo que protege dura SEGUNDOS (un reenvío pasa dentro de la misma sesión), así que irse con el deploy es asumible |
 | Tope de citas futuras | **SQL, en `reservar_hueco()`** | un contador en RAM se va con cada deploy, y ese dato no puede |
+
+**El candado del doble envío no es una comodidad: sin él dos POST idénticos crean DOS
+CITAS.** El claim de `reservar_hueco()` protege el HUECO, no la petición — la segunda pierde
+la carrera contra la estilista de la primera y el handler, cuando la clienta no eligió
+estilista, reintenta con la SIGUIENTE del hueco, que está libre. Misma persona, misma hora,
+dos estilistas, y el tope de citas futuras no lo ve porque la primera solo suma una. Tiene
+dos mitades que tapan casos distintos —coalescencia **en vuelo** (dos peticiones que se
+pisan) y memoria del **éxito** 90 s (el reenvío tardío, las dos pestañas)— y la clave es
+`(org, teléfono, fecha, hora)` **sin el servicio**: la misma persona no puede estar a la
+misma hora en dos sitios. Solo se guarda el éxito; cachear un «no» lo volvería pegajoso. Y
+se calcula **antes del limitador**, o un triple toque se comería el cupo de 3/hora de esa
+clienta. Del lado del navegador la mitad que falta es un `useRef` síncrono, no un `useState`:
+entre dos toques a 150 ms el estado no ha llegado a cambiar.
 
 La **IP de la clienta** viaja en `X-Cliente-IP` y Express solo se la cree **después** de que la
 petición haya probado el secreto: `req.ip` allí es la de Vercel (todas las clientas
@@ -229,6 +243,12 @@ TERCERA fila de la tabla de más abajo y va con el bot, no con el panel: el pane
 enseñar un `solo_complemento` porque hay una persona que sabe que eso no se vende suelto, y
 aquí no hay nadie. Encima se filtra `isReactiveOnlyService` (la Consulta de valoración está
 prohibida al bot desde el 02/08 y un desplegable público es justo lo que esa regla prohíbe).
+
+`GET /reserva-web/:slug/catalogo` devuelve además `salon: { nombre, whatsapp }` —el nombre
+sale de `business_info.companyName`, que lo edita la dueña, y sin él va **null** y la página
+dice la frase sin nombre (regla 3: un nombre inventado en el acuse de una reserva es lo peor
+que puede salir de ahí). El WhatsApp va en esa primera llamada para que la clienta tenga una
+salida humana guardada antes de que pueda fallar nada más.
 
 **Qué NO puede salir, y cómo está garantizado:** todo lo que se devuelve pasa por una
 proyección de `services/reserva-web.js` que **ENUMERA campos, nunca esparce el objeto** — lo
@@ -249,7 +269,36 @@ San Remo queda fuera **por tipo de org** en `resolveOrgBySlug`, no por config va
 viven en `config` y nacen apagados (`reservas_web_activo`). Red:
 `tests/reserva-web-{limitador,endpoints,sin-fugas}.test.js`, 18 sabotajes medidos.
 
-⚠️ **Falta la PANTALLA**: hay endpoints, no hay formulario.
+**LA PANTALLA** (`/reservar/[slug]`, 20/08/2026): servicio → variante si la categoría tiene
+varias → día → hora → nombre y teléfono → tic verde. Vive FUERA del grupo `(app)` para no
+heredar barra lateral ni contextos que piden sesión, y hay un test que prohíbe importar
+`@/lib/org-context`, `@/lib/api` y `@/utils/supabase` desde ahí: reutilizar una pieza del
+panel rompe la página para quien no tiene cuenta. `proxy.ts` exime la ruta **antes** de
+`createClient`, o cada petición de la página sin sesión haría un viaje a Supabase a preguntar
+por una sesión que no existe.
+
+Todo lo que la pantalla DECIDE está en `dashboard-app/src/lib/reservar/nucleo.ts`, **un
+fichero sin una sola importación**: así lo ejecuta un test de Node de siempre
+(`tests/reserva-web-pantalla.test.js`, 39 bloques) aprovechando el borrado de tipos de Node
+25. Lo demás sería leer el TSX con un `grep`, que mide la redacción y no la conducta.
+
+**La política de los motivos NO se copia en el navegador.** Qué código HTTP lleva cada uno,
+si se recargan los huecos y si se abre WhatsApp lo decide `services/reserva-web.js` y VIAJA
+EN LA RESPUESTA; la pantalla pone el texto y el paso al que vuelve, y el test cruza las dos.
+De ahí sale `enlaceDelAviso`: el WhatsApp de respaldo que la página guarda al cargar solo se
+usa cuando NO hubo respuesta que obedecer (red caída, cuerpo ilegible, el 502 que fabrica el
+puente del Next y que por eso se marca `origen:'puente'`). Usarlo también con los «no» del
+servidor ponía un botón de WhatsApp en «ese hueco se acaba de ocupar», donde lo que hay que
+hacer es tocar otra hora.
+
+**El día se dice en DOS formas, y son dos a propósito.** La frase con preposición llega hecha
+del servidor en `cita.cuando` (`formatReminderWhen`, acusativo: «во вторник»); el rótulo
+suelto encima de la rejilla sale de `Intl`, que da NOMINATIVO («вторник»), que es lo que un
+título necesita. No es la tabla duplicada: es que la tabla no sirve para esto.
+
+**Idiomas: la estructura está, las traducciones no.** `TEXTOS` es un mapa parcial con solo
+`es` y `textos()` cae a la tabla castellana ENTERA. Añadir inglés es rellenar una entrada;
+no se toca ni un componente. El idioma entra por `?lang=`.
 
 **`GET /api/wa-status` ya NO es público** (20/08/2026). Estuvo dos meses registrado por
 encima de `app.use('/api', requireApiAuth)` y le daba a cualquiera con la URL el slug de
