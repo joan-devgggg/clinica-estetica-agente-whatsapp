@@ -17,8 +17,9 @@ const logger = require('./lib/logger');
 const DEFAULT_ORG = process.env.ORGANIZATION_ID || 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
 // Cuánto calendario ve el enlace público: TRES MESES, decisión de Yulia del 19/08/2026.
-// El motor lo recibe por parámetro (`horizonteDias`); su default sigue siendo 14, que es lo
-// que pide el bot, y por eso una conversación no se entera de este número.
+// Desde el 20/08/2026 el default del motor es el mismo (HORIZONTE_DIAS_DEFAULT = 90), pero
+// se sigue pasando por parámetro a propósito: son dos decisiones distintas que hoy coinciden,
+// y el enlace tiene que poder mover la suya sin arrastrar a las conversaciones del bot.
 const HORIZONTE_RESERVA_WEB = 90;
 
 const app = express();

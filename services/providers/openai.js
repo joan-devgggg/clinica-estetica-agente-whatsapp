@@ -339,7 +339,11 @@ function buildSantePrompt(partialData, intent, citaConfirmada, summary, agentCfg
     // fuera simplemente que el salón está completo. Ése fue el fallo observado el 27/07.
     // La causa la calcula calendar-sante.js (CAUSAS_CERO) y la propaga bot.js.
     const CERO_STR = {
-        agenda_llena: 'NO quedan huecos libres para este servicio en las próximas dos semanas: el salón está COMPLETO. NO es un fallo técnico. Díselo con naturalidad y ofrécele mirar más adelante o con otra estilista.',
+        // "Dos semanas" era el horizonte del motor y dejó de serlo el 20/08/2026: ahora son
+        // TRES MESES (HORIZONTE_DIAS_DEFAULT). Con eso cae también el "ofrécele mirar más
+        // adelante": ya se ha mirado hasta donde hay agenda, así que mandarla a mirar más
+        // allá es pedirle algo que nadie puede hacer.
+        agenda_llena: 'NO quedan huecos libres para este servicio en los próximos TRES MESES: el salón está COMPLETO. NO es un fallo técnico, y NO hay un "más adelante" que mirar: la agenda ya está consultada hasta donde llega. Díselo con naturalidad y ofrécele otra estilista o hablar con el equipo.',
         no_cabe_antes_del_cierre: 'El servicio que pide dura más de lo que queda de jornada en los días buscados, así que no entra antes del cierre. NO es un fallo técnico. Propón reservarlo a primera hora de otro día.',
         sin_horario: 'Ninguna estilista tiene horario en las fechas buscadas. NO es un fallo técnico. Ofrece mirar otras fechas.',
         sin_skill: 'Ninguna estilista del equipo hace ese servicio. NO es un fallo técnico. Explícaselo y ofrécele algo parecido del catálogo.',
@@ -862,7 +866,10 @@ USA SIEMPRE este calendario para resolver "hoy", "mañana", "este viernes", "la 
 
 Aceptamos citas para CUALQUIER fecha futura, sin límite de antelación.
 NUNCA digas que no puedes gestionar reservas para fechas futuras ni que solo reservas con pocos días de margen: es FALSO.
-La lista de HUECOS DISPONIBLES de más abajo ya está calculada para los próximos días; propón siempre desde esa lista. Si la clienta pide una fecha concreta que no aparezca, ofrécele el hueco disponible más cercano a esa fecha; nunca rechaces la reserva por ser futura.
+La lista de HUECOS DISPONIBLES de más abajo ya está calculada sobre los próximos TRES MESES de agenda; propón siempre desde esa lista. Si la clienta pide una fecha concreta que no aparezca, ofrécele el hueco disponible más cercano a esa fecha; nunca rechaces la reserva por ser futura.
+
+REGLA CRÍTICA — NUNCA PROMETAS AVISAR MÁS ADELANTE. No existe ningún mecanismo que le escriba a una clienta cuando "salgan", "se abran" o "carguen" fechas: si lo prometes, ese mensaje no llega NUNCA y ella se queda esperando. Prohibidas todas estas y sus equivalentes en cualquier idioma: "te aviso cuando…", "en cuanto tenga las fechas te digo", "déjame cargar esas fechas y te propongo opciones", "te escribo en cuanto se abra la agenda".
+Y NUNCA hables de huecos "cargados", "no cargados" ni "que aún no se han abierto": eso es maquinaria nuestra y a la clienta no le dice nada. Si una fecha no aparece en la lista, lo único cierto es que para ESA fecha no hay hueco; lo que sí puedes hacer siempre es ofrecerle el más cercano que sí tienes, o proponerle hablar con el equipo.
 
 # ── IDIOMA (OBLIGATORIO) ──────────────────────────────────────────────────
 

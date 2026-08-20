@@ -41,17 +41,40 @@ function conCausa(slots, causa) {
 }
 
 // Horizonte por defecto: cuántos días de calendario recorre el motor. Es el valor que usa
-// el BOT, y por eso 14 sigue siendo el default: una conversación propone dos o tres huecos
-// próximos, no un calendario. El ENLACE público pide 90 (tres meses, decisión de Yulia,
-// 19/08/2026) y lo pasa por parámetro. Que el bot no lo pase es lo que garantiza que no se
-// entera de este cambio.
+// el BOT, y desde el 20/08/2026 son 90 — TRES MESES, los mismos que el enlace público
+// (decisión del dueño). Antes eran 14, y el 14 se cambió mirando lo que costaba:
+//
+//   Karolina, 17/08/2026. Pidió el lunes 7 de septiembre: 21 días. El motor no llegaba, así
+//   que devolvía cero para ese día y el modelo tradujo el cero a lenguaje de máquina —«El
+//   lunes 7 de septiembre aún no tengo huecos cargados»— y encima prometió avisarla cuando
+//   «cargaran» las fechas. Nunca hubo cita. El horizonte corto no le ahorraba nada a nadie:
+//   solo hacía que la mitad de septiembre no existiera.
+//
+// LO QUE CUESTA SUBIRLO, medido contra la Supabase real el 20/08/2026 (9 corridas):
+//
+//   · El bloque de HUECOS del prompt NO crece ni un carácter. El tope no es el horizonte
+//     sino MAX_TOTAL (20 sin día concreto, un solo día con él): sin preferencia salen las
+//     mismas 20 filas y los mismos 1044 caracteres con 14 y con 90. Cero tokens de más.
+//   · El prefetch hace los MISMOS 14 viajes en las MISMAS 2 tandas. Solo cambia el tamaño
+//     de cada lectura: mediana de 248 ms a 353 ms desde un portátil (Railway está más cerca
+//     de Supabase que nosotros).
+//   · Lo que cambia es el CONTENIDO cuando la clienta pide una fecha pasado el día 14: a 21
+//     días pasaba de `requestedDayUnavailable` (con alternativas cercanas) a los huecos
+//     REALES de ese día.
+//
+// El ENLACE sigue pasando su 90 por parámetro (webhook.js, HORIZONTE_RESERVA_WEB) aunque
+// hoy coincida con el default: son dos decisiones, y la del enlace tiene que poder moverse
+// sin arrastrar a las conversaciones.
 //
 // NO tiene nada que ver con el «CALENDARIO DE REFERENCIA (próximos 14 días)» del prompt
-// (providers/openai.js): aquello es una tabla de consulta para que el modelo no calcule
-// fechas de cabeza, y subirla metería 90 líneas en cada turno de las DOS organizaciones
-// para siempre, además de invitarle a proponer fechas lejanas sin datos detrás. Son dos
-// catorces distintos y solo se mueve este.
-const HORIZONTE_DIAS_DEFAULT = 14;
+// (providers/openai.js), que NO se toca: aquello es una tabla de consulta para que el modelo
+// no calcule fechas de cabeza, y subirla metería 90 líneas en cada turno de las DOS
+// organizaciones para siempre. Que el motor vea tres meses y el calendario de referencia
+// catorce días es correcto y deliberado: el modelo no tiene que resolver la fecha de un
+// hueco lejano, porque `formatSlotTexto` se la da ya escrita («a las 10:00 del jueves 27 de
+// noviembre con Irina»). El calendario es para las palabras de la CLIENTA («este viernes»),
+// y esas nunca apuntan a noviembre.
+const HORIZONTE_DIAS_DEFAULT = 90;
 // Techo del horizonte. No es una política del salón —eso lo decide quien llama— sino el
 // límite a partir del cual un valor deja de ser una decisión y es un bug: un año de
 // calendario ya cubre cualquier cosa que un salón pueda querer decir. Se ASERTA, no se
@@ -347,7 +370,7 @@ async function prepararMotor(orgId, { serviceDuration = 60, serviceCategory, pre
 }
 
 /**
- * Devuelve huecos disponibles para un servicio dentro del horizonte (14 días por defecto).
+ * Devuelve huecos disponibles para un servicio dentro del horizonte (90 días por defecto).
  * @param {string} orgId
  * @param {object} options
  * @param {number} options.serviceDuration — duración en minutos
@@ -357,8 +380,8 @@ async function prepararMotor(orgId, { serviceDuration = 60, serviceCategory, pre
  * @param {string|null} [options.lang] — idioma de la clienta ('es'|'en'|'ru'|'uk'); decide el
  *   idioma de `texto`. Null o desconocido caen a castellano (mismo criterio que el
  *   recordatorio). Los llamadores que no lo pasan (scripts de verificación) reciben es.
- * @param {number} [options.horizonteDias] — días de calendario a recorrer. Default 14, que es
- *   lo que pide el bot; el enlace público pasa 90. Ver HORIZONTE_DIAS_DEFAULT.
+ * @param {number} [options.horizonteDias] — días de calendario a recorrer. Default 90 (tres
+ *   meses), que es lo que ven el bot y el enlace. Ver HORIZONTE_DIAS_DEFAULT.
  * @returns {Array} — top slots con { fecha, hora, diaNombre, stylistId, stylistName, texto }
  */
 async function getAvailableSlots(orgId, { serviceDuration = 60, serviceCategory, preferredStylistId, preferencia = {}, lang = null, horizonteDias } = {}) {

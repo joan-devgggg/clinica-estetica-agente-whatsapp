@@ -8,17 +8,31 @@
  *
  * ── Lo que estos bloques protegen, y por qué cada uno ────────────────────────────────────
  *
- *  1. **Que el bot no se entere.** Sus dos call sites (bot.js:571 y el reload de confirmación)
- *     NO pasan `horizonteDias`, así que siguen recorriendo 14 días. El default no es una
- *     comodidad: es la garantía. Si mañana alguien "unifica" y sube el default, una
- *     conversación empezaría a ver tres meses de agenda y el prompt recibiría huecos de
- *     noviembre que su CALENDARIO DE REFERENCIA no contiene.
+ *  1. **Que haya UN horizonte y no dos.** El default es 90 desde el 20/08/2026 (antes 14) y
+ *     los dos call sites del bot (bot.js:571 y el reload de confirmación) siguen SIN pasar
+ *     `horizonteDias`: lo toman del default. Que no lo pasen es lo que impide que el número
+ *     acabe escrito en dos sitios que hay que acordarse de mover a la vez.
  *
- *  2. **Que el 14 del prompt siga siendo otro 14.** `providers/openai.js` tiene un
+ *     El 14 se cambió mirando lo que costaba, no por gusto. Karolina, 17/08/2026: pidió el
+ *     lunes 7 de septiembre —21 días— y el motor no llegaba, así que devolvía cero para ese
+ *     día; el modelo tradujo el cero a «aún no tengo huecos cargados» y prometió avisarla
+ *     cuando «cargaran» las fechas. Nunca hubo cita. Y no ahorraba nada: MAX_TOTAL (20 sin
+ *     día concreto) ya acotaba la lista, así que el horizonte corto solo hacía que la mitad
+ *     de septiembre no existiera.
+ *
+ *  2. **Que el 14 del prompt NO se haya movido con él.** `providers/openai.js` tiene un
  *     «CALENDARIO DE REFERENCIA (próximos 14 días)» que NO es el horizonte: es una tabla de
  *     consulta para que el modelo no calcule fechas de cabeza. Subirla metería 90 líneas en
- *     cada turno de las DOS organizaciones, para siempre, y encima le invitaría a proponer
- *     fechas lejanas sin datos detrás. Aquí se afirma que los dos catorces siguen separados.
+ *     cada turno de las DOS organizaciones, para siempre. Ya no son «dos catorces»: son un
+ *     90 y un 14, y este bloque es lo que impide que alguien los vuelva a juntar. Que el
+ *     motor vea tres meses y el calendario catorce días no es una incoherencia — el modelo
+ *     no tiene que resolver la fecha de un hueco lejano, `formatSlotTexto` se la da escrita;
+ *     el calendario es para las palabras de la CLIENTA («este viernes»), que nunca apuntan
+ *     a noviembre.
+ *
+ *  2 bis. **Que el bot no pueda prometer un aviso que nadie va a mandar.** No existe ningún
+ *     mecanismo que escriba a una clienta cuando «carguen» fechas, y el 17/08 se lo prometió
+ *     a Karolina dos veces. La regla vive en el bloque RESERVAS FUTURAS del prompt.
  *
  *  3. **Que el horizonte se ASERTE y no se recorte.** Un 0 recortado a 14 devolvería huecos
  *     correctos para una pregunta que nadie hizo; un 100000 recortado a 366, lo mismo al
@@ -43,10 +57,18 @@
  *   90 días · huecos           14 tandas 1149 ms   2 tandas  324 ms
  *   90 días · rejilla de mes   14 tandas 1019 ms   2 tandas  175 ms
  *
+ * ── Lo que costó subir el default de 14 a 90, medido el mismo día ────────────────────────
+ * Mismos 14 viajes y mismas 2 tandas; mediana 248 ms → 353 ms desde un portátil. Y el
+ * bloque de HUECOS del prompt no crece ni un carácter: sin preferencia salen las MISMAS 20
+ * filas y los mismos 1044 caracteres con 14 y con 90, porque el tope no es el horizonte
+ * sino MAX_TOTAL. Lo que cambia es el contenido cuando se pide una fecha pasado el día 14:
+ * a 21 días, de `requestedDayUnavailable` a los huecos reales de ese día.
+ *
  * ── Sabotajes medidos, con los bloques que caen ──────────────────────────────────────────
- *   · el default sube de 14 a 90 (el bot se entera) .............................. 3 rojos
- *       («el default exportado es 14» + «el día 14 dentro y el 15 fuera» + «el rango…»)
+ *   · el default vuelve a 14 (media agenda deja de existir) ...................... 3 rojos
+ *       («el default exportado es 90» + «el día 21 dentro y el 91 fuera» + «null/undefined»)
  *   · el prefetch vuelve a ir en serie (D7 sin arreglar) ......................... 3 rojos
+ *   · se borra la regla de no prometer avisos del prompt ......................... 2 rojos
  */
 process.env.TZ = 'Europe/Madrid';
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
@@ -132,27 +154,31 @@ const pedir = (opts = {}) => getAvailableSlots('org', { serviceDuration: 60, ser
 
 // ─── 1 · El default es 14, y es lo que pide el bot ───────────────────────────────────────
 
-test('el default exportado es 14 — el número que usa el bot', () => {
-    assert.strictEqual(HORIZONTE_DIAS_DEFAULT, 14);
+test('el default exportado es 90 — tres meses, el número que usan el bot y el enlace', () => {
+    assert.strictEqual(HORIZONTE_DIAS_DEFAULT, 90);
 });
 
-test('sin horizonteDias, el día 14 está DENTRO y el 15 está fuera', async () => {
-    // El recorrido arranca MAÑANA (dia(1)) y cubre 14 fechas: dia(1)…dia(14).
+test('sin horizonteDias, el día 21 (el de Karolina) está DENTRO y el 91 está fuera', async () => {
+    // El recorrido arranca MAÑANA (dia(1)) y cubre 90 fechas: dia(1)…dia(90). El 21 es el
+    // que importa: es el lunes 7 de septiembre que el 17/08 no existía para el bot.
     conEstilistas();
-    const dentro = await pedir({ preferencia: { fecha: dia(14) } });
-    assert.ok(dentro.length > 0, 'el día 14 debería tener huecos: está dentro del horizonte');
-    assert.ok(dentro.every(s => s.fecha === dia(14)), 'con fecha anclada solo salen huecos de ese día');
+    const dentro = await pedir({ preferencia: { fecha: dia(21) } });
+    assert.ok(dentro.length > 0, 'el día 21 debería tener huecos: está dentro del horizonte');
+    assert.ok(dentro.every(s => s.fecha === dia(21)), 'con fecha anclada solo salen huecos de ese día');
+    assert.ok(!dentro.requestedDayUnavailable,
+        'ese día SÍ está disponible: marcarlo como no disponible es lo que costó la cita de Karolina');
 
     conEstilistas();
-    const fuera = await pedir({ preferencia: { fecha: dia(15) } });
-    assert.ok(fuera.every(s => s.fecha !== dia(15)), 'el día 15 NO puede aparecer con el horizonte por defecto');
+    const fuera = await pedir({ preferencia: { fecha: dia(91) } });
+    assert.ok(fuera.every(s => s.fecha !== dia(91)), 'el día 91 queda fuera del horizonte por defecto');
     assert.strictEqual(fuera.requestedDayUnavailable, true, 'y el bot tiene que enterarse de que ese día no salió');
 });
 
-test('los dos call sites del bot NO pasan horizonteDias — es lo que garantiza que no se entera', () => {
-    // Un grep, sí, pero el que importa: el día que alguien le pase 90 al bot "para
-    // aprovechar", esto sale en rojo y le obliga a leer el porqué en vez de descubrirlo
-    // cuando el prompt reciba huecos de noviembre que su calendario no contiene.
+test('los dos call sites del bot NO pasan horizonteDias — es lo que mantiene UN solo número', () => {
+    // Un grep, sí, pero el que importa. Ya no protege «que el bot no se entere» (se entera:
+    // el default ES su número desde el 20/08/2026); protege que el 90 esté escrito en UN
+    // sitio. Un call site que lo pase a mano es un segundo número que hay que acordarse de
+    // mover, y el día que no se muevan a la vez nadie lo ve desde ninguna pantalla.
     const bot = fs.readFileSync(path.join(__dirname, '../bot.js'), 'utf8');
     const llamadas = bot.match(/calendarSante\.getAvailableSlots\(orgId, \{[\s\S]*?\n\s*\}\);/g) || [];
     assert.strictEqual(llamadas.length, 2, 'el bot tiene exactamente dos call sites del motor de huecos');
@@ -175,18 +201,76 @@ test('el CALENDARIO DE REFERENCIA del prompt sigue siendo de 14 días y no cuelg
     // Solo el ACOPLAMIENTO: openai.js menciona calendar-sante en dos comentarios (de dónde
     // vienen los huecos y quién calcula la causa) y eso está bien. Lo que no puede es
     // importarlo ni leerle el horizonte.
-    assert.ok(!/require\(['"][^'"]*calendar-sante/.test(openai),
+    //
+    // Los comentarios se QUITAN antes de mirar, y no es comodidad: el 20/08/2026, al subir
+    // el horizonte, hizo falta explicar en un comentario de openai.js por qué el suyo NO se
+    // movía —o sea, nombrar la constante para decir que no se lee— y este bloque salió en
+    // rojo por la explicación. Un test que prohíbe hablar del acoplamiento en vez de
+    // prohibir el acoplamiento empuja a borrar el porqué, que es lo contrario de lo que
+    // este fichero existe para conseguir.
+    const codigo = openai
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n').map(l => l.replace(/(^|\s)\/\/.*$/, '')).join('\n');
+    assert.ok(!/require\(['"][^'"]*calendar-sante/.test(codigo),
         'el prompt ha empezado a importar el motor de huecos');
-    assert.ok(!/HORIZONTE_DIAS/.test(openai),
+    assert.ok(!/HORIZONTE_DIAS/.test(codigo),
         'el prompt ha empezado a derivar su calendario del horizonte del motor');
+});
+
+// ─── 2 bis · La promesa que nadie puede cumplir ──────────────────────────────────────────
+
+// Se construye el prompt DE VERDAD en vez de grepear el fichero: así la regla tiene que
+// llegar al texto que ve el modelo, no solo estar escrita en alguna parte del módulo.
+const { buildSystemPrompt } = require('../services/providers/openai');
+const promptSante = () => buildSystemPrompt('b2c3d4e5-f6a7-8901-bcde-f12345678901', {}, null, false, null, {
+    business_info: { companyName: 'Salón de prueba', horario: 'L-S 10:00–19:00' },
+    services: [], tone: 'cercano',
+});
+
+test('el prompt PROHÍBE prometer un aviso posterior — no existe quien lo mande', () => {
+    // Karolina, 17/08/2026: «Déjame cargar esas fechas y te propongo opciones 😊» y «En
+    // cuanto carguen los huecos de principios de septiembre te propongo las opciones». Dos
+    // promesas, cero mecanismos. Escribió tres mensajes más y no le contestó nadie.
+    const p = promptSante();
+    assert.ok(/NUNCA PROMETAS AVISAR MÁS ADELANTE/.test(p),
+        'la regla de no prometer avisos no está en el prompt');
+    assert.ok(/te aviso cuando/.test(p) && /te propongo opciones/.test(p),
+        'la regla tiene que ENUMERAR las frases reales que dijo el bot, no describirlas en abstracto');
+});
+
+test('el prompt PROHÍBE hablar de huecos "cargados": es maquinaria, no una respuesta', () => {
+    // Misma frase, dos idiomas y diez días de diferencia: «I don't have the available slots
+    // loaded for that day yet» (Michal, 07/08) y «aún no tengo huecos cargados» (Karolina,
+    // 17/08). REGEN_FRASES_MAQUINARIA las enumera, pero esa lista solo mira la respuesta
+    // REGENERADA por la escalera — nunca el mensaje original, que es por donde salieron las dos.
+    const p = promptSante();
+    assert.ok(/huecos "cargados"|huecos «cargados»/.test(p),
+        'el prompt no dice nada de la jerga de "huecos cargados"');
+});
+
+test('el aviso de agenda llena ya no dice "dos semanas" ni manda a mirar "más adelante"', () => {
+    // Es el texto que lee el modelo cuando el motor devuelve cero por agenda_llena. Con el
+    // horizonte en 90 «las próximas dos semanas» pasa a ser falso, y «mira más adelante» es
+    // peor que falso: es pedirle a la clienta algo que ya se ha hecho y no ha dado nada.
+    const openai = fs.readFileSync(path.join(__dirname, '../services/providers/openai.js'), 'utf8');
+    const linea = openai.split('\n').find(l => /agenda_llena:/.test(l)) || '';
+    assert.ok(linea, 'no se encuentra el texto de agenda_llena');
+    assert.ok(!/dos semanas/.test(linea), `agenda_llena sigue diciendo "dos semanas":\n${linea}`);
+    assert.ok(/TRES MESES/.test(linea), `agenda_llena no dice el horizonte real:\n${linea}`);
+    assert.ok(!/mirar más adelante/.test(linea),
+        `agenda_llena sigue mandando a mirar más adelante, que ya no existe:\n${linea}`);
 });
 
 // ─── 3 · El horizonte se asierta, no se recorta ──────────────────────────────────────────
 
-test('90 días abre el día 15, y la frontera de 90 sigue siendo una frontera', async () => {
+test('el parámetro sigue mandando en las DOS direcciones, y la frontera es una frontera', async () => {
+    // Ahora que el default es 90, lo que hay que comprobar es que el parámetro puede
+    // BAJARLO igual que antes lo subía: si dejara de hacerlo, un llamador que quisiera
+    // mirar solo esta quincena estaría leyendo tres meses sin enterarse.
     conEstilistas();
-    const q = await pedir({ horizonteDias: 90, preferencia: { fecha: dia(15) } });
-    assert.ok(q.length > 0 && q.every(s => s.fecha === dia(15)), 'con 90 días el día 15 tiene que salir');
+    const corto = await pedir({ horizonteDias: 14, preferencia: { fecha: dia(15) } });
+    assert.ok(corto.every(s => s.fecha !== dia(15)), 'con 14 explícitos el día 15 tiene que quedar fuera');
+    assert.strictEqual(corto.requestedDayUnavailable, true);
 
     conEstilistas();
     const ultimo = await pedir({ horizonteDias: 90, preferencia: { fecha: dia(90) } });
@@ -213,20 +297,27 @@ test("una CADENA '90' también lanza: la conversión es del llamador", async () 
     await assert.rejects(() => pedir({ horizonteDias: '90' }), /horizonteDias/);
 });
 
-test('null y undefined caen al default, que es lo que hace el bot sin saberlo', async () => {
+test('null y undefined caen al default, que es de donde saca el bot sus tres meses', async () => {
     conEstilistas();
-    const sinNada = await pedir({ preferencia: { fecha: dia(15) } });
+    const sinNada = await pedir({ preferencia: { fecha: dia(60) } });
     conEstilistas();
-    const conNull = await pedir({ horizonteDias: null, preferencia: { fecha: dia(15) } });
+    const conNull = await pedir({ horizonteDias: null, preferencia: { fecha: dia(60) } });
     assert.deepStrictEqual(conNull.map(s => s.fecha), sinNada.map(s => s.fecha));
+    // Y la fecha se elige a 60 días a propósito: con una dentro de los 14 viejos, este
+    // bloque pasaría igual con el default en 14 y no diría nada del cambio.
+    assert.ok(sinNada.length > 0 && sinNada.every(s => s.fecha === dia(60)),
+        'sin pasar nada, el día 60 tiene que salir: el default es 90');
 });
 
 test('el rango que se le pide a la BD crece con el horizonte', async () => {
     // Si el horizonte subiera solo en el bucle de días y no en el rango de la consulta, el
     // motor recorrería 90 días con las citas de solo 14: los últimos 76 saldrían LIBRES
     // aunque estuvieran cogidos. Es el fallo silencioso más caro de este cambio.
+    // Los dos horizontes van EXPLÍCITOS: comparar contra el default dejaría de medir nada
+    // el día que el default valga lo mismo que el valor con el que se compara — que es
+    // justo lo que pasó al subirlo a 90 (los dos lados daban 90 y el test seguía verde).
     conEstilistas();
-    await pedir({});
+    await pedir({ horizonteDias: 14 });
     const corto = Math.max(...IO.rangos.map(r => new Date(r.to).getTime()));
     conEstilistas();
     await pedir({ horizonteDias: 90 });

@@ -44,6 +44,12 @@ require.cache[supabasePath] = {
 const db = require('../services/db');
 const calendarSante = require('../services/calendar-sante');
 
+// Cuántos días hay que tapar para que la agenda esté LLENA de verdad. Sale del horizonte del
+// motor, jamás de un número escrito aquí: el fixture tiene que seguir al horizonte solo, o
+// vuelve a caducar en silencio la próxima vez que se mueva. El +2 es el margen de los bordes
+// (el bucle arranca en «ayer» y el recorrido acaba en dia(horizonte)).
+const DIAS_A_TAPAR = calendarSante.HORIZONTE_DIAS_DEFAULT + 2;
+
 const ORG = 'b2c3d4e5-f6a7-8901-bcde-f12345678901';
 let pass = 0;
 function test(nombre, fn) {
@@ -97,8 +103,14 @@ async function lanza(fn, etiqueta) {
         control.failTables = new Set();
         // El motor agrupa las citas por su fecha de INICIO, así que hace falta una cita por
         // día: una sola cita larguísima solo taparía el día en que empieza.
+        //
+        // Y hacen falta TODAS las del horizonte, contadas desde la constante y nunca a mano:
+        // aquí había un 20 escrito, que tapaba de sobra los 14 días de entonces y dejó de
+        // tapar nada el 20/08/2026, cuando el horizonte pasó a 90. Un fixture que cubre
+        // menos que el horizonte no falla diciendo «faltan días»: dice «la causa no es
+        // agenda_llena», que manda a buscar el bug al sitio equivocado.
         const hoy = new Date();
-        control.rows.appointments = Array.from({ length: 20 }, (_, i) => {
+        control.rows.appointments = Array.from({ length: DIAS_A_TAPAR }, (_, i) => {
             const d = new Date(hoy.getTime() + (i - 1) * 86400000).toISOString().slice(0, 10);
             return {
                 id: `a${i}`, stylist_id: 'sty-1', status: 'confirmed', service: 'x',
@@ -129,7 +141,7 @@ async function lanza(fn, etiqueta) {
 
         // Y ahora el mismo servicio con la agenda tapada: la causa es agenda_llena.
         const hoy = new Date();
-        control.rows.appointments = Array.from({ length: 20 }, (_, i) => {
+        control.rows.appointments = Array.from({ length: DIAS_A_TAPAR }, (_, i) => {
             const d = new Date(hoy.getTime() + (i - 1) * 86400000).toISOString().slice(0, 10);
             return {
                 id: `b${i}`, stylist_id: 'sty-1', status: 'confirmed', service: 'x',
