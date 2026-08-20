@@ -108,7 +108,7 @@ export type Motivo =
     | 'hueco_ocupado' | 'fuera_de_horario' | 'bloqueado' | 'tope_citas' | 'rango_invalido'
     | 'demasiadas_peticiones' | 'salon_saturado' | 'no_confirmable_online'
     | 'datos_invalidos' | 'servicio_no_disponible' | 'hueco_no_existe' | 'cerrado'
-    | 'error_interno' | 'no_encontrado' | 'sin_conexion';
+    | 'error_interno' | 'no_encontrado' | 'sin_conexion' | 'hueco_caducado';
 
 /** A dónde vuelve la clienta después de leer el aviso. */
 export type Vuelta =
@@ -148,6 +148,10 @@ const VUELTAS: Record<Motivo, Vuelta> = {
     datos_invalidos: 'datos',
     error_interno: 'reintentar',
     sin_conexion: 'reintentar',
+    // No lo manda nadie: lo pone la pantalla cuando vuelve de una recarga y el hueco que
+    // ella tenía elegido ya no está en la agenda. Va a 'huecos' porque para entonces la
+    // lista del día ya se ha releído y lo que hay debajo del aviso son los que quedan.
+    hueco_caducado: 'huecos',
 };
 
 export function vueltaDe(motivo: Motivo): Vuelta {
@@ -349,6 +353,10 @@ const ES: Textos = {
             titulo: 'No hemos podido conectar',
             cuerpo: 'Comprueba tu conexión y vuelve a intentarlo.',
         },
+        hueco_caducado: {
+            titulo: 'Esa hora ya no está libre',
+            cuerpo: 'La ha cogido otra persona mientras tanto. Estas son las que quedan.',
+        },
         no_encontrado: {
             titulo: 'Esta página no existe',
             cuerpo: 'Puede que el enlace esté mal copiado o que ya no esté activo.',
@@ -498,6 +506,10 @@ const EN: Textos = {
             titulo: 'We could not connect',
             cuerpo: 'Check your connection and try again.',
         },
+        hueco_caducado: {
+            titulo: 'That time is no longer free',
+            cuerpo: 'Someone took it in the meantime. These are the ones still open.',
+        },
         no_encontrado: {
             titulo: 'This page does not exist',
             cuerpo: 'The link may have been copied wrong, or it may no longer be active.',
@@ -623,6 +635,10 @@ const RU: Textos = {
             titulo: 'Не удалось подключиться',
             cuerpo: 'Проверь соединение и попробуй снова.',
         },
+        hueco_caducado: {
+            titulo: 'Это время уже занято',
+            cuerpo: 'Его успел занять кто-то другой. Вот что осталось свободным.',
+        },
         no_encontrado: {
             titulo: 'Такой страницы нет',
             cuerpo: 'Возможно, ссылка скопирована неверно или больше не работает.',
@@ -747,6 +763,10 @@ const UK: Textos = {
         sin_conexion: {
             titulo: 'Не вдалося підключитися',
             cuerpo: 'Перевір зʼєднання і спробуй знову.',
+        },
+        hueco_caducado: {
+            titulo: 'Цей час уже зайнятий',
+            cuerpo: 'Його встиг зайняти хтось інший. Ось що лишилося вільним.',
         },
         no_encontrado: {
             titulo: 'Такої сторінки немає',
@@ -1225,4 +1245,282 @@ export function problemaTelefono(txt: unknown): ProblemaTelefono | null {
 
 export function nombreUsable(txt: unknown): boolean {
     return String(txt ?? '').trim().length >= 2;
+}
+
+// ─── Los pasos, el historial y el progreso ───────────────────────────────────────────────
+//
+// El bug: recargar o dar al ATRÁS del navegador a mitad del formulario devolvía al paso 1 con
+// todo perdido y sin decir nada. En un móvil el atrás es lo primero que se toca para
+// corregir, y quien va por el paso 4 y lo pierde todo no vuelve a empezar: se va.
+//
+// DÓNDE VIVE CADA MITAD, que es toda la decisión:
+//
+//   · el ATRÁS  → en la pila del HISTORIAL, una entrada por paso, SIEMPRE con la misma URL
+//     (`pushState` sin tercer argumento). El paso NO va en la dirección, y eso es lo que
+//     evita que un enlace copiado a mitad lleve la reserva de otra persona dentro — y que la
+//     URL cuente por WhatsApp qué se iba a hacer.
+//   · la RECARGA → en `sessionStorage`, que muere con la pestaña y no viaja a ningún sitio.
+//
+// Y lo que se recupera NO se cree: se vuelve a preguntar al motor. Un hueco elegido hace
+// veinte minutos puede ser de otra desde hace diecinueve.
+
+export type Paso = 'servicio' | 'variante' | 'dia' | 'hora' | 'datos' | 'hecha';
+
+/** Los pasos del formulario, en orden. 'hecha' no está: es el final, no un paso. */
+export const PASOS_FORMULARIO = ['servicio', 'variante', 'dia', 'hora', 'datos'] as const;
+export type PasoFormulario = typeof PASOS_FORMULARIO[number];
+
+const ES_PASO = new Set<string>([...PASOS_FORMULARIO, 'hecha']);
+
+export type CitaHecha = {
+    fecha: string;
+    hora: string;
+    cuando: string | null;
+    servicio: string | null;
+    estilista: string | null;
+};
+
+/**
+ * La secuencia REAL de esta reserva. El paso de la variante solo existe cuando la categoría
+ * tiene más de una: con una sola, elegir categoría ya elige servicio. De aquí salen a la vez
+ * el «paso 3 de 4» de la cabecera y la profundidad de la pila del historial, y tienen que
+ * ser la MISMA lista o el atrás y el contador contarían pasos distintos.
+ */
+export function secuenciaDe(grupo: { entradas: unknown[] } | null): PasoFormulario[] {
+    return grupo && grupo.entradas.length > 1
+        ? ['servicio', 'variante', 'dia', 'hora', 'datos']
+        : ['servicio', 'dia', 'hora', 'datos'];
+}
+
+/** El paso que guarda una entrada del historial, o null si esa entrada no es nuestra. */
+export function pasoDelHistorial(estado: unknown): Paso | null {
+    if (!estado || typeof estado !== 'object') return null;
+    const p = (estado as { reservaPaso?: unknown }).reservaPaso;
+    return typeof p === 'string' && ES_PASO.has(p) ? (p as Paso) : null;
+}
+
+/**
+ * Hasta dónde se puede llegar con lo que hay elegido AHORA MISMO.
+ *
+ * Lo necesita el botón de ADELANTE del navegador, que es el que nadie prueba: volver atrás
+ * al día borra la hora, y darle entonces a adelante pedía el paso 'datos' con `hora` a null
+ * — un paso que no se pinta, o sea la pantalla en blanco. Aquí se recorta al último paso que
+ * de verdad tiene todo lo que necesita.
+ */
+export function pasoAlcanzable(
+    destino: Paso,
+    tengo: { grupo: { entradas: unknown[] } | null; entrada: unknown; fecha: string | null; hora: string | null },
+): Paso {
+    if (destino === 'hecha') return 'hecha';
+    const seq = secuenciaDe(tengo.grupo);
+    const puede = (p: PasoFormulario): boolean => {
+        if (p === 'servicio') return true;
+        if (p === 'variante') return !!tengo.grupo && tengo.grupo.entradas.length > 1;
+        if (p === 'dia') return !!tengo.entrada;
+        if (p === 'hora') return !!tengo.entrada && !!tengo.fecha;
+        return !!tengo.entrada && !!tengo.fecha && !!tengo.hora;
+    };
+    const pedido = seq.indexOf(destino as PasoFormulario);
+    if (pedido < 0) return 'servicio';
+    for (let i = pedido; i > 0; i -= 1) if (puede(seq[i])) return seq[i];
+    return 'servicio';
+}
+
+/**
+ * Qué se OLVIDA al retroceder a un paso. Es lo mismo que hacía el botón «Atrás» de la
+ * cabecera, sacado a una función porque ahora hay dos formas de retroceder —el botón y el
+ * del navegador— y con dos copias se separan: retroceder con una dejaría la hora puesta y
+ * con la otra no, y eso no se ve leyendo.
+ */
+export function limpiarAlVolver(destino: Paso): {
+    grupo: boolean; entrada: boolean; fecha: boolean; hora: boolean; listas: boolean;
+} {
+    if (destino === 'servicio') return { grupo: true, entrada: true, fecha: true, hora: true, listas: true };
+    if (destino === 'variante') return { grupo: false, entrada: true, fecha: true, hora: true, listas: true };
+    if (destino === 'dia') return { grupo: false, entrada: false, fecha: false, hora: true, listas: false };
+    return { grupo: false, entrada: false, fecha: false, hora: false, listas: false };
+}
+
+// ─── El progreso guardado ────────────────────────────────────────────────────────────────
+
+export const VERSION_PROGRESO = 1;
+/**
+ * Doce horas. `sessionStorage` ya muere al cerrar la pestaña, así que esto no es para
+ * limpiar: es porque ahí dentro hay un nombre y un teléfono, y una pestaña olvidada en un
+ * móvil compartido no tiene por qué seguir teniéndolos mañana.
+ */
+export const VIDA_PROGRESO_MS = 12 * 60 * 60 * 1000;
+
+export function claveProgreso(slug: string): string {
+    return `reserva-web:${slug}`;
+}
+
+export type Progreso =
+    | { paso: 'hecha'; cita: CitaHecha }
+    | {
+        paso: PasoFormulario;
+        servicio: string;          // la clave `categoria|nombre`
+        fecha: string | null;
+        hora: string | null;
+        nombre: string;
+        telefono: string;
+    };
+
+export function serializarProgreso(p: Progreso, ahora: number): string {
+    return JSON.stringify({ v: VERSION_PROGRESO, ts: ahora, ...p });
+}
+
+const RE_FECHA = /^\d{4}-\d{2}-\d{2}$/;
+const RE_HORA = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+/**
+ * Lee lo guardado, y lo lee DESCONFIANDO. Devuelve null —empezar limpio— ante cualquier cosa
+ * que no sea exactamente lo que escribimos: otra versión del formato, un JSON roto, algo
+ * caducado. Nada de esto es un error que haya que contarle a nadie: es una pestaña vieja.
+ *
+ * Lo que sí hace, y es la parte que importa, es DEGRADAR el paso en vez de tirarlo todo:
+ * si la fecha guardada ya pasó, se pierden la fecha y la hora pero se conserva el servicio,
+ * el nombre y el teléfono, y se vuelve al calendario. Perder cuatro pasos por uno malo es el
+ * bug que estamos arreglando.
+ */
+export function leerProgreso(bruto: unknown, opciones: { hoy: string; ahora: number }): Progreso | null {
+    if (typeof bruto !== 'string' || !bruto) return null;
+    let obj: Record<string, unknown>;
+    try {
+        const x = JSON.parse(bruto);
+        if (!x || typeof x !== 'object' || Array.isArray(x)) return null;
+        obj = x as Record<string, unknown>;
+    } catch { return null; }
+
+    if (obj.v !== VERSION_PROGRESO) return null;
+    const ts = typeof obj.ts === 'number' && Number.isFinite(obj.ts) ? obj.ts : null;
+    if (ts === null || opciones.ahora - ts > VIDA_PROGRESO_MS) return null;
+
+    if (obj.paso === 'hecha') {
+        const c = (obj.cita && typeof obj.cita === 'object' ? obj.cita : {}) as Record<string, unknown>;
+        if (typeof c.fecha !== 'string' || typeof c.hora !== 'string') return null;
+        return {
+            paso: 'hecha',
+            cita: {
+                fecha: c.fecha,
+                hora: c.hora,
+                cuando: typeof c.cuando === 'string' ? c.cuando : null,
+                servicio: typeof c.servicio === 'string' ? c.servicio : null,
+                estilista: typeof c.estilista === 'string' ? c.estilista : null,
+            },
+        };
+    }
+
+    if (typeof obj.paso !== 'string' || !(PASOS_FORMULARIO as readonly string[]).includes(obj.paso)) return null;
+    const servicio = typeof obj.servicio === 'string' ? obj.servicio : '';
+    if (!servicio) return null;      // sin servicio no hay nada que recuperar: es el paso 1
+
+    let fecha = typeof obj.fecha === 'string' && RE_FECHA.test(obj.fecha) ? obj.fecha : null;
+    let hora = typeof obj.hora === 'string' && RE_HORA.test(obj.hora) ? obj.hora : null;
+    // Una fecha que ya pasó no se propone: el motor tampoco la devolvería, y la pantalla
+    // enseñaría una lista vacía sin explicar por qué.
+    if (fecha && opciones.hoy && fecha < opciones.hoy) { fecha = null; hora = null; }
+    if (!fecha) hora = null;
+
+    let paso = obj.paso as PasoFormulario;
+    if ((paso === 'hora' || paso === 'datos') && !fecha) paso = 'dia';
+    if (paso === 'datos' && !hora) paso = 'hora';
+
+    return {
+        paso, servicio, fecha, hora,
+        nombre: typeof obj.nombre === 'string' ? obj.nombre : '',
+        telefono: typeof obj.telefono === 'string' ? obj.telefono : '',
+    };
+}
+
+export type PlanRestauracion = {
+    paso: Paso;
+    grupo: GrupoServicio | null;
+    entrada: EntradaCatalogo | null;
+    fecha: string | null;
+    hora: string | null;
+    nombre: string;
+    telefono: string;
+    cita: CitaHecha | null;
+    /**
+     * Qué hay que RELEER antes de fiarse de lo de arriba. Nunca es null cuando hay fecha:
+     * lo guardado dice lo que ella eligió, no lo que sigue libre.
+     */
+    verificar: 'dias' | 'huecos' | null;
+};
+
+/**
+ * De lo guardado a lo que la pantalla tiene que hacer.
+ *
+ * El servicio se resuelve contra el catálogo QUE ACABA DE LLEGAR, no contra el de antes: si
+ * la dueña lo ha dado de baja entremedias, la clave ya no casa y se vuelve al paso 1 —con el
+ * nombre y el teléfono puestos, que ésos no caducan—.
+ */
+export function restaurar(
+    progreso: Progreso | null,
+    catalogo: { grupos: GrupoServicio[] },
+): PlanRestauracion | null {
+    if (!progreso) return null;
+
+    const vacio = {
+        grupo: null, entrada: null, fecha: null, hora: null,
+        nombre: '', telefono: '', cita: null, verificar: null,
+    } as const;
+
+    if (progreso.paso === 'hecha') return { ...vacio, paso: 'hecha', cita: progreso.cita };
+
+    const grupo = catalogo.grupos.find(g => g.entradas.some(e => e.key === progreso.servicio)) ?? null;
+    const entrada = grupo?.entradas.find(e => e.key === progreso.servicio) ?? null;
+    const datos = { nombre: progreso.nombre, telefono: progreso.telefono };
+
+    if (!grupo || !entrada) return { ...vacio, ...datos, paso: 'servicio' };
+
+    // El paso de la variante puede haber DEJADO de existir: la dueña dio de baja las otras
+    // opciones de esa categoría y ahora queda una. Sin esto, la pantalla pediría elegir entre
+    // una sola cosa.
+    let paso: PasoFormulario = progreso.paso;
+    if (paso === 'variante' && grupo.entradas.length === 1) paso = 'dia';
+
+    return {
+        ...datos,
+        paso, grupo, entrada,
+        fecha: progreso.fecha,
+        hora: progreso.hora,
+        cita: null,
+        verificar: progreso.fecha ? 'huecos' : (paso === 'servicio' || paso === 'variante' ? null : 'dias'),
+    };
+}
+
+/**
+ * El veredicto sobre el hueco recuperado, con la lista que ACABA de dar el motor.
+ *
+ * `leida` separa «ese día está vacío» de «no he podido preguntar», que es el hecho 2 de
+ * CLAUDE.md metido en una pantalla: si la petición de huecos falló, aquí no se dice que la
+ * hora se haya ocupado —eso sería inventarse un motivo— y se la deja donde estaba con el
+ * aviso de red que ya puso quien hizo la llamada.
+ */
+export function trasVerificarHuecos(
+    pedido: { paso: PasoFormulario; hora: string | null },
+    huecos: { leida: boolean; horas: string[] },
+): { paso: PasoFormulario; hora: string | null; aviso: Motivo | null } {
+    if (!huecos.leida) return { paso: pedido.paso, hora: pedido.hora, aviso: null };
+    if (!huecos.horas.length) return { paso: 'dia', hora: null, aviso: 'hueco_caducado' };
+    if (pedido.hora && !huecos.horas.includes(pedido.hora)) {
+        return { paso: 'hora', hora: null, aviso: 'hueco_caducado' };
+    }
+    return { paso: pedido.paso, hora: pedido.hora, aviso: null };
+}
+
+/**
+ * Un aviso que pone la pantalla con una respuesta del servidor DELANTE — hoy solo el hueco
+ * que ya no está, que se sabe porque el motor acaba de mandar la lista del día sin él.
+ *
+ * `deLaPantalla: false` no es un descuido: ese campo decide si se pinta el WhatsApp de
+ * respaldo, y el respaldo es para cuando NO HUBO respuesta que obedecer. Aquí la hubo. Poner
+ * true sacaría un botón de WhatsApp debajo de «esa hora ya no está libre», que es justo el
+ * caso que `enlaceDelAviso` explica que no debe salir: lo que hay que hacer es tocar otra
+ * hora, que la tiene delante.
+ */
+export function avisoPropio(motivo: Motivo): Fallo {
+    return { motivo, recargarHuecos: false, whatsapp: null, esperaSegundos: null, deLaPantalla: false };
 }

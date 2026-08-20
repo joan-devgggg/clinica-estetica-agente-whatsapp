@@ -42,6 +42,21 @@
  *   · perder el `{salon}` al traducir el título de la confirmación .............. 1 rojo
  *   · escribir un mensaje de WhatsApp en la tabla de textos ..................... 1 rojo
  *   · que el navegador gane a la `?lang=` de la URL ............................. 1 rojo
+ *
+ * Y los del NOMBRE del servicio y el TELÉFONO (21/08/2026):
+ *   · que la pantalla vuelva a componer «categoría · nombre» .................... 3 rojos
+ *   · que el título del paso 1 ignore el grupo de una sola entrada .............. 2 rojos
+ *   · que las letras de un teléfono no se distingan de un dígito que falta ...... 1 rojo
+ *   · que las letras entren en el VEREDICTO y endurezcan quién puede reservar ... 1 rojo
+ *
+ * Y los del ATRÁS y la RECARGA (21/08/2026), que es el grupo grande:
+ *   · dar por bueno el hueco recuperado sin volver a preguntar al motor ......... 2 rojos
+ *   · que una fecha ya pasada tire el progreso entero en vez de degradarlo ...... 1 rojo
+ *   · leer una petición de huecos ROTA como «ese día está vacío» ................ 1 rojo
+ *   · no recortar el paso que pide el ADELANTE del navegador .................... 1 rojo
+ *   · que retroceder al día se deje la hora puesta .............................. 1 rojo
+ *   · meter el paso en la URL (el enlace a medias que se puede reenviar) ........ 1 rojo
+ *   · que la secuencia lleve siempre el paso de la variante ..................... 1 rojo
  */
 const assert = require('assert');
 const path = require('path');
@@ -63,7 +78,11 @@ const T = N.textos('es');
 //     es «aquí no hay nada», y a esa altura ni siquiera se sabe de qué salón se hablaba.
 //   · sin_conexion  — no lo manda nadie. Lo pone la pantalla cuando el fetch no llega a
 //     contestar (el móvil en el ascensor), que es el caso que dejaría la página en blanco.
-const SOLO_DE_LA_PANTALLA = ['no_encontrado', 'sin_conexion'];
+//   · hueco_caducado — tampoco lo manda nadie. Lo pone la pantalla al VOLVER de una recarga
+//     cuando el hueco que ella tenía elegido ya no está en la lista que el motor acaba de
+//     dar. Es un veredicto sobre la agenda, no una política: la vuelta la decide `vueltaDe`
+//     como con todos los demás.
+const SOLO_DE_LA_PANTALLA = ['no_encontrado', 'sin_conexion', 'hueco_caducado'];
 
 // ─── 1 · Paridad con el conjunto cerrado del servidor ────────────────────────────────────
 
@@ -756,6 +775,201 @@ test('el nombre del grupo de una entrada es EXACTAMENTE el de su entrada', () =>
     }
 });
 
+// ─── 7 ter · El atrás y la recarga ───────────────────────────────────────────────────────
+//
+// El bug: recargar o dar al ATRÁS a mitad del formulario devolvía al paso 1 con todo perdido
+// y sin decir nada. En un móvil el atrás es lo primero que se toca para corregir.
+//
+// Las dos mitades viven en sitios distintos y por motivos distintos: el ATRÁS en la pila del
+// historial (una entrada por paso, SIEMPRE la misma URL) y la RECARGA en `sessionStorage`.
+// Lo que se recupera NO se cree: se vuelve a preguntar al motor.
+
+test('la secuencia depende de si la categoría tiene variantes, y es UNA', () => {
+    // De esta lista salen a la vez el «paso 3 de 4» de la cabecera y la profundidad de la
+    // pila. Con dos listas, el contador y el atrás contarían pasos distintos.
+    assert.deepStrictEqual(N.secuenciaDe({ entradas: [1] }), ['servicio', 'dia', 'hora', 'datos']);
+    assert.deepStrictEqual(N.secuenciaDe({ entradas: [1, 2] }),
+        ['servicio', 'variante', 'dia', 'hora', 'datos']);
+    assert.deepStrictEqual(N.secuenciaDe(null), ['servicio', 'dia', 'hora', 'datos']);
+});
+
+test('una entrada del historial que no es nuestra se deja en paz', () => {
+    // Es lo que hace que el atrás desde el paso 1 SALGA de la página en vez de quedarse
+    // dando vueltas dentro: esa entrada es de lo que la clienta estuviera viendo antes.
+    assert.strictEqual(N.pasoDelHistorial({ reservaPaso: 'hora' }), 'hora');
+    assert.strictEqual(N.pasoDelHistorial(null), null);
+    assert.strictEqual(N.pasoDelHistorial({ otraCosa: 1 }), null);
+    assert.strictEqual(N.pasoDelHistorial({ reservaPaso: 'inventado' }), null);
+});
+
+test('el ADELANTE del navegador no puede dejar la pantalla en blanco', () => {
+    // Volver al día borra la hora; darle entonces a adelante pedía «tus datos» sin hora, y
+    // ese paso no se pinta. Se recorta al último que de verdad tiene datos.
+    const grupo = { entradas: [1, 2] };
+    const con = (x) => ({ grupo, entrada: {}, fecha: '2026-11-04', hora: null, ...x });
+    assert.strictEqual(N.pasoAlcanzable('datos', con({})), 'hora');
+    assert.strictEqual(N.pasoAlcanzable('datos', con({ hora: '10:00' })), 'datos');
+    assert.strictEqual(N.pasoAlcanzable('hora', con({ fecha: null })), 'dia');
+    // Sin variante elegida se para en el paso de la variante, no en el 1: la categoría SÍ
+    // la eligió, y devolverla al principio le borraría una decisión que sigue siendo suya.
+    assert.strictEqual(N.pasoAlcanzable('dia', con({ entrada: null, fecha: null })), 'variante');
+    assert.strictEqual(
+        N.pasoAlcanzable('dia', { grupo: null, entrada: null, fecha: null, hora: null }), 'servicio');
+    // El paso de la variante puede no existir en esta reserva: entonces no se para ahí.
+    assert.strictEqual(
+        N.pasoAlcanzable('variante', { grupo: { entradas: [1] }, entrada: {}, fecha: null, hora: null }),
+        'servicio');
+});
+
+test('retroceder olvida lo mismo con el botón de la cabecera que con el del móvil', () => {
+    // Hay DOS formas de retroceder y una sola tabla de qué se olvida. Con dos copias se
+    // separan al primer retoque —una dejaría la hora puesta y la otra no— y eso no se ve
+    // leyendo: hay que retroceder con las dos y comparar.
+    assert.deepStrictEqual(N.limpiarAlVolver('dia').hora, true);
+    assert.deepStrictEqual(N.limpiarAlVolver('dia').fecha, false);
+    assert.deepStrictEqual(N.limpiarAlVolver('servicio'),
+        { grupo: true, entrada: true, fecha: true, hora: true, listas: true });
+    assert.deepStrictEqual(N.limpiarAlVolver('hora'),
+        { grupo: false, entrada: false, fecha: false, hora: false, listas: false });
+});
+
+// ── Lo guardado ──
+
+const AHORA = 1_800_000_000_000;
+const PROG = {
+    paso: 'datos', servicio: 'Cortes|Mujer y secado', fecha: '2026-11-04', hora: '10:00',
+    nombre: 'Ana', telefono: '600111222',
+};
+const leerP = (bruto, extra = {}) =>
+    N.leerProgreso(bruto, { hoy: '2026-08-21', ahora: AHORA, ...extra });
+
+test('lo guardado va y vuelve entero', () => {
+    assert.deepStrictEqual(leerP(N.serializarProgreso(PROG, AHORA)), PROG);
+});
+
+test('lo que no reconozcamos NO se restaura: se empieza limpio', () => {
+    assert.strictEqual(leerP('{no es json'), null);
+    assert.strictEqual(leerP(''), null);
+    assert.strictEqual(leerP(null), null);
+    assert.strictEqual(leerP('[]'), null, 'un array no es un progreso');
+    assert.strictEqual(leerP(JSON.stringify({ v: 99, ts: AHORA, ...PROG })), null,
+        'otra versión del formato: la de un deploy viejo no se interpreta a ojo');
+    assert.strictEqual(leerP(JSON.stringify({ v: 1, ...PROG })), null, 'sin ts no se sabe si caducó');
+    assert.strictEqual(leerP(N.serializarProgreso(PROG, AHORA - N.VIDA_PROGRESO_MS - 1)), null,
+        'caducado: ahí dentro hay un nombre y un teléfono');
+});
+
+test('un paso malo DEGRADA, no tira los otros cuatro', () => {
+    // Es el bug entero en un bloque: perder cuatro pasos por uno solo malo.
+    const conFechaPasada = leerP(N.serializarProgreso({ ...PROG, fecha: '2020-01-01' }, AHORA));
+    assert.strictEqual(conFechaPasada.paso, 'dia', 'una fecha que ya pasó devuelve al calendario');
+    assert.strictEqual(conFechaPasada.fecha, null);
+    assert.strictEqual(conFechaPasada.hora, null);
+    assert.strictEqual(conFechaPasada.servicio, 'Cortes|Mujer y secado', 'el servicio no se pierde');
+    assert.strictEqual(conFechaPasada.nombre, 'Ana', 'lo que tecleó tampoco');
+    assert.strictEqual(conFechaPasada.telefono, '600111222');
+
+    const sinHora = leerP(N.serializarProgreso({ ...PROG, hora: null }, AHORA));
+    assert.strictEqual(sinHora.paso, 'hora', '«tus datos» sin hora no se puede pintar');
+
+    const horaBasura = leerP(N.serializarProgreso({ ...PROG, hora: '25:99' }, AHORA));
+    assert.strictEqual(horaBasura.hora, null);
+    assert.strictEqual(horaBasura.paso, 'hora');
+});
+
+test('la cita ya hecha se guarda aparte y sobrevive a una recarga', () => {
+    const cita = { fecha: '2026-11-04', hora: '10:00', cuando: 'el miércoles 4 de noviembre',
+                   servicio: 'Corte mujer y secado', estilista: 'Irina' };
+    const vuelta = leerP(N.serializarProgreso({ paso: 'hecha', cita }, AHORA));
+    assert.deepStrictEqual(vuelta, { paso: 'hecha', cita });
+    // Sin fecha y hora no es un acuse de nada: no se pinta media confirmación.
+    assert.strictEqual(leerP(N.serializarProgreso({ paso: 'hecha', cita: { fecha: '2026-11-04' } }, AHORA)), null);
+});
+
+// ── De lo guardado a la pantalla ──
+
+const GRUPOS = N.agruparCatalogo([
+    { key: 'Cortes|Mujer y secado', categoria: 'Cortes', nombre: 'Mujer y secado',
+      nombreCompleto: 'Corte mujer y secado', precio: 40, duracion: 60 },
+    { key: 'Cortes|Hombre', categoria: 'Cortes', nombre: 'Hombre',
+      nombreCompleto: 'Corte hombre', precio: 25, duracion: 30 },
+    { key: 'Brillo Glow|Brillo intensivo', categoria: 'Brillo Glow', nombre: 'Brillo intensivo',
+      nombreCompleto: 'Brillo intensivo', precio: 30, duracion: 30 },
+]).grupos;
+
+test('vuelve al paso donde estaba, y con el hueco por verificar', () => {
+    const plan = N.restaurar(PROG, { grupos: GRUPOS });
+    assert.strictEqual(plan.paso, 'datos');
+    assert.strictEqual(plan.entrada.key, 'Cortes|Mujer y secado');
+    assert.strictEqual(plan.grupo.categoria, 'Cortes');
+    assert.strictEqual(plan.hora, '10:00');
+    assert.strictEqual(plan.verificar, 'huecos',
+        'volver a «tus datos» sin releer la agenda es mandarla a confirmar a ciegas');
+});
+
+test('un servicio dado de baja entremedias no se lleva por delante lo demás', () => {
+    const plan = N.restaurar({ ...PROG, servicio: 'Cortes|Ya no existe' }, { grupos: GRUPOS });
+    assert.strictEqual(plan.paso, 'servicio');
+    assert.strictEqual(plan.entrada, null);
+    assert.strictEqual(plan.verificar, null, 'no hay nada que releer si no hay servicio');
+    assert.strictEqual(plan.nombre, 'Ana', 'el nombre no caduca porque cambie el catálogo');
+    assert.strictEqual(plan.telefono, '600111222');
+});
+
+test('el paso de la variante puede haber dejado de existir', () => {
+    // La dueña dio de baja las otras opciones de esa categoría. Sin esto, la pantalla pediría
+    // elegir entre una sola cosa.
+    const plan = N.restaurar(
+        { paso: 'variante', servicio: 'Brillo Glow|Brillo intensivo', fecha: null, hora: null,
+          nombre: '', telefono: '' },
+        { grupos: GRUPOS });
+    assert.strictEqual(plan.paso, 'dia');
+});
+
+// ── El hueco recuperado, que es lo que no se puede dar por bueno ──
+
+test('si el hueco ya no está se DICE, y se vuelve a la lista de horas', () => {
+    const v = N.trasVerificarHuecos(
+        { paso: 'datos', hora: '10:00' },
+        { leida: true, horas: ['11:00', '12:00'] });
+    assert.strictEqual(v.paso, 'hora');
+    assert.strictEqual(v.hora, null, 'reservar con la hora vieja sería reservar a ciegas');
+    assert.strictEqual(v.aviso, 'hueco_caducado');
+});
+
+test('si el día entero se quedó sin nada, al calendario', () => {
+    const v = N.trasVerificarHuecos({ paso: 'datos', hora: '10:00' }, { leida: true, horas: [] });
+    assert.strictEqual(v.paso, 'dia');
+    assert.strictEqual(v.aviso, 'hueco_caducado');
+});
+
+test('si el hueco SIGUE libre no se la mueve ni se le dice nada', () => {
+    const v = N.trasVerificarHuecos(
+        { paso: 'datos', hora: '10:00' },
+        { leida: true, horas: ['10:00', '11:00'] });
+    assert.deepStrictEqual(v, { paso: 'datos', hora: '10:00', aviso: null });
+});
+
+test('una lectura ROTA no es un día vacío: no se le dice que su hora se ha ocupado', () => {
+    // Hecho 2 de CLAUDE.md metido en una pantalla. Sin el `leida`, un fallo de red al volver
+    // le contaría que le han quitado el hueco —y la sacaría de donde estaba— por algo que
+    // nadie ha llegado a preguntar.
+    const v = N.trasVerificarHuecos({ paso: 'datos', hora: '10:00' }, { leida: false, horas: [] });
+    assert.deepStrictEqual(v, { paso: 'datos', hora: '10:00', aviso: null });
+});
+
+test('el aviso del hueco caducado NO saca un botón de WhatsApp', () => {
+    // Es la misma decisión que `enlaceDelAviso` explica para «ese hueco se acaba de ocupar»:
+    // lo que esa clienta tiene que hacer es tocar otra hora, que la tiene delante.
+    const fallo = N.avisoPropio('hueco_caducado');
+    assert.strictEqual(N.enlaceDelAviso(fallo, 'https://wa.me/34641029104?text=hola'), null);
+    assert.strictEqual(N.vueltaDe('hueco_caducado'), 'huecos');
+    for (const lang of N.IDIOMAS) {
+        const txt = N.textoDelAviso(N.textos(lang), fallo);
+        assert.ok(txt.titulo && txt.cuerpo, `${lang}: el aviso saldría mudo`);
+    }
+});
+
 // ─── 8 · Lo que solo se puede mirar leyendo el fichero ───────────────────────────────────
 //
 // Estas tres no se pueden EJECUTAR desde aquí (son React y el `proxy` de Next), pero lo que
@@ -807,6 +1021,34 @@ test('la pantalla de avería NO se queda clavada en castellano', () => {
     assert.ok(src.includes('elegirIdioma'),
         'error.tsx no recupera el idioma: revisa que no haya vuelto a un textos("es")');
     assert.ok(!/textos\("es"\)/.test(src), 'error.tsx tiene el castellano cableado');
+});
+
+test('el PASO no va en la URL: un enlace copiado a mitad no lleva reserva dentro', () => {
+    // La decisión del 21/08: el atrás vive en la pila del historial y la recarga en
+    // `sessionStorage`, y la dirección no cambia en ningún paso. Meter el paso en la URL
+    // habría salido gratis, pero entonces reenviar el enlace es mandar tu reserva a medias, y
+    // la dirección cuenta por WhatsApp qué te ibas a hacer.
+    //
+    // `pushState`/`replaceState` con TERCER argumento son los que tocan la dirección. Solo
+    // hay uno permitido, y es el del selector de idioma — que reescribe `?lang=` porque el
+    // idioma SÍ tiene que sobrevivir a compartir el enlace.
+    const src = leer('components', 'reservar', 'formulario-reserva.tsx');
+    const conUrl = [...src.matchAll(/history\.(?:push|replace)State\(([^;]*?)\);/g)]
+        .map(m => m[1].replace(/\s+/g, ' ').trim())
+        .filter(args => args.split(',').length > 2);
+    assert.deepStrictEqual(conUrl, ['window.history.state, "", url.toString()'],
+        `alguien ha metido el paso en la dirección: ${conUrl.join(' | ')}`);
+});
+
+test('el progreso se guarda en la pestaña, no en el disco', () => {
+    // `localStorage` sobreviviría al cierre del navegador con un nombre y un teléfono dentro,
+    // en un móvil que puede ser de casa. `sessionStorage` muere con la pestaña.
+    const src = leer('components', 'reservar', 'formulario-reserva.tsx');
+    // Se busca el USO (`localStorage.algo`) y no la palabra: el comentario que explica por
+    // qué no se usa la nombra, y un test que se cayera con su propia explicación al lado es
+    // de los que se borran en vez de arreglarse.
+    assert.ok(!/localStorage\s*\./.test(src), 'el nombre y el teléfono sobrevivirían al navegador');
+    assert.ok(/sessionStorage\s*\./.test(src));
 });
 
 test('el núcleo de la pantalla no importa nada: es lo que lo hace ejecutable aquí', () => {

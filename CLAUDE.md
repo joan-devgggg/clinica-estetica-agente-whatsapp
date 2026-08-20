@@ -282,6 +282,29 @@ fichero sin una sola importación**: así lo ejecuta un test de Node de siempre
 (`tests/reserva-web-pantalla.test.js`, 39 bloques) aprovechando el borrado de tipos de Node
 25. Lo demás sería leer el TSX con un `grep`, que mide la redacción y no la conducta.
 
+**El ATRÁS retrocede UN paso y recargar no pierde el progreso** (21/08/2026), y las dos
+mitades viven separadas a propósito: el atrás en la **pila del historial** —una entrada por
+paso, con `pushState` SIN tercer argumento, así que la URL no cambia en ningún paso— y la
+recarga en **`sessionStorage`**, que muere con la pestaña. Meter el paso en la URL salía
+gratis y se descartó: reenviar el enlace sería mandar tu reserva a medias, y la dirección
+contaría por WhatsApp qué te ibas a hacer. Hay un test que lee el TSX y solo tolera UN
+`replaceState` con URL, el del selector de idioma. El botón «Atrás» de la cabecera llama a
+`history.back()` en vez de retroceder él: con dos formas de retroceder escribiendo estado por
+su cuenta, se separan en el primer retoque. **Lo recuperado NO se cree**: se le vuelve a
+preguntar al motor y `trasVerificarHuecos` decide —y distingue «ese día está vacío» de «no he
+podido preguntar» (hecho 2), porque un fallo de red no puede contarle que le han quitado el
+hueco—. Un paso malo DEGRADA en vez de tirar los otros cuatro: una fecha ya pasada pierde
+fecha y hora y devuelve al calendario, conservando servicio, nombre y teléfono. Desde el acuse
+el atrás **empieza de nuevo** con el formulario limpio (reservar también para la hija).
+
+**El nombre del servicio es UNO en todo el recorrido, y lo manda el servidor.** Es el de
+`buildFullServiceName`, o sea la cadena exacta que se escribe en `appointments.service`. La
+pantalla llegó a componer un tercero —«Cortes · Mujer y secado» contra «Corte mujer y
+secado»— que no existía en ningún otro sitio. No se recalcula en el navegador: esa función
+cuenta homónimos sobre el catálogo COMPLETO, que la ruta pública no publica. En el paso 1 el
+rótulo de un grupo de UNA entrada es el nombre del servicio, no la categoría (eran cuatro de
+seis). En el paso 2 sigue siendo la categoría porque está en pantalla justo encima.
+
 **La política de los motivos NO se copia en el navegador.** Qué código HTTP lleva cada uno,
 si se recargan los huecos y si se abre WhatsApp lo decide `services/reserva-web.js` y VIAJA
 EN LA RESPUESTA; la pantalla pone el texto y el paso al que vuelve, y el test cruza las dos.
