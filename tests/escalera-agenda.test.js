@@ -45,7 +45,12 @@ const dbImpls = {
     getAppointmentsByLead: async () => [],
     findContactIdsByPhone: async () => [],
     getAgentConfig: async () => ({ services: [], business_hours: null, business_info: {} }),
+    // Telemetría de la escalera (migración 044). Se captura la LLAMADA, no la fila: lo que
+    // se prueba aquí es que el bot le pasa el contexto entero; que la escritura tolere una
+    // tabla que no existe se prueba aparte, en tests/escalera-telemetria.test.js.
+    registrarIntervencionEscalera: async (orgId, datos) => { filasTelemetria.push({ orgId, ...datos }); return true; },
 };
+const filasTelemetria = [];
 stub('../services/db', new Proxy(dbImpls, { get: (t, k) => t[k] ?? (async () => null) }));
 stub('../services/telegram', {
     notifyBizumPending: async () => {}, notifyEscalation: async () => {},
@@ -133,6 +138,7 @@ const LIMPIA = '¿Qué día o semana te viene mejor? Te miro la disponibilidad r
 function ultimaIntervencion() {
     return logs.filter(l => l.evento === 'escalera_intervencion').pop();
 }
+const ultimaFila = () => filasTelemetria[filasTelemetria.length - 1];
 
 // ─── 1 · Piezas puras ────────────────────────────────────────────────────────
 
@@ -357,4 +363,82 @@ test('rescate (B, escalera): la reescritura conserva el saludo y a Veronika, y e
     assert.ok(/Вероник/.test(enviado), 'B: el hilo de la estilista sobrevive');
     assert.ok(/28 августа/.test(enviado), 'B: la negación honesta de SU fecha se conserva (exención de una fecha + sin disponibilidad)');
     assert.ok(!/27|29|30/.test(enviado), 'B: las fechas inventadas no llegan');
+});
+
+// ─── 4 · Telemetría que sobrevive al deploy (migración 044) ──────────────────
+//
+// El evento `escalera_intervencion` ya lo decía todo, pero en Railway los logs no son
+// consultables a una semana y `metrics.json` se pone a cero en cada deploy. La auditoría
+// del 20/08/2026 encontró 12 disparos del embudo y NO pudo decir qué red los produjo: el
+// borrador comido no está en `messages` y el log ya había caducado. Estos bloques afirman
+// que ahora la MISMA información se ofrece a un sitio duradero, con el contexto que
+// permite clasificar cada disparo sin adivinar.
+
+test('cada intervención ofrece su fila, con las dos mitades: qué pasó y CON QUÉ contexto', async () => {
+    const antes = filasTelemetria.length;
+    const { phone } = armarSesion({ selectedService: null, slots: [] });
+    const sink = [];
+    llmQueue.push(VIOLADORA, VIOLADORA);
+    await turno(phone, sink, ENTRANTE);
+
+    assert.strictEqual(filasTelemetria.length - antes, 1, 'una intervención, una fila');
+    const f = ultimaFila();
+    // Qué pasó.
+    assert.strictEqual(f.clase, 'agenda');
+    assert.strictEqual(f.red, 'respondsWithInventedDates');
+    assert.strictEqual(f.peldano, 'sustituir');
+    assert.ok(f.motivo, 'una derrota sin motivo no se puede clasificar después');
+    assert.strictEqual(f.respuestaOriginal, VIOLADORA, 'sin el texto comido no hay nada que juzgar');
+    assert.ok(f.respuestaFinal && f.respuestaFinal !== VIOLADORA, 'y lo que salió en su lugar');
+    // Con qué contexto — la mitad que le faltó a la auditoría del 20/08.
+    assert.strictEqual(f.tieneServicio, false);
+    assert.strictEqual(f.huecosCargados, 0);
+    assert.strictEqual(typeof f.sinServicioStreak, 'number');
+    assert.ok(f.telefono, 'sin teléfono la fila no cruza con messages ni con appointments');
+});
+
+test('la fila y el log cuentan lo MISMO: si divergen, una de las dos miente', async () => {
+    const { phone } = armarSesion();
+    const sink = [];
+    llmQueue.push(VIOLADORA, LIMPIA);
+    await turno(phone, sink, ENTRANTE);
+    const ev = ultimaIntervencion();
+    const f = ultimaFila();
+    for (const campo of ['red', 'peldano', 'motivo', 'respuestaOriginal']) {
+        assert.deepStrictEqual(f[campo], ev[campo], `la fila y el log discrepan en ${campo}`);
+    }
+    assert.strictEqual(f.respuestaFinal, ev.respuestaFinal);
+    assert.strictEqual(f.peldano, 'regenerar', 'y un RESCATE también se cuenta: si no, solo se miden las derrotas');
+});
+
+test('el 3er peldaño apunta su latencia; el que no llega a llamar al modelo, no', async () => {
+    // Sirve para saber cuánto cuesta la escalera de verdad, no de memoria.
+    const { phone } = armarSesion();
+    const sink = [];
+    llmQueue.push(VIOLADORA, LIMPIA);
+    await turno(phone, sink, ENTRANTE);
+    assert.ok(Number.isFinite(ultimaFila().latenciaRegenMs), 'una regeneración sin latencia no se puede presupuestar');
+
+    process.env.ESCALERA_REGENERAR = 'off';
+    try {
+        const { phone: p2 } = armarSesion();
+        llmQueue.push(VIOLADORA);
+        await turno(p2, [], ENTRANTE);
+        const f = ultimaFila();
+        assert.strictEqual(f.motivo, 'regeneracion_desactivada');
+        assert.strictEqual(f.latenciaRegenMs, null, 'no se llamó al modelo: inventar un número sería peor que null');
+    } finally {
+        delete process.env.ESCALERA_REGENERAR;
+    }
+});
+
+test('`salida` viaja vacía todavía: la escribirá la tanda del embudo, no ésta', () => {
+    // La columna existe desde la 044 a propósito (una de las salidas ofrece una PERSONA y
+    // eso arma una escalada real, así que tiene que poder contarse aparte desde el primer
+    // día). Hoy nadie la rellena, y este bloque es lo que hace que rellenarla sea un cambio
+    // visible en vez de un efecto lateral.
+    assert.ok(filasTelemetria.length > 0, 'sin filas este bloque no afirma nada');
+    for (const f of filasTelemetria) {
+        assert.strictEqual(f.salida, undefined, 'alguien ha empezado a escribir `salida` sin declararlo');
+    }
 });

@@ -7,6 +7,7 @@ const {
     getStylistsByOrg, getAllStylistSchedules, getLastCompletedAppointment, hasActiveAppointmentForSlot,
     getScheduleBlocks, getBlockedDays, getAppointmentsByLead, getAppointmentById, getUpcomingAppointments,
     findContactIdsByPhone, getAppointmentsByStylistAndRange, getRecentBroadcastSendAt,
+    registrarIntervencionEscalera,
 } = require('./services/db');
 const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
@@ -2627,6 +2628,26 @@ async function aplicarEscaleraAgenda({ orgId, session, userPhone, aiResponse, re
         orgId, telefono: userPhone, clase: 'agenda', red, peldano, motivo,
         respuestaOriginal, respuestaFinal: aiResponse.respuesta, latencia_regen_ms: latenciaRegen,
     });
+    // La MISMA información, en un sitio que sobreviva al deploy (migración 044). El log de
+    // arriba no se toca: sigue siendo lo que se mira en caliente. Esto es lo que se mira
+    // dentro de un mes — y es lo que le faltó a la auditoría del 20/08, que encontró 12
+    // disparos del embudo y no pudo decir qué red los produjo.
+    //
+    // SIN await, y no es un descuido: esto corre ANTES de que la respuesta salga hacia la
+    // clienta, así que esperar a una escritura de telemetría sería latencia sobre el mensaje
+    // de alguien. `registrarIntervencionEscalera` no lanza nunca; el .catch es el cinturón
+    // por si algún día lo hiciera, porque una promesa rechazada sin dueño aquí se lleva el
+    // proceso por delante (`unhandledRejection`) — el mismo motivo que lo de setBotActivo.
+    registrarIntervencionEscalera(orgId, {
+        telefono: session.partialData?.telefono || null,
+        clase: 'agenda', red, peldano, motivo,
+        latenciaRegenMs: latenciaRegen,
+        respuestaOriginal, respuestaFinal: aiResponse.respuesta,
+        tieneServicio: !!session.selectedService,
+        huecosCargados: (session.availableSlots || []).length,
+        sinServicioStreak: session.sinServicioStreak || 0,
+        idioma: session.language || null,
+    }).catch(() => {});
     incrementMetric('escaleraIntervencion');
     incrementMetric(peldano === 'regenerar' ? 'escaleraRegeneradaOk' : 'escaleraSustituida');
     // Desglose del 4º por MOTIVO, persistido en metrics.json: producción corre en Railway

@@ -2994,6 +2994,67 @@ async function getRecentBroadcastSendAt(orgId, telefono, dentroDeMs = RESPUESTA_
     return data?.[0]?.sent_at || null;
 }
 
+// ─── Telemetría de la escalera (migración 044) ───────────────────────────────
+//
+// Una fila por vez que la escalera se come una respuesta del modelo. Existe por RETENCIÓN y
+// no por instrumentación: el evento `escalera_intervencion` ya lo loguea todo, pero en
+// Railway los logs no son consultables a una semana y `metrics.json` se pone a cero en cada
+// deploy. La auditoría del 20/08/2026 encontró 12 disparos del embudo y NO pudo decir qué
+// red disparó en cada uno, porque el borrador comido no está en `messages` y el log había
+// caducado.
+//
+// TRES cosas la separan de cualquier otra escritura de este fichero, y las tres a propósito:
+//
+//  1. NO usa assertWrite y NO lanza. Es la única escritura del sistema cuyo fallo no
+//     significa nada para la clienta: perder una fila de telemetría no puede costar un
+//     turno. Lo contrario —que medir rompa lo medido— es el fallo clásico de instrumentar.
+//  2. NO se espera. El llamador la lanza y sigue; corre ANTES de que la respuesta salga y
+//     un await aquí sería latencia pura sobre el mensaje de alguien.
+//  3. Tolera que la tabla NO EXISTA. La 044 se aplica cuando el dueño quiera, así que hasta
+//     entonces el INSERT falla con 42P01 y aquí se avisa UNA vez por proceso y se calla.
+//     Sin esa guarda, cada intervención escribiría un error idéntico en el log de
+//     producción y el ruido acabaría tapando lo que sí importa.
+let _avisadoEscaleraSinTabla = false;
+async function registrarIntervencionEscalera(orgId, datos = {}) {
+    try {
+        const { error } = await supabase.from('escalera_intervenciones').insert({
+            organization_id: resolveOrg(orgId),
+            telefono: datos.telefono || null,
+            clase: datos.clase || 'agenda',
+            red: datos.red,
+            peldano: datos.peldano,
+            motivo: datos.motivo || null,
+            latencia_regen_ms: Number.isFinite(datos.latenciaRegenMs) ? datos.latenciaRegenMs : null,
+            salida: datos.salida || null,
+            respuesta_original: datos.respuestaOriginal || null,
+            respuesta_final: datos.respuestaFinal || null,
+            tiene_servicio: typeof datos.tieneServicio === 'boolean' ? datos.tieneServicio : null,
+            huecos_cargados: Number.isFinite(datos.huecosCargados) ? datos.huecosCargados : null,
+            sin_servicio_streak: Number.isFinite(datos.sinServicioStreak) ? datos.sinServicioStreak : null,
+            idioma: datos.idioma || null,
+        });
+        if (!error) return true;
+        // 42P01 = relación inexistente. Es el estado ESPERADO entre el deploy y la migración.
+        if (error.code === '42P01' || /does not exist/i.test(error.message || '')) {
+            if (!_avisadoEscaleraSinTabla) {
+                _avisadoEscaleraSinTabla = true;
+                logger.warn('escalera_telemetria_sin_tabla', {
+                    orgId, aviso: 'migración 044 sin aplicar: la escalera sigue funcionando, pero no se está midiendo',
+                });
+            }
+            return false;
+        }
+        logger.error('escalera_telemetria_no_escrita', { orgId, error: error.message, code: error.code || null });
+        return false;
+    } catch (e) {
+        logger.error('escalera_telemetria_no_escrita', { orgId, error: e.message });
+        return false;
+    }
+}
+
+/** Solo para tests: vuelve a permitir el aviso de "tabla sin aplicar". */
+function _resetAvisoEscaleraSinTabla() { _avisadoEscaleraSinTabla = false; }
+
 // ─── Pending actions ─────────────────────────────────────────────────────────
 
 async function createPendingAction(orgId, { type, contactId, appointmentId, payload }) {
@@ -4120,6 +4181,8 @@ module.exports = {
     getRecentBroadcastSendAt,
     RESPUESTA_AUTOMATICA_MS,
     createPendingAction,
+    registrarIntervencionEscalera,
+    _resetAvisoEscaleraSinTabla,
     getPendingActions,
     resolvePendingAction,
     // Stylists
