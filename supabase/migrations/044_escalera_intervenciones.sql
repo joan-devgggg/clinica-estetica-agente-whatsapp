@@ -1,14 +1,19 @@
 -- 044_escalera_intervenciones.sql
 --
--- ⚠️ NO APLICADA. Se enseña antes (regla 6) y la aplica el dueño cuando quiera.
--- El código que escribe aquí TOLERA que la tabla no exista: si falta, avisa UNA vez por
--- proceso y sigue. Así el push del commit y la migración son dos decisiones separadas y
--- ninguna conversación se rompe por el orden en que se hagan.
+-- ✅ APLICADA EN LA BD REMOTA EL 20/08/2026, con permiso del dueño y tras enseñarla entera
+-- (regla 6). Verificado después: 16 columnas, 3 índices (la PK y los dos de abajo), RLS
+-- activada, UNA política y solo para `service_role`, y CERO filas. Ninguna tabla existente
+-- cambió — `appointments` 89, `contacts` 774, `messages` 997, `config` 13, los mismos de
+-- antes.
 --
--- PROBADA EN SECO contra la BD real el 20/08/2026, en un bloque `DO $$ … RAISE $$` que
--- revierte: pasaron el CREATE TABLE, los dos índices, el ENABLE RLS, la política y un
--- INSERT con la forma EXACTA que escribe `registrarIntervencionEscalera`. Comprobado
--- después contra information_schema: la tabla NO existe, no quedó ni una fila.
+-- Antes de aplicarla se probó EN SECO el mismo SQL dentro de un bloque `DO $$ … RAISE $$`
+-- que revierte: pasaron el CREATE TABLE, los dos índices, el ENABLE RLS, la política y un
+-- INSERT con la forma EXACTA que escribe `registrarIntervencionEscalera`, y se comprobó
+-- contra information_schema que no quedaba ni una fila.
+--
+-- El código que escribe aquí TOLERA que la tabla no exista: si falta, avisa UNA vez por
+-- proceso y sigue. Eso hizo que el push del commit y la migración fueran dos decisiones
+-- separadas, y sigue valiendo para cualquier entorno donde la 044 no esté aplicada.
 --
 -- ── POR QUÉ ─────────────────────────────────────────────────────────────────────────────
 --
