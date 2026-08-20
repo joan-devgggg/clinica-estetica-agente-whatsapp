@@ -1847,7 +1847,9 @@ app.get('/reserva-web/:slug/catalogo', async (req, res) => {
     if (!ctx) return;
     if (!limitarLectura(ctx, res)) return;
     try {
-        const { botOfferableCatalog, isReactiveOnlyService, serviceCatalogKey } = require('./services/helpers');
+        const {
+            botOfferableCatalog, isReactiveOnlyService, serviceCatalogKey, buildFullServiceName,
+        } = require('./services/helpers');
         const cfg = await db.getAgentConfig(ctx.org.orgId);
         // Un catálogo que no se ha podido leer NO es un catálogo vacío. `getAgentConfig`
         // devuelve null cuando falla la lectura, y publicar eso como `servicios: []` sería
@@ -1865,7 +1867,13 @@ app.get('/reserva-web/:slug/catalogo', async (req, res) => {
         res.json({
             ok: true,
             salon: salonPublico(cfg.business_info, { waPhone: ctx.org.waPhone, lang: ctx.lang }),
-            servicios: catalogoPublico(ofertables, serviceCatalogKey),
+            // El nombre se calcula con el catálogo COMPLETO, no con `ofertables`: la función
+            // cuenta homónimos, y sobre la lista filtrada dar de baja a un «Hombre» haría que
+            // el otro dejara de prefijarse con su categoría. Es la misma razón por la que
+            // `resolverServicioPublico` le pasa `completo` — y tiene que ser la MISMA cadena
+            // en las dos, o la pantalla enseñaría un nombre y la cita se guardaría con otro.
+            servicios: catalogoPublico(ofertables, serviceCatalogKey,
+                s => buildFullServiceName(s, cfg.services)),
         });
     } catch (e) { fallo(res, 'reserva_web_catalogo_error', ctx, e); }
 });

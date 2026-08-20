@@ -655,6 +655,107 @@ test('el teléfono se comprueba flojo a propósito: el servidor tiene la última
     assert.ok(!N.nombreUsable('A'));
 });
 
+test('un teléfono con LETRAS no se cuenta como dígitos que faltan', () => {
+    // El bug: «600ABC123» decía «parece que falta algún dígito», y quien lo lee repasa las
+    // cifras una por una sin ver lo que sobra.
+    assert.strictEqual(N.problemaTelefono('600ABC123'), 'letras');
+    assert.strictEqual(N.problemaTelefono('mi movil'), 'letras');
+    assert.strictEqual(N.problemaTelefono('600 11 22 3O'), 'letras', 'una O en vez de un cero');
+    assert.strictEqual(N.problemaTelefono('60011'), 'corto');
+    assert.strictEqual(N.problemaTelefono(''), 'corto');
+    assert.strictEqual(N.problemaTelefono('1234567890123456789'), 'largo');
+    assert.strictEqual(N.problemaTelefono('600 11 22 33'), null);
+});
+
+test('los separadores que la gente teclea NO son letras', () => {
+    // Un paréntesis o una barra no convierten el número en texto: si los dígitos están, esto
+    // ni siquiera llega a hablar.
+    for (const bueno of ['+34 600-11-22-33', '(600) 112233', '600.11.22.33', '+380/67/1234567']) {
+        assert.strictEqual(N.problemaTelefono(bueno), null, bueno);
+    }
+});
+
+test('decir QUÉ pasa no cambia QUIÉN puede reservar', () => {
+    // La decisión que sostiene el bloque de arriba: `telefonoUsable` sigue siendo permisivo
+    // —lo dice su propio comentario— y `problemaTelefono` solo elige el mensaje de quien ya
+    // estaba parado. Meter las letras en el VEREDICTO dejaría fuera a esta señora, que hoy
+    // reserva y cuya cita se guarda bien (el servidor sanea el teléfono).
+    assert.ok(N.telefonoUsable('600112233 (casa)'), 'se ha endurecido el veredicto sin querer');
+    assert.strictEqual(N.problemaTelefono('600112233 (casa)'), null);
+    // Y al revés: todo lo que el veredicto rechaza tiene un motivo, nunca null.
+    for (const malo of ['', '60011', 'mi movil', '1234567890123456789']) {
+        assert.strictEqual(N.telefonoUsable(malo), false, malo);
+        assert.notStrictEqual(N.problemaTelefono(malo), null, `${malo}: rechazado y sin explicación`);
+    }
+});
+
+test('los tres problemas del teléfono se distinguen en los cuatro idiomas', () => {
+    for (const lang of N.IDIOMAS) {
+        const tabla = N.textos(lang).telefonoProblema;
+        const dichos = new Set(Object.values(tabla));
+        assert.strictEqual(dichos.size, 3,
+            `${lang}: dos problemas distintos con el mismo texto — es el bug otra vez, traducido`);
+    }
+});
+
+// ─── 7 bis · UN nombre de servicio, el mismo todo el recorrido ───────────────────────────
+//
+// «Cortes · Mujer y secado» en el resumen y «Corte mujer y secado» en la confirmación. El
+// primero se componía AQUÍ, en el navegador, y no existía en ninguna otra parte del sistema:
+// ni en `appointments.service`, ni en el recordatorio, ni en la agenda que mira el salón.
+
+const CAT_SERVIDOR = [
+    { key: 'Cortes|Mujer y secado', categoria: 'Cortes', nombre: 'Mujer y secado',
+      nombreCompleto: 'Corte mujer y secado', precio: 40, duracion: 60 },
+    { key: 'Cortes|Hombre', categoria: 'Cortes', nombre: 'Hombre',
+      nombreCompleto: 'Corte hombre', precio: 25, duracion: 30 },
+    { key: 'Brillo Glow|Brillo intensivo', categoria: 'Brillo Glow', nombre: 'Brillo intensivo',
+      nombreCompleto: 'Brillo intensivo', precio: 30, duracion: 30 },
+];
+
+test('la entrada lleva el nombre del servidor, y la pantalla no compone ninguno', () => {
+    const { grupos } = N.agruparCatalogo(CAT_SERVIDOR);
+    const cortes = grupos.find(g => g.categoria === 'Cortes');
+    assert.deepStrictEqual(cortes.entradas.map(e => e.nombreCompleto),
+        ['Corte mujer y secado', 'Corte hombre']);
+    // Lo que NO puede volver a salir de aquí, en ninguna forma.
+    for (const e of cortes.entradas) {
+        assert.ok(!e.nombreCompleto.includes(' · '),
+            'la pantalla ha vuelto a pegar categoría y nombre con un separador');
+    }
+});
+
+test('sin `nombreCompleto` se cae al `nombre` pelado, NUNCA a categoría + nombre', () => {
+    // Un Express viejo sin desplegar. El respaldo tiene que ser un valor REAL del catálogo:
+    // «Mujer y secado» es menos completo pero lo escribió la dueña; «Cortes · Mujer y
+    // secado» no lo escribió nadie (regla 3).
+    const { grupos } = N.agruparCatalogo([
+        { key: 'Cortes|Mujer y secado', categoria: 'Cortes', nombre: 'Mujer y secado', precio: 40 },
+    ]);
+    assert.strictEqual(grupos[0].entradas[0].nombreCompleto, 'Mujer y secado');
+    assert.ok(!grupos[0].entradas[0].nombreCompleto.includes('·'));
+});
+
+test('el título del paso 1: categoría si hay varias, EL SERVICIO si hay una', () => {
+    // Cuatro de los seis grupos de una sola entrada del catálogo real tenían esta
+    // divergencia: la fila decía «Brillo Glow» y la confirmación «Brillo intensivo».
+    const { grupos } = N.agruparCatalogo(CAT_SERVIDOR);
+    const porCat = Object.fromEntries(grupos.map(g => [g.categoria, g.titulo]));
+    assert.strictEqual(porCat['Cortes'], 'Cortes', 'con varias opciones el título es la navegación');
+    assert.strictEqual(porCat['Brillo Glow'], 'Brillo intensivo',
+        'con una sola entrada, esa fila ES el servicio y tiene que llamarse como se llamará después');
+});
+
+test('el nombre del grupo de una entrada es EXACTAMENTE el de su entrada', () => {
+    // Es lo que hace que el recorrido entero diga lo mismo: título del paso 1 → resumen →
+    // confirmación son la misma cadena, no tres parecidas.
+    const { grupos } = N.agruparCatalogo(CAT_SERVIDOR);
+    for (const g of grupos) {
+        if (g.entradas.length !== 1) continue;
+        assert.strictEqual(g.titulo, g.entradas[0].nombreCompleto);
+    }
+});
+
 // ─── 8 · Lo que solo se puede mirar leyendo el fichero ───────────────────────────────────
 //
 // Estas tres no se pueden EJECUTAR desde aquí (son React y el `proxy` de Next), pero lo que

@@ -197,7 +197,7 @@ export type Textos = {
     tuTelefono: string;
     tuTelefonoAyuda: string;
     nombreCorto: string;
-    telefonoRaro: string;
+    telefonoProblema: Record<ProblemaTelefono, string>;
     confirmar: string;
     confirmando: string;
     resumen: string;
@@ -258,7 +258,11 @@ const ES: Textos = {
     tuTelefono: 'Tu móvil',
     tuTelefonoAyuda: 'Te avisamos por WhatsApp el día antes',
     nombreCorto: 'Escribe tu nombre',
-    telefonoRaro: 'Repasa el número: parece que falta algún dígito',
+    telefonoProblema: {
+        letras: 'El teléfono va solo con números',
+        corto:  'Repasa el número: parece que falta algún dígito',
+        largo:  'Repasa el número: tiene dígitos de más',
+    },
     confirmar: 'Confirmar la cita',
     confirmando: 'Confirmando…',
     resumen: 'Tu cita',
@@ -413,7 +417,11 @@ const EN: Textos = {
     tuTelefono: 'Your mobile',
     tuTelefonoAyuda: 'We will remind you on WhatsApp the day before',
     nombreCorto: 'Please write your name',
-    telefonoRaro: 'Check the number — a digit seems to be missing',
+    telefonoProblema: {
+        letras: 'Phone numbers are digits only',
+        corto:  'Check the number — a digit seems to be missing',
+        largo:  'Check the number — it has too many digits',
+    },
     confirmar: 'Confirm the appointment',
     confirmando: 'Confirming…',
     resumen: 'Your appointment',
@@ -534,7 +542,11 @@ const RU: Textos = {
     tuTelefono: 'Твой телефон',
     tuTelefonoAyuda: 'Напомним в WhatsApp за день до визита',
     nombreCorto: 'Напиши своё имя',
-    telefonoRaro: 'Проверь номер: кажется, не хватает цифры',
+    telefonoProblema: {
+        letras: 'Номер пишется только цифрами',
+        corto:  'Проверь номер: кажется, не хватает цифры',
+        largo:  'Проверь номер: в нём лишние цифры',
+    },
     confirmar: 'Подтвердить запись',
     confirmando: 'Подтверждаем…',
     resumen: 'Твоя запись',
@@ -655,7 +667,11 @@ const UK: Textos = {
     tuTelefono: 'Твій телефон',
     tuTelefonoAyuda: 'Нагадаємо у WhatsApp за день до візиту',
     nombreCorto: 'Напиши своє імʼя',
-    telefonoRaro: 'Перевір номер: здається, бракує цифри',
+    telefonoProblema: {
+        letras: 'Номер пишеться лише цифрами',
+        corto:  'Перевір номер: здається, бракує цифри',
+        largo:  'Перевір номер: у ньому зайві цифри',
+    },
     confirmar: 'Підтвердити запис',
     confirmando: 'Підтверджуємо…',
     resumen: 'Твій запис',
@@ -903,20 +919,50 @@ export function textoEspera(t: Textos, segundos: number | null): string | null {
 
 export type EntradaCatalogo = {
     key: string;            // `categoria|nombre`, la clave que viaja al servidor
-    categoria: string | null;
-    nombre: string | null;
+    categoria: string;
+    nombre: string;
+    /**
+     * EL nombre del servicio: el que el servidor escribirá en `appointments.service` y el
+     * que dirá el recordatorio. Llega hecho de `buildFullServiceName` — la pantalla NO lo
+     * compone, y componerlo aquí fue el bug: «Cortes · Mujer y secado» en el resumen contra
+     * «Corte mujer y secado» en la pantalla final, dos nombres para lo mismo y uno de ellos
+     * inexistente en todo el sistema. Ver `nombreDeEntrada`.
+     */
+    nombreCompleto: string;
     precio: number | null;  // null = «se confirma en el salón». NUNCA se pinta como 0 €.
     duracion: number | null;
 };
 
 export type GrupoServicio = {
     categoria: string;
+    /**
+     * Lo que se lee en la fila del paso 1. Con VARIAS entradas es la categoría, que ahí es
+     * un rótulo de navegación y no el nombre de nada. Con UNA sola, la fila ES el servicio y
+     * pone su nombre completo: «Brillo Glow» era la categoría, y la clienta acababa viendo
+     * «Brillo intensivo» en la confirmación sin saber que era lo mismo. Cuatro de los seis
+     * grupos de una entrada tenían esa divergencia.
+     */
+    titulo: string;
     entradas: EntradaCatalogo[];
     /** Precio más bajo del grupo, o null si NINGUNA entrada tiene precio. */
     desde: number | null;
     /** true cuando alguna entrada no tiene precio: entonces «desde» no cuenta la historia. */
     algunoSinPrecio: boolean;
 };
+
+/**
+ * El nombre de una entrada tal como llega del servidor, con su respaldo.
+ *
+ * Si `nombreCompleto` no viene —un Express viejo sin desplegar— se cae al `nombre` pelado,
+ * que es un valor REAL del catálogo: sin categoría delante, pero de nadie inventado. Lo que
+ * no se hace nunca es volver a pegar `categoria` y `nombre` con un separador (regla 3: si un
+ * dato no se resuelve, no se fabrica uno que parezca bueno).
+ */
+export function nombreDeEntrada(bruto: Record<string, unknown>): string {
+    const completo = typeof bruto.nombreCompleto === 'string' ? bruto.nombreCompleto.trim() : '';
+    if (completo) return completo;
+    return typeof bruto.nombre === 'string' ? bruto.nombre : '';
+}
 
 /**
  * Agrupa por categoría conservando el ORDEN en que vienen del servidor, que es el que la
@@ -944,15 +990,24 @@ export function agruparCatalogo(servicios: unknown): { grupos: GrupoServicio[]; 
 
         let grupo = porCategoria.get(categoria);
         if (!grupo) {
-            grupo = { categoria, entradas: [], desde: null, algunoSinPrecio: false };
+            grupo = { categoria, titulo: categoria, entradas: [], desde: null, algunoSinPrecio: false };
             porCategoria.set(categoria, grupo);
         }
-        grupo.entradas.push({ key, categoria, nombre, precio, duracion });
+        grupo.entradas.push({
+            key, categoria, nombre, nombreCompleto: nombreDeEntrada(s), precio, duracion,
+        });
         if (precio === null) grupo.algunoSinPrecio = true;
         else if (grupo.desde === null || precio < grupo.desde) grupo.desde = precio;
     }
 
-    return { grupos: [...porCategoria.values()], descartadas };
+    // El título se fija AL FINAL, cuando ya se sabe cuántas entradas tiene el grupo: con una
+    // sola, la fila del paso 1 es el servicio y tiene que llamarse como se llamará después.
+    const grupos = [...porCategoria.values()];
+    for (const g of grupos) {
+        g.titulo = g.entradas.length === 1 ? (g.entradas[0].nombreCompleto || g.categoria) : g.categoria;
+    }
+
+    return { grupos, descartadas };
 }
 
 /** «35 €» · «se confirma en el salón» si no hay precio. Un 0 € inventado no sale de aquí. */
@@ -1141,6 +1196,31 @@ export function primerMesConHueco(meses: Mes[]): number {
 export function telefonoUsable(txt: unknown): boolean {
     const digitos = String(txt ?? '').replace(/\D/g, '');
     return digitos.length >= 9 && digitos.length <= 15;
+}
+
+export type ProblemaTelefono = 'letras' | 'corto' | 'largo';
+
+/**
+ * QUÉ le pasa a un teléfono que no vale. Solo elige el MENSAJE: el veredicto sigue siendo
+ * `telefonoUsable`, y por eso lo primero que hace es preguntárselo.
+ *
+ * Esa separación es la decisión, y es lo contrario de lo que parece pedir el bug: con las
+ * letras dentro del veredicto, «600 123 456 (casa)» dejaría de poder reservar, y hoy reserva
+ * —el servidor lo sanea—. Nadie pierde una cita por esto; lo único que cambia es lo que lee
+ * quien ya estaba parado.
+ *
+ * Los separadores que se perdonan son los que la gente teclea de verdad: espacios (también
+ * el duro que meten algunos teclados), guiones, puntos, paréntesis, barras y el `+` del
+ * prefijo. Lo que quede después de quitarlos y no sea un dígito ES una letra, y entonces
+ * «parece que falta algún dígito» describe otro caso: el que lo dijo escribió su nombre,
+ * un «móvil» al lado, o pegó texto.
+ */
+export function problemaTelefono(txt: unknown): ProblemaTelefono | null {
+    if (telefonoUsable(txt)) return null;
+    const crudo = String(txt ?? '');
+    const sinSeparadores = crudo.replace(/[\s\u00a0\-.()/+]/g, '');
+    if (sinSeparadores && /\D/.test(sinSeparadores)) return 'letras';
+    return crudo.replace(/\D/g, '').length > 15 ? 'largo' : 'corto';
 }
 
 export function nombreUsable(txt: unknown): boolean {

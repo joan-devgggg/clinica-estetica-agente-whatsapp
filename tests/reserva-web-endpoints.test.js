@@ -74,6 +74,12 @@ const NATALIA = 'c3d4e5f6-0000-0000-0000-000000000107';
 // ─── El catálogo de prueba: uno de cada cosa que tiene que quedarse fuera ────────────────
 const CATALOGO = [
     { categoria: 'Cortes', nombre: 'Corte mujer', precio: 35, duracion: 60 },
+    // La entrada del incidente del 21/08, con sus cadenas REALES: el catálogo la guarda como
+    // «Mujer y secado» dentro de la categoría «Cortes», y `buildFullServiceName` la nombra
+    // «Corte mujer y secado». Es el único par de este catálogo en el que el nombre del
+    // servicio NO coincide con su `nombre` pelado, o sea el único que puede cazar que la
+    // pantalla y la cita se llamen distinto.
+    { categoria: 'Cortes', nombre: 'Mujer y secado', precio: 40, duracion: 60 },
     { categoria: 'Color', nombre: 'Mechas Balayage', precio: 180, duracion: 240 },
     // Los tres que NO pueden salir a una página pública, cada uno por su motivo:
     { categoria: 'Peinados', nombre: 'Peinado con tratamientos', precio: 15, duracion: 15, solo_complemento: true },
@@ -259,19 +265,65 @@ async function test(name, fn) {
             });
             assert.strictEqual(res.status, 200);
             const nombres = res.body.servicios.map(s => s.nombre);
-            assert.deepStrictEqual(nombres.sort(), ['Corte mujer', 'Mechas Balayage']);
+            assert.deepStrictEqual(nombres.sort(), ['Corte mujer', 'Mechas Balayage', 'Mujer y secado']);
             assert.ok(!nombres.includes('Peinado con tratamientos'), 'un solo_complemento se ofrece en la web');
             assert.ok(!nombres.includes('Tinte retirado'), 'un servicio de baja se ofrece en la web');
             assert.ok(!nombres.includes('Consulta de valoración'), 'la Consulta reactive-only se ofrece en la web');
         });
 
-        await test('el catálogo lleva SOLO los cuatro campos que la página necesita', async () => {
+        await test('el catálogo lleva SOLO los campos que la página necesita', async () => {
             const res = await request(server, {
                 path: `/reserva-web/${SLUG}/catalogo`, headers: desde(ipNueva()),
             });
             for (const s of res.body.servicios) {
-                assert.deepStrictEqual(Object.keys(s).sort(), ['categoria', 'duracion', 'key', 'nombre', 'precio']);
+                assert.deepStrictEqual(Object.keys(s).sort(),
+                    ['categoria', 'duracion', 'key', 'nombre', 'nombreCompleto', 'precio']);
             }
+        });
+
+        // ─── EL NOMBRE DEL SERVICIO, que tiene que ser UNO ──────────────────────────────
+        //
+        // La pantalla enseñaba «Cortes · Mujer y secado» en el resumen y «Corte mujer y
+        // secado» en la confirmación: dos nombres para lo mismo, y el primero no existe en
+        // ningún sitio —se componía en el navegador—. Estos dos bloques atan los extremos.
+
+        await test('el catálogo trae EL nombre, el de `buildFullServiceName`', async () => {
+            const { buildFullServiceName } = require('../services/helpers');
+            const res = await request(server, {
+                path: `/reserva-web/${SLUG}/catalogo`, headers: desde(ipNueva()),
+            });
+            const porNombre = Object.fromEntries(res.body.servicios.map(s => [s.nombre, s.nombreCompleto]));
+            assert.strictEqual(porNombre['Mujer y secado'], 'Corte mujer y secado',
+                'la página seguiría llamándolo de otra forma que la cita');
+            // Y el resto, uno por uno, contra la función de verdad — no contra una lista
+            // escrita a mano, que caducaría en el primer cambio del catálogo (regla 5).
+            for (const s of res.body.servicios) {
+                const entrada = CATALOGO.find(c => c.categoria === s.categoria && c.nombre === s.nombre);
+                assert.strictEqual(s.nombreCompleto, buildFullServiceName(entrada, CATALOGO),
+                    `${s.categoria}|${s.nombre}: la proyección no usa buildFullServiceName`);
+            }
+        });
+
+        await test('el nombre del catálogo y el de la cita creada son la MISMA cadena', async () => {
+            // El cruce entero, con las dos rutas reales: lo que la página pinta en el
+            // resumen sale del catálogo, y lo que se escribe en `appointments.service` sale
+            // de `resolverServicioPublico`. Si alguien toca una de las dos llamadas a
+            // `buildFullServiceName` y no la otra, la clienta vuelve a leer dos nombres.
+            const cat = await request(server, {
+                path: `/reserva-web/${SLUG}/catalogo`, headers: desde(ipNueva()),
+            });
+            const entrada = cat.body.servicios.find(s => s.nombre === 'Mujer y secado');
+            const res = await request(server, {
+                method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ipNueva()),
+                body: { servicio: entrada.key, fecha: '2026-09-10', hora: '10:00',
+                        nombre: 'Ana', telefono: '600111222' },
+            });
+            assert.strictEqual(res.status, 200);
+            assert.strictEqual(res.body.cita.servicio, entrada.nombreCompleto,
+                'el acuse llama a la cita de otra forma que el catálogo');
+            assert.strictEqual(ESTADO.citas[0].servicio, entrada.nombreCompleto,
+                'lo que se escribe en appointments.service no es lo que se enseñó');
+            assert.strictEqual(entrada.nombreCompleto, 'Corte mujer y secado');
         });
 
         await test('el catálogo trae el NOMBRE del salón y una salida por WhatsApp', async () => {

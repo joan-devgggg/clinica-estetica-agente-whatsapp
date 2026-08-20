@@ -26,6 +26,7 @@ import {
   type Fallo,
   type GrupoServicio,
   type Mes,
+  type ProblemaTelefono,
   type Salon,
   type Textos,
   IDIOMAS,
@@ -181,7 +182,9 @@ export function ListaServicios({
             <li key={g.categoria}>
               <Fila onClick={() => elegir(g)}>
                 <span className="min-w-0 flex-1">
-                  <span className="block font-medium">{g.categoria}</span>
+                  {/* `titulo`, no `categoria`: con una sola entrada esta fila ES el
+                      servicio y tiene que llamarse igual aquí que en la confirmación. */}
+                  <span className="block font-medium">{g.titulo}</span>
                   <span className="block text-sm text-muted-foreground">
                     {unica
                       ? [formatearPrecio(unica.precio, t), formatearDuracion(unica.duracion, t)]
@@ -429,7 +432,10 @@ export function Datos({
   telefono: string;
   setNombre: (v: string) => void;
   setTelefono: (v: string) => void;
-  errores: { nombre: boolean; telefono: boolean };
+  // El teléfono no trae un booleano sino el PROBLEMA (o null): «parece que falta algún
+  // dígito» sobre un número con letras describe otro caso, y quien lo lee repasa las cifras
+  // una por una sin ver lo que sobra.
+  errores: { nombre: boolean; telefono: ProblemaTelefono | null };
   tocado: boolean;
 }) {
   return (
@@ -458,7 +464,7 @@ export function Datos({
           id="telefono"
           etiqueta={t.tuTelefono}
           ayuda={t.tuTelefonoAyuda}
-          error={tocado && errores.telefono ? t.telefonoRaro : null}
+          error={tocado && errores.telefono ? t.telefonoProblema[errores.telefono] : null}
           valor={telefono}
           onChange={setTelefono}
           autoComplete="tel"

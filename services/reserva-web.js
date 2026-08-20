@@ -475,8 +475,21 @@ function salonPublico(businessInfo, { waPhone, lang } = {}) {
  *
  * `precio: null` («se confirma en salón», hoy solo la Consulta) se conserva como null y NO
  * se convierte en 0: un 0 € en una página pública es un precio inventado.
+ *
+ * ── `nombreCompleto`: EL nombre del servicio, y viene de aquí por obligación ─────────────
+ *
+ * Es lo que `buildFullServiceName` devuelve, o sea EXACTAMENTE la cadena que se escribirá en
+ * `appointments.service`: la que el salón lee en la agenda, la que dice el recordatorio de
+ * 24 h y contra la que la facturación casa EXACTO. La pantalla no puede calcularla:
+ * `buildFullServiceName` cuenta homónimos sobre el catálogo COMPLETO —que esta ruta no
+ * publica, y no debe— y una segunda copia de la regla en el navegador es la divergencia que
+ * ya existe en `helpers.js` entre `SLOT_TEXTO_PARTES` y `_lineaCita`.
+ *
+ * Sin `nombrePara` el campo NO se inventa: se queda ausente y la pantalla cae al `nombre`
+ * pelado, que es un valor real del catálogo. Lo que no puede volver a pasar es que alguien
+ * componga un tercer nombre («Cortes · Mujer y secado») que no existe en ningún sitio.
  */
-function catalogoPublico(servicios = [], clavePara = null) {
+function catalogoPublico(servicios = [], clavePara = null, nombrePara = null) {
     return (Array.isArray(servicios) ? servicios : []).map(s => {
         const fila = {
             categoria: s.categoria ?? null,
@@ -489,6 +502,10 @@ function catalogoPublico(servicios = [], clavePara = null) {
         // —esta proyección mapea 1:1— pero el día que filtrara algo, cada servicio se
         // quedaría con la clave del de al lado: el precio de uno y la identidad de otro.
         if (clavePara) fila.key = clavePara(s);
+        if (nombrePara) {
+            const n = nombrePara(s);
+            if (typeof n === 'string' && n.trim()) fila.nombreCompleto = n;
+        }
         return fila;
     });
 }

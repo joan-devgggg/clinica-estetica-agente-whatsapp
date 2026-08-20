@@ -55,8 +55,8 @@ import {
   vueltaDe,
   mesesConDisponibilidad,
   nombreUsable,
+  problemaTelefono,
   primerMesConHueco,
-  telefonoUsable,
   textos,
   formatearPrecio,
 } from "@/lib/reservar/nucleo";
@@ -340,7 +340,9 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
     // formulario, con sus datos escritos intactos.
   }, [entrada, fecha, cargarDias, cargarHoras]);
 
-  const erroresDatos = { nombre: !nombreUsable(nombre), telefono: !telefonoUsable(telefono) };
+  // El veredicto del teléfono lo sigue dando `telefonoUsable` (permisivo a propósito);
+  // `problemaTelefono` solo elige QUÉ se le dice a quien ya está parado.
+  const erroresDatos = { nombre: !nombreUsable(nombre), telefono: problemaTelefono(telefono) };
 
   async function confirmar() {
     // ── EL CERROJO. Síncrono y lo primero de todo. ──
@@ -348,7 +350,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
     if (!entrada || !fecha || !hora) return;
 
     setTocado(true);
-    if (erroresDatos.nombre || erroresDatos.telefono) return;
+    if (erroresDatos.nombre || erroresDatos.telefono !== null) return;
 
     cerrojo.current = true;
     setEnviando(true);
@@ -476,7 +478,11 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
         <Datos
           t={t}
           resumen={{
-            servicio: `${entrada.categoria} · ${entrada.nombre}`,
+            // `nombreCompleto`, que llega del servidor y es la MISMA cadena que se
+            // escribirá en `appointments.service` y que dirá la pantalla final. Componer
+            // aquí `categoria · nombre` fabricaba un tercer nombre que no existe en ningún
+            // sitio: «Cortes · Mujer y secado» contra «Corte mujer y secado».
+            servicio: entrada.nombreCompleto,
             // Rótulo suelto, en nominativo: la frase con preposición llega hecha del
             // servidor y solo existe cuando la cita ya está escrita.
             cuando: `${etiquetaDia(fecha, idioma) ?? fecha} · ${hora}`,
