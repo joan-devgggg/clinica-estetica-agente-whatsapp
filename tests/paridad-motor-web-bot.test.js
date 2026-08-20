@@ -70,9 +70,17 @@ require.cache[dbPath] = {
 
 const { getAvailableSlots, getAvailableDays, CAUSAS_CERO } = require('../services/calendar-sante');
 
-const hoy = new Date();
-const dia = n => new Date(hoy.getTime() + n * 86400000)
-    .toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+// El HOY en hora de MADRID, no UTC: entre las 00:00 y las 02:00 de Madrid toISOString()
+// daría el día anterior.
+const HOY_STR = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+// Días de CALENDARIO, con la misma función que usa el motor (`addDaysStr`), no sumando
+// 86 400 000 ms. Los milisegundos y los días de calendario dejan de coincidir en cuanto se
+// cruza un cambio de hora: el 21/08/2026, con el horizonte ya en 90 días, `hoy + 90*86400000`
+// caía en el 18 de noviembre y el día 90 del motor era el 19 — porque el 25 de octubre
+// Madrid pasa a invierno y ese día dura 25 horas. El motor cuenta fechas (addDaysStr, UTC
+// puro) y es inmune; el test contaba tiempo y se puso rojo solo, de un día para otro.
+const { addDaysStr } = require('../services/date-utils');
+const dia = n => addDaysStr(HOY_STR, n);
 // 0 = lunes, igual que mondayDow / stylist_schedules.
 const dow = fecha => (new Date(fecha + 'T12:00:00Z').getUTCDay() + 6) % 7;
 

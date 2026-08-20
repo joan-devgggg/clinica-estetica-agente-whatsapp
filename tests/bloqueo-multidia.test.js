@@ -52,9 +52,17 @@ const jornadaCompleta = () => [0, 1, 2, 3, 4, 5, 6].map(d => ({ day_of_week: d, 
 // Con toISOString() (UTC), entre las 00:00 y las 02:00 de Madrid "mañana" salía HOY y los
 // tres bloques de bloqueo fallaban solo a esas horas (visto el 14/08/2026 a las ~00:30:
 // rojo con UTC, verde con Madrid, sin tocar nada más).
-const hoy = new Date();
-const dia = n => new Date(hoy.getTime() + n * 86400000)
-    .toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+// El HOY en hora de MADRID, no UTC: entre las 00:00 y las 02:00 de Madrid toISOString()
+// daría el día anterior.
+const HOY_STR = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+// Días de CALENDARIO, con la misma función que usa el motor (`addDaysStr`), no sumando
+// 86 400 000 ms. Los milisegundos y los días de calendario dejan de coincidir en cuanto se
+// cruza un cambio de hora: el 21/08/2026, con el horizonte ya en 90 días, `hoy + 90*86400000`
+// caía en el 18 de noviembre y el día 90 del motor era el 19 — porque el 25 de octubre
+// Madrid pasa a invierno y ese día dura 25 horas. El motor cuenta fechas (addDaysStr, UTC
+// puro) y es inmune; el test contaba tiempo y se puso rojo solo, de un día para otro.
+const { addDaysStr } = require('../services/date-utils');
+const dia = n => addDaysStr(HOY_STR, n);
 const D1 = dia(1), D2 = dia(2);
 
 async function horasDe(bloque, fecha, { serviceDuration = 30 } = {}) {

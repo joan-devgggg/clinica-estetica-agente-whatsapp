@@ -50,6 +50,14 @@ const calendarSante = require('../services/calendar-sante');
 // (el bucle arranca en «ayer» y el recorrido acaba en dia(horizonte)).
 const DIAS_A_TAPAR = calendarSante.HORIZONTE_DIAS_DEFAULT + 2;
 
+// Días de CALENDARIO, con la misma función que el motor. Sumar 86 400 000 ms deja de
+// coincidir con los días en cuanto se cruza un cambio de hora: el 21/08/2026, con el
+// horizonte ya en 90, la tapadera se quedaba un día corta —el 25 de octubre Madrid dura 25
+// horas— y estos dos bloques se pusieron rojos solos, de un día para otro, diciendo «la
+// causa no es agenda_llena» en vez de «faltan días». El motor cuenta fechas y es inmune.
+const { addDaysStr } = require('../services/date-utils');
+const HOY_STR = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+
 const ORG = 'b2c3d4e5-f6a7-8901-bcde-f12345678901';
 let pass = 0;
 function test(nombre, fn) {
@@ -109,9 +117,8 @@ async function lanza(fn, etiqueta) {
         // tapar nada el 20/08/2026, cuando el horizonte pasó a 90. Un fixture que cubre
         // menos que el horizonte no falla diciendo «faltan días»: dice «la causa no es
         // agenda_llena», que manda a buscar el bug al sitio equivocado.
-        const hoy = new Date();
         control.rows.appointments = Array.from({ length: DIAS_A_TAPAR }, (_, i) => {
-            const d = new Date(hoy.getTime() + (i - 1) * 86400000).toISOString().slice(0, 10);
+            const d = addDaysStr(HOY_STR, i - 1);
             return {
                 id: `a${i}`, stylist_id: 'sty-1', status: 'confirmed', service: 'x',
                 starts_at: `${d}T05:00:00.000Z`, ends_at: `${d}T21:00:00.000Z`,
@@ -140,9 +147,8 @@ async function lanza(fn, etiqueta) {
         assert.strictEqual(cabe.causa, null);
 
         // Y ahora el mismo servicio con la agenda tapada: la causa es agenda_llena.
-        const hoy = new Date();
         control.rows.appointments = Array.from({ length: DIAS_A_TAPAR }, (_, i) => {
-            const d = new Date(hoy.getTime() + (i - 1) * 86400000).toISOString().slice(0, 10);
+            const d = addDaysStr(HOY_STR, i - 1);
             return {
                 id: `b${i}`, stylist_id: 'sty-1', status: 'confirmed', service: 'x',
                 starts_at: `${d}T05:00:00.000Z`, ends_at: `${d}T21:00:00.000Z`,
