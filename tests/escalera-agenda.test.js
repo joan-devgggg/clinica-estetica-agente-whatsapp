@@ -37,7 +37,7 @@ stub('../services/supabase', {});
 const dbImpls = {
     findByPhone: async () => ({ id: 'ct-test', full_name: 'Test', wa_phone: '34600000001' }),
     saveMessage: async () => 1,
-    getUpcomingAppointments: async () => [],
+    getUpcomingAppointments: async () => citasDeLaBD,
     getStylistsByOrg: async () => [],
     getAllStylistSchedules: async () => [],
     getScheduleBlocks: async () => [],
@@ -51,6 +51,10 @@ const dbImpls = {
     registrarIntervencionEscalera: async (orgId, datos) => { filasTelemetria.push({ orgId, ...datos }); return true; },
 };
 const filasTelemetria = [];
+// Las citas que devuelve la BD en el turno. `resolveCitasVivas` corre en TODOS los turnos
+// del salón y borra el memo al empezar, así que sembrarlo en la sesión no sirve: hay que
+// sembrar la LECTURA, que es lo que el sistema hace de verdad.
+let citasDeLaBD = [];
 stub('../services/db', new Proxy(dbImpls, { get: (t, k) => t[k] ?? (async () => null) }));
 stub('../services/telegram', {
     notifyBizumPending: async () => {}, notifyEscalation: async () => {},
@@ -432,13 +436,48 @@ test('el 3er peldaño apunta su latencia; el que no llega a llamar al modelo, no
     }
 });
 
-test('`salida` viaja vacía todavía: la escribirá la tanda del embudo, no ésta', () => {
-    // La columna existe desde la 044 a propósito (una de las salidas ofrece una PERSONA y
-    // eso arma una escalada real, así que tiene que poder contarse aparte desde el primer
-    // día). Hoy nadie la rellena, y este bloque es lo que hace que rellenarla sea un cambio
-    // visible en vez de un efecto lateral.
-    assert.ok(filasTelemetria.length > 0, 'sin filas este bloque no afirma nada');
-    for (const f of filasTelemetria) {
-        assert.strictEqual(f.salida, undefined, 'alguien ha empezado a escribir `salida` sin declararlo');
-    }
+// ─── 6 · `salida`: con qué se contestó, y la de la PERSONA contada aparte ────
+//
+// La columna existe desde la 044 y la rellena la tanda del embudo (20/08/2026). Importa
+// una más que las otras: `ofrecer_persona` ARMA UNA ESCALADA DE VERDAD y le cuesta trabajo
+// a alguien del salón, así que tiene que poder contarse aparte de las demás escaladas en
+// vez de estimarse — que es lo que pidió el dueño al aprobar el plan.
+
+test('la fila dice CON QUÉ se sustituyó: pedir el servicio', async () => {
+    const { phone } = armarSesion({ selectedService: null, slots: [] });
+    llmQueue.push(VIOLADORA, VIOLADORA);
+    await turno(phone, [], ENTRANTE);
+    assert.strictEqual(ultimaFila().salida, 'pedir_servicio');
+});
+
+test('con cita viva, la salida es `cita_viva` y NO el embudo', async () => {
+    const { phone } = armarSesion({ selectedService: null, slots: [] });
+    citasDeLaBD = [{
+        id: 'apt-1', service: 'Mechas 3 + Matiz plus', status: 'confirmed',
+        starts_at: '2026-08-22T08:00:00.000Z', ends_at: '2026-08-22T12:00:00.000Z',
+        stylist_id: 'sty-1', stylists: { name: 'Irina' },
+    }];
+    const sink = [];
+    llmQueue.push(VIOLADORA, VIOLADORA);
+    await turno(phone, sink, ENTRANTE);
+    assert.strictEqual(ultimaFila().salida, 'cita_viva');
+    assert.ok(/Mechas 3/.test(sink[sink.length - 1]), 'y lo que sale es su cita, no la pregunta de servicio');
+    citasDeLaBD = [];
+});
+
+test('la salida de la PERSONA se cuenta aparte — es la que cuesta trabajo', async () => {
+    const { phone, session } = armarSesion({ selectedService: null, slots: [] });
+    session.sinServicioStreak = 3;   // el siguiente fallo es el 4º: se ofrece una persona
+    llmQueue.push(VIOLADORA, VIOLADORA);
+    await turno(phone, [], ENTRANTE);
+    assert.strictEqual(ultimaFila().salida, 'ofrecer_persona');
+});
+
+test('un RESCATE no tiene salida: el mensaje lo escribió el modelo', async () => {
+    const { phone } = armarSesion();
+    llmQueue.push(VIOLADORA, LIMPIA);
+    await turno(phone, [], ENTRANTE);
+    const f = ultimaFila();
+    assert.strictEqual(f.peldano, 'regenerar');
+    assert.strictEqual(f.salida, null, 'inventarle una salida a un rescate descuadraría el reparto');
 });

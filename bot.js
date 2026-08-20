@@ -316,6 +316,11 @@ function createEmptySession(userId, orgId, resolvedPhone) {
         // Nombre antes de reservar (ver SERVICE_STATE_DEFAULTS)
         pendingNameForBooking: null,
         preguntasCierre: 0,
+        // La cita que la clienta YA tiene, recitada UNA vez por conversación cuando el
+        // sustituto de la escalera se queda sin servicio (salida A). No se limpia en
+        // clearServiceState a propósito, igual que spaPromoOffered: su cita no cambia
+        // porque ella reinicie la elección de servicio.
+        citasVivasRecitadas: false,
         // Promo 10% 1ª visita Spa Hair / Masajes: se menciona una sola vez por
         // conversación (no se limpia en clearServiceState a propósito).
         spaPromoOffered: false,
@@ -1503,6 +1508,22 @@ function proposesTimingWithoutService(respuesta, session, horasHorario) {
     // la razón y sin servicio seleccionado: consultarla, cancelarla, reagendarla, ampliarla.
     if (session.citaEnCurso || session.pendingCitaAccion || session.modoReagendamiento
         || session.anchorAppointment) return false;
+    // Y una que está eligiendo la VARIANTE tampoco: la premisa de esta red —«sin servicio,
+    // hablar de cuándo es humo»— es falsa cuando la clienta YA ha nombrado su servicio y lo
+    // único que falta es cuál de sus variantes. `selectedService` sigue a null porque el
+    // catálogo tiene «Mujer y secado» (40 €) y «Mujer y peinado Dyson» (50 €) y elegir por
+    // ella sería inventarse 10 €, no porque no se sepa a qué viene.
+    //
+    // Es el escenario 11 del arnés: «un corte de mujer» deja `pendingCorteMujerTipo` desde
+    // el arreglo de la grieta (20/08/2026), y un turno después «me viene bien el finde»
+    // acababa en «necesito saber qué servicio quieres» — a alguien que lo había dicho.
+    //
+    // Lo que NO se pierde al eximir: la MENTIRA sigue cazada. Con una variante pendiente
+    // `loadAvailableSlots` no ha cargado nada (exige selectedService), así que cualquier
+    // hora concreta la ve `respondsWithInventedSlots` y cualquier fecha, `respondsWithInvented
+    // Dates`. Lo único que se suelta es hablar del cuándo sin ofrecer nada.
+    if (session.pendingLargoCategory || session.pendingCorteGenero
+        || session.pendingCorteMujerTipo || session.pendingCorteNinoTipo) return false;
     const t = normalizeText(respuesta);
     const horas = extractMentionedHours(respuesta).map(normalizeHora).filter(Boolean);
     if (!horas.length && !TIMING_MARKERS.some(re => re.test(t))) return false;
@@ -2189,14 +2210,50 @@ function salonVariasPersonasMsg(session) {
 function salonNoSlotsMsg(session) {
     const language = session.language;
     if (!session.selectedService) {
+        // ── SALIDA A · la clienta YA tiene cita ───────────────────────────────────────
+        //
+        // Es la mitad de los casos que este mensaje se comió del 14 al 20/08/2026: cuatro
+        // de las ocho personas tenían una cita viva en ese instante y se les preguntó qué
+        // servicio querían. La que avisaba de que iba de camino a las 12:00, la que decía
+        // «no tengo ninguna cita reservada ese día» tras recibir el recordatorio, la que
+        // llegaba tarde, y la que estaba moviendo la que acababa de reservar.
+        //
+        // El dato ESTABA. `resolveCitasVivas` corre en todos los turnos del salón desde el
+        // 04/08 y llega al prompt como `__citasVivas`; lo que no lo miraba era esto, porque
+        // las exenciones de la red y este sustituto consultan `citaEnCurso`, que solo pone
+        // `hidratarCitaEnSesion` cuando uno de los cuatro detectores de TEXTO ha casado.
+        //
+        // NULL NO ES CERO. `_citasVivasTurno` vale null cuando la lectura FALLÓ, y ahí no se
+        // decide nada: se cae al mensaje de siempre. Afirmar «no tienes ninguna cita» —o
+        // peor, contestar un error— porque no hemos podido mirar es la misma mentira con
+        // otro emisor (es lo que ya hace el prompt con este campo, y el criterio no puede
+        // ser distinto según quién lo lea).
+        //
+        // Se recita UNA vez por conversación: repetirle su cita en cada turno sin servicio
+        // sería el bucle de siempre con otro texto. A la segunda cae en la cadena de abajo.
+        const citasVivas = session._citasVivasTurno;
+        if (Array.isArray(citasVivas) && citasVivas.length && !session.citasVivasRecitadas) {
+            session.citasVivasRecitadas = true;
+            session._salidaSustituto = 'cita_viva';
+            // NO toca sinServicioStreak: esto es una RESPUESTA, no un turno perdido
+            // buscando el servicio, y contarlo la acercaría al menú de rescate por algo
+            // que sí hemos sabido contestar (mismo criterio que el gate de horario).
+            return buildCitasVivasMsg({ citas: citasVivas, language });
+        }
         // Segunda vez seguida con el mismo mensaje = bucle. El 02/08/2026 una clienta
         // contestó DOS veces en lenguaje natural ("me tienen que evaluar") y recibió la
         // misma frase las dos; acabó pidiendo un servicio que no quería. Repetir una
         // pregunta que la clienta ya ha respondido no es una respuesta.
         session.sinServicioStreak = (session.sinServicioStreak || 0) + 1;
         // Y el menú tampoco se repite indefinidamente: dos veces y se ofrece una persona.
-        if (session.sinServicioStreak >= 4) return salonOfferHumanMsg(session);
-        if (session.sinServicioStreak >= 2) return salonPickServiceMenuMsg(session);
+        //
+        // `_salidaSustituto` es SOLO telemetría (columna `salida` de la 044). La de aquí
+        // abajo importa más que las otras: ofrecer una persona ARMA UNA ESCALADA DE VERDAD
+        // y le cuesta trabajo a alguien del salón, así que tiene que poder contarse aparte
+        // de las demás escaladas en vez de estimarse.
+        if (session.sinServicioStreak >= 4) { session._salidaSustituto = 'ofrecer_persona'; return salonOfferHumanMsg(session); }
+        if (session.sinServicioStreak >= 2) { session._salidaSustituto = 'menu_servicios'; return salonPickServiceMenuMsg(session); }
+        session._salidaSustituto = 'pedir_servicio';
         const askService = {
             es: 'Para mirarte los huecos primero necesito saber qué servicio quieres 😊 ¿Qué te apetece hacerte?',
             en: 'To check availability I first need to know which service you\'d like 😊 What are you after?',
@@ -2626,10 +2683,17 @@ async function regenerarConVeredicto(orgId, session, llmHistory, partialDataWith
 // la verdad son los huecos reales: se ofrecen si los hay (patrón de la red anti-cierre-
 // falso), y si no, salonNoSlotsMsg dice la causa del cero (slotsCausaCero).
 function sustitutoDeCausaAgenda(red, session) {
+    delete session._salidaSustituto;
     if (red !== 'proposesTimingWithoutService' && session.availableSlots?.length) {
+        session._salidaSustituto = 'ofrecer_huecos';
         return salonOfferSlotsMsg(session);
     }
-    return salonNoSlotsMsg(session);
+    const msg = salonNoSlotsMsg(session);
+    // Con servicio ya elegido, salonNoSlotsMsg tiene sus propias salidas (causa del cero,
+    // día sin hueco, «¿qué día?»); no se etiquetan una a una porque la columna existe para
+    // separar las de la rama SIN servicio, que es donde estaba el embudo.
+    if (!session._salidaSustituto) session._salidaSustituto = 'con_servicio';
+    return msg;
 }
 
 // La escalera entera para un veredicto de agenda. UNA regeneración como máximo; todos
@@ -2691,6 +2755,9 @@ async function aplicarEscaleraAgenda({ orgId, session, userPhone, aiResponse, re
     registrarIntervencionEscalera(orgId, {
         telefono: session.partialData?.telefono || null,
         clase: 'agenda', red, peldano, motivo,
+        // Solo la hay cuando se ha SUSTITUIDO: en un rescate del 3er peldaño el mensaje lo
+        // escribe el modelo y no hay salida que contar.
+        salida: peldano === 'sustituir' ? (session._salidaSustituto || null) : null,
         latenciaRegenMs: latenciaRegen,
         respuestaOriginal, respuestaFinal: aiResponse.respuesta,
         tieneServicio: !!session.selectedService,
