@@ -101,7 +101,8 @@ export type Textos = {
     otroDia: string;
     mesAnterior: string;
     mesSiguiente: string;
-    meses: string[];                  // 12, en nominativo suelto
+    // Las iniciales SÍ son una tabla: el narrow de ICU en castellano repite «M» para martes
+    // y miércoles, y el salón escribe la X de toda la vida.
     inicialesDias: string[];          // 7, empezando en lunes
     // Datos
     tuNombre: string;
@@ -118,6 +119,8 @@ export type Textos = {
     confirmadaSinSalon: string;
     conQuien: string;                 // «con Irina»
     avisoRecordatorio: string;
+    // Cuando lo que falla es ABRIR la página, no reservar
+    noSeHaPodidoAbrir: { titulo: string; cuerpo: string };
     // Salidas
     escribirWhatsApp: string;
     reintentar: string;
@@ -154,8 +157,6 @@ const ES: Textos = {
     otroDia: 'Elegir otro día',
     mesAnterior: 'Mes anterior',
     mesSiguiente: 'Mes siguiente',
-    meses: ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
-            'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'],
     inicialesDias: ['L', 'M', 'X', 'J', 'V', 'S', 'D'],
 
     tuNombre: 'Tu nombre',
@@ -172,6 +173,11 @@ const ES: Textos = {
     confirmadaSinSalon: 'Tu cita ha sido confirmada',
     conQuien: 'con',
     avisoRecordatorio: 'Te llegará un recordatorio por WhatsApp 24 horas antes.',
+
+    noSeHaPodidoAbrir: {
+        titulo: 'No hemos podido abrir las citas',
+        cuerpo: 'Puede ser cosa de la conexión. Vuelve a intentarlo en un momento.',
+    },
 
     escribirWhatsApp: 'Escribirnos por WhatsApp',
     reintentar: 'Volver a intentarlo',
@@ -291,6 +297,12 @@ export type Fallo = {
     recargarHuecos: boolean;
     whatsapp: string | null;
     esperaSegundos: number | null;
+    /**
+     * ¿Este «no» lo ha dicho el SERVIDOR, o se lo ha inventado la pantalla porque no hubo
+     * respuesta que leer? Es lo que decide si se puede usar el WhatsApp de respaldo — ver
+     * `enlaceDelAviso`, que es donde está explicado.
+     */
+    deLaPantalla: boolean;
 };
 
 const MOTIVOS_CONOCIDOS = new Set<string>(Object.keys(ES.motivos));
@@ -323,11 +335,64 @@ export function interpretarFallo(estado: number, cuerpo: unknown): Fallo {
         recargarHuecos: c.recargarHuecos === true,
         whatsapp: url,
         esperaSegundos: espera,
+        // «De la pantalla» = este «no» NO ha pasado por la política de reserva-web.js. Son
+        // dos casos: un cuerpo que no se puede leer (motivo desconocido o ausente) y el que
+        // fabrica el puente del Next cuando Express no contesta, que se marca `origen`.
+        deLaPantalla: !MOTIVOS_CONOCIDOS.has(crudo) || c.origen === 'puente',
         // `estado` se ignora a propósito: el 409 de un hueco ocupado y el 409 de un tope de
         // citas se pintan distinto, y lo que los separa es el motivo. Queda en la firma
         // porque quien llama lo tiene y porque un motivo ausente con estado 200 sería un
         // caso que hoy no existe pero que conviene poder distinguir mañana.
     };
+}
+
+/**
+ * El fallo que no manda nadie: el `fetch` ni siquiera llegó a contestar (el móvil en el
+ * ascensor, el wifi del salón). Se fabrica aquí para que el componente no tenga que escribir
+ * a mano un motivo, que es como se cuelan los que no existen.
+ */
+export function falloSinConexion(): Fallo {
+    return {
+        motivo: 'sin_conexion', recargarHuecos: false, whatsapp: null,
+        esperaSegundos: null, deLaPantalla: true,
+    };
+}
+
+/**
+ * Qué enlace de WhatsApp se pinta en un aviso — y sobre todo, CUÁNDO no se pinta ninguno.
+ *
+ * La política de quién tiene salida humana vive en `services/reserva-web.js` y viaja en la
+ * respuesta: si el motivo la tiene, el cuerpo trae `whatsapp`; si no, no lo trae. Aquí se
+ * OBEDECE eso al pie de la letra, porque replicar la tabla sería tener dos.
+ *
+ * El respaldo —el enlace que la página guardó al cargar el catálogo— solo entra cuando NO HAY
+ * respuesta que obedecer: la red caída, un cuerpo que no se puede leer, un motivo que este
+ * código no conoce. Usarlo también con los «no» del servidor rompería la política por arriba:
+ * un «ese hueco se acaba de ocupar» saldría con un botón de WhatsApp, cuando lo que esa
+ * clienta tiene que hacer es tocar otra hora, que la tiene delante.
+ */
+export function enlaceDelAviso(fallo: Fallo, respaldo: string | null): string | null {
+    if (fallo.whatsapp) return fallo.whatsapp;
+    return fallo.deLaPantalla ? respaldo : null;
+}
+
+/**
+ * Qué título y qué cuerpo lleva un aviso.
+ *
+ * Casi siempre es el de su motivo. La excepción es al ABRIR la página: ahí no se está
+ * confirmando nada, así que «no hemos podido confirmar la cita» sería falso — y encima
+ * remite a un WhatsApp que no se ha llegado a cargar, porque el enlace venía justo en la
+ * respuesta que ha fallado. Los motivos con contenido propio (el enlace apagado, la página
+ * que no existe) se dicen igual en los dos sitios.
+ */
+export function textoDelAviso(
+    t: Textos, fallo: Fallo, opciones: { enCarga?: boolean } = {},
+): { titulo: string; cuerpo: string } {
+    if (opciones.enCarga && (fallo.motivo === 'error_interno' || fallo.motivo === 'sin_conexion')) {
+        return t.noSeHaPodidoAbrir;
+    }
+    const base = t.motivos[fallo.motivo] ?? t.motivos.error_interno;
+    return { titulo: base.titulo, cuerpo: base.cuerpo };
 }
 
 /** «Prueba otra vez dentro de 3 min» — sin prometer un reloj que no controlamos. */
@@ -424,6 +489,46 @@ export type Mes = { anio: number; mes: number; casillas: Casilla[] };
 
 const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// El locale de cada idioma. Es el mismo criterio que `REMINDER_DATE_LOCALE` en helpers.js,
+// incluido el **en-GB** en vez de en-US: «25 August», no «August 25». Las dos fechas las lee
+// la misma clienta.
+const LOCALES: Record<Idioma, string> = { es: 'es-ES', en: 'en-GB', ru: 'ru-RU', uk: 'uk-UA' };
+
+/**
+ * «martes, 25 de agosto» — el rótulo de un día SUELTO, y por eso sale de `Intl` y no de una
+ * tabla.
+ *
+ * ── Y AQUÍ ESTÁ LA RAYA, que es lo importante de esta función ────────────────────────────
+ *
+ * CLAUDE.md dice que el día de la semana se dice en UN solo sitio (`formatReminderWhen`), y
+ * esto no lo incumple: son dos FORMAS distintas de la misma palabra.
+ *
+ *   · Detrás de una preposición el ruso y el ucraniano piden ACUSATIVO —«в среду»— y el
+ *     martes cambia además la preposición («во вторник»). Eso `Intl` no lo sabe hacer, y por
+ *     eso existe la tabla del servidor. Es la frase del recordatorio y de la confirmación, y
+ *     llega HECHA desde allí (`cita.cuando`).
+ *   · Un rótulo suelto encima de una rejilla de horas no lleva preposición: va en NOMINATIVO,
+ *     que es exactamente lo que `Intl` devuelve. Copiar aquí la tabla del servidor pondría
+ *     «в среду» de título, que en ruso se lee como una frase a medias.
+ *
+ * O sea: la tabla no se duplica porque lo que hace falta aquí no es lo que la tabla da.
+ * Devuelve **null** si la fecha no se entiende, y quien llama enseña la fecha cruda.
+ */
+export function etiquetaDia(fecha: string, lang: unknown): string | null {
+    const t = aUTC(fecha);
+    if (!t) return null;
+    return new Intl.DateTimeFormat(LOCALES[idiomaValido(lang)], {
+        weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC',
+    }).format(t);
+}
+
+/** «agosto de 2026», la cabecera de la rejilla. Mismo criterio: rótulo suelto, `Intl`. */
+export function etiquetaMes(anio: number, mes: number, lang: unknown): string {
+    return new Intl.DateTimeFormat(LOCALES[idiomaValido(lang)], {
+        month: 'long', year: 'numeric', timeZone: 'UTC',
+    }).format(new Date(Date.UTC(anio, mes, 15, 12, 0, 0)));
+}
+
 /**
  * El HOY del SALÓN, no el del móvil de la clienta.
  *
@@ -496,6 +601,30 @@ export function construirMeses(hoy: string, horizonteDias: number, dias: DiaConH
         cursor.setUTCMonth(cursor.getUTCMonth() + 1);
     }
     return meses;
+}
+
+/**
+ * Los meses que hay que poder hojear, deducidos de la RESPUESTA y no de un horizonte escrito
+ * aquí. El servidor pide 90 días (`HORIZONTE_RESERVA_WEB`); copiar ese 90 en el navegador
+ * sería una segunda constante que se queda vieja el día que Yulia cambie el horizonte, y el
+ * síntoma sería un calendario con meses que no se pueden tocar. Con esto, la rejilla llega
+ * exactamente hasta donde hay algo que reservar.
+ *
+ * Sin ningún día disponible se pinta el mes en curso, para que la clienta vea un calendario
+ * vacío y no un hueco en la página.
+ */
+export function mesesConDisponibilidad(hoy: string, dias: DiaConHueco[]): Mes[] {
+    const inicio = aUTC(hoy);
+    if (!inicio) return [];
+    let ultima = hoy;
+    for (const d of dias || []) {
+        if (d && typeof d.fecha === 'string' && FECHA_RE.test(d.fecha) && d.huecos > 0 && d.fecha > ultima) {
+            ultima = d.fecha;
+        }
+    }
+    const fin = aUTC(ultima);
+    const horizonte = fin ? Math.max(0, Math.round((fin.getTime() - inicio.getTime()) / 86400000)) : 0;
+    return construirMeses(hoy, horizonte, dias);
 }
 
 /** El índice del primer mes que tiene algún día elegible. -1 si no hay ninguno. */

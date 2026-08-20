@@ -77,13 +77,16 @@ async function llamar(
       cuerpo = texto ? JSON.parse(texto) : null;
     } catch {
       // Express caído devolviendo HTML de error. NO se reenvía tal cual: podría llevar una
-      // traza. Se traduce a un motivo del conjunto cerrado.
-      return { estado: 502, cuerpo: { ok: false, motivo: "error_interno" } };
+      // traza. Se traduce a un motivo del conjunto cerrado, MARCADO como propio: este «no»
+      // no ha pasado por la política de `services/reserva-web.js`, así que no lleva el
+      // WhatsApp que esa política le daría, y la pantalla tiene que poder saberlo para poner
+      // el suyo de respaldo. Sin la marca, el aviso dice «escríbenos» y no hay a dónde.
+      return { estado: 502, cuerpo: { ok: false, motivo: "error_interno", origen: "puente" } };
     }
     return { estado: res.status, cuerpo };
   } catch {
     // Red caída entre Vercel y Railway. La clienta no tiene por qué leer eso.
-    return { estado: 502, cuerpo: { ok: false, motivo: "error_interno" } };
+    return { estado: 502, cuerpo: { ok: false, motivo: "error_interno", origen: "puente" } };
   }
 }
 

@@ -147,6 +147,14 @@ test('un cuerpo que no se entiende tampoco deja la pantalla muda', () => {
     }
 });
 
+test('el fetch que no llega a contestar tiene su propio motivo, con texto', () => {
+    const f = N.falloSinConexion();
+    assert.strictEqual(f.motivo, 'sin_conexion');
+    assert.strictEqual(f.recargarHuecos, false);
+    assert.ok(T.motivos.sin_conexion.titulo, 'la pantalla se quedaría en blanco al caerse la red');
+    assert.strictEqual(T.motivos.sin_conexion.vuelta, 'reintentar');
+});
+
 test('recargarHuecos solo es true si la respuesta lo dice con un true', () => {
     assert.strictEqual(N.interpretarFallo(409, { motivo: 'hueco_ocupado', recargarHuecos: true }).recargarHuecos, true);
     for (const v of ['true', 1, {}, undefined, null]) {
@@ -165,6 +173,48 @@ test('el enlace de WhatsApp se comprueba antes de meterlo en un href', () => {
     }
 });
 
+test('el WhatsApp de respaldo NO se cuela en un «no» que el servidor ya contestó', () => {
+    // Fallo real cazado el 20/08 mirando la pantalla: `hueco_ocupado` salía con botón de
+    // WhatsApp. Su política dice `whatsapp: false` porque lo que esa clienta tiene que hacer
+    // es tocar otra hora, que la tiene delante — el botón la sacaba de la página.
+    const respaldo = 'https://wa.me/34641029104?text=hola';
+    const ocupado = N.interpretarFallo(409, { motivo: 'hueco_ocupado', recargarHuecos: true });
+    assert.strictEqual(N.enlaceDelAviso(ocupado, respaldo), null,
+        'el respaldo se salta la política del servidor por arriba');
+
+    // Y donde el servidor SÍ manda enlace, se usa el suyo, no el de respaldo.
+    const suyo = 'https://wa.me/34641029104?text=tengo%20dos';
+    const tope = N.interpretarFallo(409, { motivo: 'tope_citas', whatsapp: suyo });
+    assert.strictEqual(N.enlaceDelAviso(tope, respaldo), suyo);
+});
+
+test('cuando NO hubo respuesta que obedecer, el respaldo es lo único que queda', () => {
+    const respaldo = 'https://wa.me/34641029104?text=hola';
+    // Red caída y cuerpo ilegible: los dos son «de la pantalla», y sin el respaldo la
+    // clienta se queda con un aviso y ninguna salida.
+    assert.strictEqual(N.enlaceDelAviso(N.falloSinConexion(), respaldo), respaldo);
+    assert.strictEqual(N.enlaceDelAviso(N.interpretarFallo(502, '<html>502</html>'), respaldo), respaldo);
+    assert.strictEqual(N.enlaceDelAviso(N.interpretarFallo(409, { motivo: 'del_futuro' }), respaldo), respaldo);
+    // Sin respaldo tampoco se inventa nada.
+    assert.strictEqual(N.enlaceDelAviso(N.falloSinConexion(), null), null);
+});
+
+test('el 502 del PUENTE se reconoce como propio y recupera la salida por WhatsApp', () => {
+    // El Route Handler del Next fabrica `{motivo:'error_interno'}` cuando Express no
+    // contesta. Ese cuerpo NO ha pasado por la política, así que no lleva `whatsapp` — y sin
+    // la marca `origen:'puente'` la pantalla decía «escríbenos por WhatsApp» sin un botón al
+    // que escribir. Cazado el 20/08 mirando la pantalla con Express caído.
+    const respaldo = 'https://wa.me/34641029104?text=hola';
+    const delPuente = N.interpretarFallo(502, { ok: false, motivo: 'error_interno', origen: 'puente' });
+    assert.strictEqual(delPuente.deLaPantalla, true);
+    assert.strictEqual(N.enlaceDelAviso(delPuente, respaldo), respaldo);
+
+    // Y el error_interno que sí viene de Express trae el suyo y no toca el respaldo.
+    const deExpress = N.interpretarFallo(500, { ok: false, motivo: 'error_interno', whatsapp: 'https://wa.me/34641029104?text=ay' });
+    assert.strictEqual(deExpress.deLaPantalla, false);
+    assert.strictEqual(N.enlaceDelAviso(deExpress, respaldo), 'https://wa.me/34641029104?text=ay');
+});
+
 test('la espera se dice en minutos cuando es larga, y nunca cuando no la hay', () => {
     assert.strictEqual(N.textoEspera(T, null), null);
     assert.strictEqual(N.textoEspera(T, 0), null);
@@ -173,6 +223,24 @@ test('la espera se dice en minutos cuando es larga, y nunca cuando no la hay', (
     assert.ok(N.textoEspera(T, 3600).includes('60'));
     // Y el marcador de la plantilla no puede quedarse sin sustituir en pantalla.
     assert.ok(!N.textoEspera(T, 3600).includes('{'), 'ha salido un {min} sin rellenar');
+});
+
+test('al ABRIR la página el aviso no habla de confirmar una cita que no existe', () => {
+    // Con Express caído, la primera llamada falla y no hay formulario detrás. Decir «no
+    // hemos podido confirmar la cita» es mentira —no había cita ninguna— y encima remite a
+    // un WhatsApp que venía justo en la respuesta que ha fallado.
+    const roto = N.interpretarFallo(502, { motivo: 'error_interno', origen: 'puente' });
+    const enCarga = N.textoDelAviso(T, roto, { enCarga: true });
+    assert.strictEqual(enCarga.titulo, T.noSeHaPodidoAbrir.titulo);
+    assert.ok(!/confirmar/i.test(enCarga.titulo + enCarga.cuerpo),
+        `dice que no ha podido confirmar algo que nadie llegó a pedir: ${enCarga.titulo}`);
+    // Reservando sí es el texto del motivo.
+    assert.strictEqual(N.textoDelAviso(T, roto).titulo, T.motivos.error_interno.titulo);
+    // Y los motivos con contenido propio se dicen igual en los dos sitios.
+    for (const m of ['cerrado', 'no_encontrado']) {
+        const f = N.interpretarFallo(503, { motivo: m });
+        assert.strictEqual(N.textoDelAviso(T, f, { enCarga: true }).titulo, T.motivos[m].titulo);
+    }
 });
 
 // ─── 4 · El catálogo ─────────────────────────────────────────────────────────────────────
@@ -257,6 +325,24 @@ test('la semana empieza en LUNES, como stylist_schedules', () => {
     assert.strictEqual(febrero.casillas.length, 6 + 28);
 });
 
+test('los meses que se pueden hojear salen de la RESPUESTA, no de un 90 copiado', () => {
+    // El horizonte lo decide el servidor (HORIZONTE_RESERVA_WEB). Copiarlo aquí sería una
+    // segunda constante, y el síntoma de que se separasen serían meses que no se pueden tocar.
+    const cerca = N.mesesConDisponibilidad('2026-08-20', [{ fecha: '2026-08-28', huecos: 2 }]);
+    assert.deepStrictEqual(cerca.map(m => `${m.anio}-${m.mes + 1}`), ['2026-8']);
+
+    const lejos = N.mesesConDisponibilidad('2026-08-20', [
+        { fecha: '2026-08-28', huecos: 2 }, { fecha: '2026-11-03', huecos: 1 },
+    ]);
+    assert.deepStrictEqual(lejos.map(m => `${m.anio}-${m.mes + 1}`), ['2026-8', '2026-9', '2026-10', '2026-11']);
+
+    // Sin nada disponible se pinta el mes en curso: un calendario vacío se entiende, un
+    // hueco en la página no.
+    const vacio = N.mesesConDisponibilidad('2026-08-20', []);
+    assert.strictEqual(vacio.length, 1);
+    assert.ok(vacio[0].casillas.every(c => !c.elegible));
+});
+
 test('el primer mes con hueco se encuentra, y -1 cuando no hay ninguno', () => {
     const conHueco = N.construirMeses('2026-08-20', 90, [{ fecha: '2026-10-05', huecos: 2 }]);
     assert.strictEqual(N.primerMesConHueco(conHueco), 2);
@@ -298,7 +384,6 @@ test('ni una cadena vacía en la tabla castellana', () => {
         if (typeof valor === 'string' && !valor.trim()) vacias.push(clave);
     }
     assert.deepStrictEqual(vacias, [], `saldría un hueco en pantalla: ${vacias.join(', ')}`);
-    assert.strictEqual(T.meses.length, 12);
     assert.strictEqual(T.inicialesDias.length, 7);
     assert.strictEqual(T.inicialesDias[0], 'L', 'la primera columna de la rejilla es lunes');
 });
@@ -310,6 +395,46 @@ test('la confirmación nombra el salón, y aguanta no saber cómo se llama', () 
     // Sin nombre no se rellena con una cadena vacía dejando «confirmada en .»: hay otra frase.
     assert.ok(!T.confirmadaSinSalon.includes('{'));
     assert.ok(/recordatorio/i.test(T.avisoRecordatorio) && /24/.test(T.avisoRecordatorio));
+});
+
+// ─── 6 bis · Las DOS formas del día, que son dos a propósito ─────────────────────────────
+
+test('el rótulo suelto va en NOMINATIVO y la frase del servidor en acusativo', () => {
+    // CLAUDE.md: el día de la semana se dice en UN solo sitio (`formatReminderWhen`). Esto no
+    // lo incumple, y este bloque es la prueba de por qué: son dos FORMAS de la misma palabra.
+    // Detrás de la preposición el ruso pide acusativo y el martes cambia hasta la preposición
+    // («во вторник»); un rótulo encima de una rejilla de horas no lleva preposición ninguna y
+    // va en nominativo, que es justo lo que `Intl` devuelve. Copiar la tabla del servidor
+    // aquí pondría «во вторник» de título, o sea una frase a medias.
+    const { formatReminderWhen } = require('../services/helpers');
+    const casos = {
+        es: ['martes', 'del martes'],
+        ru: ['вторник', 'во вторник'],
+        uk: ['вівторок', 'у вівторок'],
+    };
+    for (const [lang, [nominativo, conPreposicion]] of Object.entries(casos)) {
+        const rotulo = N.etiquetaDia('2026-08-25', lang);
+        const frase = formatReminderWhen('2026-08-25', '10:00', lang);
+        assert.ok(rotulo.includes(nominativo), `${lang}: el rótulo no está en nominativo (${rotulo})`);
+        assert.ok(frase.includes(conPreposicion), `${lang}: la frase del servidor ha cambiado (${frase})`);
+        // Y la comprobación que importa: el rótulo NO puede llevar la preposición dentro.
+        if (lang !== 'es') {
+            assert.ok(!rotulo.includes(conPreposicion),
+                `${lang}: el rótulo lleva la preposición: es la tabla del servidor copiada`);
+        }
+    }
+});
+
+test('el rótulo del día lleva día de la semana, número y mes; y null si no se entiende', () => {
+    const es = N.etiquetaDia('2026-08-25', 'es');
+    assert.ok(/martes/.test(es) && /25/.test(es) && /agosto/.test(es), es);
+    // en-GB y no en-US: «25 August», la misma decisión que REMINDER_DATE_LOCALE.
+    assert.strictEqual(N.etiquetaDia('2026-08-25', 'en'), 'Tuesday 25 August');
+    assert.strictEqual(N.etiquetaDia('2026-02-31', 'es'), null);
+    assert.strictEqual(N.etiquetaDia('mañana', 'es'), null);
+    // Y el mes de la rejilla, por el mismo camino.
+    assert.ok(/agosto/.test(N.etiquetaMes(2026, 7, 'es')));
+    assert.ok(/2026/.test(N.etiquetaMes(2026, 7, 'es')));
 });
 
 // ─── 7 · Lo que teclea la clienta ────────────────────────────────────────────────────────
@@ -324,6 +449,58 @@ test('el teléfono se comprueba flojo a propósito: el servidor tiene la última
     assert.ok(N.nombreUsable('Ana'));
     assert.ok(!N.nombreUsable(' '));
     assert.ok(!N.nombreUsable('A'));
+});
+
+// ─── 8 · Lo que solo se puede mirar leyendo el fichero ───────────────────────────────────
+//
+// Estas tres no se pueden EJECUTAR desde aquí (son React y el `proxy` de Next), pero lo que
+// vigilan no es redacción: es que la página pública siga siendo pública. Molde de
+// tests/etiquetas-escalada-paridad.test.js, que lee el TSX del panel por el mismo motivo.
+
+const fs = require('fs');
+const APP = path.join(__dirname, '..', 'dashboard-app', 'src');
+const leer = (...t) => fs.readFileSync(path.join(APP, ...t), 'utf8');
+
+test('el proxy exime la ruta pública ANTES de hablar con Supabase', () => {
+    // Crear el cliente y pedir `auth.getUser()` es un viaje a Supabase. Hacerlo antes de la
+    // exención lo metía en CADA petición de la página pública —el HTML y las cuatro del
+    // formulario— y ataba la única pantalla sin sesión del sistema a que el login esté vivo.
+    const src = leer('proxy.ts');
+    const exencion = src.indexOf('esRutaPublicaDeReserva(pathname)');
+    const cliente = src.indexOf('createClient(request)');
+    assert.ok(exencion > 0 && cliente > 0, 'el proxy ha cambiado de forma: revisa este test');
+    assert.ok(exencion < cliente,
+        'la página pública vuelve a preguntar por una sesión que por definición no existe');
+});
+
+test('la pantalla pública no arrastra NADA del panel con sesión', () => {
+    // Un componente del panel dentro de esta página la rompe para quien no tenga cuenta:
+    // `OrgProvider` y `lib/api` mandan el header de organización y el JWT, y el cliente de
+    // Supabase redirige a /login. Se cae en cuanto alguien reutilice una pieza «que ya
+    // existe» sin darse cuenta de que esa pieza da por hecha una sesión.
+    const prohibidos = ['@/lib/org-context', '@/lib/api', '@/utils/supabase', '@/lib/bot-status-context'];
+    const ficheros = [
+        ['app', 'reservar', '[slug]', 'page.tsx'],
+        ['app', 'reservar', '[slug]', 'error.tsx'],
+        ['components', 'reservar', 'formulario-reserva.tsx'],
+        ['components', 'reservar', 'piezas.tsx'],
+        ['lib', 'reservar', 'nucleo.ts'],
+    ];
+    for (const f of ficheros) {
+        const src = leer(...f);
+        for (const mal of prohibidos) {
+            assert.ok(!src.includes(mal), `${f.join('/')} importa ${mal}: la página deja de ser pública`);
+        }
+    }
+});
+
+test('el núcleo de la pantalla no importa nada: es lo que lo hace ejecutable aquí', () => {
+    // Un `import` de otro módulo del panel —o un alias `@/`— lo vuelve inejecutable fuera de
+    // Next, y entonces los 30 bloques de arriba dejan de existir.
+    const src = leer('lib', 'reservar', 'nucleo.ts');
+    const imports = src.match(/^\s*import[\s{]/gm) || [];
+    assert.deepStrictEqual(imports, [],
+        'nucleo.ts ha ganado un import: este fichero de test deja de poder cargarlo');
 });
 
 process.exit(fallos ? 1 : 0);

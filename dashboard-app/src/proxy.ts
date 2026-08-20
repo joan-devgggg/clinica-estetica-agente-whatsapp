@@ -14,10 +14,6 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const { supabase, response } = createClient(request);
-
-  const { data: { user } } = await supabase.auth.getUser();
-
   const { pathname } = request.nextUrl;
 
   // El enlace PÚBLICO de reserva no tiene sesión: es su razón de ser. Sin esta exención,
@@ -25,11 +21,21 @@ export async function proxy(request: NextRequest) {
   // la página como sus endpoints, y la clienta acabaría en la pantalla de acceso del panel
   // del salón. Es el aviso que ya estaba escrito en el brief («cuidado con proxy.ts»).
   //
+  // Va ANTES de `createClient`, y eso no es orden por gusto: crear el cliente y llamar a
+  // `auth.getUser()` es un viaje a Supabase, y hacerlo aquí lo metía en CADA petición de la
+  // página pública —la del HTML y las cuatro del formulario—. Con Supabase caído o mal
+  // configurado, esa llamada rompe la única pantalla del sistema que abre alguien que no
+  // tiene cuenta, para preguntar por una sesión que por definición no existe.
+  //
   // La exención es de AUTENTICACIÓN y de nada más: quién puede reservar, cuántas veces y con
   // qué límites lo deciden Express y Postgres, no este fichero.
   if (esRutaPublicaDeReserva(pathname)) {
     return NextResponse.next();
   }
+
+  const { supabase, response } = createClient(request);
+
+  const { data: { user } } = await supabase.auth.getUser();
 
   if (!user && !pathname.startsWith("/login") && !pathname.startsWith("/api/auth")) {
     const loginUrl = request.nextUrl.clone();
