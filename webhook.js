@@ -1696,7 +1696,7 @@ app.post('/api/reviews/:appointmentId/send', async (req, res) => {
 
 const {
     MOTIVOS, respuestaNo, resolverLimites, crearLimitador, interpretarMotivoSql,
-    catalogoPublico, diasPublicos, huecosPublicos, reservaPublica,
+    catalogoPublico, diasPublicos, huecosPublicos, reservaPublica, salonPublico,
     limpiarUnaLinea, idiomaValido, MAX_NOTAS, MAX_NOMBRE, FECHA_RE, HORA_RE, UUID_RE,
 } = require('./services/reserva-web');
 const { resolveOrgBySlug } = require('./services/org-registry');
@@ -1852,7 +1852,15 @@ app.get('/reserva-web/:slug/catalogo', async (req, res) => {
             return res.status(estado).json(cuerpo);
         }
         const ofertables = botOfferableCatalog(cfg.services).filter(s => !isReactiveOnlyService(s));
-        res.json({ ok: true, servicios: catalogoPublico(ofertables, serviceCatalogKey) });
+        // `salon` va en ESTA respuesta y no en una ruta propia: es la primera llamada de la
+        // página, y así el nombre y la salida por WhatsApp están antes de que pueda fallar
+        // nada más. Proyección enumerada, como todo lo demás (`business_info` lo edita la
+        // dueña y lleva dentro el prompt comercial y las reglas de upselling).
+        res.json({
+            ok: true,
+            salon: salonPublico(cfg.business_info, { waPhone: ctx.org.waPhone, lang: ctx.lang }),
+            servicios: catalogoPublico(ofertables, serviceCatalogKey),
+        });
     } catch (e) { fallo(res, 'reserva_web_catalogo_error', ctx, e); }
 });
 
@@ -2096,8 +2104,17 @@ app.post('/reserva-web/:slug/reserva', async (req, res) => {
                     orgId: org.orgId, citaId: cita.id, fecha, hora,
                     servicio: servicio.nombreCompleto, estilistaId: candidata.id,
                 });
+                // El «cuándo» de la confirmación sale de `formatReminderWhen`, el MISMO que
+                // el recordatorio de 24 h. No se escribe un segundo formateador ni se deja
+                // que lo pinte el navegador: la tabla de días existe porque el ruso y el
+                // ucraniano piden acusativo detrás de la preposición, y con dos tablas el
+                // mismo jueves saldría de dos formas a la misma clienta. Devuelve null si la
+                // fecha no se entiende, y entonces la página enseña fecha y hora sueltas —
+                // una fecha ilegible no puede tumbar una cita que ya está escrita.
+                const { formatReminderWhen } = require('./services/helpers');
                 return res.json(reservaPublica({
                     fecha, hora,
+                    cuando: formatReminderWhen(fecha, hora, lang),
                     servicio: servicio.nombreCompleto,
                     estilistaNombre: candidata.name,
                     duracionMin: servicio.duracionMin,

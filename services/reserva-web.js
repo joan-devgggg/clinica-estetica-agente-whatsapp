@@ -307,6 +307,31 @@ function crearLimitador({ ahora = () => Date.now(), maxClaves = MAX_CLAVES } = {
 // línea de código.
 
 /**
+ * Lo poco que la página necesita saber DEL SALÓN, y ni un campo más.
+ *
+ * `business_info` es un JSONB que edita la dueña desde el panel: hoy tiene dentro el prompt
+ * comercial, las reglas de upselling, el equipo, el enlace de reseñas y lo que escriba
+ * mañana. Un `{...business_info}` publicaría todo eso, así que aquí se ENUMERAN dos cosas:
+ *
+ *   · `nombre`   — para la pantalla de confirmación («tu cita ha sido confirmada en Sante»).
+ *     Sin `companyName` se devuelve **null** y la página dice la frase sin nombre: no se
+ *     deriva del slug ni se escribe «Sante» en el código del panel, que sería una segunda
+ *     copia de un dato que ella edita (regla 5).
+ *   · `whatsapp` — el enlace con el mensaje ya escrito. Va aquí, en la PRIMERA llamada de la
+ *     página, para que la clienta tenga una salida humana aunque más tarde se caiga todo:
+ *     una respuesta rota puede no traer enlace, y entonces la página usa el que guardó.
+ *
+ * La DIRECCIÓN no sale: no hace falta para nada de lo que la pantalla enseña hoy, y cada
+ * campo que se publica es un campo que hay que vigilar.
+ */
+function salonPublico(businessInfo, { waPhone, lang } = {}) {
+    const bi = (businessInfo && typeof businessInfo === 'object') ? businessInfo : {};
+    const nombre = typeof bi.companyName === 'string' && bi.companyName.trim()
+        ? bi.companyName.trim() : null;
+    return { nombre, whatsapp: enlaceWhatsApp(waPhone, 'generico', lang) };
+}
+
+/**
  * El catálogo que ve una desconocida. Entra ya FILTRADO por el call site
  * (`offerableCatalog`, que quita inactivos y `solo_complemento`) — el filtro no se hace aquí
  * a propósito: meterlo dentro de una proyección lo escondería del sitio donde se decide.
@@ -360,11 +385,19 @@ function huecosPublicos(slots = []) {
  * filtraría el nombre de una clienta a cualquiera que teclee su número. Se devuelve lo que
  * ELLA acaba de elegir —fecha, hora, servicio, estilista— y nada que estuviera guardado.
  */
-function reservaPublica({ fecha, hora, servicio, estilistaNombre, duracionMin }) {
+function reservaPublica({ fecha, hora, cuando, servicio, estilistaNombre, duracionMin }) {
     return {
         ok: true,
         cita: {
             fecha, hora,
+            // `cuando` es «10:00 del jueves 10 de septiembre», y lo fabrica `formatReminderWhen`
+            // en el call site. Viaja HECHO a propósito: es la misma frase que le llegará en el
+            // recordatorio de 24 h, y esa tabla de días existe porque el ruso y el ucraniano
+            // piden acusativo detrás de la preposición. Que la pintara el navegador con un
+            // `toLocaleDateString` sería la segunda tabla que CLAUDE.md prohíbe, y el mismo
+            // jueves saldría de dos formas a la misma clienta. Un null aquí NO bloquea nada:
+            // la página enseña la fecha y la hora sueltas, que es el lado recuperable.
+            cuando: cuando ?? null,
             servicio: servicio ?? null,
             estilista: estilistaNombre ?? null,
             duracionMin: duracionMin ?? null,
@@ -393,7 +426,7 @@ module.exports = {
     MOTIVOS, POLITICA, MOTIVOS_SQL, LIMITES_DEFAULT,
     interpretarMotivoSql, enlaceWhatsApp, respuestaNo,
     resolverLimites, crearLimitador,
-    catalogoPublico, diasPublicos, huecosPublicos, reservaPublica,
+    catalogoPublico, diasPublicos, huecosPublicos, reservaPublica, salonPublico,
     limpiarUnaLinea, idiomaValido,
     MAX_NOTAS, MAX_NOMBRE, FECHA_RE, HORA_RE, UUID_RE, HORA_MS,
 };

@@ -217,10 +217,21 @@ async function test(name, fn) {
         await test('la reserva devuelve lo que ELLA eligió, no lo que había guardado', async () => {
             const res = await request(server, { method: 'POST', path: `/reserva-web/${SLUG}/reserva`, body: CUERPO });
             assert.deepStrictEqual(Object.keys(res.body).sort(), ['cita', 'ok']);
+            // La lista está escrita a mano A PROPÓSITO: añadir un campo al acuse de una
+            // reserva pública tiene que costar tocar este test. `cuando` entró el 20/08 y
+            // se sostiene solo con fecha, hora e idioma — no lee nada de la ficha.
             assert.deepStrictEqual(
                 Object.keys(res.body.cita).sort(),
-                ['duracionMin', 'estilista', 'fecha', 'hora', 'servicio', 'zonaHoraria'],
+                ['cuando', 'duracionMin', 'estilista', 'fecha', 'hora', 'servicio', 'zonaHoraria'],
             );
+        });
+
+        await test('el `salon` del catálogo enumera dos campos y no esparce business_info', async () => {
+            // `business_info` lleva dentro el prompt comercial, las reglas de upselling y lo
+            // que la dueña escriba mañana sobre el JSONB. El veneno está justo ahí.
+            const res = await request(server, { path: `/reserva-web/${SLUG}/catalogo` });
+            sinVeneno(res, 'el salón del catálogo');
+            assert.deepStrictEqual(Object.keys(res.body.salon).sort(), ['nombre', 'whatsapp']);
         });
 
         await test('un fallo interno NO devuelve el mensaje de la excepción', async () => {

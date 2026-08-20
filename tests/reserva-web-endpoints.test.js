@@ -24,6 +24,14 @@
  *   · el tope de citas mandando recargar huecos .................................. 5 rojos
  *   · el cupo de LECTURAS bajado al de reservas (3/h) ............................ 1 rojo
  *   · un tope de 0 leído como «sin configurar» ................................... 1 rojo
+ *
+ * Añadidos el 20/08 con lo que la PANTALLA necesita (nombre del salón y el «cuándo»):
+ *   · `salonPublico` esparciendo `business_info` .................................. 1 rojo
+ *     (y 2 más en reserva-web-sin-fugas, que es donde vive el veneno)
+ *   · inventar el nombre del salón cuando falta `companyName` ..................... 1 rojo
+ *   · formatear el «cuándo» con `toLocaleDateString` en vez de `formatReminderWhen`  3 rojos
+ *     — y el rojo se lee solo: «10:00 четверг, 10 сентября», nominativo, que es
+ *     literalmente el motivo por el que esa tabla existe.
  */
 process.env.TZ = 'Europe/Madrid';
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
@@ -77,6 +85,8 @@ function reset() {
             reservas_web_max_futuras: 2,
             reservas_web_max_hora_lecturas_ip: 120,
         },
+        // `business_info` lo edita la dueña y lleva dentro cosas que no salen a internet.
+        businessInfo: { companyName: 'Sante Healthy Hair Salon', notas_internas: 'no publicar' },
         contacto: null,           // lo que devuelve getContactoParaReservaWeb
         leadGuardado: null,       // lo que recibió saveLead
         citas: [],                // lo que recibió saveAppointment
@@ -89,7 +99,7 @@ function reset() {
 }
 
 db.getAllConfig = async () => ESTADO.config;
-db.getAgentConfig = async () => ({ services: CATALOGO });
+db.getAgentConfig = async () => ({ services: CATALOGO, business_info: ESTADO.businessInfo });
 db.getContactoParaReservaWeb = async () => ESTADO.contacto;
 db.saveLead = async (_org, datos) => { ESTADO.leadGuardado = datos; return 'contact-1'; };
 db.saveAppointment = async (_org, contactId, opts) => {
@@ -235,6 +245,30 @@ async function test(name, fn) {
             }
         });
 
+        await test('el catálogo trae el NOMBRE del salón y una salida por WhatsApp', async () => {
+            // Van en la PRIMERA llamada de la página a propósito: así la clienta tiene una
+            // salida humana guardada antes de que pueda fallar nada más. Y el nombre sale de
+            // `business_info`, que lo edita la dueña — nunca del slug ni de una constante del
+            // panel, que sería una segunda copia (regla 5).
+            const res = await request(server, {
+                path: `/reserva-web/${SLUG}/catalogo`, headers: desde(ipNueva()),
+            });
+            assert.strictEqual(res.body.salon.nombre, 'Sante Healthy Hair Salon');
+            assert.ok(res.body.salon.whatsapp.startsWith('https://wa.me/34641029104?text='));
+            assert.deepStrictEqual(Object.keys(res.body.salon).sort(), ['nombre', 'whatsapp']);
+            assert.ok(!res.raw.includes('no publicar'), 'business_info se ha esparcido entero');
+        });
+
+        await test('sin companyName el nombre es null: la página dirá la frase sin nombre', async () => {
+            ESTADO.businessInfo = { notas_internas: 'no publicar' };
+            const res = await request(server, {
+                path: `/reserva-web/${SLUG}/catalogo`, headers: desde(ipNueva()),
+            });
+            assert.strictEqual(res.body.salon.nombre, null,
+                'un nombre inventado en la confirmación de una reserva es lo peor que puede salir de aquí');
+            assert.ok(res.body.salon.whatsapp, 'la salida por WhatsApp no depende del nombre');
+        });
+
         await test('un catálogo que no se puede LEER no sale como catálogo vacío', async () => {
             const orig = db.getAgentConfig;
             db.getAgentConfig = async () => null;   // lo que devuelve cuando la lectura falla
@@ -304,6 +338,48 @@ async function test(name, fn) {
             // El tope de la dueña viaja hasta el SQL, que es quien lo aplica de verdad.
             assert.strictEqual(ESTADO.citas[0].maxFuturas, 2);
             assert.strictEqual(ESTADO.leadGuardado.origen, 'web');
+        });
+
+        await test('la confirmación dice el CUÁNDO con el mismo formateador que el recordatorio', async () => {
+            // Contención, molde de tests/slot-texto-idioma.test.js: no se comprueba una
+            // cadena copiada aquí, se comprueba que sale de `formatReminderWhen`. Si alguien
+            // le da a la pantalla una tabla de días propia, esto se cae — que es el punto:
+            // el recordatorio de 24 h y la confirmación le dicen el día a la MISMA clienta.
+            const { formatReminderWhen } = require('../services/helpers');
+            const res = await request(server, {
+                method: 'POST', path: `/reserva-web/${SLUG}/reserva`,
+                headers: desde(ipNueva()), body: CUERPO_RESERVA,
+            });
+            assert.strictEqual(res.body.cita.cuando, formatReminderWhen('2026-09-10', '10:00', 'es'));
+            assert.ok(res.body.cita.cuando.includes('jueves'));
+        });
+
+        await test('el CUÁNDO va en el idioma que pidió, con su acusativo', async () => {
+            const res = await request(server, {
+                method: 'POST', path: `/reserva-web/${SLUG}/reserva`,
+                headers: desde(ipNueva()), body: { ...CUERPO_RESERVA, lang: 'ru' },
+            });
+            // «в четверг», no «четверг»: es TODO el motivo de que la tabla exista.
+            assert.ok(res.body.cita.cuando.includes('в четверг'),
+                `el ruso ha salido en nominativo o en castellano: ${res.body.cita.cuando}`);
+        });
+
+        await test('una fecha que no se sabe formatear NO tumba una cita ya escrita', async () => {
+            // `cuando` a null y la cita confirmada igual: la página enseña fecha y hora
+            // sueltas. Es la regla 3 por el lado bueno — no se inventa, pero tampoco se
+            // pierde una cita que ya está en la agenda por un problema de redacción.
+            const orig = require('../services/helpers').formatReminderWhen;
+            require('../services/helpers').formatReminderWhen = () => null;
+            try {
+                const res = await request(server, {
+                    method: 'POST', path: `/reserva-web/${SLUG}/reserva`,
+                    headers: desde(ipNueva()), body: CUERPO_RESERVA,
+                });
+                assert.strictEqual(res.status, 200);
+                assert.strictEqual(res.body.cita.cuando, null);
+                assert.strictEqual(res.body.cita.fecha, '2026-09-10');
+                assert.strictEqual(res.body.cita.hora, '10:00');
+            } finally { require('../services/helpers').formatReminderWhen = orig; }
         });
 
         await test('reservar por la clave de un SOLO_COMPLEMENTO escrita a mano → se rechaza', async () => {
