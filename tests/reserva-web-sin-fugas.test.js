@@ -85,7 +85,10 @@ const CATALOGO = [
 const CONFIG_AGENTE = {
     services: CATALOGO,
     system_prompt: VENENO.promptDelAgente,
-    business_info: { companyName: 'Sante', notas_internas: VENENO.infoInterna, upselling: [VENENO.upselling] },
+    business_info: {
+        companyName: 'Sante', direccion: 'Calle San Juan Bosco 14',
+        notas_internas: VENENO.infoInterna, upselling: [VENENO.upselling],
+    },
     business_hours: { lunes: '10:00-19:00' },
 };
 
@@ -236,7 +239,8 @@ async function test(name, fn) {
             // que la dueña escriba mañana sobre el JSONB. El veneno está justo ahí.
             const res = await request(server, { path: `/reserva-web/${SLUG}/catalogo` });
             sinVeneno(res, 'el salón del catálogo');
-            assert.deepStrictEqual(Object.keys(res.body.salon).sort(), ['nombre', 'whatsapp']);
+            assert.deepStrictEqual(Object.keys(res.body.salon).sort(),
+                ['direccion', 'nombre', 'puertas', 'whatsapp']);
         });
 
         await test('un fallo interno NO devuelve el mensaje de la excepción', async () => {

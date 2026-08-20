@@ -24,6 +24,7 @@ import {
   type Fallo,
   type GrupoServicio,
   type Mes,
+  type Salon,
   type Textos,
   enlaceDelAviso,
   etiquetaMes,
@@ -158,6 +159,44 @@ export function ListaServicios({
         })}
       </ul>
     </>
+  );
+}
+
+/**
+ * Las dos salidas voluntarias, debajo de la lista y no encima: quien sabe lo que quiere no
+ * tiene que leerlas, y quien no lo sabe llega aquí después de mirar y no encontrarse.
+ *
+ * Ninguna de las dos la sabe hacer el formulario y por eso son enlaces a una persona: la
+ * Consulta de valoración está prohibida al bot desde el 02/08 y el motor ni siquiera puede
+ * VER si hay dos estilistas libres a la misma hora. Sin ellas, esos dos casos terminan en
+ * una reserva mal hecha — la de dos personas, en una cita creyendo que son dos.
+ */
+export function Puertas({ t, puertas }: { t: Textos; puertas: Salon["puertas"] }) {
+  const abiertas = [
+    { url: puertas.asesoramiento, etiqueta: t.puertaAsesoramiento },
+    { url: puertas.variasPersonas, etiqueta: t.puertaVariasPersonas },
+  ].filter((p): p is { url: string; etiqueta: string } => !!p.url);
+  if (!abiertas.length) return null;   // sin teléfono no se pinta un botón que no lleva a nada
+
+  return (
+    <div className="mt-8 border-t border-border/60 pt-5">
+      <p className="mb-3 text-sm text-muted-foreground">{t.otrasOpciones}</p>
+      <ul className="flex flex-col gap-2">
+        {abiertas.map((p) => (
+          <li key={p.etiqueta}>
+            <a
+              href={p.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex min-h-14 w-full items-center gap-3 rounded-2xl border border-border bg-card px-4 text-left text-sm font-medium hover:bg-muted/60 active:bg-muted"
+            >
+              <MessageCircle className="size-5 shrink-0 text-muted-foreground" />
+              {p.etiqueta}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -564,10 +603,11 @@ export function AvisoAPantalla({
 // ─── La pantalla final ───────────────────────────────────────────────────────────────────
 
 export function Confirmada({
-  t, salon, cita,
+  t, salon, direccion, cita,
 }: {
   t: Textos;
   salon: string | null;
+  direccion: string | null;
   cita: { cuando: string | null; fecha: string; hora: string; servicio: string | null; estilista: string | null };
 }) {
   // `cuando` viene del servidor, del MISMO formateador que el recordatorio de 24 h. Si no se
@@ -590,6 +630,13 @@ export function Confirmada({
         {cita.estilista && (
           <p className="mt-1 text-sm text-muted-foreground">
             {t.conQuien} {cita.estilista}
+          </p>
+        )}
+        {/* Quien acaba de reservar necesita saber dónde va. Si la dueña no la ha escrito no
+            se inventa nada: simplemente no sale. */}
+        {direccion && (
+          <p className="mt-3 border-t border-border/60 pt-3 text-sm text-muted-foreground">
+            {direccion}
           </p>
         )}
       </div>

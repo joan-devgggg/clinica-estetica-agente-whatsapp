@@ -21,6 +21,10 @@ import { FormularioReserva } from "@/components/reservar/formulario-reserva";
 export const metadata: Metadata = {
   title: "Pedir cita",
   description: "Reserva tu cita en unos toques.",
+  // Fuera del índice mientras el enlace no esté decidido: se pega en la bio de Instagram y
+  // en Google Business, que es donde tiene que estar, y no en una búsqueda que lleve al
+  // subdominio del panel del salón. Se quita cuando se quiera (decisión del dueño, 21/08).
+  robots: { index: false, follow: false },
 };
 
 export default async function PaginaReservar({

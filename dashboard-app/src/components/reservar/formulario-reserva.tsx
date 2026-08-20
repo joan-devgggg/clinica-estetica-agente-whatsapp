@@ -42,12 +42,15 @@ import {
   type EntradaCatalogo,
   type Fallo,
   type GrupoServicio,
+  type Salon,
+  SALON_VACIO,
   agruparCatalogo,
   etiquetaDia,
   falloSinConexion,
   hoyEnElSalon,
   idiomaValido,
   interpretarFallo,
+  leerSalon,
   mesesConDisponibilidad,
   nombreUsable,
   primerMesConHueco,
@@ -66,12 +69,11 @@ import {
   ListaHoras,
   ListaServicios,
   ListaVariantes,
+  Puertas,
   Rejilla,
 } from "@/components/reservar/piezas";
 
 type Paso = "servicio" | "variante" | "dia" | "hora" | "datos" | "hecha";
-
-type Salon = { nombre: string | null; whatsapp: string | null };
 
 type CitaHecha = {
   fecha: string;
@@ -114,7 +116,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
   // ── Carga inicial ──
   const [cargando, setCargando] = useState(true);
   const [falloInicial, setFalloInicial] = useState<Fallo | null>(null);
-  const [salon, setSalon] = useState<Salon>({ nombre: null, whatsapp: null });
+  const [salon, setSalon] = useState<Salon>(SALON_VACIO);
   const [grupos, setGrupos] = useState<GrupoServicio[]>([]);
   // El HOY del salón se calcula ya en el navegador (nunca durante el render del servidor,
   // que daría dos valores distintos y un aviso de hidratación).
@@ -159,17 +161,14 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
     let vivo = true;
     (async () => {
       setHoy(hoyEnElSalon());
-      const r = await pedir<{ salon?: Salon; servicios?: unknown }>(`${base}/catalogo?lang=${idioma}`);
+      const r = await pedir<{ salon?: unknown; servicios?: unknown }>(`${base}/catalogo?lang=${idioma}`);
       if (!vivo) return;
       if (!r.ok) {
         setFalloInicial(r.fallo);
         setCargando(false);
         return;
       }
-      setSalon({
-        nombre: r.datos.salon?.nombre ?? null,
-        whatsapp: r.datos.salon?.whatsapp ?? null,
-      });
+      setSalon(leerSalon(r.datos.salon));
       setGrupos(agruparCatalogo(r.datos.servicios).grupos);
       setCargando(false);
     })();
@@ -401,7 +400,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
     return (
       <Marco>
         <Cabecera t={t} salon={salon.nombre} atras={null} paso={null} total={0} />
-        <Confirmada t={t} salon={salon.nombre} cita={cita} />
+        <Confirmada t={t} salon={salon.nombre} direccion={salon.direccion} cita={cita} />
       </Marco>
     );
   }
@@ -427,7 +426,12 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
         />
       )}
 
-      {paso === "servicio" && <ListaServicios t={t} grupos={grupos} elegir={elegirGrupo} />}
+      {paso === "servicio" && (
+        <>
+          <ListaServicios t={t} grupos={grupos} elegir={elegirGrupo} />
+          <Puertas t={t} puertas={salon.puertas} />
+        </>
+      )}
 
       {paso === "variante" && grupo && (
         <ListaVariantes t={t} grupo={grupo} elegir={elegirEntrada} />

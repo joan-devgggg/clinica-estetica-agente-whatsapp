@@ -87,6 +87,10 @@ export type Textos = {
     paso: string;
     // Servicio
     elegirServicio: string;
+    // Las dos salidas voluntarias del primer paso
+    otrasOpciones: string;
+    puertaAsesoramiento: string;
+    puertaVariasPersonas: string;
     elegirVariante: string;
     desde: string;                    // «desde 60 €»
     precioEnSalon: string;
@@ -143,6 +147,9 @@ const ES: Textos = {
     paso: 'Paso',
 
     elegirServicio: '¿Qué te quieres hacer?',
+    otrasOpciones: '¿No es tu caso?',
+    puertaAsesoramiento: 'No lo tengo claro, que me asesoren',
+    puertaVariasPersonas: 'Somos dos o más',
     elegirVariante: 'Elige la opción que te encaje',
     desde: 'desde',
     precioEnSalon: 'se confirma en el salón',
@@ -287,6 +294,40 @@ export function textos(lang: unknown): Textos {
 export function rellenar(plantilla: string, valores: Record<string, string>): string {
     return plantilla.replace(/\{(\w+)\}/g, (todo, clave) =>
         Object.prototype.hasOwnProperty.call(valores, clave) ? valores[clave] : todo);
+}
+
+/**
+ * Lo que la página sabe del salón. Sale entero de la primera llamada (`/catalogo`) y todos
+ * sus campos pueden ser null: el nombre y la dirección los edita la dueña y pueden no estar,
+ * y sin teléfono utilizable el servidor no fabrica enlaces rotos (regla 3).
+ */
+export type Salon = {
+    nombre: string | null;
+    direccion: string | null;
+    whatsapp: string | null;
+    puertas: { asesoramiento: string | null; variasPersonas: string | null };
+};
+
+export const SALON_VACIO: Salon = {
+    nombre: null, direccion: null, whatsapp: null,
+    puertas: { asesoramiento: null, variasPersonas: null },
+};
+
+/**
+ * Lee el `salon` de la respuesta. Los enlaces se comprueban igual que los de un aviso: un
+ * `href` es la única cosa de esta pantalla donde un valor cualquiera se vuelve una acción.
+ */
+export function leerSalon(bruto: unknown): Salon {
+    const b = (bruto && typeof bruto === 'object' ? bruto : {}) as Record<string, unknown>;
+    const p = (b.puertas && typeof b.puertas === 'object' ? b.puertas : {}) as Record<string, unknown>;
+    const wa = (v: unknown) => (typeof v === 'string' && v.startsWith('https://wa.me/') ? v : null);
+    const txt = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+    return {
+        nombre: txt(b.nombre),
+        direccion: txt(b.direccion),
+        whatsapp: wa(b.whatsapp),
+        puertas: { asesoramiento: wa(p.asesoramiento), variasPersonas: wa(p.varias_personas) },
+    };
 }
 
 // ─── Leer una respuesta que dice que no ──────────────────────────────────────────────────

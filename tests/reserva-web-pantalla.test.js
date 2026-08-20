@@ -243,6 +243,37 @@ test('al ABRIR la página el aviso no habla de confirmar una cita que no existe'
     }
 });
 
+// ─── 3 bis · El salón y sus dos puertas ──────────────────────────────────────────────────
+
+test('leerSalon comprueba los enlaces antes de que lleguen a un href', () => {
+    const bueno = N.leerSalon({
+        nombre: '  Sante  ', direccion: 'Calle San Juan Bosco 14',
+        whatsapp: 'https://wa.me/34641029104?text=a',
+        puertas: { asesoramiento: 'https://wa.me/34641029104?text=b', varias_personas: 'https://wa.me/34641029104?text=c' },
+    });
+    assert.strictEqual(bueno.nombre, 'Sante');
+    assert.strictEqual(bueno.direccion, 'Calle San Juan Bosco 14');
+    assert.strictEqual(bueno.puertas.variasPersonas, 'https://wa.me/34641029104?text=c');
+
+    const malo = N.leerSalon({
+        nombre: '   ', whatsapp: 'javascript:alert(1)',
+        puertas: { asesoramiento: '/algo', varias_personas: 42 },
+    });
+    assert.deepStrictEqual(malo, N.SALON_VACIO,
+        'un enlace que no es wa.me ha llegado hasta el href');
+    // Y una respuesta sin `salon` no revienta la página.
+    assert.deepStrictEqual(N.leerSalon(undefined), N.SALON_VACIO);
+});
+
+test('las dos puertas tienen etiqueta, y dicen lo que hacen', () => {
+    // Son las dos salidas que el formulario NO sabe hacer. Si alguien las deja sin texto,
+    // salen dos botones mudos en la primera pantalla que ve la clienta.
+    assert.ok(T.puertaAsesoramiento.trim().length > 5);
+    assert.ok(T.puertaVariasPersonas.trim().length > 5);
+    assert.ok(T.otrasOpciones.trim().length > 3);
+    assert.notStrictEqual(T.puertaAsesoramiento, T.puertaVariasPersonas);
+});
+
 // ─── 4 · El catálogo ─────────────────────────────────────────────────────────────────────
 
 const CATALOGO = [

@@ -131,6 +131,35 @@ const TEXTO_WHATSAPP = {
         ru: 'Здравствуйте, хочу записаться, но сайт не подтверждает запись.',
         uk: 'Доброго дня, хочу записатися, але сайт не підтверджує запис.',
     },
+    // ── LAS DOS PUERTAS ─────────────────────────────────────────────────────────────────
+    //
+    // No son motivos: no las devuelve nadie que diga que no. Son las dos salidas VOLUNTARIAS
+    // que la clienta puede tomar desde el primer paso, y viven en esta tabla porque son las
+    // mismas cuatro traducciones y con dos tablas se separarían.
+    //
+    // Las dos existen porque el formulario NO SABE hacer eso, y el brief ya lo dejó escrito:
+    //
+    //   · «no lo tengo claro» → la Consulta de valoración es `reactive-only` desde el
+    //     02/08/2026 y el bot tiene PROHIBIDO ofrecerla; un desplegable público que la
+    //     ponga es justo lo que esa regla prohíbe. Así que se pasa el turno a una persona.
+    //   · «somos dos o más» → el motor NI SIQUIERA PUEDE VER si hay dos estilistas libres a
+    //     la misma hora (el dedupe por fecha-hora las colapsa), y `saveAppointment` funde
+    //     dos citas del mismo contacto a la misma hora devolviendo la primera como si fuera
+    //     nueva. Sin esta puerta, esa clienta acaba con UNA cita creyendo que tiene dos.
+    //
+    // Son baratas y cazan justo los dos casos que, si no, terminan en una reserva mal hecha.
+    asesoramiento: {
+        es: 'Hola, no tengo claro qué servicio necesito y me gustaría que me asesoréis.',
+        en: 'Hi, I am not sure which service I need — could you advise me?',
+        ru: 'Здравствуйте, я не знаю, какая услуга мне нужна. Подскажете?',
+        uk: 'Доброго дня, я не знаю, яка послуга мені потрібна. Підкажете?',
+    },
+    varias_personas: {
+        es: 'Hola, queremos pedir cita para dos personas o más.',
+        en: 'Hi, we would like to book for two people or more.',
+        ru: 'Здравствуйте, хотим записаться вдвоём или больше.',
+        uk: 'Доброго дня, хочемо записатися вдвох або більше.',
+    },
     // El resto —limitador, cerrado, servicio que ya no se ofrece, avería— comparten frase:
     // desde fuera son la misma situación («no he podido, ayúdame») y multiplicar frases
     // multiplica traducciones que nadie revisa.
@@ -141,6 +170,11 @@ const TEXTO_WHATSAPP = {
         uk: 'Доброго дня, хочу записатися, але не вдалося через сайт.',
     },
 };
+
+// Las puertas, conjunto CERRADO como los motivos. Se enumeran para que `salonPublico` no
+// pueda fabricar un enlace con una clave que no existe (caería en el texto genérico y la
+// clienta escribiría «no he podido hacerlo desde la web» sin haberlo intentado).
+const PUERTAS = ['asesoramiento', 'varias_personas'];
 
 const IDIOMAS = ['es', 'en', 'ru', 'uk'];
 const idiomaValido = lang => (IDIOMAS.includes(lang) ? lang : 'es');
@@ -411,18 +445,27 @@ function claveDeReserva(orgId, telefono, fecha, hora) {
  *     Sin `companyName` se devuelve **null** y la página dice la frase sin nombre: no se
  *     deriva del slug ni se escribe «Sante» en el código del panel, que sería una segunda
  *     copia de un dato que ella edita (regla 5).
+ *   · `direccion` — para la pantalla de confirmación. Quien acaba de reservar necesita saber
+ *     dónde va, y es un dato público (está en la puerta y en Google). Decisión del dueño,
+ *     21/08/2026. Se limpia a una línea: va a un `<p>`, no a un parámetro de plantilla.
  *   · `whatsapp` — el enlace con el mensaje ya escrito. Va aquí, en la PRIMERA llamada de la
  *     página, para que la clienta tenga una salida humana aunque más tarde se caiga todo:
  *     una respuesta rota puede no traer enlace, y entonces la página usa el que guardó.
+ *   · `puertas` — los dos enlaces de las salidas voluntarias (ver PUERTAS arriba).
  *
- * La DIRECCIÓN no sale: no hace falta para nada de lo que la pantalla enseña hoy, y cada
- * campo que se publica es un campo que hay que vigilar.
+ * Lo demás de `business_info` no sale: ni el prompt comercial, ni el equipo, ni las reglas
+ * de upselling, ni lo que la dueña escriba mañana sobre el JSONB.
  */
 function salonPublico(businessInfo, { waPhone, lang } = {}) {
     const bi = (businessInfo && typeof businessInfo === 'object') ? businessInfo : {};
-    const nombre = typeof bi.companyName === 'string' && bi.companyName.trim()
-        ? bi.companyName.trim() : null;
-    return { nombre, whatsapp: enlaceWhatsApp(waPhone, 'generico', lang) };
+    const texto = (valor, max) => (typeof valor === 'string' && valor.trim()
+        ? limpiarUnaLinea(valor, max) : null);
+    return {
+        nombre: texto(bi.companyName, MAX_NOMBRE),
+        direccion: texto(bi.direccion, MAX_DIRECCION),
+        whatsapp: enlaceWhatsApp(waPhone, 'generico', lang),
+        puertas: Object.fromEntries(PUERTAS.map(p => [p, enlaceWhatsApp(waPhone, p, lang)])),
+    };
 }
 
 /**
@@ -507,6 +550,8 @@ function reservaPublica({ fecha, hora, cuando, servicio, estilistaNombre, duraci
 // eso no lo garantiza el destino: lo garantiza que aquí entre acotado y en una sola línea.
 const MAX_NOTAS = 300;
 const MAX_NOMBRE = 80;
+// La dirección la escribe la dueña y va a una página pública: acotada y en una línea.
+const MAX_DIRECCION = 160;
 
 const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
 const HORA_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -523,5 +568,5 @@ module.exports = {
     crearCandadoReserva, claveDeReserva, CANDADO_TTL_MS,
     catalogoPublico, diasPublicos, huecosPublicos, reservaPublica, salonPublico,
     limpiarUnaLinea, idiomaValido,
-    MAX_NOTAS, MAX_NOMBRE, FECHA_RE, HORA_RE, UUID_RE, HORA_MS,
+    MAX_NOTAS, MAX_NOMBRE, MAX_DIRECCION, FECHA_RE, HORA_RE, UUID_RE, HORA_MS, PUERTAS,
 };

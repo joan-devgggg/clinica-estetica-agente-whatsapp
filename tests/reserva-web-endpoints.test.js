@@ -101,7 +101,11 @@ function reset() {
             reservas_web_max_hora_lecturas_ip: 120,
         },
         // `business_info` lo edita la dueña y lleva dentro cosas que no salen a internet.
-        businessInfo: { companyName: 'Sante Healthy Hair Salon', notas_internas: 'no publicar' },
+        businessInfo: {
+            companyName: 'Sante Healthy Hair Salon',
+            direccion: 'Calle San Juan Bosco 14, Alicante 03005',
+            notas_internas: 'no publicar',
+        },
         retrasoMs: 0,             // para forzar solape real en el candado
         contacto: null,           // lo que devuelve getContactoParaReservaWeb
         leadGuardado: null,       // lo que recibió saveLead
@@ -280,8 +284,57 @@ async function test(name, fn) {
             });
             assert.strictEqual(res.body.salon.nombre, 'Sante Healthy Hair Salon');
             assert.ok(res.body.salon.whatsapp.startsWith('https://wa.me/34641029104?text='));
-            assert.deepStrictEqual(Object.keys(res.body.salon).sort(), ['nombre', 'whatsapp']);
+            assert.deepStrictEqual(Object.keys(res.body.salon).sort(),
+                ['direccion', 'nombre', 'puertas', 'whatsapp']);
             assert.ok(!res.raw.includes('no publicar'), 'business_info se ha esparcido entero');
+        });
+
+        await test('la DIRECCIÓN sale para la pantalla final, en una línea y acotada', async () => {
+            ESTADO.businessInfo = {
+                companyName: 'Sante',
+                direccion: 'Calle San Juan Bosco 14\n  Alicante\t03005',
+                notas_internas: 'no publicar',
+            };
+            const res = await request(server, {
+                path: `/reserva-web/${SLUG}/catalogo`, headers: desde(ipNueva()),
+            });
+            assert.strictEqual(res.body.salon.direccion, 'Calle San Juan Bosco 14 Alicante 03005',
+                'la dirección va a un <p>, pero entra saneada igual que las notas');
+            // Y sin dirección escrita, null: no se inventa una (regla 3).
+            ESTADO.businessInfo = { companyName: 'Sante' };
+            const sin = await request(server, {
+                path: `/reserva-web/${SLUG}/catalogo`, headers: desde(ipNueva()),
+            });
+            assert.strictEqual(sin.body.salon.direccion, null);
+        });
+
+        await test('LAS DOS PUERTAS: cada una con SU mensaje ya escrito', async () => {
+            // No son motivos: nadie las devuelve al decir que no. Son las dos salidas que el
+            // formulario NO sabe hacer —la Consulta es reactive-only y el motor no puede ver
+            // dos estilistas libres a la vez— y sin ellas esos casos acaban en una reserva
+            // mal hecha.
+            const res = await request(server, {
+                path: `/reserva-web/${SLUG}/catalogo`, headers: desde(ipNueva()),
+            });
+            const { asesoramiento, varias_personas: dos } = res.body.salon.puertas;
+            assert.ok(asesoramiento.startsWith('https://wa.me/34641029104?text='));
+            assert.ok(dos.startsWith('https://wa.me/34641029104?text='));
+            assert.notStrictEqual(asesoramiento, dos, 'las dos puertas mandan el MISMO mensaje');
+            assert.ok(decodeURIComponent(asesoramiento).includes('asesor'));
+            assert.ok(decodeURIComponent(dos).includes('dos personas'));
+            // Y ninguna es el genérico de «no he podido», que sería mentira: no lo ha intentado.
+            assert.notStrictEqual(asesoramiento, res.body.salon.whatsapp);
+            assert.notStrictEqual(dos, res.body.salon.whatsapp);
+        });
+
+        await test('las puertas van en los CUATRO idiomas', async () => {
+            for (const lang of ['es', 'en', 'ru', 'uk']) {
+                const res = await request(server, {
+                    path: `/reserva-web/${SLUG}/catalogo?lang=${lang}`, headers: desde(ipNueva()),
+                });
+                const texto = decodeURIComponent(res.body.salon.puertas.varias_personas);
+                assert.ok(texto.length > 20, `${lang} sin texto de puerta`);
+            }
         });
 
         await test('sin companyName el nombre es null: la página dirá la frase sin nombre', async () => {
