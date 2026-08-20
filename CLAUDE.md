@@ -303,9 +303,27 @@ prohibido ofrecerla, y el motor **ni siquiera puede ver** si hay dos estilistas 
 misma hora, así que sin ellas esos dos casos acaban en una reserva mal hecha —la de dos
 personas, en UNA cita creyendo que son dos—.
 
-**Idiomas: la estructura está, las traducciones no.** `TEXTOS` es un mapa parcial con solo
-`es` y `textos()` cae a la tabla castellana ENTERA. Añadir inglés es rellenar una entrada;
-no se toca ni un componente. El idioma entra por `?lang=`.
+**Los cuatro idiomas están** (21/08/2026), y tres cosas NO se traducen en la pantalla: la
+fecha en palabras (llega hecha del servidor, `formatReminderWhen`), los mensajes de WhatsApp
+(los redacta `services/reserva-web.js`) y los nombres de servicio (el catálogo está en
+castellano y así lo lee la clienta en el salón — traducir «Mechas Balayage» sería que no lo
+reconociera al llegar). Trato de **tú** en los cuatro, como el bot.
+
+**`vuelta` NO vive en la tabla de idiomas** sino en una única `VUELTAS` sin idioma: con
+cuatro copias, cambiar una haría que la pantalla se COMPORTARA distinto en ruso, y eso no se
+ve leyendo. El texto se traduce; la conducta no.
+
+**El idioma sale de una cascada: `?lang=` → `Accept-Language` (con su `q`) → castellano**, y
+la URL manda porque es lo único que la clienta puede cambiar a mano — una ucraniana con el
+móvil en ruso es justo a quien el navegador engaña. Un `?lang=` inválido NO cae a castellano:
+se ignora y sigue la cascada. Se resuelve en el servidor (`elegirIdioma`, puro y probado), y
+el selector de la cabecera reescribe la URL sin navegar y vuelve a pedir el catálogo, porque
+los enlaces de WhatsApp los redacta el servidor.
+
+**La estilista se dice con ETIQUETA, no con preposición** («Мастер: Irina»). El conector por
+idioma ya existe DOS veces en `helpers.js` y no coinciden —`SLOT_TEXTO_PARTES` dice «с/з» y
+`_lineaCita` dice «у/у» para lo mismo—; una tercera copia en un sitio que no puede importar
+helpers es la forma segura de equivocarse. **Esa divergencia sigue abierta en el bot.**
 
 **`GET /api/wa-status` ya NO es público** (20/08/2026). Estuvo dos meses registrado por
 encima de `app.use('/api', requireApiAuth)` y le daba a cualquiera con la URL el slug de
