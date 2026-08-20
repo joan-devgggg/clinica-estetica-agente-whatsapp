@@ -302,6 +302,10 @@ plantada.
 
 > ⚠️ **[ARREGLADOS 13/08/2026]** D1 y D4 se arreglaron en `ed60d7b`, tres horas después de escribir este brief. D6 lo cubre la 043 para el camino web. D2, D3 y D7 siguen pendientes con su reparto en el plan del 19/08 (D7 pasó a obligatorio al subir el horizonte a 3 meses).
 
+> ⚠️ **[HECHO 20/08/2026 · D7]** Arreglado paralelizando el prefetch, no agrupándolo: el coste era la PROFUNDIDAD (14 viajes ENCADENADOS), no el volumen. Medido con `npm run medir:prefetch -- sante` (9 corridas, mediana): **14 tandas / 1026 ms → 2 tandas / 204 ms** a 14 días y **1149 → 324 ms** a 90. Siguen siendo 14 consultas. Agrupar con `.in(stylist_id)` bajaría a 5 viajes pero seguirían siendo 2 tandas —el mismo reloj— a cambio de romper los dobles de ~25 ficheros de test y de meter una lectura sin trocear cuyo truncado se leería como «esta estilista no tiene citas»; el porqué entero está en el comentario de `prepararMotor`. **D2 y D3 siguen pendientes.**
+
+> ⚠️ **[HECHO 20/08/2026 · horizonte y rejilla]** El horizonte es `horizonteDias` (default **14**, el del bot; el enlace pasa 90) y existe `getAvailableDays(orgId, …)`, la rejilla de mes. Las dos salen de `prepararMotor`, que hace el prefetch UNA vez — la garantía de que no nacen dos motores. El test de paridad que pide la sección «Verificación» está escrito: `tests/paridad-motor-web-bot.test.js`, cinco sabotajes medidos. El «CALENDARIO DE REFERENCIA (próximos 14 días)» del prompt **NO se movió**: no es el horizonte, y hay un test que los mantiene separados.
+
 
 ---
 

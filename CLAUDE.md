@@ -199,8 +199,13 @@ server.js              ← Punto de entrada: crea N clientes WA, arranca workers
         └── threesixty-dialog.js  ← Adapter 360dialog: webhook entrante + cliente saliente (Sante)
 ```
 
-El diseño del **enlace público de reserva** (en construcción; la migración 043 —claim
-atómico— ya está aplicada, el resto no existe): [docs/enlace-publico-reserva.md](docs/enlace-publico-reserva.md).
+El diseño del **enlace público de reserva** (en construcción): [docs/enlace-publico-reserva.md](docs/enlace-publico-reserva.md).
+Hecho a 20/08/2026: la migración **043** (claim atómico), el **horizonte como parámetro**
+—`horizonteDias`, default 14 para el bot y 90 para el enlace— y **`getAvailableDays`**, la
+rejilla de mes. Las dos salen de `prepararMotor` (un prefetch, un `buildSlots`): es lo que
+impide que nazca un segundo motor de disponibilidad, y lo vigila
+`tests/paridad-motor-web-bot.test.js`. **El 14 del prompt es OTRO 14** y no se toca (ver
+`HORIZONTE_DIAS_DEFAULT`). Nada de esto tiene todavía endpoint ni pantalla.
 
 ## Canal de WhatsApp por organización
 
