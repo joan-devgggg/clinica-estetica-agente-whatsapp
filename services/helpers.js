@@ -3372,6 +3372,33 @@ function _lineaCita(c, lang) {
 //
 // `citaExistente` puede ser null: es la variante «no he podido comprobarlo» (lectura de
 // Supabase fallida), donde afirmar «ya tienes una cita» sería inventar (regla 3).
+// ─── El modelo DECLARÓ una reserva y no hay ninguna fila ─────────────────────
+//
+// Lo que sale cuando el cierre de turno caza una afirmación de reserva sin respaldo. Es un
+// texto NUEVO y no `salonRetryMsg` a propósito: aquel dice «no he podido fijar ese hueco»,
+// que da por hecho que había un hueco en juego, y en estos casos NO LO HAY — es la fila de
+// Candela del 09/08/2026, esa frase dicha sin que hubiera ningún hueco de por medio.
+//
+// Solo dice lo cierto —que no hay nada apuntado— y abre la puerta a seguir. Lo que NO dice,
+// y es deliberado: ninguna hora, ninguna fecha, ningún servicio, y ninguna promesa de
+// escribirle más tarde (no existe quien la cumpla). Eso lo hace además INERTE a las redes
+// que corren después, igual que buildPreguntaSegundaCitaMsg.
+//
+// Cuatro idiomas y castellano de respaldo. Para una clienta que hable un quinto lo recibe
+// en castellano: no miente, y es el mismo trato que ya tienen las plantillas fijas. Que lo
+// traduzca el modelo (el patrón de `frase_idiomas_salon`) se deja para cuando se sepa que
+// hace falta.
+function buildSinReservaAunMsg({ language } = {}) {
+    const lang = IDIOMAS_SOPORTADOS.includes(language) ? language : 'es';
+    const T = {
+        es: 'Perdona: todavía no tengo nada apuntado a tu nombre 😊 Dime y lo miramos.',
+        en: "Sorry — I don't have anything booked under your name yet 😊 Tell me and we'll sort it out.",
+        ru: 'Извини: на твоё имя пока ничего не записано 😊 Напиши мне, и посмотрим.',
+        uk: 'Вибач: на твоє ім\'я поки нічого не записано 😊 Напиши мені, і подивимось.',
+    };
+    return T[lang];
+}
+
 function buildPreguntaSegundaCitaMsg({ citaExistente = null, language } = {}) {
     const lang = IDIOMAS_SOPORTADOS.includes(language) ? language : 'es';
     const svc = (citaExistente?.servicio || '').trim();
@@ -5249,6 +5276,7 @@ module.exports = {
     detectCancelRequest,
     detectRescheduleRequest,
     buildCitasVivasMsg,
+    buildSinReservaAunMsg,
     buildPreguntaSegundaCitaMsg,
     buildSegundaCitaNoMsg,
     buildCancelConfirmMsg,

@@ -13,7 +13,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteMencion, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, botOfferableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, resolverHora12h, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteMencion, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, botOfferableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, resolverHora12h, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildSinReservaAunMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -7428,6 +7428,54 @@ async function processMessageCore(client, message, userPhone, userText, messageK
         // hayan reescrito. La primera pasada corre antes del despacho de acciones (ver
         // blockPhantomBookingClaim), que tiene rutas de salida propias.
         if (orgType === 'salon') await blockPhantomBookingClaim(orgId, session, userPhone, aiResponse, sanitized);
+
+        // ─── CIERRE DE TURNO: la DECLARACIÓN sin fila ───────────────────────
+        //
+        // El anillo que no lee prosa, y por eso es el único que funciona en cualquier idioma.
+        //
+        // Los otros dos reconocen la mentira LEYÉNDOLA: `llmClaimsBooked` enumera frases en
+        // cuatro idiomas y `unbackedBookingClaim` necesita encontrar un HH:MM dentro del
+        // texto. Medido el 20/08/2026 con la MISMA frase en seis idiomas y la agenda sin
+        // consultar: en francés no se leyó ni la hora («11h» no lleva dos puntos) ni la fecha
+        // («août») ni la afirmación → «Ta consultation est confirmée pour demain, jeudi 20
+        // août à 11h» salió entera con CERO filas detrás. Y el inglés —idioma soportado—
+        // tampoco cazó su propia afirmación («your consultation is confirmed» no casa el
+        // patrón, que espera «appointment»). O sea que el problema nunca fue que faltara el
+        // francés: es que reconocer una mentira leyendo prosa no escala a ningún idioma.
+        //
+        // Este anillo no lee nada: mira un BOOLEANO que el modelo emite en su JSON
+        // (`reserva_confirmada`) y lo contrasta con si hay fila. Las dos cosas son
+        // independientes del idioma, y por eso el idioma número seis no necesita que nadie
+        // añada nada. Es la doctrina del caso 7 aplicada aquí: el modelo DECLARA, la máquina
+        // DECIDE.
+        //
+        // NO es nuevo del todo — `cita_sante_flag_sin_slot` ya hacía esto — pero vivía dentro
+        // de un `else if` que exigía `session.selectedService`, y antes de él
+        // `resolveSalonConfirmation` sale por `clienta_no_ha_visto_huecos` si nunca se
+        // propusieron huecos. En la conversación en francés lo más probable es que ninguna de
+        // las dos se cumpliera (ella aceptó con «oui», que ni `isAffirmative` ni
+        // `detectConsultaValoracion` entienden), así que el anillo ni se evaluó. Aquí va sin
+        // gates: si se declara reserva y no hay fila, el mensaje no sale tal cual.
+        //
+        // REGLA 12 — el mensaje bueno que esto puede comerse: uno en el que el modelo pone
+        // `reserva_confirmada: true` por error mientras PREGUNTA si reserva. `asksForBooking
+        // Approval` exime eso en la red de prosa, y aquí NO se aplica a propósito: aquella se
+        // dispara por lo que el texto DICE y ésta por lo que el modelo DECLARA, que son dos
+        // disparadores distintos. Sin fila, callar es mejor que afirmar — y el sustituto
+        // sigue siendo cierto e invita a seguir, así que el coste es un turno menos fluido.
+        if (orgType === 'salon' && aiResponse.reserva_confirmada && !session.reservaConfirmada
+                && !aiResponse._rectificadoPorRedFantasma) {
+            logger.error('cita_declarada_sin_fila', {
+                orgId, telefono: userPhone,
+                idioma: session.language || null,
+                idiomaSinCodigo: !!session.idiomaSinCodigo,
+                tieneServicio: !!session.selectedService,
+                slotsPropuestos: !!session.slotsProposed,
+                respuestaBloqueada: aiResponse.respuesta,
+            });
+            aiResponse.reserva_confirmada = false;
+            aiResponse.respuesta = buildSinReservaAunMsg({ language: session.language });
+        }
 
         if (orgType === 'salon') {
             aiResponse.respuesta = stripMarkdown(aiResponse.respuesta);
