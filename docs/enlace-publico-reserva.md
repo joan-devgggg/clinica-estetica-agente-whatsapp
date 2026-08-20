@@ -599,3 +599,30 @@ Cuando se construya, así se comprueba:
 > con Irina**, e Irina ya no trabaja los lunes (hoy: martes, jueves y sábado). Es
 > exactamente el caso para el que se escribió ese verificador — la dueña quitó el día y la
 > cita ya reservada no se movió ni avisó. La decide una persona.
+
+> ⚠️ **[HECHO 22/08/2026 · cuatro cosas de usarlo en el móvil]** El detalle vive en CLAUDE.md
+> y en las cabeceras del código; aquí queda lo que CAMBIA respecto de este brief.
+>
+> **1 · El teléfono se compone, no se adivina.** El brief daba la identidad por resuelta
+> («el teléfono ya es la clave, no hace falta inventar nada», sección 4) y eso era cierto
+> del ALTA y falso de la ENTRADA: un campo de número pelado más `sanitizePhone` convierte un
+> móvil ucraniano sin el 0 del tronco en un móvil español de otra persona. Ahora hay selector
+> de país (+34 por defecto) y el número aparte. **Nada guardado se reescribe**, y el camino
+> español sale byte por byte igual — hay un test que lo compara contra `sanitizePhone` a
+> secas. Medido antes de tocar nada: 735 de 771 fichas son `34`+9, y cinco de las 36 restantes
+> ya no son un teléfono, con el enlace sin haber escrito ninguna.
+>
+> **2 y 4 · La explicación de un servicio es un HUECO, y está vacío.** El brief decidía
+> «texto de la variante NEUTRO y siempre el mismo» (21/08) porque un texto por categoría es
+> lenguaje de Yulia. Sigue siendo suyo: lo que se ha construido es el sitio donde escribirlo,
+> `agent_configs.services[].explicacion`, por ENTRADA y en cuatro idiomas. El mismo campo
+> resuelve las dos cosas —qué ES el servicio y qué significa cada variante— según ella escriba
+> lo mismo en todas las entradas de una categoría o algo distinto en cada una. **Sin texto no
+> sale línea.** Y queda escrito por qué el NOMBRE no se traduce: es la cadena que va a
+> `appointments.service`, o sea a la agenda, al recordatorio y a la factura.
+>
+> **3 · El selector de idioma.** Ponía «ES» y nada más. Ahora es un control con globo, borde y
+> galón, en la misma cabecera y sin una fila nueva.
+>
+> **Lo que sigue igual**: San Remo fuera por tipo de org, cero plantillas nuevas de Meta, el
+> aviso por Telegram en cada reserva, y el `noindex` puesto hasta que el enlace se decida.

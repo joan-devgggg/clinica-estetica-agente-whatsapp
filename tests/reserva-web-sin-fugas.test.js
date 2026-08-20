@@ -24,6 +24,7 @@
  *   · `huecosPublicos` conservando `texto` ....................................... 1 rojo
  *   · el handler devolviendo `e.message` en el error interno ..................... 1 rojo
  *   · el handler devolviendo la FILA de `appointments` en vez de la proyección ... 5 rojos
+ *   · publicar `explicacion` entera en vez de solo el idioma pedido (22/08) ...... 4 rojos
  *     (el fallo realista: sale de «simplificar» el acuse a `res.json({ok:true, cita})`,
  *      y esa fila lleva `full_name`, `phone`, `notes` y `contact_id`)
  *
@@ -70,6 +71,10 @@ const VENENO = {
     otraOrg:            'ZZOTRAORGZZ',            // datos de la otra organización
     mensajeDeError:     'ZZTRAZASUPABASEZZ',      // el e.message de un fallo interno
     textoDelSlot:       'ZZTEXTOPARAELMODELOZZ',  // el `texto` que el motor fabrica
+    // La explicación de un servicio SÍ se publica —es el hueco que rellena la dueña— pero
+    // solo en el idioma que se pidió. Los otros tres son texto suyo que no tiene por qué
+    // salir, y publicar el objeto entero sería el mismo spread de siempre con otro nombre.
+    explicacionOtroIdioma: 'ZZEXPLICACIONENRUSOZZ',
 };
 
 const CATALOGO = [
@@ -78,6 +83,8 @@ const CATALOGO = [
         // Un campo que hoy no existe y que la dueña podría escribir mañana sobre el JSONB.
         nota_interna: VENENO.notaInternaServicio,
         precio_coste: VENENO.costeServicio,
+        // El ÚNICO campo del catálogo que se publica a propósito, y solo en un idioma.
+        explicacion: { es: 'Corte y peinado', ru: VENENO.explicacionOtroIdioma },
     },
     { categoria: 'Color', nombre: 'Mechas Balayage', precio: 180, duracion: 240 },
 ];
@@ -177,7 +184,7 @@ function sinVeneno(res, contexto) {
 const SERVICIO_Q = encodeURIComponent('Cortes|Corte mujer');
 const CUERPO = {
     servicio: 'Cortes|Corte mujer', fecha: '2026-09-10', hora: '10:00',
-    nombre: 'Marta', telefono: '600111222',
+    nombre: 'Marta', prefijo: '34', telefono: '600111222',
 };
 
 async function test(name, fn) {
@@ -283,6 +290,37 @@ async function test(name, fn) {
                 assert.ok(!res.raw.includes('contact-1') && !res.raw.includes('cita-1'),
                     `${path} devuelve un identificador interno`);
             }
+        });
+
+        await test('la EXPLICACIÓN sale solo en el idioma que se pidió, no el objeto entero', async () => {
+            // Es el único campo del catálogo que la dueña escribe y que sí se publica. Un
+            // `{...s}` —o un `explicacion: s.explicacion`— publicaría las cuatro traducciones
+            // de golpe, y con ellas los borradores que tenga a medias en los otros idiomas.
+            const res = await request(server, { path: `/reserva-web/${SLUG}/catalogo?lang=es` });
+            assert.strictEqual(res.status, 200);
+            sinVeneno(res, 'catálogo en castellano');
+            const corte = res.body.servicios.find(s => s.nombre === 'Corte mujer');
+            assert.strictEqual(corte.explicacion, 'Corte y peinado');
+        });
+
+        await test('y una explicación de la dueña sale SANEADA: una línea y acotada', async () => {
+            // Texto libre suyo en una página pública. Sin el saneo, un párrafo pegado en el
+            // JSONB empuja cada fila de la lista y deja la pantalla inservible en un móvil.
+            const original = db.getAgentConfig;
+            db.getAgentConfig = async () => ({
+                ...CONFIG_AGENTE,
+                services: [{
+                    categoria: 'Cortes', nombre: 'Corte mujer', precio: 35, duracion: 60,
+                    explicacion: `linea uno\nlinea dos\ttab   y   espacios ${'x'.repeat(400)}`,
+                }],
+            });
+            try {
+                const res = await request(server, { path: `/reserva-web/${SLUG}/catalogo` });
+                const expl = res.body.servicios[0].explicacion;
+                assert.ok(!/[\r\n\t]/.test(expl), 'ha salido con saltos de línea');
+                assert.ok(!/ {2}/.test(expl), 'ha salido con espacios múltiples');
+                assert.ok(expl.length <= 140, `mide ${expl.length}`);
+            } finally { db.getAgentConfig = original; }
         });
 
         await test('un 404 de slug desconocido no lleva ni eco de lo que se pidió', async () => {

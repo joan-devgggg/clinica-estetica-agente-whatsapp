@@ -177,7 +177,9 @@ const desde = (ip) => ({ 'X-Reserva-Token': TOKEN, 'X-Cliente-IP': ip });
 const CUERPO_RESERVA = {
     servicio: 'Cortes|Corte mujer',
     fecha: '2026-09-10', hora: '10:00',
-    nombre: 'Marta', telefono: '600111222', lang: 'es',
+    // El país va SEPARADO del número, que es como lo manda la pantalla desde el 22/08/2026.
+    // El porqué —y qué pasaba cuando iban juntos— en tests/reserva-web-telefono.test.js.
+    nombre: 'Marta', prefijo: '34', telefono: '600111222', lang: 'es',
 };
 
 async function test(name, fn) {
@@ -829,6 +831,139 @@ async function test(name, fn) {
             }
             assert.deepStrictEqual(vistos, ['ok', 'ok', 'salon_saturado', 'salon_saturado']);
         });
+        // ─── EL TELÉFONO, POR EL CAMINO DE VERDAD ───────────────────────────────────────
+        //
+        // La composición se prueba unidad a unidad en tests/reserva-web-telefono.test.js.
+        // Aquí se comprueba lo otro: que el handler la USA, y que lo que llega a `saveLead`
+        // y a la ficha es la forma canónica y no lo que se tecleó.
+
+        await test('lo que se guarda lleva el prefijo del PAÍS, no el que adivine el servidor', async () => {
+            const res = await request(server, {
+                method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ipNueva()),
+                // El número del incidente: un móvil ucraniano de nueve dígitos que empieza
+                // por 6. Antes salía 34671234567 — un móvil español de otra persona.
+                body: { ...CUERPO_RESERVA, prefijo: '380', telefono: '67 123 45 67' },
+            });
+            assert.strictEqual(res.status, 200);
+            assert.strictEqual(ESTADO.leadGuardado.telefono, '380671234567');
+            assert.notStrictEqual(ESTADO.leadGuardado.telefono, '34671234567',
+                'ha vuelto a convertirse en un móvil español');
+        });
+
+        await test('el móvil español sigue guardándose exactamente igual que ayer', async () => {
+            const res = await request(server, {
+                method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ipNueva()),
+                body: CUERPO_RESERVA,
+            });
+            assert.strictEqual(res.status, 200);
+            assert.strictEqual(ESTADO.leadGuardado.telefono, '34600111222');
+        });
+
+        await test('sin `prefijo` NO se le tira la reserva: se hace lo de ayer', async () => {
+            // Un navegador con el bundle viejo, en los minutos de un despliegue. Cambiar un
+            // fallo silencioso por un 400 encima de alguien que no ha hecho nada mal sería
+            // peor. Queda el log `reserva_web_telefono_sin_prefijo` para saber si pasa.
+            const body = { ...CUERPO_RESERVA };
+            delete body.prefijo;
+            const res = await request(server, {
+                method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ipNueva()), body,
+            });
+            assert.strictEqual(res.status, 200);
+            assert.strictEqual(ESTADO.leadGuardado.telefono, '34600111222');
+        });
+
+        await test('un número que no cuadra con su país se para ANTES de escribir nada', async () => {
+            const res = await request(server, {
+                method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ipNueva()),
+                body: { ...CUERPO_RESERVA, prefijo: '34', telefono: '600' },
+            });
+            assert.strictEqual(res.status, 400);
+            assert.strictEqual(res.body.motivo, 'datos_invalidos');
+            assert.strictEqual(ESTADO.leadGuardado, null, 'ha creado ficha con un teléfono inservible');
+            assert.strictEqual(ESTADO.citas.length, 0);
+        });
+
+        await test('un prefijo inventado no se pega delante del número', async () => {
+            const res = await request(server, {
+                method: 'POST', path: `/reserva-web/${SLUG}/reserva`, headers: desde(ipNueva()),
+                body: { ...CUERPO_RESERVA, prefijo: '99999', telefono: '600111222' },
+            });
+            // Cae en la rama «sin prefijo», o sea la conducta de ayer: nunca 99999600111222.
+            assert.strictEqual(res.status, 200);
+            assert.strictEqual(ESTADO.leadGuardado.telefono, '34600111222');
+        });
+
+        // ─── LO QUE LA PANTALLA NECESITA DEL CATÁLOGO ───────────────────────────────────
+
+        await test('el catálogo trae la lista de países del selector', async () => {
+            const res = await request(server, {
+                path: `/reserva-web/${SLUG}/catalogo`, headers: desde(ipNueva()),
+            });
+            assert.strictEqual(res.status, 200);
+            assert.ok(Array.isArray(res.body.paises) && res.body.paises.length > 1);
+            assert.strictEqual(res.body.paises[0].codigo, '34', 'España primero: es el 95 %');
+            // Y solo lo que la pantalla necesita: nada de las piezas de la composición.
+            for (const p of res.body.paises) {
+                assert.deepStrictEqual(Object.keys(p).sort(), ['codigo', 'iso', 'minimo']);
+            }
+        });
+
+        await test('el NOMBRE del servicio va en castellano en los cuatro idiomas', async () => {
+            // Es la cadena que se escribirá en `appointments.service`. La misma en ruso que
+            // en castellano, porque es la que el salón lee en la agenda y la que ella tendrá
+            // que pedir al llegar.
+            const nombres = {};
+            for (const lang of ['es', 'en', 'ru', 'uk']) {
+                const res = await request(server, {
+                    path: `/reserva-web/${SLUG}/catalogo?lang=${lang}`, headers: desde(ipNueva()),
+                });
+                nombres[lang] = res.body.servicios.map(s => s.nombreCompleto).join('|');
+            }
+            assert.strictEqual(nombres.ru, nombres.es, 'el nombre del servicio se ha traducido');
+            assert.strictEqual(nombres.uk, nombres.es);
+            assert.strictEqual(nombres.en, nombres.es);
+            assert.ok(nombres.es.includes('Corte mujer y secado'));
+        });
+
+        await test('la explicación: hoy NO sale, porque la escribe la dueña', async () => {
+            // El catálogo de producción no la tiene (verificado el 21/08/2026 sobre las 82
+            // entradas). Sin texto escrito, el campo ni siquiera viaja: la pantalla no puede
+            // pintar un renglón en blanco debajo de cada servicio.
+            const res = await request(server, {
+                path: `/reserva-web/${SLUG}/catalogo`, headers: desde(ipNueva()),
+            });
+            for (const s of res.body.servicios) {
+                assert.ok(!('explicacion' in s), `${s.nombre}: explicación inventada`);
+            }
+        });
+
+        await test('cuando la dueña la escriba, sale en SU idioma y cae al castellano', async () => {
+            ESTADO.businessInfo = { ...ESTADO.businessInfo };
+            const original = db.getAgentConfig;
+            db.getAgentConfig = async () => ({
+                business_info: ESTADO.businessInfo,
+                services: [
+                    { categoria: 'Color', nombre: 'Mechas Balayage', precio: 180, duracion: 240,
+                      explicacion: { es: 'Aclarado a mano', ru: 'Осветление вручную' } },
+                    // Atajo: una cadena vale por el castellano, para que se pueda escribir
+                    // primero uno y traducir después sin que la pantalla se quede muda.
+                    { categoria: 'Cortes', nombre: 'Corte mujer', precio: 35, duracion: 60,
+                      explicacion: 'Corte y peinado' },
+                ],
+            });
+            try {
+                const ru = await request(server, {
+                    path: `/reserva-web/${SLUG}/catalogo?lang=ru`, headers: desde(ipNueva()),
+                });
+                const porNombre = Object.fromEntries(ru.body.servicios.map(s => [s.nombre, s.explicacion]));
+                assert.strictEqual(porNombre['Mechas Balayage'], 'Осветление вручную');
+                assert.strictEqual(porNombre['Corte mujer'], 'Corte y peinado',
+                    'sin ruso escrito, el castellano es mejor que nada');
+                // Y el nombre sigue sin traducirse, que es la mitad de la decisión.
+                assert.ok(ru.body.servicios.some(s => s.nombre === 'Mechas Balayage'));
+            } finally { db.getAgentConfig = original; }
+        });
+
     } finally {
         server.close();
     }

@@ -328,9 +328,40 @@ personas, en UNA cita creyendo que son dos—.
 
 **Los cuatro idiomas están** (21/08/2026), y tres cosas NO se traducen en la pantalla: la
 fecha en palabras (llega hecha del servidor, `formatReminderWhen`), los mensajes de WhatsApp
-(los redacta `services/reserva-web.js`) y los nombres de servicio (el catálogo está en
-castellano y así lo lee la clienta en el salón — traducir «Mechas Balayage» sería que no lo
-reconociera al llegar). Trato de **tú** en los cuatro, como el bot.
+(los redacta `services/reserva-web.js`) y los nombres de servicio. Trato de **tú** en los
+cuatro, como el bot.
+
+**EL NOMBRE DEL SERVICIO NO SE TRADUCE, y el motivo es que no es una etiqueta: es la CLAVE.**
+Lo que la clienta lee en la pantalla es EXACTAMENTE la cadena que se escribe en
+`appointments.service` — la que el salón ve en la agenda, la que dice el recordatorio de 24 h
+y contra la que la facturación casa EXACTO desde `f187270`. Traducirlo la dejaría reservando
+«Осветление» y pidiendo en el mostrador algo que allí no se llama así, y a la dueña buscando
+en su agenda un servicio que no existe con ese nombre en ninguna parte del sistema. Vigilado
+por dos bloques de `tests/reserva-web-pantalla.test.js` (ningún nombre real puede aparecer en
+las cuatro tablas de textos, y `agruparCatalogo` no recibe idioma) y uno de endpoints (los
+cuatro idiomas devuelven los MISMOS `nombreCompleto`).
+
+**Lo que sí se traduce es la línea de DEBAJO, y hoy está VACÍA a propósito** (22/08/2026).
+`agent_configs.services[].explicacion` es un hueco que rellena la dueña —`{es,en,ru,uk}`, o
+una cadena suelta que vale por el castellano— y sin texto escrito no sale ninguna línea: no
+se compone una descripción a partir del nombre ni de la categoría (regla 3). **Añade, nunca
+sustituye**: dice qué es sin tocar cómo se llama. Tres cosas que no hay que redescubrir:
+
+- **Vive en la ENTRADA, no en una tabla por categoría**, igual que `solo_complemento` y por
+  lo mismo: la categoría la edita la dueña y una tabla del código indexada por su nombre deja
+  de casar el día que la renombre, en silencio (regla 5). Ya hay dos así, las dos anotadas
+  como fragilidad: `REACTIVE_ONLY_CATEGORIES` y `COBERTURA_MECHAS_CLASICAS`.
+- **El MISMO campo vale para el largo y para lo que no es largo, y lo decide ella
+  escribiendo**: la misma frase en todas las entradas de una categoría es del SERVICIO y sale
+  una vez arriba; frases distintas son de la VARIANTE y salen en su fila (`grupo.explicacion`,
+  en `agruparCatalogo`). Hacía falta porque de las 15 categorías con variantes solo **6** van
+  por largo: en «Mechas clásicas» son cobertura, en «Cortes» son cinco servicios distintos y
+  en «Manicura/Pedicura» son diez. Un campo llamado «largo» mentiría en nueve de quince.
+- **Lo que el bot dice del largo NO se puede reutilizar**: son tres frases en castellano
+  DENTRO del prompt (`openai.js:661-665`) que el modelo reescribe y traduce sobre la marcha
+  —una página no tiene modelo—, no van por entrada sino por FORMA de la categoría, y solo
+  cubren el largo. Lo reutilizable es su CONTENIDO cuando Yulia escriba el hueco: hombros /
+  espalda / cintura, con el XL que es cambio de color y no longitud.
 
 **`vuelta` NO vive en la tabla de idiomas** sino en una única `VUELTAS` sin idioma: con
 cuatro copias, cambiar una haría que la pantalla se COMPORTARA distinto en ruso, y eso no se
@@ -347,6 +378,66 @@ los enlaces de WhatsApp los redacta el servidor.
 idioma ya existe DOS veces en `helpers.js` y no coinciden —`SLOT_TEXTO_PARTES` dice «с/з» y
 `_lineaCita` dice «у/у» para lo mismo—; una tercera copia en un sitio que no puede importar
 helpers es la forma segura de equivocarse. **Esa divergencia sigue abierta en el bot.**
+
+**El selector de idioma es un control, no un rótulo** (22/08/2026). Era un círculo con «ES»
+dentro, sin borde, y su `aria-label` decía «Español» — o sea lo que está ELEGIDO, no lo que
+pasa si lo tocas. Ahora lleva globo, borde y galón, y el `aria-label` dice las dos cosas. El
+globo y **no una bandera**: una bandera dice país, no idioma, y este ruso lo lee tanto quien
+vive en Ucrania como quien no. Cuesta ~30 px de ancho, que salen del título, que ya truncaba;
+la cabecera mide exactamente lo mismo.
+
+## El teléfono del enlace: el país se ELIGE, jamás se adivina
+
+Diseño en la cabecera de `services/reserva-web.js`; red en `tests/reserva-web-telefono.test.js`
+(20 bloques, 7 sabotajes medidos). Hasta el 22/08/2026 el formulario tenía **un** campo de
+teléfono, un número pelado, y el servidor se lo daba a `sanitizePhone`, que prefija `34` a
+todo lo que sean **nueve dígitos empezados por 6 o 7**. Un móvil ucraniano escrito sin el 0
+del tronco es exactamente eso:
+
+    «67 123 45 67»  →  671234567  →  sanitizePhone  →  34671234567
+
+**Y eso no es un número que no exista: es un móvil ESPAÑOL, de otra persona.** Con el UNIQUE
+`(organization_id, wa_phone)`, si esa española ya es clienta la cita web se cuelga de SU
+ficha, la lista negra se comprueba contra ELLA y el recordatorio de 24 h se lo lleva ELLA. El
+caso ruso falla más barato —diez dígitos, no casa el patrón, se guarda tal cual y como no es
+de nadie Meta responde 200 y no entrega (hecho 3)— pero tampoco recibe el recordatorio.
+
+**Medido contra producción** (21/08/2026): de 771 fichas de Sante, **735 son `34`+9** y 36 no
+lo son; de esas 36, **cinco no son un teléfono** (dos empiezan por `0`, dos tienen menos de
+diez dígitos, una está vacía). Y eso **sin que el enlace haya escrito ni una** (`source='web'`
+= 0 citas): entraron por el panel y por la importación.
+
+- **`sanitizePhone` NO se toca.** Es de San Remo también (regla de oro) y del pipeline de
+  entrada, donde su `34` es correcto. Lo que cambia es lo que se le da de comer: después de
+  componer, lo que sale lleva prefijo SIEMPRE, así que `MOVIL_ES_SIN_PREFIJO` —que exige nueve
+  dígitos exactos— no puede casar y `sanitizePhone` es un **no-op**, con test que lo afirma.
+  La forma guardada sigue siendo la de siempre: E.164 sin `+`, solo dígitos.
+- **Nada de lo guardado se reescribe.** Ni migración ni backfill: esto solo decide lo que el
+  enlace compone de aquí en adelante. Las cinco fichas malformadas siguen ahí —arreglarlas es
+  decidir de quién es cada número, y eso lo decide una persona— y los duplicados anteriores a
+  `sanitizePhone` los sigue cubriendo en LECTURA `phoneVariants`.
+- **Las dos podas, y por qué solo una lleva guarda.** Quitar el código del país cuando ya está
+  delante es un no-op (se quita y se vuelve a poner), así que puede ser generosa. Quitar el
+  dígito de salida nacional SÍ transforma, y va **sin** guarda de largo: un número nacional no
+  empieza nunca por su propio tronco. *La versión con guarda estuvo escrita y era un bug: un
+  móvil alemán con su tronco (`01701234567`, once dígitos) cae DENTRO del rango alemán [6, 11],
+  así que el 0 se quedaba dentro. Lo cazó medir el sabotaje —cero rojos— y no leerlo.*
+- **La excepción es Italia**, que declara `troncal: null` porque sus fijos llevan el 0 dentro
+  (+39 06… es Roma). Hay tres contactos italianos. Rusia declara `'8'`, que es su tronco.
+- **La lista es corta (17 países) y no deja a nadie fuera**: quien escribe su número con `+`
+  o `00` delante manda sobre el desplegable, venga del país que venga. Ésa es la puerta.
+- **La tabla vive en el SERVIDOR y viaja en la respuesta del catálogo** (`paises`), misma
+  doctrina que la política de los motivos. Al navegador van solo `{codigo, iso, minimo}`: ni
+  `troncal` ni el máximo, que son piezas de la composición y componer lo hace el servidor.
+  El NOMBRE del país lo pone `Intl.DisplayNames` en el idioma de la pantalla — son 17 × 4
+  cadenas que nadie revisaría para decir «Ucrania».
+- **El mínimo de dígitos sale del país y el máximo NO**, y no es simetría rota: el servidor
+  sabe quitar el 0 del tronco, y aplicar el máximo en la pantalla pararía esa reparación con
+  un «tiene dígitos de más» que es mentira. Con los 9 de España a fuego, además, las dos
+  noruegas de la tabla (8 dígitos) no podrían ni darle al botón.
+- **Sin `prefijo` en el cuerpo se hace lo de ayer y se registra** (`reserva_web_telefono_sin_prefijo`).
+  Pasa en un caso: un navegador con el bundle viejo en los minutos de un despliegue. Cambiar
+  un fallo silencioso por un 400 encima de quien no ha hecho nada mal sería peor.
 
 **`GET /api/wa-status` ya NO es público** (20/08/2026). Estuvo dos meses registrado por
 encima de `app.use('/api', requireApiAuth)` y le daba a cualquiera con la URL el slug de

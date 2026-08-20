@@ -660,7 +660,105 @@ test('el nombre de cada idioma va en SU idioma, y no se traduce', () => {
         { es: 'Español', en: 'English', ru: 'Русский', uk: 'Українська' });
 });
 
+// ─── 6 quinquies · El país del teléfono ──────────────────────────────────────────────────
+//
+// La tabla vive en el SERVIDOR y llega en la respuesta del catálogo. Aquí solo se comprueba
+// que la pantalla la lee desconfiando y que sin ella no se queda sin campo de teléfono —el
+// resto (que componer no invente el número de nadie) es `tests/reserva-web-telefono.test.js`.
+
+test('la lista de países llega del servidor, y una entrada a medias se descarta', () => {
+    // Un país sin código compondría el número SIN prefijo, que es exactamente el bug.
+    const leidos = N.leerPaises([
+        { codigo: '34', iso: 'ES', minimo: 9 },
+        { codigo: '380', iso: 'ua', minimo: 9 },      // iso en minúsculas: se normaliza
+        { iso: 'FR', minimo: 9 },                      // sin código: fuera
+        { codigo: 'abc', iso: 'XX', minimo: 9 },       // código que no son dígitos: fuera
+        { codigo: '7', iso: 'RUS', minimo: 10 },       // iso de tres letras: fuera
+        null,
+    ]);
+    assert.deepStrictEqual(leidos.map(p => p.codigo), ['34', '380']);
+    assert.strictEqual(leidos[1].iso, 'UA');
+});
+
+test('sin lista NO se queda sin campo: cae al respaldo español', () => {
+    // El camino que hoy funciona para 735 de las 771 fichas de Sante. Una respuesta vieja o
+    // a medias no puede dejar la pantalla sin poder pedir un teléfono.
+    for (const nada of [null, undefined, [], 'ES', {}, [{}]]) {
+        const r = N.leerPaises(nada);
+        assert.strictEqual(r.length, 1, JSON.stringify(nada));
+        assert.strictEqual(r[0].codigo, '34');
+    }
+});
+
+test('siempre hay un país elegido: nunca undefined, contra el que componer', () => {
+    const paises = N.leerPaises([{ codigo: '34', iso: 'ES', minimo: 9 }, { codigo: '380', iso: 'UA', minimo: 9 }]);
+    assert.strictEqual(N.paisElegido(paises, '380').iso, 'UA');
+    assert.strictEqual(N.paisElegido(paises, null).iso, 'ES', 'sin elegir, el primero');
+    assert.strictEqual(N.paisElegido(paises, '999').iso, 'ES', 'uno que ya no está en la lista');
+    assert.strictEqual(N.paisElegido([], '34').codigo, '34', 'ni con la lista vacía');
+});
+
+test('el nombre del país lo pone el NAVEGADOR, no nuestra tabla de textos', () => {
+    // 17 países × 4 idiomas son 68 cadenas que nadie revisaría para decir «Ucrania».
+    // `Intl.DisplayNames` las sabe, y son datos del sistema como los meses de `etiquetaMes`.
+    assert.strictEqual(N.nombrePais('UA', 'uk'), 'Україна');
+    assert.strictEqual(N.nombrePais('UA', 'es'), 'Ucrania');
+    assert.strictEqual(N.nombrePais('RU', 'en'), 'Russia');
+    // Y cada idioma dice algo distinto: si esto se rompiera, saldrían los cuatro en inglés.
+    const dichos = new Set(N.IDIOMAS.map(l => N.nombrePais('ES', l)));
+    assert.strictEqual(dichos.size, 4, `los cuatro idiomas dicen lo mismo: ${[...dichos]}`);
+    // Un ISO sin datos NO se inventa: sale el código (regla 3). 'QQ' y no 'ZZ' — ZZ sí tiene
+    // datos en CLDR («Región desconocida»), que es una frase, no un código.
+    assert.strictEqual(N.nombrePais('QQ', 'es'), 'QQ');
+});
+
+test('el prefijo se pinta con su «+», y en un solo sitio', () => {
+    assert.strictEqual(N.prefijoVisible({ codigo: '34', iso: 'ES', minimo: 9 }), '+34');
+    assert.strictEqual(N.prefijoVisible({ codigo: '380', iso: 'UA', minimo: 9 }), '+380');
+});
+
+test('el desplegable se ANUNCIA en los cuatro idiomas, y el de idioma dice qué hace', () => {
+    // El otro medio bug: el control de arriba a la derecha ponía «ES» y su etiqueta decía
+    // «Español», o sea lo que está elegido y no lo que pasa si lo tocas.
+    for (const lang of N.IDIOMAS) {
+        assert.ok(N.textos(lang).tuPais.trim(), `${lang}: el desplegable de país sin anunciar`);
+        assert.ok(N.textos(lang).idioma.trim(), `${lang}: el control de idioma sin anunciar`);
+    }
+    // Y el nombre del idioma sigue en SU idioma, que eso no se traduce.
+    assert.strictEqual(N.NOMBRES_IDIOMA.ru, 'Русский');
+});
+
 // ─── 7 · Lo que teclea la clienta ────────────────────────────────────────────────────────
+
+const ES_PAIS = { codigo: '34', iso: 'ES', minimo: 9 };
+const NO_PAIS = { codigo: '47', iso: 'NO', minimo: 8 };
+
+test('el mínimo de dígitos sale del PAÍS elegido', () => {
+    // Un móvil noruego tiene ocho dígitos. Con los nueve de España metidos a fuego —que es
+    // lo que había cuando el campo era uno solo— esas dos clientas no podrían ni darle al
+    // botón, y hay dos noruegas en la tabla de contactos.
+    assert.ok(N.telefonoUsable('12345678', NO_PAIS));
+    assert.ok(!N.telefonoUsable('12345678', ES_PAIS), 'ocho dígitos no son un móvil español');
+    assert.strictEqual(N.problemaTelefono('12345678', NO_PAIS), null);
+    assert.strictEqual(N.problemaTelefono('12345678', ES_PAIS), 'corto');
+});
+
+test('la pantalla NO para una reparación que el servidor sí sabe hacer', () => {
+    // Una ucraniana escribe «0 67 123 45 67»: diez dígitos, uno de más para su país. El
+    // servidor le quita el 0 del tronco y reserva. Si aquí se aplicara el máximo del país,
+    // se pararía con un «tiene dígitos de más» que es MENTIRA — y ella no tiene forma de
+    // saber que lo que sobra es el cero.
+    const ua = { codigo: '380', iso: 'UA', minimo: 9 };
+    assert.ok(N.telefonoUsable('0671234567', ua));
+    assert.strictEqual(N.problemaTelefono('0671234567', ua), null);
+});
+
+test('sin país todavía (la carga inicial) se usan los nueve de España', () => {
+    // Es lo que había antes de todo esto, así que nada cambia mientras llega el catálogo.
+    assert.ok(N.telefonoUsable('600112233'));
+    assert.ok(!N.telefonoUsable('60011223'));
+    assert.ok(N.telefonoUsable('600112233', null));
+});
 
 test('el teléfono se comprueba flojo a propósito: el servidor tiene la última palabra', () => {
     assert.ok(N.telefonoUsable('600 11 22 33'));
@@ -775,6 +873,109 @@ test('el nombre del grupo de una entrada es EXACTAMENTE el de su entrada', () =>
     }
 });
 
+// ─── 7 quater · La línea de explicación, y por qué el NOMBRE no se traduce ───────────────
+//
+// El nombre que la clienta lee es EXACTAMENTE la cadena que se escribirá en
+// `appointments.service`: la que el salón ve en la agenda, la que dice el recordatorio de
+// 24 h y contra la que la facturación casa EXACTO. Traducirlo la dejaría reservando una cosa
+// y pidiendo otra en el mostrador. Lo que se traduce es la línea de DEBAJO, que añade sin
+// sustituir — y hoy está vacía, porque la escribe la dueña.
+//
+// El mismo campo sirve para las dos cosas que pide el catálogo real, y lo decide ella con
+// solo escribir: la MISMA frase en todas las entradas de una categoría es del servicio y
+// sale una vez; frases DISTINTAS son de la variante y salen en su fila. Eso es lo que hace
+// que valga igual para el largo (Balayage: corto / medio / largo / XL) y para la cobertura
+// (Mechas clásicas: delante y rostro / media cabeza / cabeza completa), que no son lo mismo.
+
+test('sin explicación escrita no sale ninguna línea: no se compone del nombre', () => {
+    // El estado de HOY: las 82 entradas del catálogo de producción no tienen el campo.
+    const { grupos } = N.agruparCatalogo(CAT_SERVIDOR);
+    for (const g of grupos) {
+        assert.strictEqual(g.explicacion, null, g.categoria);
+        for (const e of g.entradas) assert.strictEqual(e.explicacion, null, e.key);
+    }
+});
+
+test('la misma frase en TODAS las entradas es del servicio: sale una vez, arriba', () => {
+    const { grupos } = N.agruparCatalogo([
+        { key: 'Mechas Balayage|Cabello corto', categoria: 'Mechas Balayage', nombre: 'Cabello corto',
+          nombreCompleto: 'Mechas Balayage Cabello corto', precio: 180, explicacion: 'Aclarado a mano, sin raíz marcada' },
+        { key: 'Mechas Balayage|Cabello largo', categoria: 'Mechas Balayage', nombre: 'Cabello largo',
+          nombreCompleto: 'Mechas Balayage Cabello largo', precio: 200, explicacion: 'Aclarado a mano, sin raíz marcada' },
+    ]);
+    assert.strictEqual(grupos[0].explicacion, 'Aclarado a mano, sin raíz marcada');
+});
+
+test('frases DISTINTAS son de la variante: el grupo se queda sin línea', () => {
+    // Es el caso del largo, que es el que trajo el encargo. La categoría no puede decir
+    // «hasta los hombros» porque cada variante dice otra cosa.
+    const { grupos } = N.agruparCatalogo([
+        { key: 'Anti-encrespamiento|Corto', categoria: 'Anti-encrespamiento', nombre: 'Corto',
+          nombreCompleto: 'Anti-encrespamiento Corto', precio: 120, explicacion: 'Hasta los hombros' },
+        { key: 'Anti-encrespamiento|Medio', categoria: 'Anti-encrespamiento', nombre: 'Medio',
+          nombreCompleto: 'Anti-encrespamiento Medio', precio: 160, explicacion: 'Hasta la espalda' },
+    ]);
+    assert.strictEqual(grupos[0].explicacion, null, 'el grupo no puede decir lo de una sola');
+    assert.deepStrictEqual(grupos[0].entradas.map(e => e.explicacion),
+        ['Hasta los hombros', 'Hasta la espalda']);
+});
+
+test('y vale igual para lo que NO es largo: la cobertura de las mechas clásicas', () => {
+    // Nueve de las quince categorías con variantes NO van por largo. Un campo que se llamara
+    // «largo» o una pregunta «¿qué largo tienes?» mentiría en todas ellas.
+    const { grupos } = N.agruparCatalogo([
+        { key: 'Mechas clásicas|Mechas 1', categoria: 'Mechas clásicas', nombre: 'Mechas 1',
+          nombreCompleto: 'Mechas 1', precio: 60, explicacion: 'Solo delante, puntas y rostro' },
+        { key: 'Mechas clásicas|Mechas 2', categoria: 'Mechas clásicas', nombre: 'Mechas 2',
+          nombreCompleto: 'Mechas 2', precio: 80, explicacion: 'Media cabeza' },
+    ]);
+    assert.deepStrictEqual(grupos[0].entradas.map(e => e.explicacion),
+        ['Solo delante, puntas y rostro', 'Media cabeza']);
+});
+
+test('una entrada sola: su explicación ES la del grupo, porque esa fila ES el servicio', () => {
+    const { grupos } = N.agruparCatalogo([
+        { key: 'Brillo Glow|Brillo intensivo', categoria: 'Brillo Glow', nombre: 'Brillo intensivo',
+          nombreCompleto: 'Brillo intensivo', precio: 30, explicacion: 'Brillo de un día para otro' },
+    ]);
+    assert.strictEqual(grupos[0].explicacion, 'Brillo de un día para otro');
+    assert.strictEqual(grupos[0].explicacion, grupos[0].entradas[0].explicacion);
+});
+
+test('una explicación vacía o que no es texto NO pinta un renglón en blanco', () => {
+    const { grupos } = N.agruparCatalogo([
+        { key: 'A|1', categoria: 'A', nombre: '1', nombreCompleto: '1', precio: 1, explicacion: '   ' },
+        { key: 'B|1', categoria: 'B', nombre: '1', nombreCompleto: '1', precio: 1, explicacion: 42 },
+        { key: 'C|1', categoria: 'C', nombre: '1', nombreCompleto: '1', precio: 1, explicacion: { es: 'x' } },
+    ]);
+    // El objeto lo resuelve el SERVIDOR (`explicacionPublica`), que manda ya una cadena en el
+    // idioma pedido. Aquí un objeto es una respuesta que no entendemos: no se pinta.
+    for (const g of grupos) assert.strictEqual(g.entradas[0].explicacion, null, g.categoria);
+});
+
+test('los NOMBRES de servicio no están en ninguna tabla de idioma', () => {
+    // La red de la decisión: si alguien empezara a traducir nombres de servicio, el sitio
+    // natural sería la tabla de textos. Ninguna de las cuatro puede contener uno.
+    const nombresReales = ['Mechas Balayage', 'Corte mujer y secado', 'Brillo intensivo',
+                           'Mechas 1', 'Anti-encrespamiento', 'K18', 'Airtouch'];
+    for (const lang of N.IDIOMAS) {
+        const todo = JSON.stringify(N.TEXTOS[lang]);
+        for (const nombre of nombresReales) {
+            assert.ok(!todo.includes(nombre),
+                `${lang}: «${nombre}» ha entrado en la tabla de textos — los nombres no se traducen`);
+        }
+    }
+});
+
+test('el nombre que se pinta es SIEMPRE el que mandó el servidor, en los cuatro idiomas', () => {
+    // `agruparCatalogo` no recibe idioma, y eso no es un descuido: es lo que garantiza que
+    // el nombre no pueda depender de él. La única parte traducida del catálogo la resuelve
+    // el servidor antes de mandarla.
+    assert.strictEqual(N.agruparCatalogo.length, 1, 'agruparCatalogo ha empezado a recibir idioma');
+    const { grupos } = N.agruparCatalogo(CAT_SERVIDOR);
+    assert.strictEqual(grupos[0].entradas[0].nombreCompleto, 'Corte mujer y secado');
+});
+
 // ─── 7 ter · El atrás y la recarga ───────────────────────────────────────────────────────
 //
 // El bug: recargar o dar al ATRÁS a mitad del formulario devolvía al paso 1 con todo perdido
@@ -838,7 +1039,7 @@ test('retroceder olvida lo mismo con el botón de la cabecera que con el del mó
 const AHORA = 1_800_000_000_000;
 const PROG = {
     paso: 'datos', servicio: 'Cortes|Mujer y secado', fecha: '2026-11-04', hora: '10:00',
-    nombre: 'Ana', telefono: '600111222',
+    nombre: 'Ana', prefijo: '34', telefono: '600111222',
 };
 const leerP = (bruto, extra = {}) =>
     N.leerProgreso(bruto, { hoy: '2026-08-21', ahora: AHORA, ...extra });
@@ -875,6 +1076,17 @@ test('un paso malo DEGRADA, no tira los otros cuatro', () => {
     const horaBasura = leerP(N.serializarProgreso({ ...PROG, hora: '25:99' }, AHORA));
     assert.strictEqual(horaBasura.hora, null);
     assert.strictEqual(horaBasura.paso, 'hora');
+});
+
+test('lo guardado ANTES de que existiera el selector de país sigue volviendo', () => {
+    // El progreso de una clienta que estaba a medias cuando se desplegó esto. `prefijo` no
+    // estaba, y por eso `VERSION_PROGRESO` NO sube: un campo nuevo que cae a un valor bueno
+    // no justifica tirarle el formulario a quien lo tenía a medio rellenar.
+    const viejo = JSON.stringify({ v: N.VERSION_PROGRESO, ts: AHORA, ...PROG, prefijo: undefined });
+    const vuelta = leerP(viejo);
+    assert.strictEqual(vuelta.prefijo, '', 'sin prefijo guardado se usa el primero de la lista');
+    assert.strictEqual(vuelta.telefono, '600111222', 'y el número no se pierde');
+    assert.strictEqual(vuelta.paso, 'datos');
 });
 
 test('la cita ya hecha se guarda aparte y sobrevive a una recarga', () => {

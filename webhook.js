@@ -1698,6 +1698,7 @@ const {
     MOTIVOS, respuestaNo, resolverLimites, crearLimitador, interpretarMotivoSql,
     crearCandadoReserva, claveDeReserva,
     catalogoPublico, diasPublicos, huecosPublicos, reservaPublica, salonPublico,
+    paisesPublicos, componerTelefono,
     limpiarUnaLinea, idiomaValido, MAX_NOTAS, MAX_NOMBRE, FECHA_RE, HORA_RE, UUID_RE,
 } = require('./services/reserva-web');
 const { resolveOrgBySlug } = require('./services/org-registry');
@@ -1867,13 +1868,26 @@ app.get('/reserva-web/:slug/catalogo', async (req, res) => {
         res.json({
             ok: true,
             salon: salonPublico(cfg.business_info, { waPhone: ctx.org.waPhone, lang: ctx.lang }),
+            // La lista de países del selector de teléfono. Viaja EN LA RESPUESTA, con la
+            // misma doctrina que la política de los motivos: la tabla vive en un solo sitio
+            // (`services/reserva-web.js`, que es quien compone el número que se guarda) y la
+            // pantalla solo la pinta. Una segunda copia en el navegador sería una lista de
+            // prefijos que enseña un país y un servidor que compone otro.
+            paises: paisesPublicos(),
             // El nombre se calcula con el catálogo COMPLETO, no con `ofertables`: la función
             // cuenta homónimos, y sobre la lista filtrada dar de baja a un «Hombre» haría que
             // el otro dejara de prefijarse con su categoría. Es la misma razón por la que
             // `resolverServicioPublico` le pasa `completo` — y tiene que ser la MISMA cadena
             // en las dos, o la pantalla enseñaría un nombre y la cita se guardaría con otro.
-            servicios: catalogoPublico(ofertables, serviceCatalogKey,
-                s => buildFullServiceName(s, cfg.services)),
+            //
+            // `lang` es lo ÚNICO del catálogo que se traduce, y solo para la línea de
+            // explicación: el NOMBRE va en castellano en los cuatro idiomas a propósito
+            // (ver `explicacionPublica`).
+            servicios: catalogoPublico(ofertables, {
+                clavePara: serviceCatalogKey,
+                nombrePara: s => buildFullServiceName(s, cfg.services),
+                lang: ctx.lang,
+            }),
         });
     } catch (e) { fallo(res, 'reserva_web_catalogo_error', ctx, e); }
 });
@@ -2013,7 +2027,22 @@ app.post('/reserva-web/:slug/reserva', async (req, res) => {
         const body = req.body || {};
         const fecha = String(body.fecha || '');
         const hora = String(body.hora || '');
-        const telefono = db.sanitizePhone(String(body.telefono || ''));
+        // EL TELÉFONO SE COMPONE, no se adivina. El formulario manda el país por separado
+        // (`prefijo`, del conjunto cerrado de `PAISES`) y el número aparte; de ahí sale una
+        // forma con prefijo SIEMPRE, que es lo que impide que `sanitizePhone` vuelva a
+        // convertir un móvil ucraniano de nueve dígitos en uno español. Después de componer,
+        // `sanitizePhone` es un no-op —y hay un test que lo afirma—, pero se sigue llamando:
+        // es la función canónica de este repo y saltársela sería abrir el segundo camino.
+        //
+        // Sin `prefijo` (un navegador con el bundle viejo, en los minutos de un despliegue)
+        // se hace EXACTAMENTE lo de ayer y se registra. Tirarle la reserva a esa clienta
+        // sería cambiar un fallo silencioso por uno ruidoso encima de alguien que no ha
+        // hecho nada mal.
+        const compuesto = componerTelefono({ prefijo: body.prefijo, numero: String(body.telefono || '') });
+        if (compuesto.sinPrefijo) {
+            logger.warn('reserva_web_telefono_sin_prefijo', { orgId: org.orgId });
+        }
+        const telefono = compuesto.ok ? db.sanitizePhone(compuesto.telefono) : '';
         const nombre = limpiarUnaLinea(body.nombre || '', MAX_NOMBRE);
         const notas = body.notas ? limpiarUnaLinea(body.notas, MAX_NOTAS) : null;
         const estilistaPedida = typeof body.estilista === 'string' && UUID_RE.test(body.estilista)

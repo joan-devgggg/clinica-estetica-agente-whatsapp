@@ -44,6 +44,7 @@ import {
   type Fallo,
   type GrupoServicio,
   type Idioma,
+  type Pais,
   type Paso,
   type PasoFormulario,
   type Salon,
@@ -56,6 +57,7 @@ import {
   hoyEnElSalon,
   idiomaValido,
   interpretarFallo,
+  leerPaises,
   leerProgreso,
   leerSalon,
   limpiarAlVolver,
@@ -68,6 +70,7 @@ import {
   vueltaDe,
   mesesConDisponibilidad,
   nombreUsable,
+  paisElegido,
   problemaTelefono,
   primerMesConHueco,
   textos,
@@ -145,8 +148,21 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
   const [cargandoHoras, setCargandoHoras] = useState(false);
   const [hora, setHora] = useState<string | null>(null);
   const [nombre, setNombre] = useState("");
+  // El país y el número, SEPARADOS. Juntos, el servidor tenía que adivinar el país a partir
+  // de la forma del número — y adivinaba «España» sobre un móvil ucraniano. Ver
+  // `CampoTelefono` en piezas.tsx y `componerTelefono` en services/reserva-web.js.
+  //
+  // La LISTA llega del servidor con el catálogo, en la misma respuesta y por el mismo
+  // motivo que el WhatsApp de respaldo: es lo primero que se pide, así que está antes de
+  // que pueda fallar nada más. Hasta entonces `leerPaises(null)` deja el respaldo español,
+  // que es el camino que hoy funciona para 735 de las 771 fichas.
+  const [paises, setPaises] = useState<Pais[]>(() => leerPaises(null));
+  const [prefijo, setPrefijo] = useState<string>("");
   const [telefono, setTelefono] = useState("");
   const [tocado, setTocado] = useState(false);
+  // Nunca undefined: `paisElegido` cae al primero de la lista, y la lista trae al menos el
+  // respaldo. Así el campo siempre tiene contra qué componerse.
+  const pais = paisElegido(paises, prefijo || null);
 
   // ── El envío ──
   const [enviando, setEnviando] = useState(false);
@@ -249,7 +265,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
     (async () => {
       const hoyLocal = hoyEnElSalon();
       setHoy(hoyLocal);
-      const r = await pedir<{ salon?: unknown; servicios?: unknown }>(`${base}/catalogo?lang=${idioma}`);
+      const r = await pedir<{ salon?: unknown; servicios?: unknown; paises?: unknown }>(`${base}/catalogo?lang=${idioma}`);
       if (!vivo) return;
       if (!r.ok) {
         setFalloInicial(r.fallo);
@@ -257,6 +273,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
         return;
       }
       setSalon(leerSalon(r.datos.salon));
+      setPaises(leerPaises(r.datos.paises));
       const gs = agruparCatalogo(r.datos.servicios).grupos;
       setGrupos(gs);
       setCargando(false);
@@ -280,6 +297,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
       if (!plan) return;
 
       setNombre(plan.nombre);
+      setPrefijo(plan.prefijo);
       setTelefono(plan.telefono);
 
       if (plan.paso === "hecha" && plan.cita) {
@@ -425,7 +443,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
     setCita(null);
     setGrupo(null); setEntrada(null); setFecha(null); setHora(null);
     setDias([]); setHoras([]); setMesTocado(null);
-    setNombre(""); setTelefono(""); setTocado(false);
+    setNombre(""); setPrefijo(""); setTelefono(""); setTocado(false);
     setAviso(null); setSinSalida(false);
     setPaso("servicio");
     marcar("servicio", false);
@@ -532,12 +550,16 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
       window.sessionStorage.setItem(clave, serializarProgreso({
         paso: paso as PasoFormulario,
         servicio: entrada.key,
-        fecha, hora, nombre, telefono,
+        fecha, hora, nombre, prefijo, telefono,
       }, Date.now()));
     } catch { /* pestaña privada o cuota llena: se pierde el progreso, nunca la reserva */ }
-  }, [slug, paso, entrada, fecha, hora, nombre, telefono, cita]);
+  }, [slug, paso, entrada, fecha, hora, nombre, prefijo, telefono, cita]);
 
-  const erroresDatos = { nombre: !nombreUsable(nombre), telefono: problemaTelefono(telefono) };
+  // El mínimo de dígitos depende del PAÍS elegido (un móvil noruego tiene ocho y un español
+  // nueve), y el máximo no se aplica aquí a propósito: el servidor sabe quitar el 0 del
+  // tronco y la pantalla no puede pararle esa reparación con un «tiene dígitos de más» que
+  // sería mentira. Ver `telefonoUsable`.
+  const erroresDatos = { nombre: !nombreUsable(nombre), telefono: problemaTelefono(telefono, pais) };
 
   async function confirmar() {
     // ── EL CERROJO. Síncrono y lo primero de todo. ──
@@ -560,6 +582,9 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
         fecha,
         hora,
         nombre: nombre.trim(),
+        // Los dos por separado: el servidor compone. Ni la pantalla pega el prefijo ni el
+        // servidor lo adivina — que era el bug.
+        prefijo: pais.codigo,
         telefono: telefono.trim(),
         lang: idioma,
       }),
@@ -676,6 +701,7 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
       {enDatos && entrada && (
         <Datos
           t={t}
+          lang={idioma}
           resumen={{
             // `nombreCompleto`, que llega del servidor y es la MISMA cadena que se
             // escribirá en `appointments.service` y que dirá la pantalla final. Componer
@@ -689,8 +715,11 @@ export function FormularioReserva({ slug, lang }: { slug: string; lang: string }
           }}
           nombre={nombre}
           telefono={telefono}
+          paises={paises}
+          pais={pais}
           setNombre={setNombre}
           setTelefono={setTelefono}
+          setPais={setPrefijo}
           errores={erroresDatos}
           tocado={tocado}
         />

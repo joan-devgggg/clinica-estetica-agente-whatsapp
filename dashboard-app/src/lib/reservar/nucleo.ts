@@ -165,6 +165,12 @@ export type Textos = {
     titulo: string;
     cargando: string;
     volver: string;
+    /**
+     * Qué HACE el control de la cabecera. Antes ahí solo ponía «ES» y su `aria-label` decía
+     * «Español», que es lo que está elegido y no lo que pasa si lo tocas. El nombre del
+     * idioma en su propio idioma sigue viniendo de `NOMBRES_IDIOMA`, que no se traduce.
+     */
+    idioma: string;
     pasoServicio: string;
     pasoVariante: string;
     pasoDia: string;
@@ -200,6 +206,11 @@ export type Textos = {
     tuNombreAyuda: string;
     tuTelefono: string;
     tuTelefonoAyuda: string;
+    /** El desplegable del prefijo. No se pinta como etiqueta —la del campo entero es
+     *  `tuTelefono`— pero sí se ANUNCIA: un lector de pantalla encuentra dos controles
+     *  seguidos y sin esto el primero no dice qué es. El NOMBRE de cada país no está aquí:
+     *  lo pone el navegador (`nombrePais`). */
+    tuPais: string;
     nombreCorto: string;
     telefonoProblema: Record<ProblemaTelefono, string>;
     confirmar: string;
@@ -229,6 +240,7 @@ const ES: Textos = {
     titulo: 'Pedir cita',
     cargando: 'Un momento…',
     volver: 'Atrás',
+    idioma: 'Idioma',
     pasoServicio: 'Servicio',
     pasoVariante: 'Opción',
     pasoDia: 'Día',
@@ -261,6 +273,7 @@ const ES: Textos = {
     tuNombreAyuda: 'Para saber a quién esperamos',
     tuTelefono: 'Tu móvil',
     tuTelefonoAyuda: 'Te avisamos por WhatsApp el día antes',
+    tuPais: 'País',
     nombreCorto: 'Escribe tu nombre',
     telefonoProblema: {
         letras: 'El teléfono va solo con números',
@@ -392,6 +405,7 @@ const EN: Textos = {
     titulo: 'Book an appointment',
     cargando: 'One moment…',
     volver: 'Back',
+    idioma: 'Language',
     pasoServicio: 'Service',
     pasoVariante: 'Option',
     pasoDia: 'Day',
@@ -424,6 +438,7 @@ const EN: Textos = {
     tuNombreAyuda: 'So we know who to expect',
     tuTelefono: 'Your mobile',
     tuTelefonoAyuda: 'We will remind you on WhatsApp the day before',
+    tuPais: 'Country',
     nombreCorto: 'Please write your name',
     telefonoProblema: {
         letras: 'Phone numbers are digits only',
@@ -521,6 +536,7 @@ const RU: Textos = {
     titulo: 'Записаться',
     cargando: 'Одну минуту…',
     volver: 'Назад',
+    idioma: 'Язык',
     pasoServicio: 'Услуга',
     pasoVariante: 'Вариант',
     pasoDia: 'День',
@@ -553,6 +569,7 @@ const RU: Textos = {
     tuNombreAyuda: 'Чтобы знать, кого ждём',
     tuTelefono: 'Твой телефон',
     tuTelefonoAyuda: 'Напомним в WhatsApp за день до визита',
+    tuPais: 'Страна',
     nombreCorto: 'Напиши своё имя',
     telefonoProblema: {
         letras: 'Номер пишется только цифрами',
@@ -650,6 +667,7 @@ const UK: Textos = {
     titulo: 'Записатися',
     cargando: 'Одну хвилинку…',
     volver: 'Назад',
+    idioma: 'Мова',
     pasoServicio: 'Послуга',
     pasoVariante: 'Варіант',
     pasoDia: 'День',
@@ -682,6 +700,7 @@ const UK: Textos = {
     tuNombreAyuda: 'Щоб знати, кого чекаємо',
     tuTelefono: 'Твій телефон',
     tuTelefonoAyuda: 'Нагадаємо у WhatsApp за день до візиту',
+    tuPais: 'Країна',
     nombreCorto: 'Напиши своє імʼя',
     telefonoProblema: {
         letras: 'Номер пишеться лише цифрами',
@@ -951,6 +970,13 @@ export type EntradaCatalogo = {
     nombreCompleto: string;
     precio: number | null;  // null = «se confirma en el salón». NUNCA se pinta como 0 €.
     duracion: number | null;
+    /**
+     * La línea de debajo del nombre: qué es esto, en el idioma de la pantalla. Es el único
+     * campo del catálogo que llega TRADUCIDO, y es el hueco que rellena la dueña — hoy vacío
+     * en producción, así que hoy es null en las 82 entradas. Ver `explicacionPublica` en
+     * `services/reserva-web.js` para por qué el NOMBRE no se traduce y esto sí.
+     */
+    explicacion: string | null;
 };
 
 export type GrupoServicio = {
@@ -968,6 +994,24 @@ export type GrupoServicio = {
     desde: number | null;
     /** true cuando alguna entrada no tiene precio: entonces «desde» no cuenta la historia. */
     algunoSinPrecio: boolean;
+    /**
+     * La explicación del GRUPO: la que tienen TODAS sus entradas cuando escriben la misma.
+     * null si difieren o si falta en alguna.
+     *
+     * No es un campo nuevo ni una tabla por categoría —que es la fragilidad que CLAUDE.md
+     * ya tiene anotada dos veces—: sale de las entradas, y por eso la dueña decide cuál de
+     * las dos cosas quiere con solo escribir.
+     *
+     *   · La MISMA frase en las cuatro entradas de «Mechas Balayage» → es del servicio, y
+     *     sale una vez, arriba: qué es un balayage.
+     *   · Una frase DISTINTA en cada una («hasta los hombros», «hasta la espalda»…) → es de
+     *     la variante, y sale en su fila.
+     *
+     * Y con eso el mismo hueco vale para las dos cosas que pide el catálogo real: seis
+     * categorías cuyas variantes son el LARGO, y nueve cuyas variantes son otra cosa
+     * —cobertura en «Mechas clásicas», diez servicios distintos en «Manicura/Pedicura»—.
+     */
+    explicacion: string | null;
 };
 
 /**
@@ -1008,13 +1052,19 @@ export function agruparCatalogo(servicios: unknown): { grupos: GrupoServicio[]; 
         const precio = typeof s.precio === 'number' && Number.isFinite(s.precio) ? s.precio : null;
         const duracion = typeof s.duracion === 'number' && Number.isFinite(s.duracion) ? s.duracion : null;
 
+        const explicacion = typeof s.explicacion === 'string' && s.explicacion.trim()
+            ? s.explicacion.trim() : null;
+
         let grupo = porCategoria.get(categoria);
         if (!grupo) {
-            grupo = { categoria, titulo: categoria, entradas: [], desde: null, algunoSinPrecio: false };
+            grupo = {
+                categoria, titulo: categoria, entradas: [],
+                desde: null, algunoSinPrecio: false, explicacion: null,
+            };
             porCategoria.set(categoria, grupo);
         }
         grupo.entradas.push({
-            key, categoria, nombre, nombreCompleto: nombreDeEntrada(s), precio, duracion,
+            key, categoria, nombre, nombreCompleto: nombreDeEntrada(s), precio, duracion, explicacion,
         });
         if (precio === null) grupo.algunoSinPrecio = true;
         else if (grupo.desde === null || precio < grupo.desde) grupo.desde = precio;
@@ -1025,6 +1075,10 @@ export function agruparCatalogo(servicios: unknown): { grupos: GrupoServicio[]; 
     const grupos = [...porCategoria.values()];
     for (const g of grupos) {
         g.titulo = g.entradas.length === 1 ? (g.entradas[0].nombreCompleto || g.categoria) : g.categoria;
+        // La explicación del grupo: solo si TODAS coinciden. Con una sola entrada eso es
+        // trivialmente la suya, que es lo que se quiere — ahí la fila ES el servicio.
+        const primera = g.entradas[0]?.explicacion ?? null;
+        g.explicacion = primera && g.entradas.every(e => e.explicacion === primera) ? primera : null;
     }
 
     return { grupos, descartadas };
@@ -1204,18 +1258,111 @@ export function primerMesConHueco(meses: Mes[]): number {
     return meses.findIndex(m => m.casillas.some(c => c.elegible));
 }
 
+// ─── El país del teléfono ────────────────────────────────────────────────────────────────
+//
+// El campo del teléfono era UNO, un número pelado, y el servidor le pegaba el `34` a todo lo
+// que fueran nueve dígitos empezados por 6 o 7. Un móvil ucraniano escrito sin el 0 del
+// tronco es exactamente eso, así que salía un móvil ESPAÑOL de otra persona. El porqué
+// entero, con los números medidos contra producción, está en `services/reserva-web.js`.
+//
+// **La tabla no está aquí, y eso es la mitad del arreglo.** Vive en el servidor —que es
+// quien compone el número que se guarda— y llega en la respuesta del catálogo, con la misma
+// doctrina que la política de los motivos. Una lista de prefijos en el navegador y otra en
+// Express es una pantalla que enseña un país y un servidor que compone otro.
+//
+// Aquí solo se pinta y se hace una comprobación floja para ahorrar el viaje.
+
+export type Pais = {
+    codigo: string;   // el prefijo internacional, sin '+' («34», «380»)
+    iso: string;      // ISO-3166 alfa-2, SOLO para que el navegador ponga el nombre
+    minimo: number;   // dígitos mínimos del número nacional, para el aviso sin viaje
+};
+
+/**
+ * El respaldo cuando la respuesta no trae países: un Express viejo, o una respuesta a medias.
+ *
+ * Es España, y es deliberado: sin lista, lo que tiene que seguir funcionando es el camino
+ * que hoy funciona —el 95 % de las fichas de Sante son `34`+9— y no una pantalla sin campo
+ * de teléfono. No es un dato de la dueña (un prefijo telefónico no se edita desde el panel),
+ * así que no le aplica la regla 5.
+ */
+export const PAIS_RESPALDO: Pais = { codigo: '34', iso: 'ES', minimo: 9 };
+
+/** Lee la lista que mandó el servidor, desconfiando de cada campo. Una entrada a medias se
+ *  DESCARTA en vez de pintarse con un prefijo vacío, que compondría el número sin país. */
+export function leerPaises(bruto: unknown): Pais[] {
+    const lista = Array.isArray(bruto) ? bruto : [];
+    const out: Pais[] = [];
+    for (const x of lista) {
+        const p = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>;
+        const codigo = typeof p.codigo === 'string' ? p.codigo.trim() : '';
+        const iso = typeof p.iso === 'string' ? p.iso.trim().toUpperCase() : '';
+        if (!/^\d{1,4}$/.test(codigo) || !/^[A-Z]{2}$/.test(iso)) continue;
+        const minimo = typeof p.minimo === 'number' && Number.isFinite(p.minimo) && p.minimo > 0
+            ? Math.floor(p.minimo) : PAIS_RESPALDO.minimo;
+        out.push({ codigo, iso, minimo });
+    }
+    return out.length ? out : [PAIS_RESPALDO];
+}
+
+/**
+ * El NOMBRE del país, en el idioma de la pantalla, y lo pone el navegador.
+ *
+ * `Intl.DisplayNames` sabe decir ES → «España / Spain / Испания / Іспанія», así que no hay
+ * que escribir 68 cadenas a mano ni mantenerlas: son datos del sistema, no texto nuestro, y
+ * por eso NO están en la tabla de `TEXTOS`. Es la misma decisión que `etiquetaMes`.
+ *
+ * Si el navegador no lo sabe, sale el código ISO — `fallback: 'code'`, que es lo que hace
+ * que un código sin datos salga como código y no desaparezca. Un país sin nombre es feo; un
+ * país con el nombre equivocado manda un recordatorio a otro sitio (regla 3).
+ *
+ * Ojo con `'ZZ'` al probar esto: NO es un código sin datos, es el código CLDR de «región
+ * desconocida» y devuelve esa frase traducida. Para el caso sin datos vale cualquier par de
+ * letras sin asignar (`'QQ'`).
+ */
+export function nombrePais(iso: string, lang: unknown): string {
+    try {
+        const dn = new Intl.DisplayNames([LOCALES[idiomaValido(lang)]], {
+            type: 'region', fallback: 'code',
+        });
+        return dn.of(iso) || iso;
+    } catch { return iso; }
+}
+
+/** «+34». Una función para que la pantalla no vaya pegando el '+' en cuatro sitios. */
+export function prefijoVisible(pais: Pais): string {
+    return `+${pais.codigo}`;
+}
+
+/** El país elegido, o el primero de la lista. `undefined` NUNCA: el campo tiene que
+ *  componerse contra algo, y la lista siempre trae al menos el respaldo. */
+export function paisElegido(paises: Pais[], codigo: string | null): Pais {
+    return paises.find(p => p.codigo === codigo) ?? paises[0] ?? PAIS_RESPALDO;
+}
+
 // ─── Lo que teclea la clienta ────────────────────────────────────────────────────────────
 
 /**
- * El teléfono. Aquí NO se replica `sanitizePhone` —la forma canónica la decide el servidor,
- * que es quien escribe en `contacts`— y esto solo evita el viaje: 9 dígitos o más una vez
- * quitados espacios, guiones y el prefijo. Falla hacia el lado permisivo a propósito: un
- * número extranjero raro tiene que poder reservar, y si de verdad no vale, el servidor
- * devuelve `datos_invalidos` y la pantalla lo dice.
+ * El teléfono. Aquí NO se replica la composición —la forma canónica la decide el servidor,
+ * que es quien escribe en `contacts`— y esto solo evita el viaje.
+ *
+ * **El mínimo sale del PAÍS elegido y el máximo no.** No es simetría rota, es lo que hace
+ * que la pantalla no bloquee una reparación que el servidor sí sabe hacer: una ucraniana que
+ * escribe «0 67 123 45 67» tiene un dígito de más para su país, y el servidor le quita el 0
+ * del tronco y reserva. Si aquí se aplicara el máximo, ese número se pararía en la pantalla
+ * con un «tiene dígitos de más» que es MENTIRA. El mínimo, en cambio, no lo puede reparar
+ * nadie: faltan dígitos, y decírselo en el sitio es mejor que un viaje.
+ *
+ * Sin país (la carga inicial, antes de que llegue el catálogo) se usan los 9 de España, que
+ * es lo que había antes de todo esto.
+ *
+ * Sigue fallando hacia el lado permisivo a propósito: si de verdad no vale, el servidor
+ * devuelve `datos_invalidos` y la pantalla lo dice, con sus datos intactos.
  */
-export function telefonoUsable(txt: unknown): boolean {
+export function telefonoUsable(txt: unknown, pais?: Pais | null): boolean {
     const digitos = String(txt ?? '').replace(/\D/g, '');
-    return digitos.length >= 9 && digitos.length <= 15;
+    const minimo = pais && Number.isFinite(pais.minimo) ? pais.minimo : PAIS_RESPALDO.minimo;
+    return digitos.length >= minimo && digitos.length <= 15;
 }
 
 export type ProblemaTelefono = 'letras' | 'corto' | 'largo';
@@ -1235,8 +1382,8 @@ export type ProblemaTelefono = 'letras' | 'corto' | 'largo';
  * «parece que falta algún dígito» describe otro caso: el que lo dijo escribió su nombre,
  * un «móvil» al lado, o pegó texto.
  */
-export function problemaTelefono(txt: unknown): ProblemaTelefono | null {
-    if (telefonoUsable(txt)) return null;
+export function problemaTelefono(txt: unknown, pais?: Pais | null): ProblemaTelefono | null {
+    if (telefonoUsable(txt, pais)) return null;
     const crudo = String(txt ?? '');
     const sinSeparadores = crudo.replace(/[\s\u00a0\-.()/+]/g, '');
     if (sinSeparadores && /\D/.test(sinSeparadores)) return 'letras';
@@ -1363,6 +1510,12 @@ export type Progreso =
         fecha: string | null;
         hora: string | null;
         nombre: string;
+        /**
+         * El PAÍS y el NÚMERO, separados igual que en la pantalla. Guardar el compuesto
+         * obligaría a descomponerlo al volver, y descomponer un teléfono es adivinar — que
+         * es justo lo que este cambio quita de en medio.
+         */
+        prefijo: string;
         telefono: string;
     };
 
@@ -1429,6 +1582,13 @@ export function leerProgreso(bruto: unknown, opciones: { hoy: string; ahora: num
     return {
         paso, servicio, fecha, hora,
         nombre: typeof obj.nombre === 'string' ? obj.nombre : '',
+        // Sin `prefijo` guardado se queda vacío y la pantalla usa el primero de la lista.
+        // Es lo que pasa con lo guardado ANTES de que existiera el selector, y por eso
+        // `VERSION_PROGRESO` no sube: un campo nuevo que cae a un valor bueno no obliga a
+        // tirar el progreso de quien esté a medias en el momento del despliegue. Y lo que
+        // guardó con el campo único —un «+380…» tecleado entero— sigue funcionando: el '+'
+        // manda sobre el desplegable (ver `componerTelefono`).
+        prefijo: typeof obj.prefijo === 'string' ? obj.prefijo : '',
         telefono: typeof obj.telefono === 'string' ? obj.telefono : '',
     };
 }
@@ -1440,6 +1600,7 @@ export type PlanRestauracion = {
     fecha: string | null;
     hora: string | null;
     nombre: string;
+    prefijo: string;
     telefono: string;
     cita: CitaHecha | null;
     /**
@@ -1464,14 +1625,16 @@ export function restaurar(
 
     const vacio = {
         grupo: null, entrada: null, fecha: null, hora: null,
-        nombre: '', telefono: '', cita: null, verificar: null,
+        nombre: '', prefijo: '', telefono: '', cita: null, verificar: null,
     } as const;
 
     if (progreso.paso === 'hecha') return { ...vacio, paso: 'hecha', cita: progreso.cita };
 
     const grupo = catalogo.grupos.find(g => g.entradas.some(e => e.key === progreso.servicio)) ?? null;
     const entrada = grupo?.entradas.find(e => e.key === progreso.servicio) ?? null;
-    const datos = { nombre: progreso.nombre, telefono: progreso.telefono };
+    const datos = {
+        nombre: progreso.nombre, prefijo: progreso.prefijo, telefono: progreso.telefono,
+    };
 
     if (!grupo || !entrada) return { ...vacio, ...datos, paso: 'servicio' };
 

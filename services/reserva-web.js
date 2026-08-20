@@ -425,6 +425,188 @@ function claveDeReserva(orgId, telefono, fecha, hora) {
     return `${orgId}:${telefono}:${fecha}:${hora}`;
 }
 
+// ─── El teléfono: el país se ELIGE, jamás se adivina ─────────────────────────────────────
+//
+// Hasta el 22/08/2026 el formulario tenía UN campo de teléfono, un número pelado, y el
+// servidor se lo daba a `sanitizePhone`. Esa función prefija `34` a todo lo que sean nueve
+// dígitos que empiecen por 6 o por 7 — y eso es exactamente un móvil ucraniano escrito sin
+// el 0 del tronco.
+//
+//     «67 123 45 67»  →  671234567  →  sanitizePhone  →  34671234567
+//
+// No es un número que no exista: es un móvil ESPAÑOL, de otra persona. `contacts` tiene
+// UNIQUE (organization_id, wa_phone), así que si esa española ya es clienta, la cita web se
+// cuelga de SU ficha, la lista negra se comprueba contra ELLA y el recordatorio de 24 h se
+// lo lleva ELLA. Un ruso escrito sin prefijo («916 123 45 67», diez dígitos) falla más
+// barato: no casa el patrón español, se guarda tal cual, y como no es de nadie Meta
+// responde 200 y no entrega (hecho 3 de la cabecera).
+//
+// **No es hipotético, y está medido** (21/08/2026, contra producción): de las 771 fichas de
+// Sante, 735 son `34`+9 y 36 no lo son. De esas 36, **cinco no son un teléfono**: dos
+// empiezan por `0`, dos tienen menos de diez dígitos y una está vacía. Y eso SIN que el
+// enlace haya escrito ni una sola (`source='web'` = 0 citas): entraron por el panel y por la
+// importación. El enlace no iba a crear el problema, iba a abrirle un grifo — con nadie
+// mirando, que es la diferencia.
+//
+// ── LO QUE NO SE TOCA, Y POR QUÉ ─────────────────────────────────────────────────────────
+//
+// **`sanitizePhone` se queda como está.** Es COMPARTIDA con San Remo (regla de oro) y con
+// todo el pipeline de entrada de WhatsApp, donde su prefijado del `34` es correcto y
+// necesario: ahí los nueve dígitos vienen del panel o de un JID y son españoles de verdad.
+// Lo que cambia no es la función: es lo que se le da de comer. Después de componer aquí, lo
+// que sale SIEMPRE lleva prefijo de país, así que `MOVIL_ES_SIN_PREFIJO` (que exige
+// exactamente nueve dígitos) no puede casar nunca y `sanitizePhone` es un no-op — hay un
+// test que lo afirma. La forma guardada sigue siendo la misma de siempre: E.164 sin `+`,
+// solo dígitos, que es la que `contacts.wa_phone` y el bot ya usan.
+//
+// **Y no se reescribe nada de lo guardado.** Este cambio solo decide lo que el ENLACE compone
+// de aquí en adelante; no hay migración ni backfill. Las cinco fichas malformadas siguen
+// malformadas —arreglarlas es decidir a quién pertenece cada número, y eso lo decide una
+// persona— y los duplicados anteriores a `sanitizePhone` los siguen cubriendo en LECTURA las
+// variantes de `phoneVariants`.
+//
+// ── LA TABLA ─────────────────────────────────────────────────────────────────────────────
+//
+// Corta a propósito: son los países que Sante TIENE en su tabla de contactos, más los
+// vecinos evidentes. No pretende ser el plan de numeración mundial, y no hace falta que lo
+// sea — quien venga de fuera de la lista escribe su número con `+` delante y se le respeta
+// tal cual (ver `componerTelefono`). Esa es la puerta de atrás, y es la que hace que una
+// lista corta no deje a nadie fuera.
+//
+//   · `troncal` es el dígito que, si va DELANTE del número nacional, es el prefijo de salida
+//     nacional y sobra. Es `'0'` en casi toda Europa; en Rusia y Kazajistán es `'8'`; y en
+//     **Italia es `null` porque los fijos italianos CONSERVAN su 0** (+39 06… es Roma). Esa
+//     es la excepción de libro, hay tres contactos italianos, y por eso está declarada aquí
+//     y no descubierta el día que una llame.
+//   · `nsn` es el largo del número nacional, y es lo que decide si una reparación se aplica:
+//     el 0 del tronco solo se quita si quitarlo produce un largo VÁLIDO. **Ante la duda, el
+//     rango va ANCHO**: uno demasiado ancho deja pasar un número malo —que es exactamente lo
+//     que pasa hoy, donde no hay ninguna comprobación de largo en el servidor— y uno
+//     demasiado estrecho deja a una clienta real sin poder reservar. Alemania e Italia son
+//     anchos porque de verdad lo son.
+//
+// El ORDEN es el del desplegable, y no es alfabético: España primero porque es el 95 % y el
+// valor por defecto, y detrás Ucrania y Rusia, que son las dos que trajeron este encargo. El
+// resto va por código ISO. El NOMBRE del país no está aquí: lo pone el navegador con
+// `Intl.DisplayNames` en el idioma de la pantalla, que es correcto en los cuatro y no son
+// 68 cadenas que traducir a mano (ver `nombrePais` en nucleo.ts).
+const PAISES = [
+    { codigo: '34',  iso: 'ES', troncal: '0', nsn: [9, 9] },
+    { codigo: '380', iso: 'UA', troncal: '0', nsn: [9, 9] },
+    { codigo: '7',   iso: 'RU', troncal: '8', nsn: [10, 10] },
+    { codigo: '32',  iso: 'BE', troncal: '0', nsn: [8, 9] },
+    { codigo: '41',  iso: 'CH', troncal: '0', nsn: [9, 9] },
+    { codigo: '49',  iso: 'DE', troncal: '0', nsn: [6, 11] },
+    { codigo: '33',  iso: 'FR', troncal: '0', nsn: [9, 9] },
+    { codigo: '44',  iso: 'GB', troncal: '0', nsn: [9, 10] },
+    { codigo: '353', iso: 'IE', troncal: '0', nsn: [7, 9] },
+    // Italia: SIN troncal. Sus fijos llevan el 0 dentro del número nacional.
+    { codigo: '39',  iso: 'IT', troncal: null, nsn: [6, 11] },
+    { codigo: '52',  iso: 'MX', troncal: '0', nsn: [10, 10] },
+    { codigo: '31',  iso: 'NL', troncal: '0', nsn: [9, 9] },
+    { codigo: '47',  iso: 'NO', troncal: '0', nsn: [8, 8] },
+    { codigo: '48',  iso: 'PL', troncal: '0', nsn: [9, 9] },
+    { codigo: '351', iso: 'PT', troncal: '0', nsn: [9, 9] },
+    { codigo: '40',  iso: 'RO', troncal: '0', nsn: [9, 9] },
+    // +1 es Estados Unidos Y Canadá. Se enseña con la bandera de uno de los dos porque
+    // `Intl.DisplayNames` traduce PAÍSES y no zonas de numeración; el número que se compone
+    // es idéntico para los dos, que es lo único que cambia una cita.
+    { codigo: '1',   iso: 'US', troncal: null, nsn: [10, 10] },
+];
+
+const PAIS_POR_DEFECTO = '34';
+
+/** Lo que de esta tabla necesita la pantalla, y ni un campo más.
+ *
+ *  `minimo` va porque la pantalla lo usa para decir «parece que falta algún dígito» sin
+ *  viaje al servidor. NO viaja el máximo ni el troncal: la pantalla no compone nada —lo hace
+ *  `componerTelefono`, aquí— y darle las piezas de la composición sería invitar a que un día
+ *  las use y nazca la segunda versión de esta regla. */
+function paisesPublicos() {
+    return PAISES.map(p => ({ codigo: p.codigo, iso: p.iso, minimo: p.nsn[0] }));
+}
+
+const dentroDe = ([min, max], n) => n >= min && n <= max;
+
+/**
+ * De lo que ella teclea a la forma con la que trabaja el bot.
+ *
+ * Devuelve `{ ok:true, telefono }` con SOLO DÍGITOS y prefijo de país delante — lo que hay
+ * que pasarle a `sanitizePhone` (para el que será un no-op) y de ahí a `contacts.wa_phone`.
+ *
+ * ── Las tres formas en las que la gente escribe su número, y qué se hace con cada una ────
+ *
+ *  1. **Con `+` o `00` delante** → es ella diciendo «esto ya lleva prefijo». Se respeta TAL
+ *     CUAL, aunque no coincida con el país del desplegable: quien escribe el `+` sabe lo que
+ *     hace, y ésta es la puerta por la que puede reservar alguien de un país que no está en
+ *     la lista corta. Aquí no se repara nada — no hay país fiable contra el que comprobar.
+ *  2. **El número nacional** → se le pone delante el código del país elegido.
+ *  3. **Algo intermedio** (el código de país pegado, el 0 del tronco delante, o los dos) → se
+ *     repara, y SOLO si la reparación produce un largo válido para ese país. Ése es el
+ *     candado: sin él, «reparar» sería adivinar.
+ *
+ * ── LAS DOS PODAS, EN ESTE ORDEN Y CADA UNA CON SU CANDADO ──────────────────────────────
+ *
+ * **(a) El código del país, si ya está delante.** No es una corrección: se quita y se vuelve
+ * a poner, así que por sí sola esta poda devuelve EXACTAMENTE lo que ella escribió. Es un
+ * candado contra duplicar el prefijo, y por eso puede permitirse ser generosa. Su guarda es
+ * que lo que quede tenga un largo nacional plausible — con un dígito de margen, que es el
+ * hueco donde cabe un tronco pegado detrás («380 067 123 45 67», que existe).
+ *
+ * **(b) El dígito de salida nacional.** Ésta SÍ transforma, y por eso el que lo declara es
+ * el país: es `'0'` en casi toda Europa y `'8'` en Rusia. Se aplica SIN comprobar largos, y
+ * es deliberado: un número nacional no empieza NUNCA por su propio dígito de tronco —eso es
+ * lo que significa ser un prefijo de salida— así que quitarlo no puede romper un número que
+ * estuviera bien. La única excepción del mundo es Italia, cuyos fijos llevan el 0 dentro, y
+ * por eso Italia declara `troncal: null`.
+ *
+ * **La versión con guarda de largo estuvo escrita, y era un bug.** «Solo quito el 0 si al
+ * quitarlo el largo queda válido» funciona mientras el país tenga un largo único (España,
+ * nueve), y falla en cuanto el rango es ancho: un móvil alemán con su tronco, `01701234567`,
+ * mide once dígitos, once ESTÁ dentro del rango alemán [6, 11], así que el 0 se quedaba
+ * dentro y salía `4901701234567`. Lo cazó medir el sabotaje —salió en 0 rojos, o sea que el
+ * test no protegía nada— y no leyéndolo. Es la regla 2 del repo en una línea.
+ */
+function componerTelefono({ prefijo, numero } = {}) {
+    const crudo = typeof numero === 'string' ? numero : '';
+    // (1) Internacional declarado. `\D` se lleva el '+', así que hay que mirarlo ANTES.
+    if (/^\s*(\+|00)/.test(crudo)) {
+        const d = crudo.replace(/\D/g, '').replace(/^0+/, '');
+        return d.length >= LARGO_MIN_E164 && d.length <= LARGO_MAX_E164
+            ? { ok: true, telefono: d, internacional: true }
+            : { ok: false, motivo: 'largo' };
+    }
+
+    const d = crudo.replace(/\D/g, '');
+
+    // Sin país no se compone: se devuelve lo que hay y quien llama decide. Pasa en un solo
+    // caso real —un navegador con el bundle viejo, en los minutos de un despliegue— y ahí lo
+    // correcto es comportarse como ayer y DECIRLO, no tirarle la reserva a la clienta.
+    const pais = PAISES.find(p => p.codigo === String(prefijo ?? ''));
+    if (!pais) return { ok: true, telefono: d, sinPrefijo: true };
+
+    if (!d) return { ok: false, motivo: 'vacio' };
+
+    const cod = pais.codigo;
+    const tro = pais.troncal;
+    let nacional = d;
+    // (a) el prefijo del país, si ya venía puesto. El '+1' de margen es para el tronco que
+    //     pueda venir detrás.
+    if (nacional.startsWith(cod)
+        && dentroDe([pais.nsn[0], pais.nsn[1] + 1], nacional.length - cod.length)) {
+        nacional = nacional.slice(cod.length);
+    }
+    // (b) el dígito de salida nacional. Sin guarda de largo: ver la cabecera.
+    if (tro && nacional.length > 1 && nacional.startsWith(tro)) {
+        nacional = nacional.slice(1);
+    }
+    if (!dentroDe(pais.nsn, nacional.length)) {
+        return { ok: false, motivo: nacional.length > pais.nsn[1] ? 'largo' : 'corto' };
+    }
+
+    return { ok: true, telefono: cod + nacional };
+}
+
 // ─── Las proyecciones: qué sale a internet ───────────────────────────────────────────────
 //
 // LA REGLA, y es la que sostiene el test de fuga: **se enumeran los campos, jamás se
@@ -488,8 +670,12 @@ function salonPublico(businessInfo, { waPhone, lang } = {}) {
  * Sin `nombrePara` el campo NO se inventa: se queda ausente y la pantalla cae al `nombre`
  * pelado, que es un valor real del catálogo. Lo que no puede volver a pasar es que alguien
  * componga un tercer nombre («Cortes · Mujer y secado») que no existe en ningún sitio.
+ *
+ * ── `explicacion`: el ÚNICO campo del catálogo que sale traducido ────────────────────────
+ *
+ * El HUECO, hoy vacío. Ver `explicacionPublica`.
  */
-function catalogoPublico(servicios = [], clavePara = null, nombrePara = null) {
+function catalogoPublico(servicios = [], { clavePara = null, nombrePara = null, lang = null } = {}) {
     return (Array.isArray(servicios) ? servicios : []).map(s => {
         const fila = {
             categoria: s.categoria ?? null,
@@ -506,8 +692,81 @@ function catalogoPublico(servicios = [], clavePara = null, nombrePara = null) {
             const n = nombrePara(s);
             if (typeof n === 'string' && n.trim()) fila.nombreCompleto = n;
         }
+        // Ausente cuando no hay nada escrito, NUNCA una cadena vacía: la pantalla decide si
+        // pinta la línea preguntando si el campo está, y un '' pintaría un renglón en blanco
+        // debajo de cada servicio del catálogo.
+        const expl = explicacionPublica(s, lang);
+        if (expl) fila.explicacion = expl;
         return fila;
     });
+}
+
+// ─── La explicación de un servicio: el hueco que rellena la dueña ────────────────────────
+//
+// **El nombre del servicio NO se traduce, y eso no se toca** — está escrito arriba y en
+// nucleo.ts: el nombre que la clienta lee es EXACTAMENTE la cadena que se escribe en
+// `appointments.service`, o sea la que el salón ve en la agenda, la que le dirá el
+// recordatorio de 24 h y contra la que casa la facturación. Traducirlo la dejaría reservando
+// «Осветление» y pidiendo en el mostrador algo que allí no se llama así.
+//
+// Lo que SÍ puede ir traducido es una línea DEBAJO del nombre, que explica qué es sin
+// sustituirlo. Y eso es lo que hay aquí: un hueco, hoy vacío en el catálogo de producción
+// (verificado 21/08/2026: las 82 entradas tienen `categoria`, `nombre`, `precio`, `duracion`
+// y nada más, salvo una con `solo_complemento` y una con `nota`). **No se rellena desde el
+// código**: el texto lo escribe Yulia, en el idioma del salón, y hasta entonces no sale
+// ninguna línea. Inventarle a un servicio una descripción que la dueña no ha escrito es
+// exactamente la regla 3.
+//
+// ── Vale para las dos cosas, y por eso no se llama `largo` ───────────────────────────────
+//
+// La tentación era un campo «largo» con hombros/espalda/cintura dentro, porque el caso que
+// trajo esto son las variantes que dicen Corto/Medio/Largo/XL. Sería falso en la mitad del
+// catálogo: de las 15 categorías con varias entradas, solo 6 van por largo. En «Mechas
+// clásicas» las tres variantes son COBERTURA (delante y rostro / media cabeza / cabeza
+// completa), en «Cortes» son cinco servicios distintos y en «Manicura/Pedicura» son diez.
+// Un rótulo que preguntara «¿qué largo tienes?» mentiría en nueve de las quince. Así que el
+// campo es texto libre por ENTRADA y neutro: dice lo que esa entrada necesite decir.
+//
+// ── Vive en la ENTRADA, no en una tabla por categoría ────────────────────────────────────
+//
+// Misma doctrina que `solo_complemento` y por el mismo motivo: la categoría la edita la
+// dueña sobre el JSONB, y una tabla del código indexada por su nombre deja de casar el día
+// que la renombre — en silencio, que es lo caro (regla 5). Ya hay dos así en el repo, las
+// dos anotadas como fragilidad: `REACTIVE_ONLY_CATEGORIES` y `COBERTURA_MECHAS_CLASICAS`
+// (`openai.js`), que es justo la explicación de las mechas clásicas escrita a mano en git.
+//
+// ── Y por qué NO se reutiliza lo que el bot ya dice ──────────────────────────────────────
+//
+// El bot sí explica el largo, en `openai.js:661-665`, y no sirve para esto por tres motivos,
+// cada uno suficiente: (1) no es un dato sino tres frases en castellano DENTRO del prompt,
+// que el modelo reescribe y traduce sobre la marcha —una página no tiene modelo—; (2) no es
+// por entrada sino por FORMA de la categoría (si tiene una 4ª variante, y si esa 4ª es XL);
+// y (3) cubre solo el largo. Lo que sí se puede reutilizar es su CONTENIDO cuando Yulia
+// escriba el hueco: hombros / espalda / cintura, con el XL que es cambio de color y no
+// longitud. Esa decisión es suya, no del código.
+//
+// ── La forma ─────────────────────────────────────────────────────────────────────────────
+//
+//   explicacion: { es: '…', en: '…', ru: '…', uk: '…' }     ← lo normal
+//   explicacion: 'hasta los hombros'                        ← atajo, equivale a { es: … }
+//
+// Falta un idioma → cae al castellano, con el mismo criterio que `textos()` en la pantalla:
+// una explicación en castellano para una rusa es peor que en ruso y MEJOR QUE NINGUNA, y
+// sobre todo permite que Yulia escriba primero el castellano y traduzca después sin que la
+// pantalla se quede muda entremedias. Falta también el castellano → no sale línea.
+//
+// Sale SANEADA: una línea y 140 caracteres. Es texto libre de la dueña en una página
+// pública, así que el tope no es cosmético — sin él, un párrafo pegado en el JSONB empuja
+// cada fila de la lista y deja la pantalla inservible en un móvil.
+function explicacionPublica(entrada, lang) {
+    const v = entrada && entrada.explicacion;
+    const limpiar = txt => (typeof txt === 'string' && txt.trim()
+        ? (limpiarUnaLinea(txt, MAX_EXPLICACION) || null) : null);
+    if (typeof v === 'string') return limpiar(v);
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+        return limpiar(v[idiomaValido(lang)]) || limpiar(v.es);
+    }
+    return null;
 }
 
 /** La rejilla de mes. Un día es una fecha, un número y quién puede atenderlo. */
@@ -569,6 +828,16 @@ const MAX_NOTAS = 300;
 const MAX_NOMBRE = 80;
 // La dirección la escribe la dueña y va a una página pública: acotada y en una línea.
 const MAX_DIRECCION = 160;
+// La explicación de un servicio: la escribe la dueña, va a una página pública y tiene que
+// caber DEBAJO de un nombre sin empujar la fila. Una línea, y corta.
+const MAX_EXPLICACION = 140;
+
+// El largo de un E.164: entre 8 y 15 dígitos con el prefijo dentro. Solo lo usa el camino
+// internacional de `componerTelefono` —el que se fía de lo que ella escribió tras el '+'—,
+// porque ahí no hay país contra el que comprobar nada más. Los demás caminos comprueban el
+// largo NACIONAL contra `nsn`, que es mucho más estrecho y por tanto mejor.
+const LARGO_MIN_E164 = 8;
+const LARGO_MAX_E164 = 15;
 
 const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
 const HORA_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -584,6 +853,9 @@ module.exports = {
     resolverLimites, crearLimitador,
     crearCandadoReserva, claveDeReserva, CANDADO_TTL_MS,
     catalogoPublico, diasPublicos, huecosPublicos, reservaPublica, salonPublico,
+    explicacionPublica,
+    PAISES, PAIS_POR_DEFECTO, paisesPublicos, componerTelefono,
     limpiarUnaLinea, idiomaValido,
-    MAX_NOTAS, MAX_NOMBRE, MAX_DIRECCION, FECHA_RE, HORA_RE, UUID_RE, HORA_MS, PUERTAS,
+    MAX_NOTAS, MAX_NOMBRE, MAX_DIRECCION, MAX_EXPLICACION,
+    FECHA_RE, HORA_RE, UUID_RE, HORA_MS, PUERTAS, IDIOMAS,
 };

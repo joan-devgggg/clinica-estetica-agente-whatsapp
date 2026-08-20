@@ -17,7 +17,7 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowLeft, Check, ChevronLeft, ChevronRight, LoaderCircle, MessageCircle, RefreshCw } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, Globe, LoaderCircle, MessageCircle, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   type Casilla,
@@ -26,6 +26,7 @@ import {
   type Fallo,
   type GrupoServicio,
   type Mes,
+  type Pais,
   type ProblemaTelefono,
   type Salon,
   type Textos,
@@ -35,6 +36,8 @@ import {
   etiquetaMes,
   formatearDuracion,
   formatearPrecio,
+  nombrePais,
+  prefijoVisible,
   rellenar,
   textoDelAviso,
   textoEspera,
@@ -79,16 +82,35 @@ export function Cabecera({
             </p>
           )}
         </div>
-        {/* El código de dos letras y no una bandera: una bandera dice país, no idioma, y el
-            ruso de esta pantalla lo lee tanto quien vive en Ucrania como quien no. */}
+        {/* ── El selector de idioma ────────────────────────────────────────────────────
+            Era un círculo con «ES» dentro y nada más: no se leía como un botón, y desde
+            luego no decía que sirviera para cambiar de idioma. Ahora lleva las tres cosas
+            que lo convierten en un control — un globo, un borde y un galón —, y el código
+            de dos letras se queda porque es lo que dice cuál está puesto.
+
+            El globo y NO una bandera: una bandera dice país, no idioma, y este ruso lo lee
+            tanto quien vive en Ucrania como quien no. Es la misma decisión de antes, ahora
+            con un icono que sí significa «idioma».
+
+            El `aria-label` cambia también, y era la mitad del bug para quien usa lector de
+            pantalla: decía «Español», o sea lo que está ELEGIDO, y no lo que pasa si lo
+            tocas. Ahora dice las dos cosas.
+
+            Cuesta unos 30 px de ancho, y salen del título, que ya truncaba. No cuesta una
+            fila ni empuja nada hacia abajo: la cabecera mide exactamente lo mismo. */}
         <button
           type="button"
           onClick={() => setAbierto((v) => !v)}
           aria-expanded={abierto}
-          aria-label={NOMBRES_IDIOMA[idioma]}
-          className="flex size-11 shrink-0 items-center justify-center rounded-full text-xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:bg-muted"
+          aria-label={`${t.idioma}: ${NOMBRES_IDIOMA[idioma]}`}
+          className={cn(
+            "flex h-11 shrink-0 items-center gap-1 rounded-full border px-2.5 text-xs font-semibold tracking-wide uppercase transition-colors",
+            abierto ? "border-primary/40 bg-primary/5 text-primary" : "border-border bg-card text-muted-foreground hover:bg-muted",
+          )}
         >
+          <Globe className="size-4" />
           {idioma}
+          <ChevronDown className={cn("size-3.5 transition-transform", abierto && "rotate-180")} />
         </button>
       </div>
 
@@ -138,6 +160,30 @@ export function Cargando({ t }: { t: Textos }) {
   );
 }
 
+/**
+ * La línea de debajo del nombre: qué es este servicio, en el idioma de la pantalla.
+ *
+ * ── EL NOMBRE NO SE TRADUCE, Y ESTO ES LO QUE LO HACE INNECESARIO ───────────────────────
+ *
+ * El nombre que la clienta lee aquí es EXACTAMENTE la cadena que se va a escribir en
+ * `appointments.service`: la que el salón verá en la agenda, la que le dirá el recordatorio
+ * de 24 h y contra la que casa la facturación (que compara EXACTO desde `f187270`).
+ * Traducirlo la dejaría reservando una cosa y pidiendo otra en el mostrador — y a la dueña
+ * buscando en su agenda un servicio que no se llama así en ningún sitio del sistema.
+ *
+ * Así que se traduce lo de DEBAJO. Esta línea añade, no sustituye: dice qué es sin tocar
+ * cómo se llama, y es la única forma de que una clienta rusa entienda «Mechas Balayage» sin
+ * que deje de poder pedirlo por su nombre al llegar.
+ *
+ * Hoy no sale nunca: el campo está vacío en las 82 entradas del catálogo y lo escribe la
+ * dueña. Sin texto no hay línea — no se compone una descripción a partir del nombre ni de
+ * la categoría (regla 3).
+ */
+function Explicacion({ texto }: { texto: string | null }) {
+  if (!texto) return null;
+  return <span className="mt-0.5 block text-sm text-muted-foreground">{texto}</span>;
+}
+
 /** Una fila tocable: la unidad de casi toda la pantalla. */
 function Fila({
   onClick, children, destacada = false,
@@ -185,7 +231,12 @@ export function ListaServicios({
                   {/* `titulo`, no `categoria`: con una sola entrada esta fila ES el
                       servicio y tiene que llamarse igual aquí que en la confirmación. */}
                   <span className="block font-medium">{g.titulo}</span>
-                  <span className="block text-sm text-muted-foreground">
+                  {/* La explicación del GRUPO: la que comparten todas sus entradas. Con una
+                      sola entrada es la suya, que es lo que se quiere aquí. Cuando difieren
+                      —«hasta los hombros» / «hasta la espalda»— no sale nada en este paso:
+                      es información de la VARIANTE y su sitio es el paso siguiente. */}
+                  <Explicacion texto={g.explicacion} />
+                  <span className="mt-0.5 block text-sm text-muted-foreground">
                     {unica
                       ? [formatearPrecio(unica.precio, t), formatearDuracion(unica.duracion, t)]
                           .filter(Boolean)
@@ -259,15 +310,28 @@ export function ListaVariantes({
     <>
       <p className="mb-1 text-sm font-medium text-primary">{grupo.categoria}</p>
       <Titulo>{t.elegirVariante}</Titulo>
+      {/* Lo que es COMÚN a todas las variantes se dice UNA vez, aquí arriba, y no repetido
+          cuatro veces en las cuatro filas. */}
+      {grupo.explicacion && (
+        <p className="-mt-2 mb-4 text-sm text-muted-foreground">{grupo.explicacion}</p>
+      )}
       <ul className="flex flex-col gap-2">
         {grupo.entradas.map((e) => {
           const dur = formatearDuracion(e.duracion, t);
+          // Solo si dice algo DISTINTO de lo de arriba. Es lo que hace que el mismo campo
+          // sirva para las dos cosas: escrito igual en todas, es del servicio y sale una
+          // vez; escrito distinto, es de la variante y sale en su fila. Y ahí es donde va
+          // «hasta los hombros» el día que la dueña lo escriba — que es el hueco que pedía
+          // este encargo, y que vale igual para «media cabeza» de las mechas clásicas,
+          // porque el campo no se llama «largo» ni pregunta por el largo.
+          const propia = e.explicacion && e.explicacion !== grupo.explicacion ? e.explicacion : null;
           return (
             <li key={e.key}>
               <Fila onClick={() => elegir(e)}>
                 <span className="min-w-0 flex-1">
                   <span className="block font-medium">{e.nombre}</span>
-                  {dur && <span className="block text-sm text-muted-foreground">{dur}</span>}
+                  <Explicacion texto={propia} />
+                  {dur && <span className="mt-0.5 block text-sm text-muted-foreground">{dur}</span>}
                 </span>
                 <span className="shrink-0 text-right text-sm font-semibold tabular-nums">
                   {formatearPrecio(e.precio, t)}
@@ -424,14 +488,18 @@ export function ListaHoras({
 // ─── Paso 5 · sus datos ──────────────────────────────────────────────────────────────────
 
 export function Datos({
-  t, resumen, nombre, telefono, setNombre, setTelefono, errores, tocado,
+  t, lang, resumen, nombre, telefono, paises, pais, setNombre, setTelefono, setPais, errores, tocado,
 }: {
   t: Textos;
+  lang: Idioma;
   resumen: { servicio: string; cuando: string; precio: string };
   nombre: string;
   telefono: string;
+  paises: Pais[];
+  pais: Pais;
   setNombre: (v: string) => void;
   setTelefono: (v: string) => void;
+  setPais: (codigo: string) => void;
   // El teléfono no trae un booleano sino el PROBLEMA (o null): «parece que falta algún
   // dígito» sobre un número con letras describe otro caso, y quien lo lee repasa las cifras
   // una por una sin ver lo que sobra.
@@ -460,16 +528,15 @@ export function Datos({
           autoComplete="name"
           inputMode="text"
         />
-        <Campo
-          id="telefono"
-          etiqueta={t.tuTelefono}
-          ayuda={t.tuTelefonoAyuda}
-          error={tocado && errores.telefono ? t.telefonoProblema[errores.telefono] : null}
+        <CampoTelefono
+          t={t}
+          lang={lang}
+          paises={paises}
+          pais={pais}
+          setPais={setPais}
           valor={telefono}
           onChange={setTelefono}
-          autoComplete="tel"
-          inputMode="tel"
-          type="tel"
+          error={tocado && errores.telefono ? t.telefonoProblema[errores.telefono] : null}
         />
       </div>
     </>
@@ -511,6 +578,101 @@ function Campo({
       />
       <p id={`${id}-ayuda`} className={cn("mt-1.5 text-xs", error ? "text-destructive" : "text-muted-foreground")}>
         {error ?? ayuda}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * El teléfono, con el país aparte.
+ *
+ * ── POR QUÉ SON DOS CONTROLES Y NO UNO ───────────────────────────────────────────────────
+ *
+ * Era un campo suelto y el servidor le pegaba el `34` a todo lo que fueran nueve dígitos
+ * empezados por 6 o 7 — o sea a un móvil ucraniano escrito sin el 0 del tronco, que salía
+ * convertido en un móvil ESPAÑOL de otra persona. El porqué entero, con los números medidos
+ * contra la tabla de contactos, está en `services/reserva-web.js`.
+ *
+ * ── UN `<select>` NATIVO, Y ES LA DECISIÓN ───────────────────────────────────────────────
+ *
+ * En un móvil el desplegable del sistema es una rueda a pantalla completa, con búsqueda por
+ * teclado y accesible sin que escribamos una línea. Cualquier lista propia sería peor y más
+ * grande, y esta pantalla se ve con una mano.
+ *
+ * El truco de encima: el `<select>` va TRANSPARENTE y a tamaño completo sobre una cajita que
+ * enseña «+34». Cerrado ocupa cuatro caracteres —que es todo lo que cabe al lado del número
+ * en una pantalla de 375 px— y abierto el sistema enseña los nombres largos de país. Un
+ * `<select>` normal tendría que enseñar «+34 · España» también cerrado, y no cabe.
+ *
+ * Y el nombre de cada país lo pone el NAVEGADOR (`nombrePais` → `Intl.DisplayNames`), no
+ * nuestra tabla de textos: son 17 países × 4 idiomas, y traducirlos a mano es escribir 68
+ * cadenas que nadie revisa para decir «Ucrania».
+ */
+function CampoTelefono({
+  t, lang, paises, pais, setPais, valor, onChange, error,
+}: {
+  t: Textos;
+  lang: Idioma;
+  paises: Pais[];
+  pais: Pais;
+  setPais: (codigo: string) => void;
+  valor: string;
+  onChange: (v: string) => void;
+  error: string | null;
+}) {
+  return (
+    <div>
+      {/* UNA etiqueta para los dos controles: lo que se pide es un teléfono, y el país es
+          parte de él. El desplegable se anuncia aparte con su `aria-label`. */}
+      <label htmlFor="telefono" className="mb-1.5 block text-sm font-medium">
+        {t.tuTelefono}
+      </label>
+      <div className="flex gap-2">
+        <div className="relative shrink-0">
+          <div
+            aria-hidden
+            className={cn(
+              "pointer-events-none flex h-14 items-center gap-1 rounded-2xl border bg-card px-3 text-base tabular-nums",
+              error ? "border-destructive" : "border-border",
+            )}
+          >
+            {prefijoVisible(pais)}
+            <ChevronDown className="size-4 text-muted-foreground" />
+          </div>
+          <select
+            aria-label={t.tuPais}
+            value={pais.codigo}
+            onChange={(e) => setPais(e.target.value)}
+            className="absolute inset-0 size-full cursor-pointer rounded-2xl opacity-0 focus-visible:opacity-100"
+          >
+            {paises.map((p) => (
+              <option key={p.codigo} value={p.codigo}>
+                {prefijoVisible(p)} · {nombrePais(p.iso, lang)}
+              </option>
+            ))}
+          </select>
+        </div>
+        <input
+          id="telefono"
+          type="tel"
+          value={valor}
+          onChange={(e) => onChange(e.target.value)}
+          autoComplete="tel-national"
+          inputMode="tel"
+          aria-invalid={error ? true : undefined}
+          aria-describedby="telefono-ayuda"
+          className={cn(
+            "h-14 min-w-0 flex-1 rounded-2xl border bg-card px-4 text-base transition-colors",
+            "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+            error ? "border-destructive" : "border-border",
+          )}
+        />
+      </div>
+      <p
+        id="telefono-ayuda"
+        className={cn("mt-1.5 text-xs", error ? "text-destructive" : "text-muted-foreground")}
+      >
+        {error ?? t.tuTelefonoAyuda}
       </p>
     </div>
   );
