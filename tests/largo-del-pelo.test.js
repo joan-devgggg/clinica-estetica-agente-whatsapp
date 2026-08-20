@@ -230,5 +230,68 @@ test('REGRESIÓN · las que ya se entendían antes del 11/08/2026', () => {
     }
 });
 
+// ─── «largo» el SUSTANTIVO, y la negación (20/08/2026) ───────────────────────
+//
+// Dos fallos medidos en la auditoría, en la misma función y con la misma forma: una palabra
+// que significa dos cosas y una frase que dice lo contrario de lo que casa.
+//
+//   «no llega a los hombros el largo»  → daba 3 (LARGO) y es 1 (no le llega ni a los hombros)
+//   «el largo es hasta el pecho»       → daba 3 y es 2
+//   «mi largo es medio»                → daba 3 y es 2
+//   «qué largo tienes?»                → daba 3, y es la PREGUNTA QUE HACE EL BOT
+//   «no llega a la cintura»            → daba 3, y significa que NO le llega
+//
+// La culpa del primero no era la negación: «no llega a los hombros» a secas YA devolvía 1,
+// que es correcto. Era la palabra `largo` del final, el SUSTANTIVO, casando el adjetivo del
+// tramo 3.
+//
+// Y la negación se resuelve con la regla del sujetador, que ya estaba escrita en este mismo
+// fichero: «más corto que X» solo tiene una respuesta segura cuando X es el tramo MÁS BAJO
+// (por encima de los hombros no hay nada). Para cualquier otro cae entre dos tramos y se
+// devuelve null — preguntar otra vez es gratis; meterlo en un tramo son 20-50 €.
+//
+// Sabotajes MEDIDOS (cp previo, 20/08/2026): quitar LARGO_SUSTANTIVO_RE → 2 rojos; quitar
+// la negación → 1 rojo. (Los CONTROLES pasan con y sin el arreglo a propósito: están para
+// que el arreglo no se pase de largo y deje de resolver «pelo largo» o «no llega a los
+// hombros», que hoy sí resuelven.)
+
+test('el SUSTANTIVO «largo» no decide el tramo: lo decide el resto de la frase', () => {
+    assert.strictEqual(extractLargoPelo('no llega a los hombros el largo'), 1,
+        'la frase real de la auditoría: no le llega ni a los hombros');
+    assert.strictEqual(extractLargoPelo('el largo es hasta el pecho'), 2);
+    assert.strictEqual(extractLargoPelo('mi largo es medio'), 2);
+});
+
+test('«qué largo tienes?» no es una respuesta: es la pregunta del bot', () => {
+    assert.strictEqual(extractLargoPelo('¿qué largo tienes?'), null,
+        'devolvía 3, o sea que la propia pregunta traía la respuesta puesta');
+    assert.strictEqual(extractLargoPelo('¿cuánto largo tienes?'), null);
+});
+
+test('CONTROL el ADJETIVO sigue siendo el tramo 3', () => {
+    // La lista de determinantes es corta a propósito: si se hiciera genérica, estas tres
+    // dejarían de resolver y el bot volvería a preguntar el largo a quien ya lo dijo.
+    for (const t of ['tengo el pelo largo', 'lo tengo largo', 'pelo largo', 'largo']) {
+        assert.strictEqual(extractLargoPelo(t), 3, `«${t}» es el adjetivo`);
+    }
+    assert.strictEqual(extractLargoPelo('muy largo'), 4, 'y el tramo 4 tampoco se toca');
+});
+
+test('«no llega a X» por encima del tramo 1 devuelve NULL, no el tramo de X', () => {
+    for (const t of ['no llega a la cintura', 'no me llega al pecho', 'no llega hasta la cintura',
+        "doesn't reach the waist", 'не доходит до талии']) {
+        assert.strictEqual(extractLargoPelo(t), null, `«${t}» cae entre dos tramos: se pregunta`);
+    }
+});
+
+test('CONTROL negar el tramo MÁS BAJO no pierde nada: sigue siendo 1', () => {
+    // Por encima de los hombros no hay ningún tramo, así que aquí «más corto que» no mueve
+    // la respuesta. Devolver null también aquí sería preguntar por preguntar.
+    for (const t of ['no llega a los hombros', 'no me llega a los hombros',
+        'it does not reach my shoulders', 'por encima de los hombros']) {
+        assert.strictEqual(extractLargoPelo(t), 1, `«${t}» es corto y se sabe`);
+    }
+});
+
 console.log(fallos === 0 ? '\nTODO OK' : `\n${fallos} FALLO(S)`);
 process.exit(fallos === 0 ? 0 : 1);

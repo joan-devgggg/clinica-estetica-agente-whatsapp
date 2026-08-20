@@ -4069,15 +4069,56 @@ const LARGO_REGLAS = [
     ] },
 ];
 
+// ─── «largo» el SUSTANTIVO no es «largo» el adjetivo ─────────────────────────
+//
+// «no llega a los hombros el largo» devolvía 3 (LARGO) cuando significa lo contrario: que no
+// le llega ni a los hombros. La culpa no era la negación —«no llega a los hombros» a secas
+// ya devolvía 1, que es correcto— sino la palabra `largo` del final, que es el SUSTANTIVO
+// («la longitud») y casaba el adjetivo del tramo 3.
+//
+// Medido el 20/08/2026, y son cuatro frases normales, no rebuscadas:
+//
+//   «no llega a los hombros el largo»  → 3   debería ser 1 (hombros)
+//   «el largo es hasta el pecho»       → 3   debería ser 2 (pecho)
+//   «mi largo es medio»                → 3   debería ser 2 (medio)
+//   «qué largo tienes?»                → 3   debería ser null: ¡es la PREGUNTA del bot!
+//
+// Se descarta cuando lleva delante un determinante que lo convierte en nombre. Lo que NO se
+// toca, y por eso la lista es corta y no genérica: «pelo largo», «lo tengo largo» y «largo»
+// a secas siguen siendo el adjetivo del tramo 3.
+const LARGO_SUSTANTIVO_RE = /\b(?:el|mi|tu|su|que|cuanto)\s+larg[oa]s?\b/g;
+
+// ─── «no llega a X» ──────────────────────────────────────────────────────────
+//
+// Significa «más corto que X», y ahí solo hay una respuesta segura: si X es el tramo MÁS
+// BAJO, más corto que X sigue siendo ese tramo (por debajo de los hombros hacia arriba no
+// hay nada). Para cualquier otro tramo, «más corto que X» cae ENTRE dos y no se adivina:
+// se devuelve null y se vuelve a preguntar, que es gratis, en vez de meterlo en un tramo y
+// equivocarse en 20-50 €. Es exactamente la decisión del sujetador, que está escrita cuatro
+// líneas más abajo en LARGO_REGLAS y por el mismo motivo.
+//
+// «no llega a la cintura» devolvía 3 (la cintura) cuando significa que NO le llega.
+const LARGO_NEGACION_RE = new RegExp([
+    'no (?:me )?(?:llega|pasa)(?: hasta)?',
+    'does ?n.?t reach', 'do(?:es)? not reach', 'not (?:down )?to',
+].join('|'));
+const LARGO_NEGACION_CIRILICA = buildCyrillicRe(['не доходит до', 'не доходить до', 'не достает до', 'не сягає до']);
+
 function extractLargoPelo(text) {
     if (!text) return null;
-    const t = normalizeText(text);
+    let t = normalizeText(text);
     // "Largo 2" es el NOMBRE de una variante del catálogo, no una medida del cuerpo.
     if (/\blargo\s+\d\b/.test(t)) return null;
-    for (const { nivel, res } of LARGO_REGLAS) {
-        if (res.some(re => re.test(t))) return nivel;
+    // El sustantivo se borra ANTES de mirar los tramos: así el resto de la frase decide.
+    t = t.replace(LARGO_SUSTANTIVO_RE, ' ');
+    let nivel = null;
+    for (const regla of LARGO_REGLAS) {
+        if (regla.res.some(re => re.test(t))) { nivel = regla.nivel; break; }
     }
-    return null;
+    if (nivel === null) return null;
+    // Negado: solo sobrevive el tramo más bajo, donde «más corto que» no cambia de tramo.
+    if (nivel > 1 && (LARGO_NEGACION_RE.test(t) || LARGO_NEGACION_CIRILICA.test(t))) return null;
+    return nivel;
 }
 
 // ─── Facturación por estilista ────────────────────────────────────────────────
