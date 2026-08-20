@@ -2460,13 +2460,95 @@ function resolveUpcomingDate(dom, month, refNow = null) {
 // dos dígitos de minutos son obligatorios aquí. Ahora sí lo importan las tres.
 const HORA_HHMM_SRC = '\\b([01]?\\d|2[0-3]):[0-5]\\d\\b';
 
-// Horas HH:MM que MENCIONA un texto, normalizadas a dos dígitos ('9:30' → '09:30').
+// ─── LA regla de las 12 horas, en UN solo sitio ──────────────────────────────
+//
+// Estaba escrita TRES veces y solo dos coincidían, con la tercera contradiciendo a las
+// otras dentro del mismo turno:
+//
+//   · `normalizeHora` (bot.js) — la completa: lee tarde/noche/pm y mañana/morning/am, y a
+//     falta de las dos aplica «1-8 → +12» («las 4» en un salón son las 16:00).
+//   · `extractLooseClockHours` (aquí) — solo el «1-8 → +12». Su comentario ya avisaba: «si
+//     una de las dos cambia, la otra tiene que cambiar con ella».
+//   · `extractClockHours` (aquí) — NINGUNA. `9:30` → `09:30` y punto.
+//
+// El coste, medido el 20/08/2026 con la conversación de una clienta que venía ANDANDO al
+// salón con cita a la 1 del mediodía:
+//
+//   «Ya tengo cita a la 1:00 pm hoy»  →  «A las 01:00 no estamos abiertos 😊»
+//   «I have an app at 1:00»           →  «We're not open at 01:00 😊»
+//
+// Y no era solo el `pm` ignorado: el MISMO texto valía dos cosas distintas según quién
+// preguntara. `detectHoraFueraDeHorario` (aquí) leía `01:00` en crudo y decía «cerrado»;
+// las redes de bot.js hacían `extractMentionedHours(...).map(normalizeHora)`, o sea le
+// pasaban ese `01:00` por la regla otra vez y obtenían `13:00`. Dos ficheros, una frase,
+// doce horas de diferencia.
+//
+// Ahora la regla vive AQUÍ y la usan las tres. `normalizeHora` se queda en bot.js —tiene
+// que seguir aceptando «las 4 y media» y otras formas coloquiales— pero delega el tramo
+// 12h/24h en esta función, así que ya no puede divergir. Y sigue siendo IDEMPOTENTE, que
+// es lo que permite que bot.js aplique normalizeHora sobre lo que ya salió de aquí: la
+// salida es siempre 9-23 (o 00), y ninguno de esos vuelve a moverse.
+//
+// LO QUE NO CUBRE, dicho: ruso y ucraniano no tienen sus palabras de franja («утра»,
+// «вечера»). Su marcador de hora («в 10») sí está en HORA_SUELTA_MARCADORES, así que la
+// hora se lee; lo que falta es distinguir mañana de tarde cuando lo dicen con palabras.
+// Hoy caen en el «1-8 → +12», que es lo que hacían las tres copias.
+const FRANJA_TARDE_RE = /\b(?:pm|p\s?m)\b|tarde|noche/;
+const FRANJA_MANANA_RE = /\b(?:am|a\s?m)\b|manana|morning/;
+function resolverHora12h(hora, contexto = '') {
+    const bruto = String(hora).trim();
+    const n = Number(bruto);
+    if (!Number.isFinite(n) || n < 0 || n > 23) return null;
+    const t = normalizeText(contexto);
+    // 1 · Lo que la clienta DICE manda sobre cualquier heurística.
+    if (FRANJA_TARDE_RE.test(t)) return n < 12 ? n + 12 : n;
+    if (FRANJA_MANANA_RE.test(t)) return n;
+    // 2 · EL CERO DELANTE TAMBIÉN ES UNA DECLARACIÓN. «08:00» son las ocho de la mañana:
+    //     nadie escribe el cero para decir las ocho de la tarde. La heurística de abajo
+    //     existe para lo AMBIGUO («a las 4», «at 1:00»), no para lo que ya viene dicho —
+    //     sin esta línea, «¿puedo a las 08:00?» se leía como las 20:00 y la clienta recibía
+    //     un horario que no había pedido.
+    if (/^0\d$/.test(bruto)) return n;
+    // 3 · Y a falta de todo: en un salón que abre de 10 a 19, «a las 4» son las 16:00.
+    return (n >= 1 && n <= 8) ? n + 12 : n;
+}
+
+// ─── Un HH:MM que en realidad es una DURACIÓN ────────────────────────────────
+//
+// «1:15 at least» son «me falta al menos una hora y cuarto», no la una y cuarto. Lo escribió
+// la misma clienta del caso de arriba, viniendo andando, y recibió «We're not open at 01:15».
+//
+// La lista va ENUMERADA y los marcadores tienen que estar PEGADOS al HH:MM (12 caracteres a
+// cada lado). Nada de un detector difuso de duraciones: «around 3:00» o «about 3:00» son
+// horas de reloj con un marcador temporal delante —están en HORA_SUELTA_MARCADORES— y un
+// «aproximadamente» genérico se las llevaría por delante.
+//
+// EXENCIÓN DECLARADA, porque esto hace INVISIBLE una hora y eso también lo miran las redes:
+// «te lo dejo a las 10:00 al menos» dejaría de verse. Es una frase que nadie escribe —ni el
+// modelo ni una clienta— y el precio de no tenerlo lo pagó ella tres veces en un día.
+const DURACION_PEGADA = ['al menos', 'at least', 'como minimo', 'como mínimo', 'por lo menos', 'mas o menos'];
+function esDuracionNoHora(texto, indice, coincidencia) {
+    const antes = normalizeText(String(texto).slice(Math.max(0, indice - 12), indice));
+    const despues = normalizeText(String(texto).slice(indice + coincidencia.length, indice + coincidencia.length + 12));
+    return DURACION_PEGADA.some(m => antes.includes(normalizeText(m)) || despues.includes(normalizeText(m)));
+}
+
+// Horas HH:MM que MENCIONA un texto, en 24 h ('9:30' → '09:30', '1:00 pm' → '13:00').
+// El contexto que decide la franja es LOCAL —los 12 caracteres de después— y no el mensaje
+// entero: con el mensaje entero, «mañana a las 4:00» leería el «mañana» de «tomorrow» como
+// franja horaria y devolvería las 04:00.
 function extractClockHours(text) {
+    const src = String(text || '');
     const re = new RegExp(HORA_HHMM_SRC, 'g');
-    return [...String(text || '').matchAll(re)].map((m) => {
+    const out = [];
+    for (const m of src.matchAll(re)) {
+        if (esDuracionNoHora(src, m.index, m[0])) continue;
         const [h, min] = m[0].split(':');
-        return `${String(Number(h)).padStart(2, '0')}:${min}`;
-    });
+        const hh = resolverHora12h(h, src.slice(m.index + m[0].length, m.index + m[0].length + 12));
+        if (hh === null) continue;
+        out.push(`${String(hh).padStart(2, '0')}:${min}`);
+    }
+    return out;
 }
 
 // ─── Hora SUELTA, sin minutos ────────────────────────────────────────────────
@@ -2564,11 +2646,14 @@ function extractLooseClockHours(text) {
             const h = Number(n);
             // 0 y >23 no son horas de reloj; y las 0:00 no las propone nadie en un salón.
             if (h < 1 || h > 23) continue;
-            // MISMA regla de 12h que normalizeHora (bot.js): "a las 5" en un salón que cierra
-            // a las 19:00 son las 17:00, no las 5 de la mañana. Si una de las dos cambia, la
-            // otra tiene que cambiar con ella — viven separadas porque helpers no puede
-            // importar bot.js, no porque sean decisiones distintas.
-            horas.push(`${String(h >= 1 && h <= 8 ? h + 12 : h).padStart(2, '0')}:00`);
+            // La MISMA regla que normalizeHora y que extractClockHours, y ahora de verdad:
+            // `resolverHora12h` es la función única desde el 20/08/2026. Aquí el contexto que
+            // decide la franja es lo que va JUSTO DETRÁS del número («at 3 pm»), no el
+            // mensaje entero — mismo criterio que arriba y por el mismo motivo.
+            const desde = m.index + m[0].length;
+            const hh24 = resolverHora12h(h, t.slice(desde, desde + 12));
+            if (hh24 === null) continue;
+            horas.push(`${String(hh24).padStart(2, '0')}:00`);
         }
     }
     return horas;
@@ -5088,6 +5173,7 @@ module.exports = {
     detectNoPreferenceSignal,
     detectNoStylistPreference,
     HORA_HHMM_SRC,
+    resolverHora12h,
     extractClockHours,
     extractLooseClockHours,
     extractMentionedHours,

@@ -13,7 +13,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteMencion, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, botOfferableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteMencion, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, botOfferableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, resolverHora12h, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -1061,18 +1061,19 @@ function normalizeHora(h) {
 
     if (/mediodia|mediodía/.test(s)) return '13:00';
 
-    const esTarde = /tarde|noche|pm/.test(s);
-    const esMañana = /ma[ñn]ana|morning|am/.test(s);
-
     const m = s.match(/(\d{1,2})(?:[:.h](\d{2}))?/);
     if (!m) return null;
 
-    let hh = parseInt(m[1], 10);
-    let mm = m[2] ? parseInt(m[2], 10) : (/y\s*media/.test(s) ? 30 : 0);
+    const mm = m[2] ? parseInt(m[2], 10) : (/y\s*media/.test(s) ? 30 : 0);
 
-    // Convertir 12h/coloquial a 24h
-    if (esTarde && hh < 12) hh += 12;
-    else if (!esMañana && hh >= 1 && hh <= 8) hh += 12; // "las 4" → 16:00, "las 7" → 19:00
+    // El tramo 12h→24h lo decide `resolverHora12h` (helpers), que es LA regla y la única.
+    // Estuvo escrita tres veces y solo dos coincidían: la tercera, extractClockHours, no
+    // aplicaba ninguna, y por eso el mismo «1:00 pm» valía 01:00 para el gate de horario y
+    // 13:00 para las redes de este fichero. Aquí se le pasa la cadena ENTERA como contexto
+    // —que en este camino ya es solo una expresión de hora («las 4 y media de la tarde»)—,
+    // y lo que se queda en bot.js es lo coloquial que aquella no tiene por qué saber.
+    const hh = resolverHora12h(m[1], s);
+    if (hh === null) return null;
 
     return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
@@ -1408,7 +1409,10 @@ function respondsWithInventedSlots(respuesta, availableSlots, horasHorario = nul
     // Las HH:MM y las sueltas con marcador ("around 10, 11, or 12"). El normalizeHora de
     // encima se mantiene: es el que convierte "5:30" en 17:30 y hace que case con un hueco
     // real de la tarde. Sin él, quitarlo sería marcar como inventado un hueco que existe.
-    const mentioned = extractMentionedHours(respuesta).map(normalizeHora).filter(Boolean);
+    // `extractMentionedHours` YA devuelve 24 h desde el 20/08/2026 (resolverHora12h, la regla
+    // única). Volver a pasarle normalizeHora la aplicaría DOS veces y «at 5 am» —que sale
+    // correcto como 05:00— se convertiría en 17:00. Una regla, una aplicación.
+    const mentioned = extractMentionedHours(respuesta).filter(Boolean);
     if (mentioned.length === 0) return false;
     if (soloDeclaraHorarioDelSalon(respuesta, mentioned, horasHorario)) return false;
     const realSlots = Array.isArray(availableSlots) ? availableSlots : [];
@@ -1525,7 +1529,10 @@ function proposesTimingWithoutService(respuesta, session, horasHorario) {
     if (session.pendingLargoCategory || session.pendingCorteGenero
         || session.pendingCorteMujerTipo || session.pendingCorteNinoTipo) return false;
     const t = normalizeText(respuesta);
-    const horas = extractMentionedHours(respuesta).map(normalizeHora).filter(Boolean);
+    // `extractMentionedHours` YA devuelve 24 h desde el 20/08/2026 (resolverHora12h, la regla
+    // única). Volver a pasarle normalizeHora la aplicaría DOS veces y «at 5 am» —que sale
+    // correcto como 05:00— se convertiría en 17:00. Una regla, una aplicación.
+    const horas = extractMentionedHours(respuesta).filter(Boolean);
     if (!horas.length && !TIMING_MARKERS.some(re => re.test(t))) return false;
     // Decir el horario del salón NO es proponer un hueco, y es una respuesta legítima sin
     // servicio: "¿a qué hora abrís?" no exige saber a qué viene. Misma exención que la red
@@ -1546,7 +1553,10 @@ function proposesTimingWithoutService(respuesta, session, horasHorario) {
 // comercial ("abrimos de 10:00 a 19:00") marcará esas horas como no respaldadas. El coste
 // es un mensaje honesto de más; el coste de no mirar es una cita perdida en silencio.
 function unbackedBookingClaim(respuesta, horasReales) {
-    const mencionadas = extractMentionedHours(respuesta).map(normalizeHora).filter(Boolean);
+    // `extractMentionedHours` YA devuelve 24 h desde el 20/08/2026 (resolverHora12h, la regla
+    // única). Volver a pasarle normalizeHora la aplicaría DOS veces y «at 5 am» —que sale
+    // correcto como 05:00— se convertiría en 17:00. Una regla, una aplicación.
+    const mencionadas = extractMentionedHours(respuesta).filter(Boolean);
     if (!mencionadas.length) return [];
     const reales = new Set((Array.isArray(horasReales) ? horasReales : []).map(normalizeHora).filter(Boolean));
     return [...new Set(mencionadas.filter(h => h && !reales.has(h)))];
@@ -3755,7 +3765,10 @@ function textoYaPideNombre(texto) {
 // función compartida y no una copia.
 function mencionaLoRetenido(texto, slot, horasHorario = null) {
     if (!slot || !texto) return false;
-    const mencionadas = extractMentionedHours(texto).map(normalizeHora).filter(Boolean);
+    // `extractMentionedHours` YA devuelve 24 h desde el 20/08/2026 (resolverHora12h, la regla
+    // única). Volver a pasarle normalizeHora la aplicaría DOS veces y «at 5 am» —que sale
+    // correcto como 05:00— se convertiría en 17:00. Una regla, una aplicación.
+    const mencionadas = extractMentionedHours(texto).filter(Boolean);
     if (mencionadas.length && !soloDeclaraHorarioDelSalon(texto, mencionadas, horasHorario)) {
         const horaRetenida = normalizeHora(slot.hora);
         if (horaRetenida && mencionadas.includes(horaRetenida)) return true;
@@ -4013,7 +4026,10 @@ function residuoCambiaLaCita(texto, senal, session, slot, catalogo = []) {
     }
     if (!HORARIO_SENALES.has(senal)) return false;
     if (!slot) return false;
-    const horas = extractMentionedHours(texto).map(normalizeHora).filter(Boolean);
+    // `extractMentionedHours` YA devuelve 24 h desde el 20/08/2026 (resolverHora12h, la regla
+    // única). Volver a pasarle normalizeHora la aplicaría DOS veces y «at 5 am» —que sale
+    // correcto como 05:00— se convertiría en 17:00. Una regla, una aplicación.
+    const horas = extractMentionedHours(texto).filter(Boolean);
     const horaRetenida = normalizeHora(slot.hora);
     if (horas.length) return !(horaRetenida && horas.includes(horaRetenida));
     // Sin hora mencionada decide la fecha; un día suelto («el jueves») no se resuelve a fecha
