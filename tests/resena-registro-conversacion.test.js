@@ -1,11 +1,19 @@
-// La petición de reseña deja su nota en el buzón de pending-outbound: cuando la clienta
-// conteste («gracias» / «¿dónde la dejo?»), el turno siguiente drena la nota al historial
-// y el bot sabe a qué contesta. Es el arreglo del recordatorio (a741fd5, H1) aplicado al
-// segundo worker que escribe sin conversación viva. Sin la nota, el bot contestaba a
-// ciegas — la misma ceguera de Barbora, con la reseña en vez del recordatorio.
+// La petición de reseña deja rastro en los DOS sitios que la ven, igual que el
+// recordatorio (registrarRecordatorioEnviado, a741fd5 · H1):
 //
-// Visto fallar sin el arreglo (17/08/2026): review.js sin la llamada a
-// notePendingOutboundTurn pone en rojo el test 1 («la nota no está en el buzón»).
+//   · `messages`, que es el PANEL. Auditoría del 20/08/2026: 60 reseñas marcadas
+//     `resena_enviada` desde el 01/08 y CERO filas en `messages` — ni una en toda la
+//     historia de la tabla. Se enviaron de verdad, así que eran 60 WhatsApps que la
+//     clienta recibió y que no existían para quien abría su ficha.
+//   · el buzón de pending-outbound, para que el turno siguiente lo drene al historial y
+//     el bot no conteste a ciegas a un «gracias» / «¿dónde la dejo?». Esta mitad ya
+//     estaba desde el 17/08.
+//
+// Visto fallar sin el arreglo (cp previo, 20/08/2026), dos sabotajes MEDIDOS:
+//   · quitar la llamada a registrarResenaEnviada → 5 bloques en rojo (las dos mitades);
+//   · dejar la llamada y quitar solo el `saveMessage` de dentro → 3 bloques en rojo,
+//     todos de `messages`, y ninguno de la nota. Es lo que demuestra que las dos mitades
+//     se prueban por separado: con una sola de las dos, el sabotaje que faltaba no se ve.
 process.env.TZ = 'Europe/Madrid';
 
 const assert = require('assert');
@@ -15,6 +23,8 @@ const estado = {
     modoEnvio: 'texto',
     envioLanza: null,
     enviado: null,
+    guardados: [],
+    saveLanza: null,
 };
 
 function stub(ruta, exports) {
@@ -30,6 +40,11 @@ stub('../services/db', {
     getConfigValue: async (_o, k) => (k === 'horas_resena' ? 2 : null),
     getCompletedAppointmentsForReview: async () => [APT],
     updateAppointment: async () => ({ id: 'apt-1' }),
+    saveMessage: async (orgId, msg) => {
+        if (estado.saveLanza) throw new Error(estado.saveLanza);
+        estado.guardados.push({ orgId, ...msg });
+        return 1;
+    },
 });
 stub('../services/outbound', {
     resolveOutboundClient: () => null,
@@ -43,6 +58,17 @@ stub('../services/channel-health', { noteSendResult: async () => {} });
 stub('../services/admin-alerts', { alertOnce: async () => {} });
 stub('../services/org-registry', { getOrgType: () => estado.orgType, SANTE_ORG_ID: 'org-sante' });
 stub('../services/seguimiento', { prepararOfertaTrasResena: async () => null, confirmarOfertaTrasResena: async () => {} });
+
+// El logger se envuelve, no se sustituye: solo hace falta capturar los `error` para poder
+// afirmar que un fallo de registro NO es silencioso.
+const loggerPath = require.resolve('../lib/logger');
+const loggerReal = require(loggerPath);
+require.cache[loggerPath].exports = {
+    ...loggerReal,
+    info: () => {}, warn: () => {},
+    error: (evento, datos) => { estado.errores.push({ evento, datos }); },
+};
+estado.errores = [];
 
 const review = require('../services/review');
 const po = require('../services/pending-outbound');
@@ -60,7 +86,10 @@ const clienteFalso = {
 
 function reset(parches = {}) {
     po._resetPendingOutbound();
-    Object.assign(estado, { orgType: 'salon', modoEnvio: 'texto', envioLanza: null, enviado: null }, parches);
+    Object.assign(estado, {
+        orgType: 'salon', modoEnvio: 'texto', envioLanza: null, enviado: null,
+        guardados: [], saveLanza: null, errores: [],
+    }, parches);
 }
 
 let fallos = 0;
@@ -105,6 +134,57 @@ async function test(nombre, fn) {
         assert.strictEqual(r.ok, false);
         assert.strictEqual(po.drainPendingOutboundTurns('org-sante', '34600111222', 60000).length, 0,
             'quedó nota de un mensaje que nunca salió');
+    });
+
+    // ── El PANEL: `messages`. Las 60 que no existían (auditoría 20/08/2026) ────────────
+
+    await test('texto libre: el saliente queda en messages con el LITERAL que salió', async () => {
+        reset();
+        const r = await review.sendReviewForAppointment('org-sante', 'apt-1', { client: clienteFalso });
+        assert.strictEqual(r.ok, true, JSON.stringify(r));
+        assert.strictEqual(estado.guardados.length, 1, 'la petición de reseña no se escribió en messages');
+        assert.strictEqual(estado.guardados[0].direccion, 'saliente');
+        assert.strictEqual(estado.guardados[0].telefono, '34600111222');
+        assert.strictEqual(estado.guardados[0].contenido, estado.enviado.texto,
+            'texto libre: se guarda EL LITERAL enviado, como en el recordatorio');
+    });
+
+    await test('plantilla: messages lleva el prefijo [plantilla …] y la nota NO (mismo formato que el recordatorio)', async () => {
+        reset({ modoEnvio: 'template' });
+        const r = await review.sendReviewForAppointment('org-sante', 'apt-1', { client: clienteFalso });
+        assert.strictEqual(r.ok, true, JSON.stringify(r));
+        assert.strictEqual(estado.guardados.length, 1);
+        assert.ok(estado.guardados[0].contenido.startsWith('[plantilla sante_solicitud_resena] '),
+            `no afirmamos los bytes de Meta: ${estado.guardados[0].contenido}`);
+        const turnos = po.drainPendingOutboundTurns('org-sante', '34600111222', 60000);
+        assert.ok(!turnos[0].content.startsWith('[plantilla'),
+            'al historial del modelo va el contenido a secas: el prefijo es para el panel');
+    });
+
+    await test('CONTROL San Remo: mismo envío, nada en messages (regla de oro)', async () => {
+        reset({ orgType: 'restaurant' });
+        const r = await review.sendReviewForAppointment('org-sante', 'apt-1', { client: clienteFalso });
+        assert.strictEqual(r.ok, true, JSON.stringify(r));
+        assert.strictEqual(estado.guardados.length, 0, 'su panel no cambia ni un byte');
+    });
+
+    await test('CONTROL honestidad: si el envío revienta, tampoco se escribe en messages', async () => {
+        reset({ envioLanza: 'canal caído' });
+        const r = await review.sendReviewForAppointment('org-sante', 'apt-1', { client: clienteFalso });
+        assert.strictEqual(r.ok, false);
+        assert.strictEqual(estado.guardados.length, 0,
+            'quedó en el panel un mensaje que nunca salió');
+    });
+
+    await test('si messages está caída, la reseña sigue contando como ENVIADA — y el fallo se loguea', async () => {
+        reset({ saveLanza: 'messages caída' });
+        const r = await review.sendReviewForAppointment('org-sante', 'apt-1', { client: clienteFalso });
+        assert.strictEqual(r.ok, true, 'desmarcar sería reenviarle la reseña dentro de 5 minutos');
+        assert.strictEqual(estado.guardados.length, 0);
+        assert.ok(estado.errores.some(x => x.evento === 'resena_registro_mensaje_fallido'),
+            'y no es silencioso: queda logueado');
+        assert.strictEqual(po.drainPendingOutboundTurns('org-sante', '34600111222', 60000).length, 1,
+            'el fallo de una mitad no puede llevarse la otra: la nota del buzón sigue');
     });
 
     if (fallos) { console.error(`\n${fallos} tests en rojo`); process.exit(1); }

@@ -18,6 +18,59 @@ const logger = require('../lib/logger');
 // petición de reseña» y meterla en el historial confundiría más que ayudar.
 const TTL_NOTA_RESENA_MS = 48 * 60 * 60 * 1000;
 
+/**
+ * Deja constancia de una petición de reseña YA ENVIADA en los DOS sitios que la ven, que es
+ * exactamente lo que hace `registrarRecordatorioEnviado` (reminder.js) — y hasta hoy este
+ * worker solo hacía la mitad.
+ *
+ * Medido el 20/08/2026: 60 peticiones de reseña marcadas `resena_enviada` desde el 01/08 y
+ * CERO filas en `messages`. Ni una, en toda la historia de la tabla. Se enviaron de verdad
+ * (`marcarResenaEnviada` solo corre con resultado 'enviado'), así que son 60 WhatsApps que
+ * la clienta recibió y que no existen en el panel: quien abre su ficha no sabe que le
+ * pedimos una reseña hace dos horas, y un «ya la puse» aparece como primer mensaje de la
+ * nada. Es el hecho 1 de la cabecera agravado — allí `messages` no registra lo que escriben
+ * las dueñas desde el móvil; aquí no registraba lo que escribía el propio sistema.
+ *
+ *   1. `messages` (panel, y con él `last_message_at`). Mismo formato que el recordatorio,
+ *      sin inventar uno nuevo: texto libre se guarda literal; plantilla va prefijada con su
+ *      nombre — `mensaje` lleva el mismo contenido por diseño (nombre y enlace son los dos
+ *      params), pero los bytes que Meta renderiza no los hemos visto y no se afirman.
+ *      Efecto lateral asumido, el mismo que allí: `saveMessage` refresca
+ *      `conversations.last_message_at`, que auto-return usa como «última actividad».
+ *   2. El historial de la conversación, vía pending-outbound. Ya estaba, y no se toca: el
+ *      prompt se construye SOLO de session.history, así que escribir en `messages` no cura
+ *      esa ceguera. Al historial va `mensaje` A SECAS (un prefijo técnico despistaría al
+ *      modelo), también en modo plantilla.
+ *
+ * Lo de atrás NO se rellena: no existe el texto exacto de cada una de las 60 y fabricarlo
+ * sería escribir en el panel un mensaje que nadie ha leído (regla 3).
+ *
+ * Solo salón, gateado por tipo de org (regla de oro: San Remo no cambia ni un byte).
+ * Nunca lanza: el mensaje ya salió, y no poder registrarlo no puede impedir el marcado —
+ * desmarcar es reenviar cada cinco minutos.
+ */
+async function registrarResenaEnviada(orgId, telefono, { mensaje, decision }) {
+    if (getOrgType(orgId) !== 'salon') return;
+    try {
+        // require perezoso, como en reminder.js: el destructure de la cabecera se congela al
+        // cargar el módulo y los tests herméticos reemplazan db entero en require.cache.
+        const { saveMessage } = require('./db');
+        if (typeof saveMessage === 'function') {
+            const contenido = decision?.mode === 'template'
+                ? `[plantilla ${decision.template?.name || 'resena'}] ${mensaje}`
+                : mensaje;
+            await saveMessage(orgId, { telefono, contenido, direccion: 'saliente' });
+        }
+    } catch (e) {
+        logger.error('resena_registro_mensaje_fallido', { orgId, telefono, error: e.message });
+    }
+    try {
+        notePendingOutboundTurn(orgId, telefono, mensaje, { ttlMs: TTL_NOTA_RESENA_MS });
+    } catch (e) {
+        logger.error('resena_registro_historial_fallido', { orgId, telefono, error: e.message });
+    }
+}
+
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 let waClients = null;
 
@@ -107,19 +160,11 @@ async function sendReviewMessage(orgId, { telefono, language, waJid }, { mensaje
         // Telegram, y sin await el worker sigue adelante sin saber si salió. Es el mismo
         // await que se puso en alertOnce cuando se arreglaron los avisos que no llegaban.
         await noteSendResult(orgId, { ok: true });
-        // El bot VE lo que salió: la nota va al buzón y el próximo turno la drena al
-        // historial ANTES del mensaje de la clienta (el arreglo del recordatorio, a741fd5)
-        // — sin ella, un «¿dónde os dejo la reseña?» se contesta a ciegas. El texto va a
-        // secas (un prefijo técnico solo despistaría al modelo) y también en modo
-        // plantilla: `mensaje` es su equivalente en texto libre. Solo salón (regla de
-        // oro), y nunca lanza: el mensaje ya salió.
-        if (getOrgType(orgId) === 'salon') {
-            try {
-                notePendingOutboundTurn(orgId, telefono, mensaje, { ttlMs: TTL_NOTA_RESENA_MS });
-            } catch (e) {
-                logger.error('resena_registro_historial_fallido', { orgId, telefono, error: e.message });
-            }
-        }
+        // El panel y el bot VEN lo que salió. Las dos mitades viven juntas en
+        // registrarResenaEnviada por el mismo motivo que en el recordatorio: son la misma
+        // decisión («esto ya se envió, que conste»), y separarlas es cómo la de `messages`
+        // llevaba desde siempre sin existir mientras la del buzón sí estaba.
+        await registrarResenaEnviada(orgId, telefono, { mensaje, decision });
         return 'enviado';
     } catch (e) {
         logger.error('review_error_envio', { orgId, telefono, chatId, error: e.message });
