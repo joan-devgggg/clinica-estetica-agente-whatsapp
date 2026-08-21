@@ -3014,8 +3014,18 @@ async function getRecentBroadcastSendAt(orgId, telefono, dentroDeMs = RESPUESTA_
 //     entonces el INSERT falla con 42P01 y aquí se avisa UNA vez por proceso y se calla.
 //     Sin esa guarda, cada intervención escribiría un error idéntico en el log de
 //     producción y el ruido acabaría tapando lo que sí importa.
+//
+// Y una cuarta, que se descubrió mirando las primeras filas: EL ARNÉS NO ESCRIBE AQUÍ.
+// `verify:robustez:llm` conduce conversaciones contra la Supabase REAL —es lo que le da
+// valor— así que sus intervenciones aterrizaban en la misma tabla que las de producción. Las
+// TRES primeras filas de la 044 eran suyas y las cero restantes de nadie: una tabla que se
+// consulta para decidir si el embudo dispara demasiado no puede llevar dentro las corridas
+// de quien lo está probando. El criterio es `motivoNoEnviable === 'prueba'`, la MISMA
+// función que excluye esos teléfonos de la audiencia de campañas: el rango `999…` está sin
+// asignar en E.164 y no puede ser de nadie.
 let _avisadoEscaleraSinTabla = false;
 async function registrarIntervencionEscalera(orgId, datos = {}) {
+    if (motivoNoEnviable(datos.telefono) === 'prueba') return false;
     try {
         const { error } = await supabase.from('escalera_intervenciones').insert({
             organization_id: resolveOrg(orgId),

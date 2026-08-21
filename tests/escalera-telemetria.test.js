@@ -17,6 +17,7 @@
  * Sabotajes MEDIDOS (cp previo, 20/08/2026):
  *   · que lance como cualquier otra escritura del fichero (throw en vez de return false) .. 4 rojos
  *   · quitar la guarda `_avisadoEscaleraSinTabla` (un aviso por intervención) ........... 1 rojo
+ *   · quitar la guarda del arnés (21/08/2026) ......................................... 2 rojos
  */
 process.env.TZ = 'Europe/Madrid';
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
@@ -155,4 +156,40 @@ test('un error DISTINTO sí se loguea cada vez: no lo tapa la guarda del aviso',
     await db.registrarIntervencionEscalera(SANTE_ORG_ID, DATOS);
     await db.registrarIntervencionEscalera(SANTE_ORG_ID, DATOS);
     assert.strictEqual(logs.filter(l => l.evento === 'escalera_telemetria_no_escrita').length, 2);
+});
+
+// ─── 4 · El arnés no escribe en la telemetría de producción ──────────────────
+
+test('REGRESIÓN · una conversación del ARNÉS no deja fila', async () => {
+    // Las TRES primeras filas de la 044 eran del arnés y las cero restantes de nadie.
+    // `verify:robustez:llm` conduce contra la Supabase REAL —es lo que le da valor— así que
+    // sus intervenciones aterrizaban en la misma tabla que se consulta para decidir si el
+    // embudo dispara demasiado.
+    reset();
+    for (const tel of ['9996001009', '9996001010', '9996001027', '999123456789']) {
+        assert.strictEqual(await db.registrarIntervencionEscalera(SANTE_ORG_ID, { ...DATOS, telefono: tel }), false,
+            `${tel} es del arnés: no puede escribir`);
+    }
+    assert.strictEqual(inserts.length, 0, `el arnés escribió ${inserts.length} filas en producción`);
+});
+
+test('CONTROL · una conversación real sigue escribiendo, y una sin teléfono también', async () => {
+    reset();
+    await db.registrarIntervencionEscalera(SANTE_ORG_ID, { ...DATOS, telefono: '34600111222' });
+    await db.registrarIntervencionEscalera(SANTE_ORG_ID, { ...DATOS, telefono: '380509321253' });
+    // Sin teléfono NO se descarta: es una intervención real cuya fila se pierde si se filtra.
+    await db.registrarIntervencionEscalera(SANTE_ORG_ID, { ...DATOS, telefono: null });
+    assert.strictEqual(inserts.length, 3, 'las tres tienen que escribirse');
+});
+
+test('el criterio es el MISMO que excluye al arnés de las campañas', async () => {
+    // Una segunda lista de prefijos aquí se separaría de la de helpers en el primer cambio,
+    // y entonces el arnés volvería a ensuciar la tabla sin que nada lo dijera.
+    const { motivoNoEnviable } = require('../services/helpers');
+    assert.strictEqual(motivoNoEnviable('9996001009'), 'prueba');
+    assert.strictEqual(motivoNoEnviable('34600111222'), null);
+    const src = require('fs').readFileSync(require.resolve('../services/db.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function registrarIntervencionEscalera'));
+    assert.ok(/motivoNoEnviable/.test(fn.slice(0, 400)),
+        'la guarda tiene que salir de motivoNoEnviable, no de un prefijo escrito aquí');
 });
