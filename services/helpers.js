@@ -1892,6 +1892,74 @@ function extractStylistFromText(text, teamList, opts = {}) {
     return resolveStylistMention(text, teamList, opts).stylist;
 }
 
+// ─── El nombre de una estilista escrito en CIRÍLICO ──────────────────────────
+//
+// `stylists.name` está en LATÍN («Veronika», «Irina», «Olga») y la mitad de la clientela
+// escribe en cirílico. Los dos alfabetos no comparten ni un codepoint, así que ni la
+// pasada exacta ni la de Levenshtein pueden verse: medido el 21/08/2026,
+// `resolveStylistMention('Вероника', roster)` devolvía **null** para las OCHO del equipo.
+//
+// La tabla es ENUMERADA, nunca un normalizador difuso: es la misma doctrina que los typos
+// de `largoKeywords`. Cubre ruso y ucraniano (і ї є ґ incluidas).
+const TRANSLIT_CIRILICO = {
+    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'ґ': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
+    'є': 'ie', 'ж': 'zh', 'з': 'z', 'и': 'i', 'і': 'i', 'ї': 'yi', 'й': 'y', 'к': 'k',
+    'л': 'l', 'м': 'm', 'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't',
+    'у': 'u', 'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+    'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+};
+const TIENE_CIRILICO_RE = /[\u0400-\u04FF\u0500-\u052F]/;
+
+// Devuelve null si no hay ni una letra cirílica: así quien llama sabe que no hay una
+// segunda forma que probar, en vez de recibir el mismo texto y probarlo dos veces.
+function translitCirilico(texto) {
+    const s = String(texto || '').toLowerCase().normalize('NFC');
+    if (!TIENE_CIRILICO_RE.test(s)) return null;
+    let out = '';
+    for (const ch of s) out += (TRANSLIT_CIRILICO[ch] !== undefined ? TRANSLIT_CIRILICO[ch] : ch);
+    return out;
+}
+
+// ¿Este texto es el NOMBRE DE UNA DEL EQUIPO? Pregunta distinta de la que contesta
+// `resolveStylistMention`, y por eso no comparte su umbral:
+//
+//   · allí se decide A QUIÉN quiere la clienta, y equivocarse por una letra es barato
+//     («Veronca» → Veronika);
+//   · aquí se decide SI ESO ES SU APELLIDO, y un falso positivo le niega su propio nombre.
+//
+// Medido sobre las 763 fichas con nombre de Sante (21/08/2026): con la resolución completa
+// (fuzzy incluido) se rechazaban NUEVE apellidos y solo uno era el averiado —«Natalla»,
+// «Olya», «Luisa», «Ilina» y «María Martín» son apellidos reales que caían a distancia 1-2
+// de Natalia / Olga / Larisa / Irina—. Exigiendo ACIERTO se rechaza UNO: el averiado.
+//
+// La excepción es el cirílico, donde sí se admite la resolución entera: la distancia que
+// queda ahí no es una errata de la clienta sino la imprecisión de la propia tabla de
+// transliteración («Юлия» → «yuliya» contra el «Yulia» del roster). Falsos positivos
+// conocidos de esa mitad, ninguno presente en las 763: «Татьяна» (→ Tetiana) y «Лариска»
+// (→ Larisa). Los dos son NOMBRES DE PILA, y esta guarda solo mira el APELLIDO.
+function mencionaEstilistaDelEquipo(texto, teamList) {
+    if (!texto || !teamList?.length) return false;
+    if (resolveStylistMention(texto, teamList, { assumePersonName: true }).status === 'exact') return true;
+    const latino = translitCirilico(texto);
+    return !!(latino && resolveStylistMention(latino, teamList, { assumePersonName: true }).stylist);
+}
+
+// ¿Este texto es la respuesta a «¿qué largo tienes?» y no un nombre?
+//
+// Se mira TOKEN A TOKEN porque el daño real llegó por el apellido: «Pelin Long» y
+// «Alicia Medio» son un nombre de pila bueno con la respuesta del largo pegada detrás.
+// Medido sobre las 763 fichas con nombre: casan TRES, y las tres son las averiadas
+// («Короткие Вероника», «Pelin Long», «Alicia Medio»). Cero apellidos reales — «Cortés»,
+// «Cortez», «Longoria», «Medina» y «Mediano» dan null.
+//
+// Coste declarado: una clienta que de verdad se apellide «Long» o «Corto» tiene que
+// repetirlo. Eso es una pregunta de más; lo otro es saludarla por un largo de pelo en
+// todos los recordatorios de aquí en adelante.
+function esRespuestaDeLargo(texto) {
+    if (!texto) return false;
+    return String(texto).split(/\s+/).filter(Boolean).some(tok => extractLargoPelo(tok) !== null);
+}
+
 // ─── Segunda reserva en la misma conversación (Sante) ───────────────────────
 // Tras confirmar una cita, la clienta puede querer reservar OTRA (para ella o para
 // un acompañante). Detectamos esa intención para reiniciar el flujo de reserva.
@@ -2113,7 +2181,12 @@ function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], tea
             // ("5 августа" no llega aquí: este fallback exige una sola palabra.)
             const esMesEnTurnoDeFecha = opts.datePreferenceAsked
                 && MESES_RU_UK_AMBIGUOS.has(normalizeText(word));
-            if (!esMesEnTurnoDeFecha && isValidName(word) && word.length >= 3) result.nombre = word;
+            // «Короткие» / «Long» / «Medio» son la respuesta a «¿qué largo tienes?», no
+            // cómo se llama. Aquí NO se mira el equipo: 51 de las 763 fichas de Sante
+            // tienen de NOMBRE DE PILA el de una estilista (Yulia, Natalia, Olga…), así
+            // que esa guarda solo tiene sentido en el apellido, unas líneas más abajo.
+            if (!esMesEnTurnoDeFecha && !esRespuestaDeLargo(word)
+                    && isValidName(word) && word.length >= 3) result.nombre = word;
         }
         if (result.nombre && result.nombre !== 'desconocido') {
             result.nombre = filterServiceKeyword(result.nombre) || undefined;
@@ -2122,12 +2195,26 @@ function extractQuickDataSante(text, partialData = {}, servicesCatalog = [], tea
         // Ya tenemos nombre de pila pero el bot le acaba de pedir el apellido
         // explícitamente (ver proximoPaso en openai.js). Si este turno es una
         // respuesta corta (1-2 palabras) que parece un apellido válido y no es
-        // ni un servicio ni una estilista, se completa el nombre.
+        // ni un servicio, ni un largo, ni una estilista, se completa el nombre.
+        //
+        // ⚠️ ESTAS GUARDAS ESTUVIERON MUERTAS. `servicesCatalog` y `teamList` son
+        // parámetros, y el ÚNICO call site de producción (bot.js) los pasaba VACÍOS: con
+        // `[]`, `isServiceName` sale por su primera línea y `resolveStylistMention`
+        // devuelve NONE. Estaban escritas, tenían su comentario, y no se ejecutó ninguna
+        // ni una vez. Lo que costó, contado sobre las 763 fichas con nombre de Sante
+        // (21/08/2026): NUEVE apellidos que son la respuesta a otra pregunta —
+        //
+        //     Ihab Lavar · Gabriela Completo · Karolina Secado · Karina Tratamiento
+        //     Mamen Peinado · Aurora Blond · Alicia Medio · Pelin Long
+        //     Короткие Вероника
+        //
+        // Si alguien vuelve a pasar `[]` aquí, esto vuelve entero y en silencio.
         const trimmed = text.trim();
         const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
         if (wordCount >= 1 && wordCount <= 2 && isValidName(trimmed)
+                && !esRespuestaDeLargo(trimmed)
                 && !isServiceName(trimmed, servicesCatalog)
-                && !resolveStylistMention(trimmed, teamList, { assumePersonName: true }).stylist) {
+                && !mencionaEstilistaDelEquipo(trimmed, teamList)) {
             const completado = filterServiceKeyword(trimmed);
             if (completado) result.nombre = `${result.nombre} ${completado}`;
         }
@@ -5237,6 +5324,9 @@ module.exports = {
     getMissingFieldsSante,
     hasApellido,
     extractQuickDataSante,
+    esRespuestaDeLargo,
+    mencionaEstilistaDelEquipo,
+    translitCirilico,
     extractDateSignalSante,
     detectNoPreferenceSignal,
     detectNoStylistPreference,

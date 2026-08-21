@@ -13,7 +13,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteMencion, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, botOfferableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, resolverHora12h, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildSinReservaAunMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, esRespuestaDeLargo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteMencion, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, botOfferableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, resolverHora12h, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildSinReservaAunMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -5267,7 +5267,18 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // (preferencia_horaria) vía el reducer idempotente — ya no hay sticky paralelo.
             // stylistQuestionPending: si el turno anterior dejó abierta la pregunta de
             // estilista, "el más cercano" contesta a QUIÉN y no debe tocar la fecha.
-            session.partialData = extractQuickDataSante(sanitized, session.partialData, [], [],
+            // El catálogo y el equipo van DE VERDAD. Estuvieron en `[]` desde que existe
+            // esta llamada, y con `[]` las dos guardas del apellido —«no es un servicio»,
+            // «no es una estilista»— salen por su primera línea sin mirar nada: ocho
+            // fichas de Sante acabaron llamándose «Ihab Lavar», «Karina Tratamiento» o
+            // «Короткие Вероника». Las dos lecturas se hacen SIEMPRE y no bajo una
+            // condición que repita la de la rama: una guarda que se apaga sola en cuanto
+            // esa condición se desvía es exactamente lo que acaba de pasar aquí.
+            // `getAgentConfig` va cacheado 60 s; el equipo es un SELECT por índice.
+            const cfgQuick = await getAgentConfig(orgId);
+            const rosterQuick = await getStylistsByOrg(orgId);
+            session.partialData = extractQuickDataSante(sanitized, session.partialData,
+                cfgQuick?.services || [], rosterQuick,
                 {
                     stylistQuestionPending: !!session.stylistQuestionPending,
                     // Para descartar "августа"/"марта" como nombre cuando son la respuesta a
@@ -7267,6 +7278,13 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     if (k === 'nombre' && orgType === 'salon') {
                         if (isServiceName(v, await loadSvcCatalog())) {
                             logger.info('nombre_llm_es_servicio_descartado', { orgId, nombre: v });
+                            continue;
+                        }
+                        // Y por la misma puerta puede entrar la respuesta al largo: el
+                        // modelo ve «Короткие» contestando una pregunta suya y lo rellena
+                        // como nombre. Misma regla que el camino determinista.
+                        if (esRespuestaDeLargo(v)) {
+                            logger.info('nombre_llm_es_largo_descartado', { orgId, telefono: userPhone, nombre: v });
                             continue;
                         }
                     }
