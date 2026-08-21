@@ -484,8 +484,9 @@ entrada a Color Premium que case `raiz`, y las tres frases vuelven a `null`.
    mujer (3→2) y Reconstrucción (3→2). No está medido — eso es el trabajo.
 3. **Si conviene que el empate no sea la única razón de preguntar.** Hoy la decisión de
    preguntar es un subproducto de cuántas entradas hay, no una regla. Es la misma forma que
-   `REACTIVE_ONLY_CATEGORIES` y `COBERTURA_MECHAS_CLASICAS`: conducta que depende de datos que
-   edita la dueña, sin que ella lo sepa.
+   `REACTIVE_ONLY_CATEGORIES`: conducta que depende de datos que edita la dueña, sin que ella
+   lo sepa. (`COBERTURA_MECHAS_CLASICAS` era el tercer caso de esa familia y se cerró el
+   21/08/2026 llevándose la cobertura al propio catálogo — ver CLAUDE.md.)
 
 **No decidido como «no arreglar»: decidido como «no ahora»**, y con el cambio aceptado en
 firme. Contexto completo del marcado: CLAUDE.md, sección «Dar de baja un servicio».

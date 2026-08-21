@@ -34,10 +34,16 @@ function test(name, fn) {
 // categorías, una entrada sin precio) pero con cifras que no existen en ningún salón: si una
 // de ellas aparece en el prompt es porque se leyó de aquí. Los precios son primos y las
 // duraciones también, para que ni una suma ni un redondeo puedan fabricarlas por accidente.
+//
+// Las coberturas de las mechas clásicas siguen el MISMO truco que los precios: son frases que
+// no diría ningún salón. Desde el 21/08/2026 esa descripción no está en el código sino en
+// `services[].explicacion`, así que si alguien vuelve a meter una tabla en git el prompt
+// diría «media cabeza» donde aquí pone «zona dos de prueba», y sale en rojo con su línea.
+// Una en objeto por idioma y dos en cadena suelta, que son las dos formas admitidas.
 const CATALOGO = [
-    { nombre: 'Mechas 1', precio: 7, duracion: 11, categoria: 'Mechas clásicas' },
-    { nombre: 'Mechas 2', precio: 13, duracion: 17, categoria: 'Mechas clásicas' },
-    { nombre: 'Mechas 3', precio: 19, duracion: 23, categoria: 'Mechas clásicas' },
+    { nombre: 'Mechas 1', precio: 7, duracion: 11, categoria: 'Mechas clásicas', explicacion: 'zona uno de prueba' },
+    { nombre: 'Mechas 2', precio: 13, duracion: 17, categoria: 'Mechas clásicas', explicacion: { es: 'zona dos de prueba', ru: 'ZONA-EN-RUSO' } },
+    { nombre: 'Mechas 3', precio: 19, duracion: 23, categoria: 'Mechas clásicas', explicacion: 'zona tres de prueba' },
     { nombre: 'Mechas Contouring', precio: 29, duracion: 31, categoria: 'Mechas Contouring' },
     { nombre: 'Hombre', precio: 37, duracion: 41, categoria: 'Cortes' },
     { nombre: 'Niño', precio: 43, duracion: 47, categoria: 'Cortes' },
@@ -153,22 +159,40 @@ test('toda duración en minutos sale del catálogo, salvo las declaradas', () =>
 // 3. Los bloques derivados dicen lo que dice el catálogo, no lo que decía la prosa
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('las mechas clásicas se recitan con el precio y la duración del catálogo', () => {
+// La cobertura ya no es prosa de este repo: sale de `services[].explicacion`, el MISMO campo
+// que la pantalla del enlace público pinta debajo del nombre. Es lo que impide que el bot y
+// la página describan el mismo servicio de dos formas distintas — que es lo que estaba a
+// punto de pasar el 21/08/2026, con «delante y rostro» en el catálogo y «solo delante,
+// puntas y rostro» en la tabla que había aquí.
+test('las mechas clásicas se recitan con la cobertura que dice el CATÁLOGO, no una de git', () => {
     const p = prompt();
-    assert.ok(p.includes('Mechas 1 (7€, 11 min) = solo delante, puntas y rostro'));
-    assert.ok(p.includes('Mechas 2 (13€, 17 min) = media cabeza'));
-    assert.ok(p.includes('Mechas 3 (19€, 23 min) = cabeza completa'));
+    assert.ok(p.includes('Mechas 1 (7€, 11 min) = zona uno de prueba'));
+    assert.ok(p.includes('Mechas 2 (13€, 17 min) = zona dos de prueba'), 'el objeto por idioma se resuelve al castellano');
+    assert.ok(p.includes('Mechas 3 (19€, 23 min) = zona tres de prueba'));
+    assert.ok(!p.includes('ZONA-EN-RUSO'), 'el prompt es castellano: no se cuela otro idioma');
 });
 
-// La cobertura no está en ninguna columna del catálogo: es lo único que ese bloque añade.
-// Renombrar una entrada tiene que costarle la DESCRIPCIÓN, nunca el precio — una explicación
-// pegada al servicio equivocado es peor que ninguna (regla 3).
-test('una mechas renombrada pierde su descripción pero conserva su precio', () => {
+// La razón de traer la cobertura al dato, en un solo bloque: viaja CON la entrada, así que
+// renombrar deja de costarle la descripción. Antes la tabla estaba indexada por el nombre
+// normalizado y un renombrado desde el panel la perdía en silencio (regla 5).
+test('una mechas renombrada CONSERVA su cobertura — viaja en la entrada, no en una tabla', () => {
     const renombrado = CATALOGO.map(s => (s.nombre === 'Mechas 2' ? { ...s, nombre: 'Mechas medias' } : s));
     const p = buildSystemPrompt(SANTE_ORG_ID, {}, 'reservar', false, null, cfg({ services: renombrado }));
-    assert.ok(p.includes('Mechas medias (13€, 17 min)'), 'debe seguir diciendo su precio');
-    assert.ok(!p.includes('Mechas medias (13€, 17 min) = media cabeza'), 'no debe heredar la cobertura de otra');
-    assert.ok(p.includes('Mechas 1 (7€, 11 min) = solo delante, puntas y rostro'), 'las demás siguen con la suya');
+    assert.ok(p.includes('Mechas medias (13€, 17 min) = zona dos de prueba'),
+        'renombrar ya no le quita la descripción: va dentro de su propia entrada');
+    assert.ok(p.includes('Mechas 1 (7€, 11 min) = zona uno de prueba'), 'las demás siguen con la suya');
+});
+
+// El otro lado de la misma decisión, y el que protege la regla 3: sin texto escrito NO se
+// compone una descripción y NO se cae a ninguna tabla vieja. La línea se queda con su precio
+// y su duración, que es información verdadera. Si la dueña vacía la explicación es que no
+// quiere que salga; resucitarla desde git sería desobedecerla en silencio.
+test('una mechas SIN explicación sale con su precio y sin descripción inventada', () => {
+    const sinTexto = CATALOGO.map(s => (s.nombre === 'Mechas 2' ? { nombre: s.nombre, precio: s.precio, duracion: s.duracion, categoria: s.categoria } : s));
+    const p = buildSystemPrompt(SANTE_ORG_ID, {}, 'reservar', false, null, cfg({ services: sinTexto }));
+    assert.ok(p.includes('Mechas 2 (13€, 17 min)'), 'debe seguir diciendo su precio');
+    assert.ok(!/Mechas 2 \(13€, 17 min\) =/.test(p), 'no puede aparecer un "=" con una descripción de ninguna parte');
+    assert.ok(!p.includes('media cabeza'), 'y menos aún la que había escrita a mano en git');
 });
 
 // El bloque afirma "el precio no depende del largo". Eso es una afirmación sobre la FORMA del

@@ -738,9 +738,11 @@ function catalogoPublico(servicios = [], { clavePara = null, nombrePara = null, 
 //
 // Misma doctrina que `solo_complemento` y por el mismo motivo: la categoría la edita la
 // dueña sobre el JSONB, y una tabla del código indexada por su nombre deja de casar el día
-// que la renombre — en silencio, que es lo caro (regla 5). Ya hay dos así en el repo, las
-// dos anotadas como fragilidad: `REACTIVE_ONLY_CATEGORIES` y `COBERTURA_MECHAS_CLASICAS`
-// (`openai.js`), que es justo la explicación de las mechas clásicas escrita a mano en git.
+// que la renombre — en silencio, que es lo caro (regla 5). `REACTIVE_ONLY_CATEGORIES` sigue
+// siendo así y está anotada. La otra era `COBERTURA_MECHAS_CLASICAS` (`openai.js`), o sea la
+// explicación de las mechas clásicas escrita a mano en git, y desde el 21/08/2026 ya no
+// existe: `mechasClasicasLineas` llama a `explicacionPublica`, esta misma función. El bot y
+// esta pantalla ya no pueden describir el mismo servicio de dos formas distintas.
 //
 // ── Y por qué NO se reutiliza lo que el bot ya dice ──────────────────────────────────────
 //

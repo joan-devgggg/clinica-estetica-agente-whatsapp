@@ -351,8 +351,9 @@ redescubrir:
 
 - **Vive en la ENTRADA, no en una tabla por categoría**, igual que `solo_complemento` y por
   lo mismo: la categoría la edita la dueña y una tabla del código indexada por su nombre deja
-  de casar el día que la renombre, en silencio (regla 5). Ya hay dos así, las dos anotadas
-  como fragilidad: `REACTIVE_ONLY_CATEGORIES` y `COBERTURA_MECHAS_CLASICAS`.
+  de casar el día que la renombre, en silencio (regla 5). `REACTIVE_ONLY_CATEGORIES` sigue
+  siendo así y está anotada; `COBERTURA_MECHAS_CLASICAS` ERA la otra y ya no existe — el
+  prompt lee este mismo campo desde el 21/08 (ver abajo).
 - **El MISMO campo vale para el largo y para lo que no es largo, y lo decide ella
   escribiendo**: la misma frase en todas las entradas de una categoría es del SERVICIO y sale
   una vez arriba; frases distintas son de la VARIANTE y salen en su fila (`grupo.explicacion`,
@@ -377,10 +378,22 @@ redescubrir:
   (Balayage) dichos como precio bueno en una página donde no hay nadie al lado. Mismo criterio
   que el sujetador de `extractLargoPelo`: en la raya no se adivina. **Esa divergencia sigue
   abierta en el bot** y no la trajo la explicación.
-- **Lo que el bot dice del largo NO se puede reutilizar**: son tres frases en castellano
+- **Lo que el bot dice del LARGO sigue sin poder reutilizarse**: son tres frases en castellano
   DENTRO del prompt (`openai.js`) que el modelo reescribe y traduce sobre la marcha —una
-  página no tiene modelo—, no van por entrada sino por FORMA de la categoría, y solo cubren
-  el largo. Lo que sí se reutilizó fue su CONTENIDO: hombros / espalda / cintura.
+  página no tiene modelo—, y no van por entrada sino por FORMA de la categoría (si hay una 4ª
+  variante y si esa 4ª es XL). Lo que sí se reutilizó fue su CONTENIDO: hombros / espalda /
+  cintura. La COBERTURA de mechas clásicas es el caso contrario y va al revés — ver abajo.
+- **La cobertura de mechas clásicas la lee ahora el PROMPT de este campo** (21/08/2026), y es
+  la razón de que el bot y la página no puedan divergir: `COBERTURA_MECHAS_CLASICAS` era una
+  tabla en `openai.js` indexada por el nombre normalizado y decía «solo delante, puntas y
+  rostro» donde Yulia dijo «delante y rostro». Ya no existe: `mechasClasicasLineas` llama a
+  `explicacionPublica`, que es la MISMA función que usa la pantalla. **Sin explicación escrita
+  la línea sale con precio y duración y sin descripción, y NO hay fallback a la tabla vieja**:
+  si la dueña la vacía es que no quiere que salga. Efecto colateral bueno: renombrar una
+  entrada ya no le quita la descripción, porque viaja dentro de ella. Red: los tres bloques
+  nuevos de `tests/prompt-sin-datos-a-mano.test.js`, cuyo fixture usa coberturas imposibles
+  («zona dos de prueba») justo para que una tabla en git vuelva a salir en rojo — 3 rojos
+  medidos al revertir.
 
 **`vuelta` NO vive en la tabla de idiomas** sino en una única `VUELTAS` sin idioma: con
 cuatro copias, cambiar una haría que la pantalla se COMPORTARA distinto en ruso, y eso no se

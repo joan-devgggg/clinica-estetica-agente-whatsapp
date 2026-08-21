@@ -7,6 +7,10 @@ const { normalizeText, classifyLargoVariant, hasApellido, isReactiveOnlyCategory
 // Observador de la salud del proveedor del modelo. No decide nada del flujo: solo cuenta.
 // summarizeHistory NO se instrumenta — no recibe orgId, y que falle un resumen no le llega
 // a ninguna clienta. El embudo que importa es este.
+// La resolución de `services[].explicacion` (objeto por idioma o cadena suelta, saneada a una
+// línea) vive en reserva-web.js y se importa en vez de copiarse: es el mismo texto que lee la
+// pantalla pública, y dos copias de la regla es cómo el bot y la página se separan.
+const { explicacionPublica } = require('../reserva-web');
 const { noteLlmResult } = require('../llm-health');
 const logger = require('../../lib/logger');
 
@@ -246,24 +250,32 @@ const enumerarEs = (items) => (items.length <= 1
     ? (items[0] || '')
     : `${items.slice(0, -1).join(', ')} y ${items[items.length - 1]}`);
 
-// La cobertura de cada mechas clásica es lo ÚNICO que este bloque añade al catálogo: no está
-// en ninguna columna, y sin ella la clienta no puede elegir entre tres números. El precio y
-// la duración sí están, así que salen de allí.
+// La cobertura de cada mechas clásica —delante y rostro / media cabeza / cabeza completa— es
+// lo que la clienta necesita para poder elegir entre tres números. Hasta el 21/08/2026 vivía
+// en una tabla de ESTE fichero indexada por el nombre normalizado, y era la fragilidad que
+// ya estaba anotada al lado de `REACTIVE_ONLY_CATEGORIES`: la dueña renombra desde el panel y
+// una tabla del código deja de casar en silencio (regla 5).
 //
-// La clave es el nombre normalizado, y una entrada renombrada pierde su descripción pero
-// conserva su precio: preferimos una línea sin explicación a una explicación pegada al
-// servicio equivocado (regla 3). El bloque entero desaparece si la categoría no existe.
-const COBERTURA_MECHAS_CLASICAS = {
-    'mechas 1': 'solo delante, puntas y rostro',
-    'mechas 2': 'media cabeza',
-    'mechas 3': 'cabeza completa',
-};
-
+// Ahora sale de `agent_configs.services[].explicacion`, EL MISMO CAMPO que la pantalla del
+// enlace público pinta debajo del nombre, y ése es todo el motivo del cambio: con dos textos
+// el bot y la página describen el mismo servicio de dos formas distintas y nadie se entera.
+// No es hipotético — pasó al escribir el campo: Yulia confirmó «delante y rostro» y aquí
+// ponía «solo delante, puntas y rostro».
+//
+// **Sin texto escrito NO se compone una descripción** (regla 3): la línea sale con su precio
+// y su duración, que es exactamente lo que ya hacía una entrada renombrada. Y por eso NO
+// queda un fallback a la tabla vieja: si la dueña vacía la explicación es que no quiere que
+// salga, y resucitar un texto de git contra esa decisión es lo contrario de leer el dato.
+// El bloque entero sigue desapareciendo si la categoría no existe.
+//
+// Se reutiliza `explicacionPublica` en vez de leer `s.explicacion` a pelo: resuelve tanto el
+// objeto `{es,en,ru,uk}` como la cadena suelta, y SANEA a una línea — texto libre de la dueña
+// con un salto de línea dentro rompería el formato de esta lista.
 function mechasClasicasLineas(services) {
     return (services || [])
         .filter(s => normalizeText(s.categoria) === 'mechas clasicas')
         .map(s => {
-            const desc = COBERTURA_MECHAS_CLASICAS[normalizeText(s.nombre)];
+            const desc = explicacionPublica(s, 'es');
             const precio = s.precio == null ? 'precio a confirmar en el salón' : `${s.precio}€`;
             const duracion = s.duracion == null ? '' : `, ${s.duracion} min`;
             return `  ${s.nombre} (${precio}${duracion})${desc ? ` = ${desc}` : ''}`;
