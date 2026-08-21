@@ -175,9 +175,10 @@ export function Cargando({ t }: { t: Textos }) {
  * cómo se llama, y es la única forma de que una clienta rusa entienda «Mechas Balayage» sin
  * que deje de poder pedirlo por su nombre al llegar.
  *
- * Hoy no sale nunca: el campo está vacío en las 82 entradas del catálogo y lo escribe la
- * dueña. Sin texto no hay línea — no se compone una descripción a partir del nombre ni de
- * la categoría (regla 3).
+ * Lo escribe la dueña, y sin texto no hay línea — no se compone una descripción a partir
+ * del nombre ni de la categoría (regla 3). Desde el 21/08/2026 sale en 21 de las 82
+ * entradas: las variantes de las seis categorías que van por largo y las tres coberturas de
+ * mechas clásicas, todas de una sola línea. El resto del catálogo sigue sin ella.
  */
 function Explicacion({ texto }: { texto: string | null }) {
   if (!texto) return null;

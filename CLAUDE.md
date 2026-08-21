@@ -341,11 +341,13 @@ por dos bloques de `tests/reserva-web-pantalla.test.js` (ningún nombre real pue
 las cuatro tablas de textos, y `agruparCatalogo` no recibe idioma) y uno de endpoints (los
 cuatro idiomas devuelven los MISMOS `nombreCompleto`).
 
-**Lo que sí se traduce es la línea de DEBAJO, y hoy está VACÍA a propósito** (22/08/2026).
-`agent_configs.services[].explicacion` es un hueco que rellena la dueña —`{es,en,ru,uk}`, o
-una cadena suelta que vale por el castellano— y sin texto escrito no sale ninguna línea: no
-se compone una descripción a partir del nombre ni de la categoría (regla 3). **Añade, nunca
-sustituye**: dice qué es sin tocar cómo se llama. Tres cosas que no hay que redescubrir:
+**Lo que sí se traduce es la línea de DEBAJO** (`agent_configs.services[].explicacion`,
+`{es,en,ru,uk}` o una cadena suelta que vale por el castellano). Sin texto escrito no sale
+ninguna línea: no se compone una descripción a partir del nombre ni de la categoría (regla 3).
+**Añade, nunca sustituye**: dice qué es sin tocar cómo se llama. **Escrita el 21/08/2026 en 21
+de las 82 entradas y solo en castellano** —los otros tres caen a él, que es lo que deja a
+Yulia traducir después sin que la pantalla se quede muda entremedias—. Lo que no hay que
+redescubrir:
 
 - **Vive en la ENTRADA, no en una tabla por categoría**, igual que `solo_complemento` y por
   lo mismo: la categoría la edita la dueña y una tabla del código indexada por su nombre deja
@@ -355,13 +357,30 @@ sustituye**: dice qué es sin tocar cómo se llama. Tres cosas que no hay que re
   escribiendo**: la misma frase en todas las entradas de una categoría es del SERVICIO y sale
   una vez arriba; frases distintas son de la VARIANTE y salen en su fila (`grupo.explicacion`,
   en `agruparCatalogo`). Hacía falta porque de las 15 categorías con variantes solo **6** van
-  por largo: en «Mechas clásicas» son cobertura, en «Cortes» son cinco servicios distintos y
-  en «Manicura/Pedicura» son diez. Un campo llamado «largo» mentiría en nueve de quince.
+  por largo —Alisado vegano, Anti-encrespamiento, Color Premium, Deco Total Blond, Mechas
+  Airtouch y Mechas Balayage—: en «Mechas clásicas» son cobertura, en «Cortes» son cinco
+  servicios distintos y en «Manicura/Pedicura» son diez. Un campo llamado «largo» mentiría en
+  nueve de quince. Hoy las 21 líneas son justo esas dos cosas: las variantes de las seis, y
+  las tres coberturas de mechas clásicas.
+- **«Hasta la cintura» y «hasta la cintura o más» son DOS textos, y la diferencia es el
+  TECHO.** En las tres categorías sin cuarta variante (Alisado vegano, Anti-encrespamiento,
+  Color Premium) «Largo» es la última, y `Math.min(largo-1, candidates.length-1)` (`bot.js`)
+  manda ahí a quien dice «por debajo de la cintura»; sin el «o más», esa clienta ve tres
+  opciones y ninguna es la suya. Es la misma frase que el prompt ya le dicta al modelo en ese
+  caso (rama sin nivel 4). Solo ensancha el tramo de ARRIBA, así que no encarece a nadie.
+- **LAS TRES XL NO LLEVAN LÍNEA, Y ES UNA DECISIÓN PENDIENTE DE YULIA.** Las tres fuentes no
+  dicen lo mismo: la máquina manda el largo 4 a la XL (`classifyLargoVariant` la clasifica
+  como nivel 4), el prompt le dice a la clienta que la XL es para cambios de color
+  importantes y NO por longitud, y en Balayage la entrada se llama literalmente «XL / cambio
+  importante». Poner «por debajo de la cintura» debajo de una fila que se llama «cambio
+  importante» contradice su propio nombre y cuesta +10 € (Deco), +25 € (Airtouch) o +30 €
+  (Balayage) dichos como precio bueno en una página donde no hay nadie al lado. Mismo criterio
+  que el sujetador de `extractLargoPelo`: en la raya no se adivina. **Esa divergencia sigue
+  abierta en el bot** y no la trajo la explicación.
 - **Lo que el bot dice del largo NO se puede reutilizar**: son tres frases en castellano
-  DENTRO del prompt (`openai.js:661-665`) que el modelo reescribe y traduce sobre la marcha
-  —una página no tiene modelo—, no van por entrada sino por FORMA de la categoría, y solo
-  cubren el largo. Lo reutilizable es su CONTENIDO cuando Yulia escriba el hueco: hombros /
-  espalda / cintura, con el XL que es cambio de color y no longitud.
+  DENTRO del prompt (`openai.js`) que el modelo reescribe y traduce sobre la marcha —una
+  página no tiene modelo—, no van por entrada sino por FORMA de la categoría, y solo cubren
+  el largo. Lo que sí se reutilizó fue su CONTENIDO: hombros / espalda / cintura.
 
 **`vuelta` NO vive en la tabla de idiomas** sino en una única `VUELTAS` sin idioma: con
 cuatro copias, cambiar una haría que la pantalla se COMPORTARA distinto en ruso, y eso no se

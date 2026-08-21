@@ -673,7 +673,7 @@ function salonPublico(businessInfo, { waPhone, lang } = {}) {
  *
  * ── `explicacion`: el ÚNICO campo del catálogo que sale traducido ────────────────────────
  *
- * El HUECO, hoy vacío. Ver `explicacionPublica`.
+ * Escrito desde el 21/08/2026 en 21 de las 82 entradas. Ver `explicacionPublica`.
  */
 function catalogoPublico(servicios = [], { clavePara = null, nombrePara = null, lang = null } = {}) {
     return (Array.isArray(servicios) ? servicios : []).map(s => {
@@ -710,12 +710,19 @@ function catalogoPublico(servicios = [], { clavePara = null, nombrePara = null, 
 // «Осветление» y pidiendo en el mostrador algo que allí no se llama así.
 //
 // Lo que SÍ puede ir traducido es una línea DEBAJO del nombre, que explica qué es sin
-// sustituirlo. Y eso es lo que hay aquí: un hueco, hoy vacío en el catálogo de producción
-// (verificado 21/08/2026: las 82 entradas tienen `categoria`, `nombre`, `precio`, `duracion`
-// y nada más, salvo una con `solo_complemento` y una con `nota`). **No se rellena desde el
-// código**: el texto lo escribe Yulia, en el idioma del salón, y hasta entonces no sale
-// ninguna línea. Inventarle a un servicio una descripción que la dueña no ha escrito es
-// exactamente la regla 3.
+// sustituirlo. **No se rellena desde el código**: el texto lo escribe Yulia, en el idioma del
+// salón, y sin él no sale ninguna línea. Inventarle a un servicio una descripción que la
+// dueña no ha escrito es exactamente la regla 3.
+//
+// Escrito el 21/08/2026 en 21 de las 82 entradas, y SOLO en castellano —los otros tres
+// idiomas caen a él, que es lo que permite traducir después sin dejar la pantalla muda—:
+// las variantes de las SEIS categorías que van por largo (hombros / espalda / cintura, con
+// «o más» en las tres que no tienen cuarta variante, porque allí «Largo» es el techo al que
+// el motor manda a quien dice «por debajo de la cintura») y las tres coberturas de mechas
+// clásicas. **Las tres XL se quedaron sin línea a propósito**: la máquina las trata como
+// largo 4 y el prompt le dice a la clienta que son cambio de color, y hasta que Yulia diga
+// cuál de las dos es, una línea equivocada ahí cuesta entre 10 y 30 € dichos como precio
+// bueno. Las demás entradas siguen sin el campo, y no sale nada por ellas.
 //
 // ── Vale para las dos cosas, y por eso no se llama `largo` ───────────────────────────────
 //

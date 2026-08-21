@@ -972,8 +972,8 @@ export type EntradaCatalogo = {
     duracion: number | null;
     /**
      * La línea de debajo del nombre: qué es esto, en el idioma de la pantalla. Es el único
-     * campo del catálogo que llega TRADUCIDO, y es el hueco que rellena la dueña — hoy vacío
-     * en producción, así que hoy es null en las 82 entradas. Ver `explicacionPublica` en
+     * campo del catálogo que llega TRADUCIDO, y lo rellena la dueña: null en las entradas
+     * donde no ha escrito nada, que hoy son 61 de 82. Ver `explicacionPublica` en
      * `services/reserva-web.js` para por qué el NOMBRE no se traduce y esto sí.
      */
     explicacion: string | null;
