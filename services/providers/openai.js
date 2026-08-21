@@ -1144,7 +1144,8 @@ Responde SIEMPRE con JSON puro y nada más. SIN backticks, SIN markdown, SIN tex
   "slot_rechazado": false,
   "accion": null,
   "motivo_escalado": null,
-  "ofrezco_traspaso": null,${lineaEjemploIdiomas}
+  "ofrezco_traspaso": null,
+  "variante_preguntada": null,${lineaEjemploIdiomas}
   "idioma_detectado": "es",
   "datos": {
     "nombre": null,
@@ -1163,6 +1164,7 @@ PROHIBIDO envolver el JSON en \`\`\`json o \`\`\` — devuelve el objeto { } dir
 Valores posibles de accion: "cancelar" | "cambiar" | "escalar_humano" | null
 motivo_escalado: solo cuando accion es "escalar_humano" → ${MOTIVOS_LLM_STR} | null
 ofrezco_traspaso: cuando en ESTE mensaje OFRECES pasarla con el equipo y estás esperando su "sí" → ${MOTIVOS_OFRECIBLES_STR} | null. En ese turno accion sigue siendo null: estás preguntando, no escalando. Ponlo SIEMPRE que ofrezcas, aunque la pregunta te salga con otras palabras — es lo que hace que su "sí" llegue al equipo.
+variante_preguntada: cuando en ESTE mensaje le PREGUNTAS de qué largo es su pelo para elegir entre las variantes de una categoría → el NOMBRE EXACTO de esa categoría del catálogo | null. Solo cuando la PREGUNTAS: si la nombras de pasada, o ya sabes el largo, va null. Es lo que evita que el sistema crea que aún no sabe a qué viene y te corte el flujo.
 cita_confirmada: true → siempre que la clienta acepte un hueco O que tu mensaje afirme que la cita queda reservada/apuntada/confirmada. En ese caso datos.hora_cita DEBE llevar la hora exacta (HH:MM) y datos.fecha_cita la fecha exacta (YYYY-MM-DD). NUNCA junto con slot_rechazado: true.${contratoIdiomasSalon}`;
 }
 
@@ -1211,6 +1213,7 @@ function getFallbackResponse(orgId, language) {
             // Explícito y no por omisión: un fallback no ofrece nada, y `undefined` aquí
             // dejaría el campo fuera del sobre en vez de decir que no hay oferta.
             ofrezco_traspaso: null,
+            variante_preguntada: null,
             datos: { nombre: null, servicio: null, categoria_servicio: null, estilista_preferida: null, fecha_cita: null, hora_cita: null, upselling_aceptado: [], notas: null },
         };
     }
@@ -1394,6 +1397,15 @@ async function getChatbotResponse(orgId, history, partialData = {}, intent = 'ge
         }
         parsed.ofrezco_traspaso = MOTIVOS_OFRECIBLES.includes(parsed.ofrezco_traspaso)
             ? parsed.ofrezco_traspaso
+            : null;
+        // `variante_preguntada` NO se valida aquí contra un conjunto cerrado, y es la
+        // diferencia con el de arriba: su conjunto son las CATEGORÍAS DEL CATÁLOGO, que edita
+        // la dueña y que este módulo no puede consultar sin recibirlas (regla 5). Aquí solo se
+        // sanea la forma —cadena de una línea y con tope— y quien decide si existe es bot.js,
+        // contra `agent_configs.services`. Una categoría inventada resuelve a null allí y no
+        // siembra nada.
+        parsed.variante_preguntada = typeof parsed.variante_preguntada === 'string'
+            ? (parsed.variante_preguntada.replace(/\s+/g, ' ').trim().slice(0, 60) || null)
             : null;
         // Normalize: salon uses cita_confirmada, map to reserva_confirmada for bot.js compatibility
         parsed.reserva_confirmada = parsed.cita_confirmada;

@@ -13,7 +13,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, extractLargoPelo, esRespuestaDeLargo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteMencion, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, botOfferableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, resolverHora12h, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildSinReservaAunMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, resolveCategoriaDeLargo, extractLargoPelo, esRespuestaDeLargo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteMencion, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, botOfferableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, resolverHora12h, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildSinReservaAunMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -7359,6 +7359,58 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     }
                     if (canOverwrite) session.partialData[k] = v;
                 }
+            }
+        }
+
+        // ─── El modelo DECLARA que está preguntando la variante ──────────────
+        //
+        // El embudo del 20/08/2026, 19:01-19:02, en ruso y de principio a fin: pidió cita el
+        // 7.09 «на покраску», el modelo le preguntó QUÉ tipo de color (raíces, completo o
+        // matiz), luego DE QUÉ LARGO era su pelo, y con las dos respuestas le dio los precios
+        // —75 € y 40 €—. Al turno siguiente contestó «Вероника» a la pregunta de estilista y
+        // recibió: «para ver los huecos necesito saber qué servicio te interesa». Cinco
+        // turnos, dos precios dichos, y el sistema preguntándole lo que ella ya había dicho.
+        //
+        // Ninguno de sus cinco mensajes resolvió nada por el camino determinista: la
+        // conversación entera la condujo el modelo, así que `selectedService` seguía a null y
+        // ninguna de las cuatro banderas de variante estaba puesta. La red del embudo mira
+        // esas banderas y no tenía ninguna que mirar.
+        //
+        // Doctrina del caso 7: EL MODELO DECLARA, LA MÁQUINA DECIDE. Él pone en su JSON la
+        // categoría por cuya variante está preguntando; aquí se comprueba contra el catálogo
+        // VIVO —`resolveCategoriaDeLargo`, la misma lista que usa el detector determinista— y
+        // solo se siembra si existe y sus variantes son de largo. Una categoría inventada no
+        // siembra nada y se registra (regla 3).
+        //
+        // TRES condiciones más, y ninguna sobra:
+        //   · solo si NO hay servicio elegido: con servicio, sembrar reabriría una elección
+        //     que ya está hecha;
+        //   · solo si no hay ya una bandera de variante en marcha, que manda sobre esto
+        //     porque la puso el camino determinista (lo dijo la CLIENTA, no el modelo);
+        //   · solo salón.
+        //
+        // LO QUE SE ACEPTA A CAMBIO, dicho en voz alta: la bandera no solo exime al embudo,
+        // también pone en marcha la resolución por largo del turno siguiente. Si la clienta
+        // contesta «cortos», la máquina elegirá la variante corta de esa categoría y con ella
+        // su precio. Eso es lo correcto —en la conversación de arriba habría resuelto «Color
+        // completo largo 1», que es EXACTAMENTE la cita que el salón acabó creando a mano— y
+        // es también lo que hay que releer si algún día esto elige de más: quien decide sigue
+        // siendo la respuesta de la clienta, pero quien abrió la puerta fue el modelo.
+        if (orgType === 'salon' && aiResponse.variante_preguntada && !session.selectedService
+                && !session.pendingLargoCategory && !session.pendingCorteGenero
+                && !session.pendingCorteMujerTipo && !session.pendingCorteNinoTipo) {
+            // `getAgentConfig` va cacheado 60 s: es la misma lectura que hace el resto del
+            // turno, no una de más. `loadSvcCatalog` no vale aquí — vive dentro del bloque de
+            // `aiResponse.datos`, que puede no haberse ejecutado.
+            const cfgVar = await getAgentConfig(orgId);
+            const catDecl = resolveCategoriaDeLargo(aiResponse.variante_preguntada, cfgVar?.services || []);
+            if (catDecl) {
+                session.pendingLargoCategory = catDecl;
+                logger.info('variante_declarada_sembrada', { orgId, telefono: userPhone, categoria: catDecl });
+            } else {
+                logger.info('variante_declarada_no_resuelta', {
+                    orgId, telefono: userPhone, valor: String(aiResponse.variante_preguntada).slice(0, 60),
+                });
             }
         }
 

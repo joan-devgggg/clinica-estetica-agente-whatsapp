@@ -3652,20 +3652,46 @@ function classifyLargoVariant(nombre) {
 // Detects if text mentions a service category with hair-length variants (Largo 1/2/3/4,
 // o nombres descriptivos equivalentes como "Cabello corto/medio/largo").
 // Returns the original category name or null.
-function detectLargoCategory(text, servicesCatalog) {
-    if (!text || !servicesCatalog?.length) return null;
-    const t = normalizeText(text);
-
+// Las categorías del catálogo cuyas variantes SON el largo del pelo. Se calcula del catálogo
+// vivo y nunca de una lista escrita aquí (regla 5): la dueña renombra categorías desde el
+// panel, y un `Set` contra su nombre dejaría de casar en silencio.
+//
+// Vive fuera de `detectLargoCategory` porque lo necesitan DOS sitios: el detector, que lee lo
+// que escribe la CLIENTA, y la validación de la categoría que DECLARA el modelo cuando está
+// preguntando la variante. Con dos copias, el día que cambie el criterio de «tiene variantes
+// de largo» una de las dos se quedaría vieja sin que nada lo dijera.
+function categoriasConVariantesDeLargo(servicesCatalog) {
+    if (!servicesCatalog?.length) return [];
     const catMap = {};
     for (const svc of servicesCatalog) {
         const catNorm = normalizeText(svc.categoria);
         if (!catMap[catNorm]) catMap[catNorm] = { name: svc.categoria, services: [] };
         catMap[catNorm].services.push(svc);
     }
-
-    const largoCats = Object.values(catMap).filter(({ services }) =>
+    return Object.values(catMap).filter(({ services }) =>
         services.filter(s => classifyLargoVariant(s.nombre) != null).length >= 2
     );
+}
+
+// ¿El nombre que viene de fuera es una de esas categorías? Devuelve el nombre CANÓNICO del
+// catálogo (el que la dueña escribió), nunca el que llegó: lo que se guarda en la sesión
+// tiene que casar luego con `svc.categoria` normalizado, y una grafía distinta no casaría.
+// null si no resuelve — y entonces no se siembra nada (regla 3).
+function resolveCategoriaDeLargo(nombre, servicesCatalog) {
+    if (!nombre || typeof nombre !== 'string') return null;
+    const t = normalizeText(nombre);
+    if (!t) return null;
+    for (const { name } of categoriasConVariantesDeLargo(servicesCatalog)) {
+        if (normalizeText(name) === t) return name;
+    }
+    return null;
+}
+
+function detectLargoCategory(text, servicesCatalog) {
+    if (!text || !servicesCatalog?.length) return null;
+    const t = normalizeText(text);
+
+    const largoCats = categoriasConVariantesDeLargo(servicesCatalog);
     if (!largoCats.length) return null;
 
     for (const { name } of largoCats) {
@@ -5377,6 +5403,8 @@ module.exports = {
     hasPreviousSpaOrMassage,
     buildSpaPromoNote,
     detectLargoCategory,
+    categoriasConVariantesDeLargo,
+    resolveCategoriaDeLargo,
     extractLargoPelo,
     classifyLargoVariant,
     extractMechasClasicasTipo,
