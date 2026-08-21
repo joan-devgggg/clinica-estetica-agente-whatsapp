@@ -438,3 +438,54 @@ detector de ofertas (`з'єднаю` frente a `зв'яжу`; se arregló al escr
 
 **No decidido como «no arreglar»: decidido como «no ahora».** La señal existe (una fila real)
 pero es una, y ampliar el alcance por iniciativa propia es la regla 8.
+
+---
+
+## 21/08/2026 · «tinte de raíz» pasó de PREGUNTAR a DECIDIR, y nadie lo pidió
+
+Efecto lateral de marcar los nueve complementos que confirmó Yulia para poder publicar el
+enlace. No es un fallo —la resolución nueva es correcta— pero **es un sitio donde el bot dejó
+de preguntar y empezó a decidir, y ese salto lo produjo un cambio de DATOS, no de código**.
+Aceptado por el dueño el 21/08 («un tinte de raíz ES una color raíz, y preguntar por algo que
+está claro también molesta») con el encargo explícito de mirarlo en la próxima auditoría.
+
+### Qué cambió, medido contra el catálogo vivo
+
+```
+                        ANTES (Difuminado ofertable)   DESPUÉS (Difuminado = complemento)
+  «tinte de raíz»       null → el bot pregunta         Color raíz · 75 € / 120 min
+  «retoque de raíz»     null → el bot pregunta         Color raíz · 75 € / 120 min
+  «me toca la raíz»     null → el bot pregunta         Color raíz · 75 € / 120 min
+  «color raíz»          Color raíz                     Color raíz        (sin cambio)
+```
+
+### Por qué, que es lo que no hay que volver a excavar
+
+La pasada fuzzy de `extractServiceFromText` entra por `CATEGORY_KEYWORDS` (`raiz` → Color
+Premium) y puntúa las entradas de esa categoría. Con «Difuminado de raíz» todavía ofertable,
+**«Difuminado de raíz» y «Color raíz» empataban a 1** —las dos casan solo `raiz`— y un empate
+que el prefijo no rompe devuelve `null` a propósito: preguntar es más barato que cobrar de
+más en silencio. Retirado el difuminado de la lista ofertable, el empate desaparece y «Color
+raíz» gana sola.
+
+O sea: **el `null` de antes no era un juicio sobre esas frases, era un empate**. Nadie decidió
+que «tinte de raíz» debía preguntarse; salía de que había dos candidatos. Y por el mismo
+motivo puede volver a cambiar sin que nadie toque código: le basta a Yulia con añadir otra
+entrada a Color Premium que case `raiz`, y las tres frases vuelven a `null`.
+
+### Qué mirar en la auditoría
+
+1. **¿Acierta de verdad?** «me toca la raíz» resuelve hoy a Color raíz (75 €, 120 min). Si la
+   clienta quería el difuminado de 40 €, es el error caro que el veto de `difuminado` tapa
+   solo cuando dice esa palabra.
+2. **Cuántos sitios más tienen esta forma.** Este empate-que-desaparece es genérico: cualquier
+   categoría que se quede con UNA sola entrada casando su keyword deja de preguntar. Con las
+   nueve marcadas, las candidatas son Color Premium (6→4), Manicura/Pedicura (10→7), Matiz
+   mujer (3→2) y Reconstrucción (3→2). No está medido — eso es el trabajo.
+3. **Si conviene que el empate no sea la única razón de preguntar.** Hoy la decisión de
+   preguntar es un subproducto de cuántas entradas hay, no una regla. Es la misma forma que
+   `REACTIVE_ONLY_CATEGORIES` y `COBERTURA_MECHAS_CLASICAS`: conducta que depende de datos que
+   edita la dueña, sin que ella lo sepa.
+
+**No decidido como «no arreglar»: decidido como «no ahora»**, y con el cambio aceptado en
+firme. Contexto completo del marcado: CLAUDE.md, sección «Dar de baja un servicio».

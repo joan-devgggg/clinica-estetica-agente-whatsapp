@@ -1134,6 +1134,18 @@ buena que se comería (regla 12)— y hay un test que lo afirma. Red:
 que el fixture reproduce la caída**: la primera versión no la reproducía y quitar el arreglo
 dejaba los 7 bloques en verde.
 
+**Y EN LA OTRA DIRECCIÓN: quitar una entrada de la oferta puede hacer que el bot deje de
+PREGUNTAR y empiece a DECIDIR.** «tinte de raíz», «retoque de raíz» y «me toca la raíz» daban
+`null` porque «Difuminado de raíz» y «Color raíz» EMPATABAN a un token, y un empate que el
+prefijo no rompe devuelve null a propósito; retirado el difuminado, «Color raíz» (75 €/120
+min) gana sola. El `null` de antes no era un juicio sobre esas frases: era un empate. Aceptado
+en firme el 21/08 —un tinte de raíz sí es una Color raíz— y **anotado para auditar** con las
+otras tres categorías que se quedaron cortas (Manicura/Pedicura 10→7, Matiz mujer 3→2,
+Reconstrucción 3→2):
+[`docs/observaciones-para-proxima-auditoria.md`](docs/observaciones-para-proxima-auditoria.md).
+Es conducta que depende de cuántas entradas tenga una categoría, o sea de lo que edita la
+dueña sin saber que lo mueve.
+
 Dos cosas medidas que no hay que redescubrir al tocar esto:
 
 - **La sonda que llega al complemento es el PLURAL suelto**, no «un peinado» (que da null
