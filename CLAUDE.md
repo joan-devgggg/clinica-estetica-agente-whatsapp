@@ -1106,6 +1106,34 @@ renombre y el servicio se vuelve ofertable **en silencio** (regla 5). Es la frag
 `REACTIVE_ONLY_CATEGORIES` sí tiene hoy con «Consulta», anotada y no arreglada.
 `solo_complemento` **ausente = servicio normal**, igual que `activo`.
 
+**Hoy son DIEZ** (21/08/2026, confirmados por Yulia para poder publicar el enlace: sin la
+marca, el formulario ofrecía reservar una hora de agenda por 10 €). Además del peinado:
+Ampolla cuidado, Mascarilla violeta, Reconstrucción K18 (la de 15 min y 35 € — **la de 60 €
+con lavar y peinar SIGUE reservable**, y las dos vías de `resolveK18ComplementIfNeeded`
+siguen igual porque reciben el catálogo COMPLETO), Diseño, Fortalecimiento gel,
+Exfoliación/pilling, Reparación 1 uña, Difuminado de raíz y Retocar mujer. El público pasó
+de 80 a 71 y perdió dos categorías enteras («Exfoliación cabeza» y «Retocar», de una entrada
+cada una); las diez siguen resolviendo para facturación, duración y upsell, y **ninguna de
+las 18 etiquetas de upselling cambió de resolución**. Tres llevan `nota` con las palabras de
+Yulia, que es lo que el prompt recita como motivo (`openai.js:775`).
+
+**QUITAR ALGO DE LA OFERTA NO LO DEJA EN `null`: LO DEJA EN MANOS DEL VECINO.** Ocho de los
+nueve pasaron a `null`, que es lo correcto —el bot pregunta—; «difuminado de raíz» (40 €/30
+min) no: el token `raiz` es keyword de Color Premium en `CATEGORY_KEYWORDS` y, retirada su
+entrada, **«quiero un difuminado de raíz» resolvía a «Color raíz», 75 €/120 min**. Casi el
+doble de precio y cuatro veces la agenda, dicho como cifra buena y deshecho a mano en el
+salón. Es el agujero de «Para lavar.» → K18 de 60 € (la cita de Ihab) abierto desde el otro
+lado: allí sobraba un token ajeno, aquí faltaba la entrada propia. Lo tapa
+`TOKENS_SOLO_DE_SU_SERVICIO` (`helpers.js`), y la regla **no** es «este token no vale» sino
+«si el texto lo nombra y su entrada NO está en el catálogo que me han dado, la mención es de
+ELLA y no de su vecina»: con el catálogo completo y con el del panel no veta nada, y **se
+apaga solo** el día que la dueña le quite la marca. Los tokens van ENUMERADOS, mismo criterio
+que los typos del largo; **`raiz` queda fuera a propósito** —«color raíz» es la respuesta
+buena que se comería (regla 12)— y hay un test que lo afirma. Red:
+`tests/complemento-no-cae-en-el-vecino.test.js`, 3 mutaciones medidas, **y su bloque 0 afirma
+que el fixture reproduce la caída**: la primera versión no la reproducía y quitar el arreglo
+dejaba los 7 bloques en verde.
+
 Dos cosas medidas que no hay que redescubrir al tocar esto:
 
 - **La sonda que llega al complemento es el PLURAL suelto**, no «un peinado» (que da null

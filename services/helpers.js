@@ -1302,6 +1302,51 @@ const SERVICE_SYNONYMS = [
 // "espalda") y quedan fuera los conectores y las colas cortas de nombre.
 const MIN_DISTINCTIVE_TOKEN = 5;
 
+// ─── Tokens que son la IDENTIDAD de un servicio que puede NO estar en la oferta ──────
+//
+// Cuando un servicio sale del catálogo ofertable —porque es `solo_complemento` o porque
+// está de baja— la mención que lo nombraba no se queda en null: cae en el VECINO que
+// comparte una palabra con él, y eso es peor que no resolver. Medido el 21/08/2026, al
+// marcar «Difuminado de raíz» (40 €/30 min) como complemento:
+//
+//     «quiero un difuminado de raíz»  →  Color raíz, 75 € / 120 min
+//
+// El token 'raiz' es keyword de Color Premium en CATEGORY_KEYWORDS, y dentro de esa
+// categoría «Color raíz» era la única que puntuaba una vez retirado el difuminado. Casi el
+// doble de precio y cuatro veces la agenda, comunicado a la clienta como cifra buena y
+// deshecho a mano en el salón. Es el mismo agujero que «Para lavar.» → «Reconstrucción K18
+// + lavar y peinar» (60 €) de la cita de Ihab, sólo que abierto desde el otro lado: allí lo
+// que sobraba era un token ajeno, aquí lo que falta es la entrada propia.
+//
+// LA REGLA NO ES «ESTE TOKEN NO VALE»: es «si el texto nombra este token y su entrada NO
+// está en el catálogo que me han dado, la mención es de ELLA y no de su vecina». Por eso la
+// comprobación se hace contra el catálogo RECIBIDO y no contra una lista de nombres:
+//
+//   · con el catálogo COMPLETO (facturación, duración, `isServiceName`, upsell) la entrada
+//     está → no veta nada, y ninguna resolución existente cambia;
+//   · con el del PANEL (`offerableCatalog`) también está → la dueña la sigue añadiendo a
+//     mano, que es justo para lo que se separaron las dos listas;
+//   · con el del BOT / el ENLACE (`botOfferableCatalog`) no está → null, y el bot pregunta.
+//
+// Se apaga SOLO, sin tocar código, el día que la dueña le quite la marca. Y los tokens van
+// ENUMERADOS, nunca deducidos: el criterio de admisión es el mismo que el de los typos del
+// largo — que la palabra identifique a ESE servicio y que nadie la diga de pasada. 'raiz' NO
+// entra («color raíz», «me toca la raíz» son de Color raíz); 'difuminado' sí, porque en las
+// 82 entradas del catálogo aparece en una sola.
+//
+// Lo que este veto NO puede comerse (regla 12): ningún mensaje que no diga literalmente la
+// palabra. Medido contra el catálogo vivo, «color raíz», «tinte de raíz», «retoque de raíz»,
+// «me toca la raíz» y «color completo largo 2» resuelven exactamente igual con y sin él.
+const TOKENS_SOLO_DE_SU_SERVICIO = ['difuminado'];
+
+// ¿El texto nombra un servicio cuyo token identitario no está en ESTE catálogo? Entonces no
+// hay respuesta correcta que dar y el vecino no sirve: null, y que pregunte el bot.
+function mencionaServicioFueraDeEsteCatalogo(textoNormalizado, servicesCatalog) {
+    return TOKENS_SOLO_DE_SU_SERVICIO.some(tok =>
+        textoNormalizado.includes(tok)
+        && !(servicesCatalog || []).some(s => normalizeService(s.nombre).includes(tok)));
+}
+
 // Partición en palabras completas de un texto YA normalizado. Vive a nivel de módulo
 // porque lo usan dos pasadas de extractServiceFromText (la de especificidad y la de
 // último recurso) y deben partir exactamente igual.
@@ -1371,6 +1416,11 @@ function extractServiceCategoriesFromText(text, servicesCatalog) {
 function extractServiceFromText(text, servicesCatalog) {
     if (!text || !servicesCatalog?.length) return null;
     const t = normalizeService(text);
+
+    // Antes de todas las pasadas: si el texto nombra un servicio que este catálogo no
+    // contiene, ninguna de ellas puede acertar — sólo pueden caer en el vecino. Ver
+    // TOKENS_SOLO_DE_SU_SERVICIO.
+    if (mencionaServicioFueraDeEsteCatalogo(t, servicesCatalog)) return null;
 
     let bestMatch = null;
     let bestLen = 0;
@@ -5333,6 +5383,7 @@ module.exports = {
     isValidName,
     isNameToken,
     isUsableName,
+    TOKENS_SOLO_DE_SU_SERVICIO,
     NAME_STOPWORDS,
     NOMBRES_RU_UK_NUNCA_STOPWORD,
     extractNameAfterIntro,
