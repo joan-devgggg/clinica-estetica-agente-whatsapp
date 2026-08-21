@@ -369,15 +369,11 @@ redescubrir:
   manda ahí a quien dice «por debajo de la cintura»; sin el «o más», esa clienta ve tres
   opciones y ninguna es la suya. Es la misma frase que el prompt ya le dicta al modelo en ese
   caso (rama sin nivel 4). Solo ensancha el tramo de ARRIBA, así que no encarece a nadie.
-- **LAS TRES XL NO LLEVAN LÍNEA, Y ES UNA DECISIÓN PENDIENTE DE YULIA.** Las tres fuentes no
-  dicen lo mismo: la máquina manda el largo 4 a la XL (`classifyLargoVariant` la clasifica
-  como nivel 4), el prompt le dice a la clienta que la XL es para cambios de color
-  importantes y NO por longitud, y en Balayage la entrada se llama literalmente «XL / cambio
-  importante». Poner «por debajo de la cintura» debajo de una fila que se llama «cambio
-  importante» contradice su propio nombre y cuesta +10 € (Deco), +25 € (Airtouch) o +30 €
-  (Balayage) dichos como precio bueno en una página donde no hay nadie al lado. Mismo criterio
-  que el sujetador de `extractLargoPelo`: en la raya no se adivina. **Esa divergencia sigue
-  abierta en el bot** y no la trajo la explicación.
+- **LAS TRES XL NO SON UN LARGO, y la que estaba equivocada era la MÁQUINA.** Yulia lo
+  confirmó el 21/08/2026: la XL es para CAMBIOS DE COLOR IMPORTANTES, no por longitud —lo que
+  ya decía el prompt, y lo que la entrada de Balayage dice en su propio nombre—. Arreglado el
+  mismo día: ver «La última variante no siempre continúa la escala», abajo. Su línea de
+  explicación está pendiente de escribir en el catálogo.
 - **Lo que el bot dice del LARGO sigue sin poder reutilizarse**: son tres frases en castellano
   DENTRO del prompt (`openai.js`) que el modelo reescribe y traduce sobre la marcha —una
   página no tiene modelo—, y no van por entrada sino por FORMA de la categoría (si hay una 4ª
@@ -394,6 +390,53 @@ redescubrir:
   nuevos de `tests/prompt-sin-datos-a-mano.test.js`, cuyo fixture usa coberturas imposibles
   («zona dos de prueba») justo para que una tabla en git vuelva a salir en rojo — 3 rojos
   medidos al revertir.
+
+## La última variante no siempre continúa la escala (XL, 21/08/2026)
+
+`classifyLargoVariant` ORDENA las variantes de una categoría, y hasta el 21/08/2026 se daba
+por hecho que el orden ERA la escala entera: quien decía «por debajo de la cintura» (nivel 4)
+se llevaba la 4ª variante. En las tres categorías que tienen 4ª eso era falso — la 4ª es la
+XL, que es CAMBIO DE COLOR y no longitud— y costaba **+10 € (Deco), +25 € (Airtouch) y +30 €
+(Balayage)** dichos como precio bueno. Mismo daño que «difuminado de raíz» cayendo en «Color
+raíz», y misma forma que el sujetador de `extractLargoPelo`: en la raya no se adivina.
+
+**Lo peor no era la regla que faltaba, sino que ya existía en UN sitio.** El prompt tenía
+`nivel4EsCambioColor` y le explicaba a la clienta que la XL no era por longitud; dos pasos
+después `bot.js` le metía el «por debajo de la cintura» justo en esa variante. El bot se
+contradecía dentro de la misma conversación y nada lo avisaba. Es la trampa de las dos tablas
+—la de `formatSlotTexto` y sus días— en su forma más cara: **las dos copias no decían lo
+mismo**.
+
+- **El criterio vive en `helpers.esVarianteFueraDeEscalaDeLargo`** y lo leen los dos. Mira el
+  NOMBRE y no una lista de categorías en git (regla 5), con una consecuencia buscada: el día
+  que la dueña renombre la XL a «Muy largo», deja de estar fuera de la escala y el nivel 4
+  vuelve a caer en ella, que es exactamente lo correcto.
+- **La fórmula es UNA: `elegirVariantePorLargo`**, y que sea una es el arreglo. Estaba escrita
+  tres veces en `bot.js` y una cuarta como gemelo en `tests/balayage-resuelve.test.js` — el
+  gemelo llevaba el mismo bug copiado, así que no podía cazarlo. Un gemelo solo sirve mientras
+  es idéntico, y nadie se entera del día que deja de serlo. Ese gemelo ya no existe: el test
+  llama a la función de verdad.
+- **La XL no queda huérfana**: sigue siendo nivel 4 y se llega a ella por su NOMBRE, o porque
+  el modelo la proponga cuando la clienta describe un cambio de color grande (el prompt se lo
+  manda). Lo que ya no puede es alcanzarla un LARGO.
+- **MEDIDO ANTES DE TOCAR NADA** (ventana disponible: citas 01/08–07/09, entrantes
+  31/07–21/08): **98 citas y CERO con una XL**; **524 entrantes y 28 largos declarados —10 de
+  nivel 1, 12 de nivel 2, 6 de nivel 3 y NINGUNO de nivel 4**. Podía costar dinero y todavía
+  no lo había costado. La medida es sólida porque el largo lo dice la clienta en un ENTRANTE,
+  y los entrantes sí se escriben en `messages` (hecho 1).
+- **Auditadas TODAS las escalas del catálogo** buscando más casos de la misma familia (última
+  que no continúa, niveles duplicados, huecos que desplazan las posiciones): solo las tres XL.
+  Queda **un caso latente**, anotado y NO arreglado, en
+  [`docs/observaciones-para-proxima-auditoria.md`](docs/observaciones-para-proxima-auditoria.md):
+  las dos guardas de «Mechas clásicas» en `bot.js` comparan el nombre LITERAL de la categoría,
+  así que renombrarla desde el panel convierte su escala de COBERTURA en una de largo.
+
+Red: `tests/xl-no-es-un-largo.test.js` (15 bloques, con bloque 0 que afirma que el fixture
+reproduce la condición, un bloque de PARIDAD entre lo que el prompt dice y lo que la máquina
+hace, y dos redes estructurales sobre `bot.js` porque el test no ejerce su turno). Dos
+mutaciones medidas: devolver el techo a `length - 1` deja **6 rojos**; desenganchar `bot.js`
+dejando `helpers` intacto deja **2**. Ningún otro test de la suite se entera de ninguna de las
+dos — el fallo era invisible para los 174 ficheros.
 
 **`vuelta` NO vive en la tabla de idiomas** sino en una única `VUELTAS` sin idioma: con
 cuatro copias, cambiar una haría que la pantalla se COMPORTARA distinto en ruso, y eso no se

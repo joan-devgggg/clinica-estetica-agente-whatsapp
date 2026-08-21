@@ -3699,6 +3699,79 @@ function classifyLargoVariant(nombre) {
     return null;
 }
 
+// ─── La última variante NO siempre continúa la escala ────────────────────────────────────
+//
+// `classifyLargoVariant` ORDENA, y hasta el 21/08/2026 se daba por hecho que el orden era la
+// escala entera: quien decía «por debajo de la cintura» (nivel 4) se llevaba la 4ª variante.
+// En las tres categorías que tienen una 4ª eso era FALSO, y Yulia lo confirmó: la XL es para
+// CAMBIOS DE COLOR IMPORTANTES —de moreno a rubio— y no por la longitud del pelo. En Balayage
+// la entrada lo dice en su propio nombre: «XL / cambio importante».
+//
+// O sea que el pelo por debajo de la cintura tiene que ir a «Largo», que es el TECHO de la
+// escala, y no a una variante que es para otra cosa y cuesta 10 € más (Deco Total Blond),
+// 25 € (Mechas Airtouch) o 30 € (Mechas Balayage). Dicho como precio bueno, y deshecho a mano
+// en el salón — el mismo daño que «difuminado de raíz» cayendo en «Color raíz».
+//
+// **El criterio ya existía, pero solo lo conocía el PROMPT** (`nivel4EsCambioColor`, que le
+// hacía decir a la clienta justo lo contrario de lo que la máquina hacía a continuación).
+// Vive aquí para que los dos lean lo mismo: es la lección de `formatSlotTexto` y su tabla de
+// días, y la de la cobertura de mechas clásicas doce horas antes.
+//
+// Se mira el NOMBRE y no una lista de categorías en git, por la regla 5 — la dueña los edita.
+// Consecuencia buscada: el día que renombre la XL a «Muy largo», deja de estar fuera de la
+// escala y el nivel 4 vuelve a caer en ella, que es exactamente lo correcto. Sigue siendo
+// alcanzable pidiéndola por su nombre; lo que ya no puede es alcanzarla un LARGO.
+function esVarianteFueraDeEscalaDeLargo(nombre) {
+    return /\b(xl|cambio)\b/.test(normalizeText(nombre || ''));
+}
+
+// El índice de la última variante que TODAVÍA es un largo, sobre la lista ya ordenada por
+// `classifyLargoVariant`. Es el tope al que puede llegar una elección hecha por longitud, y
+// sustituye al `length - 1` de los tres sitios que elegían por posición.
+//
+// Nunca baja de 0 (con todas fuera de escala se queda en la primera, que es lo recuperable:
+// la más barata y la que el bot puede corregir preguntando). Con la lista vacía devuelve -1,
+// igual que hacía `length - 1`, y quien llama ya comprueba `idx >= 0`.
+function ultimoIndiceDeLargo(variantesOrdenadas) {
+    const v = Array.isArray(variantesOrdenadas) ? variantesOrdenadas : [];
+    let i = v.length - 1;
+    while (i > 0 && esVarianteFueraDeEscalaDeLargo(v[i] && v[i].nombre)) i--;
+    return i;
+}
+
+// Las variantes de una categoría, ordenadas por largo. Catálogo COMPLETO a propósito: la
+// elección es POSICIONAL, así que filtrar aquí correría los índices y «cabello largo»
+// resolvería a la variante de al lado — otro precio y sin síntoma. El descarte de un
+// servicio de baja va DESPUÉS, ya elegida (`servicio_inactivo_no_seleccionado`).
+function variantesDeLargoOrdenadas(categoria, servicesCatalog) {
+    const catNorm = normalizeText(categoria || '');
+    if (!catNorm || !Array.isArray(servicesCatalog)) return [];
+    return servicesCatalog
+        .filter(s => normalizeText(s.categoria) === catNorm && classifyLargoVariant(s.nombre) != null)
+        .sort((a, b) => classifyLargoVariant(a.nombre) - classifyLargoVariant(b.nombre));
+}
+
+// Dado un nivel de largo (1-4), qué variante sale. **Es la ÚNICA fórmula**, y que sea única
+// es el arreglo: el criterio del techo vivía solo en el prompt, la fórmula estaba escrita
+// tres veces en `bot.js` y una cuarta como gemelo en `tests/balayage-resuelve.test.js`, y la
+// del prompt decía lo contrario que las otras cuatro. Quien quiera cambiar cómo se elige una
+// variante por largo tiene ahora un solo sitio donde hacerlo.
+//
+// Un nivel por encima del techo NO es un error: se topa. Es lo que hace que «por debajo de
+// la cintura» acabe en «Largo» tanto en las categorías de tres variantes (donde «Largo» es
+// literalmente la última) como en las de cuatro (donde la cuarta es la XL, que no es largo).
+function elegirVariantePorLargo(variantesOrdenadas, nivel) {
+    const v = Array.isArray(variantesOrdenadas) ? variantesOrdenadas : [];
+    // `nivel` ausente no es «el primero»: es que no se sabe, y entonces no se elige nada
+    // (regla 3). Sin este descarte `Number(null)` da 0 y se llevaría la variante más barata
+    // en silencio — el mismo 0 fabricado que `precio_facturado`.
+    if (nivel == null || nivel === '') return null;
+    const n = Number(nivel);
+    if (!v.length || !Number.isFinite(n)) return null;
+    const idx = Math.min(Math.max(Math.trunc(n), 1) - 1, ultimoIndiceDeLargo(v));
+    return idx >= 0 ? (v[idx] || null) : null;
+}
+
 // Detects if text mentions a service category with hair-length variants (Largo 1/2/3/4,
 // o nombres descriptivos equivalentes como "Cabello corto/medio/largo").
 // Returns the original category name or null.
@@ -5458,6 +5531,10 @@ module.exports = {
     resolveCategoriaDeLargo,
     extractLargoPelo,
     classifyLargoVariant,
+    esVarianteFueraDeEscalaDeLargo,
+    ultimoIndiceDeLargo,
+    variantesDeLargoOrdenadas,
+    elegirVariantePorLargo,
     extractMechasClasicasTipo,
     detectCorteMencion,
     detectCorteGenerico,

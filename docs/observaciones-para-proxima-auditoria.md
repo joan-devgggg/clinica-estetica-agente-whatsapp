@@ -490,3 +490,46 @@ entrada a Color Premium que case `raiz`, y las tres frases vuelven a `null`.
 
 **No decidido como «no arreglar»: decidido como «no ahora»**, y con el cambio aceptado en
 firme. Contexto completo del marcado: CLAUDE.md, sección «Dar de baja un servicio».
+
+
+---
+
+## Las guardas de «Mechas clásicas» comparan el nombre literal de la categoría
+
+**Anotado el 21/08/2026 al auditar las escalas tras el arreglo de la XL. NO arreglado.**
+
+`bot.js` exime a «Mechas clásicas» de los dos caminos que eligen variante por largo, porque
+sus variantes son COBERTURA (delante y rostro / media cabeza / cabeza completa) y no longitud.
+Las dos exenciones comparan el nombre de la categoría con la cadena `'mechas clasicas'`:
+
+    bloque 1:  normalizeText(session.pendingLargoCategory) === 'mechas clasicas'
+    bloque 2:  normalizeText(session.selectedService.categoria) !== 'mechas clasicas'
+
+Es la fragilidad de la regla 5, y es la MISMA familia que la XL: una escala tratada como otra.
+La categoría la edita la dueña desde el panel, y el día que la renombre —«Mechas
+tradicionales», «Mechas»— las dos guardas dejan de casar en silencio. Medido sobre el fixture
+simulando el renombrado:
+
+    sigue formando escala posicional:  Mechas 1 | Mechas 2 | Mechas 3
+
+    frases de COBERTURA por el detector de LARGO
+      «media cabeza»        → nivel 2  → Mechas 2 (80 €)   ← acierta por casualidad
+      «cabeza completa»     → null     → no elige
+      «solo delante»        → null     → no elige
+      «delante y rostro»    → null     → no elige
+
+    frases de LARGO sobre una cita de mechas ya elegida (corrección, bloque 2)
+      «por debajo de la cintura»  → Mechas 3 (100 €)
+      «hasta los hombros»         → Mechas 1 (60 €)
+
+O sea: 3 de 4 formas de decir la cobertura dejarían de resolver, y una frase de largo movería
+la cita entre coberturas — de 60 € a 100 € — sobre una clienta que nunca habló de su pelo.
+
+**Por qué no se arregla ahora**: el criterio «esta categoría va por cobertura y no por largo»
+tendría que salir del dato y hoy no hay campo para eso. Se puede DERIVAR —las variantes de
+largo nombran un largo («Corto», «Cabello medio», «Color completo largo 1») y las de cobertura
+son dígito puro («Mechas 2»)— pero eso es un cambio de diseño en un camino delicado y toca
+decidirlo, no colarlo (regla 8). Hoy la categoría no está renombrada, así que es latente.
+
+Nota: la explicación de la cobertura ya NO tiene este problema desde el 21/08 — la lee el
+prompt de `services[].explicacion`, que viaja en la entrada. Lo que queda es la elección.

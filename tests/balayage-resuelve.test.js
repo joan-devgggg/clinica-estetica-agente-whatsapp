@@ -16,6 +16,7 @@ process.env.TZ = 'Europe/Madrid';
 const assert = require('assert');
 const {
     detectLargoCategory, extractLargoPelo, classifyLargoVariant, normalizeText,
+    variantesDeLargoOrdenadas, elegirVariantePorLargo,
 } = require('../services/helpers');
 
 const CATALOGO = require('./fixtures/sante-catalog.json').services;
@@ -23,16 +24,15 @@ const CATALOGO = require('./fixtures/sante-catalog.json').services;
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
 
-// Segundo paso, tal como lo hace bot.js: dentro de la categoría pendiente, las variantes
-// ordenadas por largo y elegida por posición.
+// Segundo paso: dentro de la categoría pendiente, la variante que sale de ese largo. Llama a
+// las MISMAS funciones que bot.js en vez de reproducir la fórmula, y eso no es comodidad —
+// esta función era un gemelo con la fórmula copiada, y llevaba el bug del techo escrito igual
+// que el original, así que no podía cazarlo. Un gemelo solo sirve mientras es idéntico, y
+// nadie se entera del día que deja de serlo (21/08/2026).
 function resolverVariante(categoria, texto) {
     const largo = extractLargoPelo(texto);
     if (largo == null) return null;
-    const catNorm = normalizeText(categoria);
-    const candidatas = CATALOGO
-        .filter(s => normalizeText(s.categoria) === catNorm && classifyLargoVariant(s.nombre) != null)
-        .sort((a, b) => classifyLargoVariant(a.nombre) - classifyLargoVariant(b.nombre));
-    return candidatas[Math.min(largo - 1, candidatas.length - 1)] || null;
+    return elegirVariantePorLargo(variantesDeLargoOrdenadas(categoria, CATALOGO), largo);
 }
 
 // ─── El arreglo ──────────────────────────────────────────────────────────────

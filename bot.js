@@ -13,7 +13,7 @@ const { toLocalDateStr, toLocalTimeStr } = require('./services/date-utils');
 const { applyDatePreference } = require('./services/date-preference');
 const calendar = require('./services/calendar');
 const calendarSante = require('./services/calendar-sante');
-const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, resolveCategoriaDeLargo, extractLargoPelo, esRespuestaDeLargo, classifyLargoVariant, extractMechasClasicasTipo, detectCorteMencion, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, botOfferableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, resolverHora12h, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildSinReservaAunMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
+const { detectIntent, getMissingFields, extractQuickData, extractQuickDataSante, hasApellido, extractServiceFromText, extractServiceCategoriesFromText, extractAnchorConstraint, buildFullServiceName, humanizeLargoLabel, extractStylistFromText, resolveStylistMention, isAffirmative, esAmbiguo, normalizeText, MOTIVOS_OFRECIBLES, wantsAnotherBooking, wantsRestart, detectGuestBooking, detectVariasPersonas, extractGuestName, isValidName, isServiceName, extractNameAfterIntro, residuoTrasNombre, mensajeTraeOtraCosa, detectLanguage, IDIOMAS_SOPORTADOS, matchUpsellRule, resolveServiceDurationMin, resolveAppointmentDurationMin, computeAmpliacionEndsAt, DURACION_CITA_FALLBACK_MIN, resolveK18ComplementIfNeeded, resolveK18ServiceFromText, resolveAcceptedUpsellNames, resolveServiceCatalogEntry, shouldDiscardUpsellForClosing, buildSanteConfirmationMessage, buildCitaFantasmaMsg, isSpaPromoCategory, hasPreviousSpaOrMassage, buildSpaPromoNote, detectLargoCategory, resolveCategoriaDeLargo, extractLargoPelo, esRespuestaDeLargo, classifyLargoVariant, variantesDeLargoOrdenadas, elegirVariantePorLargo, extractMechasClasicasTipo, detectCorteMencion, detectCorteGenerico, detectCorteGenero, detectCorteMujerTipo, detectCorteNinoTipo, detectConsultaService, detectConsultaValoracion, detectHairProblemDescription, namesConcreteService, isReactiveOnlyService, isServiceActive, botOfferableCatalog, detectNoPreferenceSignal, detectNoStylistPreference, HORA_HHMM_SRC, resolverHora12h, extractMentionedHours, extractMentionedDates, declaraSinDisponibilidad, extractPrecioMencionado, catalogEntriesAtPrice, detectHoraFueraDeHorario, resolveDiasDeApertura, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX, detectTratamiento, classifyIncomingMedia, unsupportedMediaMsg, buildCyrillicRe, isNegative, detectAppointmentQuery, detectExistingAppointmentReference, extractCitaPistas, detectCancelRequest, detectRescheduleRequest, buildCitasVivasMsg, buildCancelConfirmMsg, buildElegirCitaMsg, buildCancelFalloMsg, buildAmpliacionSolapaMsg, buildSinReservaAunMsg, buildPreguntaSegundaCitaMsg, buildSegundaCitaNoMsg } = require('./services/helpers');
 const { incrementMetric } = require('./services/metrics');
 const { transcribeAudio } = require('./services/transcription');
 const { loadClient, saveClient, saveSummary, deleteClient } = require('./services/memory');
@@ -5865,25 +5865,24 @@ async function processMessageCore(client, message, userPhone, userText, messageK
                     // Catálogo COMPLETO: misma razón que en Mechas clásicas, la elección es
                     // posicional sobre las variantes ordenadas por largo. Filtrar aquí haría
                     // que "cabello largo" cayera en la variante de al lado.
-                    const catalog = agentCfgPre?.services || [];
-                    const catNorm = normalizeText(session.pendingLargoCategory);
-                    const candidates = catalog.filter(s =>
-                        normalizeText(s.categoria) === catNorm && classifyLargoVariant(s.nombre) != null
-                    ).sort((a, b) => classifyLargoVariant(a.nombre) - classifyLargoVariant(b.nombre));
-                    const idx = variantNum > 0
-                        ? Math.min(variantNum - 1, candidates.length - 1)
-                        : largo != null
-                            ? Math.min(largo - 1, candidates.length - 1)
-                            : Math.min(1, candidates.length - 1); // default to Largo 2 (medium)
-                    if (idx >= 0 && candidates[idx]) {
-                        if (isServiceActive(candidates[idx])) {
-                            session.selectedService = candidates[idx];
+                    const candidates = variantesDeLargoOrdenadas(
+                        session.pendingLargoCategory, agentCfgPre?.services || []);
+                    // `variantNum` sale del regex `largo\s+(\d)`, o sea el NIVEL de largo y
+                    // no «la enésima opción»: mismo eje que `largo`, así que misma fórmula.
+                    // Sin ninguno de los dos («no sé») cae a 2, el medio.
+                    const nivel = variantNum > 0 ? variantNum : (largo != null ? largo : 2);
+                    // Topa en la última variante que TODAVÍA es un largo, que no siempre es
+                    // la última de la lista: las tres XL son cambio de color y no longitud.
+                    const elegida = elegirVariantePorLargo(candidates, nivel);
+                    if (elegida) {
+                        if (isServiceActive(elegida)) {
+                            session.selectedService = elegida;
                             session.largoPelo = largo;
                             session.pendingLargoCategory = null;
                         } else {
                             logger.info('servicio_inactivo_no_seleccionado', {
                                 orgId, telefono: userPhone, via: 'largo_variante',
-                                servicio: candidates[idx].nombre, categoria: candidates[idx].categoria,
+                                servicio: elegida.nombre, categoria: elegida.categoria,
                             });
                         }
                     }
@@ -5900,37 +5899,37 @@ async function processMessageCore(client, message, userPhone, userText, messageK
             // tiene su propia resolución arriba con extractMechasClasicasTipo.
             else if (session.selectedService && !session.pendingLargoCategory
                 && normalizeText(session.selectedService.categoria || '') !== 'mechas clasicas') {
-                // Catálogo COMPLETO: elección posicional, igual que los dos bloques de
-                // arriba. El descarte del servicio de baja va en la condición de abajo.
-                const catalog = agentCfgPre?.services || [];
-                const catNorm = normalizeText(session.selectedService.categoria || '');
-                const sorted = catalog
-                    .filter(s => normalizeText(s.categoria) === catNorm && classifyLargoVariant(s.nombre) != null)
-                    .sort((a, b) => classifyLargoVariant(a.nombre) - classifyLargoVariant(b.nombre));
+                // Misma fuente que el bloque de arriba: catálogo COMPLETO (la elección es
+                // posicional) y una sola fórmula. El descarte del servicio de baja va en la
+                // condición de abajo.
+                const sorted = variantesDeLargoOrdenadas(
+                    session.selectedService.categoria, agentCfgPre?.services || []);
                 if (sorted.length >= 2) {
                     const largo = extractLargoPelo(sanitized);
                     const variantNum = parseInt(normalizeText(sanitized).match(/\blargo\s+(\d)\b/)?.[1] || '0', 10);
                     const newLevel = variantNum > 0 ? variantNum : largo;
                     const currentLevel = classifyLargoVariant(session.selectedService.nombre);
                     if (newLevel != null && newLevel !== currentLevel) {
-                        const idx = Math.min(newLevel - 1, sorted.length - 1);
-                        if (idx >= 0 && sorted[idx] && !isServiceActive(sorted[idx])) {
+                        // Topa igual que arriba: corregir el largo tampoco puede llevar a una
+                        // variante que no es de largo (las tres XL).
+                        const elegida = elegirVariantePorLargo(sorted, newLevel);
+                        if (elegida && !isServiceActive(elegida)) {
                             // La corrección apuntaba a una variante de baja: se deja el
                             // servicio que ya tenía, que sigue siendo reservable.
                             logger.info('servicio_inactivo_no_seleccionado', {
                                 orgId, telefono: userPhone, via: 'largo_correccion',
-                                servicio: sorted[idx].nombre, categoria: sorted[idx].categoria,
+                                servicio: elegida.nombre, categoria: elegida.categoria,
                             });
-                        } else if (idx >= 0 && sorted[idx] && sorted[idx].nombre !== session.selectedService.nombre) {
+                        } else if (elegida && elegida.nombre !== session.selectedService.nombre) {
                             logger.info('largo_correccion_aplicada', {
                                 orgId, telefono: userPhone, categoria: session.selectedService.categoria,
-                                antes: session.selectedService.nombre, despues: sorted[idx].nombre,
+                                antes: session.selectedService.nombre, despues: elegida.nombre,
                             });
-                            session.selectedService = sorted[idx];
+                            session.selectedService = elegida;
                             session.largoPelo = largo;
                             if (session.selectedStylist) {
                                 const styRec = stylistsPre.find(s => s.id === session.selectedStylist.id);
-                                if (styRec && !stylistCanDoService(styRec, sorted[idx])) {
+                                if (styRec && !stylistCanDoService(styRec, elegida)) {
                                     session.selectedStylist = null;
                                 }
                             }

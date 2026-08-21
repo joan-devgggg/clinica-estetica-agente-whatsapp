@@ -20,6 +20,12 @@ o acepta el «no sé»); lo caro es devolver el tramo equivocado.
 | **3 · Largo** | **por debajo del pecho** · **por debajo de los omóplatos** · media espalda · mitad de la espalda · codos · cintura |
 | **4 · Muy largo** | **por debajo de la cintura** · cadera |
 
+⚠️ **El tramo 4 NO compra la variante «XL»** de Deco Total Blond, Mechas Airtouch ni Mechas
+Balayage: esas tres son para CAMBIOS DE COLOR IMPORTANTES y no por longitud (Yulia,
+21/08/2026), así que un largo 4 para en «Largo», que es el techo de la escala. Lo decide
+`elegirVariantePorLargo` (`helpers.js`), que es la ÚNICA fórmula — antes estaba copiada en
+tres sitios y el criterio del techo solo en el prompt. Red: `tests/xl-no-es-un-largo.test.js`.
+
 En negrita, las que llevan modificador: son las que hay que registrar aparte (ver abajo).
 
 Los cuatro idiomas, con las formas equivalentes:

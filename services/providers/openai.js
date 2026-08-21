@@ -3,7 +3,7 @@ require('dotenv').config();
 const config = require('../../config.json');
 const db = require('../db');
 const { getOrgType } = require('../org-registry');
-const { normalizeText, classifyLargoVariant, hasApellido, isReactiveOnlyCategory, offerableCatalog, botOfferableCatalog, isComplementOnlyService, IDIOMAS_SOPORTADOS, MOTIVOS_LLM, MOTIVOS_OFRECIBLES, resolveDiasDeApertura, DIAS_SEMANA_ES, DIAS_SEMANA_ES_PLURAL, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX } = require('../helpers');
+const { normalizeText, classifyLargoVariant, esVarianteFueraDeEscalaDeLargo, hasApellido, isReactiveOnlyCategory, offerableCatalog, botOfferableCatalog, isComplementOnlyService, IDIOMAS_SOPORTADOS, MOTIVOS_LLM, MOTIVOS_OFRECIBLES, resolveDiasDeApertura, DIAS_SEMANA_ES, DIAS_SEMANA_ES_PLURAL, TRATAMIENTOS_PRECIO_MIN, TRATAMIENTOS_PRECIO_MAX } = require('../helpers');
 // Observador de la salud del proveedor del modelo. No decide nada del flujo: solo cuenta.
 // summarizeHistory NO se instrumenta — no recibe orgId, y que falle un resumen no le llega
 // a ninguna clienta. El embudo que importa es este.
@@ -668,10 +668,16 @@ Salúdala con calidez, como a alguien que ya conoces. Puedes hacer referencia a 
             const catNorm = normalizeText(cat);
             const catServices = services.filter(s => normalizeText(s.categoria) === catNorm);
             const nivel4 = catServices.find(s => classifyLargoVariant(s.nombre) === 4);
-            // La 4ª variante de Balayage NO es por longitud sino por cambio de color
-            // importante (XL). En ese caso hay que aclararlo para que la clienta sepa
-            // cuándo aplica en vez del "largo" normal.
-            const nivel4EsCambioColor = nivel4 && /\b(xl|cambio)\b/.test(normalizeText(nivel4.nombre));
+            // La 4ª variante NO siempre es por longitud: hoy las tres son XL, o sea cambio
+            // de color importante (confirmado por Yulia el 21/08/2026). Hay que aclarárselo
+            // para que sepa cuándo aplica en vez del "largo" normal.
+            //
+            // El criterio sale de `helpers`, NO de un regex escrito aquí. Estuvo escrito solo
+            // en este fichero y la máquina no lo conocía: el prompt le decía a la clienta que
+            // la XL no era por longitud y `bot.js`, dos pasos después, le metía el «por
+            // debajo de la cintura» justo en esa variante. Con una sola fuente eso no puede
+            // volver a separarse.
+            const nivel4EsCambioColor = !!nivel4 && esVarianteFueraDeEscalaDeLargo(nivel4.nombre);
             let largoPregunta;
             if (nivel4EsCambioColor) {
                 largoPregunta = 'pregúntale el largo aproximado: "¿Cuánto largo tienes? Corto (hasta hombros), medio (hasta la espalda) o largo (hasta la cintura)". Y aclárale que además existe una variante especial (XL) para cambios de color importantes —por ejemplo pasar de moreno a rubio—, no por la longitud del pelo: si ese es su caso, que te lo diga y reservamos esa opción en vez de la de largo normal';
