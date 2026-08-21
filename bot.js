@@ -1362,9 +1362,34 @@ function salonRetryMsg(language) {
 //      falta porque la respuesta correcta REPITE la hora imposible que pidió la clienta
 //      («a las 23:00 no abrimos, nuestro horario es de 10:00 a 19:00»), y una hora fuera
 //      del horario no puede ser un hueco inventado: no es reservable por definición.
-//   2. Se mencionan DOS puntas distintas. Un mensaje que nombra UNA sola hora no está
-//      diciendo un horario, está proponiendo un hueco — «te apunto a las 19:00» y «¿te va
-//      bien a las 11:00?» caen aquí, que es justo lo que no puede colarse.
+//   2. Se mencionan DOS puntas distintas, O NINGUNA DE LAS HORAS ES RESERVABLE Y NO SE PIDE
+//      APROBACIÓN. Un mensaje
+//      que nombra UNA sola hora RESERVABLE no está diciendo un horario, está proponiendo un
+//      hueco — «te apunto a las 11:00» y «¿te va bien a las 11:00?» caen aquí. Pero la hora
+//      de CIERRE no es reservable por definición (el salón cierra a las 19:00: ninguna cita
+//      empieza a esa hora), así que decirla sola no puede ser una oferta. La disyunción no
+//      es un aflojamiento del umbral: es la razón por la que el umbral existía, escrita
+//      donde se comprueba.
+//
+//      LO QUE COSTÓ (Anna Zhyravel, 13/08/2026): se dejó la зарядка en el salón y preguntó
+//      si podía pasar a recogerla en un par de horas. La respuesta era perfecta —«Конечно,
+//      приходи когда удобно. Мы работаем до 19:00»— y se la comió esta exención por nombrar
+//      UNA punta: `proposesTimingWithoutService` la sustituyó por «para ver los huecos
+//      necesito saber qué servicio quieres», a alguien que iba a buscar un cargador.
+//      Y con ella el segundo caso, que es el de Olga otra vez: «a las 23:00 no abrimos»,
+//      una sola hora, fuera del horario, también se condenaba.
+//
+//      La coletilla de la aprobación es lo que separa «trabajamos hasta las 19:00» de
+//      «cierra a las 20:00, ¿te va bien a las 20:00?» —que ofrece una hora imposible— y va
+//      SOLO en esa mitad de la disyunción: en la de las dos puntas mataría «Мы работаем с
+//      11:00 до 15:00. Какое время тебе подойдёт?», que es el falso positivo por el que
+//      `asksForBookingApproval` se sacó de aquí en su día.
+//
+//      RESIDUO DECLARADO: la hora de APERTURA sola («abrimos a las 10:00») sigue sin
+//      exención, y es correcto — las 10:00 SÍ son reservables, así que ese mensaje y una
+//      oferta de hueco a las 10:00 no se distinguen sin leer intención. En la práctica no
+//      duele: el horario se dice casi siempre entero («de 10:00 a 19:00»), que son dos
+//      puntas.
 //   3. El texto DICE que es un horario ("abrimos", "мы работаем", "our hours"…). Sin esto,
 //      «tengo libre a las 11:00 y a las 15:00» sin un solo hueco pasaría por horario.
 //   4. No da la reserva por hecha (llmClaimsBooked).
@@ -1403,7 +1428,17 @@ function soloDeclaraHorarioDelSalon(respuesta, horasMencionadas, horasHorario) {
     const noReservable = h => toMinutos(h) < primera || toMinutos(h) >= ultima;
     const soloHorario = horasMencionadas.every(h => h && (limites.has(h) || noReservable(h)));
     const puntasDistintas = new Set(horasMencionadas.filter(h => h && limites.has(h))).size;
-    return soloHorario && puntasDistintas >= 2 && statesOpeningHours(respuesta) && !llmClaimsBooked(respuesta);
+    // Ninguna hora del mensaje puede ser un hueco: o cierra, o cae fuera del horario. Y ahí
+    // —y SOLO ahí— se exige además que no esté pidiendo aprobación: es lo que separa
+    // «trabajamos hasta las 19:00» de «cierra a las 20:00, ¿te va bien a las 20:00?», que
+    // ofrece una hora imposible. En la rama de las dos puntas `asksForBookingApproval` NO
+    // puede entrar: «Мы работаем с 11:00 до 15:00. Какое время тебе подойдёт?» la activa y
+    // es la respuesta correcta en ruso más natural que existe. Misma doctrina de siempre:
+    // la exención va donde no se pierde nada, nunca en el gate.
+    const ningunaReservable = horasMencionadas.every(h => h && noReservable(h));
+    const declaraSinOfrecer = ningunaReservable && !asksForBookingApproval(respuesta);
+    return soloHorario && (puntasDistintas >= 2 || declaraSinOfrecer)
+        && statesOpeningHours(respuesta) && !llmClaimsBooked(respuesta);
 }
 function respondsWithInventedSlots(respuesta, availableSlots, horasHorario = null) {
     // Las HH:MM y las sueltas con marcador ("around 10, 11, or 12"). El normalizeHora de
