@@ -344,7 +344,7 @@ cuatro idiomas devuelven los MISMOS `nombreCompleto`).
 **Lo que sí se traduce es la línea de DEBAJO** (`agent_configs.services[].explicacion`,
 `{es,en,ru,uk}` o una cadena suelta que vale por el castellano). Sin texto escrito no sale
 ninguna línea: no se compone una descripción a partir del nombre ni de la categoría (regla 3).
-**Añade, nunca sustituye**: dice qué es sin tocar cómo se llama. **Escrita el 21/08/2026 en 21
+**Añade, nunca sustituye**: dice qué es sin tocar cómo se llama. **Escrita el 21/08/2026 en 24
 de las 82 entradas y solo en castellano** —los otros tres caen a él, que es lo que deja a
 Yulia traducir después sin que la pantalla se quede muda entremedias—. Lo que no hay que
 redescubrir:
@@ -362,7 +362,8 @@ redescubrir:
   Airtouch y Mechas Balayage—: en «Mechas clásicas» son cobertura, en «Cortes» son cinco
   servicios distintos y en «Manicura/Pedicura» son diez. Un campo llamado «largo» mentiría en
   nueve de quince. Hoy las 21 líneas son justo esas dos cosas: las variantes de las seis, y
-  las tres coberturas de mechas clásicas.
+  las tres coberturas de mechas clásicas, más la línea de las tres XL, que es la única que no
+  habla de longitud.
 - **«Hasta la cintura» y «hasta la cintura o más» son DOS textos, y la diferencia es el
   TECHO.** En las tres categorías sin cuarta variante (Alisado vegano, Anti-encrespamiento,
   Color Premium) «Largo» es la última, y `Math.min(largo-1, candidates.length-1)` (`bot.js`)
@@ -372,8 +373,11 @@ redescubrir:
 - **LAS TRES XL NO SON UN LARGO, y la que estaba equivocada era la MÁQUINA.** Yulia lo
   confirmó el 21/08/2026: la XL es para CAMBIOS DE COLOR IMPORTANTES, no por longitud —lo que
   ya decía el prompt, y lo que la entrada de Balayage dice en su propio nombre—. Arreglado el
-  mismo día: ver «La última variante no siempre continúa la escala», abajo. Su línea de
-  explicación está pendiente de escribir en el catálogo.
+  mismo día: ver «La última variante no siempre continúa la escala», abajo. Su línea dice
+  **«Cambios de color grandes»** y es la única de las 24 que no habla de longitud, que es lo
+  que la hace funcionar: leída de arriba abajo la lista dice hombros / espalda / cintura / y
+  esto es otra cosa. Se escribió DESPUÉS de arreglar la máquina y no antes — con el largo 4
+  cayendo todavía en la XL, esa línea habría contradicho a la mitad del sistema.
 - **Lo que el bot dice del LARGO sigue sin poder reutilizarse**: son tres frases en castellano
   DENTRO del prompt (`openai.js`) que el modelo reescribe y traduce sobre la marcha —una
   página no tiene modelo—, y no van por entrada sino por FORMA de la categoría (si hay una 4ª

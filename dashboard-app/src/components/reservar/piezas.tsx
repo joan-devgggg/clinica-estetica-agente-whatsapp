@@ -176,9 +176,12 @@ export function Cargando({ t }: { t: Textos }) {
  * que deje de poder pedirlo por su nombre al llegar.
  *
  * Lo escribe la dueña, y sin texto no hay línea — no se compone una descripción a partir
- * del nombre ni de la categoría (regla 3). Desde el 21/08/2026 sale en 21 de las 82
- * entradas: las variantes de las seis categorías que van por largo y las tres coberturas de
- * mechas clásicas, todas de una sola línea. El resto del catálogo sigue sin ella.
+ * del nombre ni de la categoría (regla 3). Desde el 21/08/2026 sale en 24 de las 82
+ * entradas: las variantes de las seis categorías que van por largo, las tres coberturas de
+ * mechas clásicas y las tres XL, todas de una sola línea. El resto del catálogo sigue sin
+ * ella. Medido a 360 px, que es donde aprieta: la fila pasa de 72 a 94 px y el paso más
+ * largo (cuatro variantes, las cuatro con línea) acaba a 574 de 600 — no scrollea, pero el
+ * margen que queda son 26 px. Una línea de más de ~35 caracteres parte en dos y se lo come.
  */
 function Explicacion({ texto }: { texto: string | null }) {
   if (!texto) return null;

@@ -673,7 +673,7 @@ function salonPublico(businessInfo, { waPhone, lang } = {}) {
  *
  * ── `explicacion`: el ÚNICO campo del catálogo que sale traducido ────────────────────────
  *
- * Escrito desde el 21/08/2026 en 21 de las 82 entradas. Ver `explicacionPublica`.
+ * Escrito desde el 21/08/2026 en 24 de las 82 entradas. Ver `explicacionPublica`.
  */
 function catalogoPublico(servicios = [], { clavePara = null, nombrePara = null, lang = null } = {}) {
     return (Array.isArray(servicios) ? servicios : []).map(s => {
@@ -714,15 +714,19 @@ function catalogoPublico(servicios = [], { clavePara = null, nombrePara = null, 
 // salón, y sin él no sale ninguna línea. Inventarle a un servicio una descripción que la
 // dueña no ha escrito es exactamente la regla 3.
 //
-// Escrito el 21/08/2026 en 21 de las 82 entradas, y SOLO en castellano —los otros tres
+// Escrito el 21/08/2026 en 24 de las 82 entradas, y SOLO en castellano —los otros tres
 // idiomas caen a él, que es lo que permite traducir después sin dejar la pantalla muda—:
 // las variantes de las SEIS categorías que van por largo (hombros / espalda / cintura, con
 // «o más» en las tres que no tienen cuarta variante, porque allí «Largo» es el techo al que
-// el motor manda a quien dice «por debajo de la cintura») y las tres coberturas de mechas
-// clásicas. **Las tres XL se quedaron sin línea a propósito**: la máquina las trata como
-// largo 4 y el prompt le dice a la clienta que son cambio de color, y hasta que Yulia diga
-// cuál de las dos es, una línea equivocada ahí cuesta entre 10 y 30 € dichos como precio
-// bueno. Las demás entradas siguen sin el campo, y no sale nada por ellas.
+// el motor manda a quien dice «por debajo de la cintura»), las tres coberturas de mechas
+// clásicas y las tres XL. Las demás entradas siguen sin el campo, y no sale nada por ellas.
+//
+// **La línea de la XL es la única de las 24 que no habla de longitud, y por eso funciona**:
+// leída de arriba abajo la lista dice hombros / espalda / cintura / y esto es otra cosa
+// («Cambios de color grandes»). Se escribió DESPUÉS de arreglar la máquina, no antes: hasta
+// ese momento el prompt decía que la XL no era por longitud y `bot.js` le mandaba el largo 4
+// justo ahí, así que la línea habría contradicho a la mitad del sistema. Ver la sección «La
+// última variante no siempre continúa la escala» de CLAUDE.md.
 //
 // ── Vale para las dos cosas, y por eso no se llama `largo` ───────────────────────────────
 //
