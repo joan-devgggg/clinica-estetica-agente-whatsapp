@@ -1,0 +1,22 @@
+{
+  "_meta": "Backup ANTES de borrar la cita fantasma del 27/08/2026. Nació del mensaje «❤️🥰» de Ihab (inbound 2026-08-16 14:26:29Z); la fila se creó 11 s después (14:26:40) y el acuse salió a las 14:26:43. Nadie la pidió: el cliente se fue de Alicante el 17/08. Sin cobros ni seguimientos asociados. Borrada el 2026-08-22.",
+  "tabla": "appointments",
+  "fila": {
+    "id": "005b43ed-89b7-4114-92ac-a37ebee0186e",
+    "organization_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+    "contact_id": "f8876063-94eb-45b3-bba7-6fe2b5fa4c0a",
+    "full_name": "Ihab",
+    "service": "Reconstrucción K18 + lavar y peinar",
+    "starts_at": "2026-08-27 13:00:00+00",
+    "ends_at": "2026-08-27 14:00:00+00",
+    "status": "confirmed",
+    "stylist_id": "c3d4e5f6-a7b8-9012-cdef-234567890107",
+    "stylist_name": "Natalia",
+    "source": "bot",
+    "created_at": "2026-08-16 14:26:40.087205+00",
+    "updated_at": "2026-08-16 14:26:40.087205+00",
+    "updated_by": null,
+    "last_change": null
+  },
+  "contacto": { "wa_phone": "4790768781", "full_name": "Ihab Lavar" }
+}
