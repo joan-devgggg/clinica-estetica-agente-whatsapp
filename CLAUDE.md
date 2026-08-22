@@ -1294,6 +1294,45 @@ afirma algo del CATÁLOGO REAL va a `verify:sante`, contra `agent_configs`, que 
 9**— y la conclusión falsa que salió de saltársela, en
 [`docs/incidentes-cerrados.md#tres-catalogos`](docs/incidentes-cerrados.md#tres-catalogos).
 
+## Quien NOMBRA gana a quien insinúa (colisiones del catálogo, 22/08/2026)
+
+`extractServiceFromText` tiene dos pasadas que pueden elegir servicio, y corren en el orden
+equivocado: primero la DIFUSA, que traduce una palabra coloquial a una CATEGORÍA
+(`CATEGORY_KEYWORDS`) y elige dentro; mucho después la de ÚLTIMO RECURSO, la única que mira
+el NOMBRE de cada entrada. Con eso, una clienta que escribe el nombre de un servicio se
+llevaba otro. Barrido el catálogo vivo entero (82 entradas, 817 sondas), **cuatro cruces, y
+los cuatro de la misma familia**:
+
+    «botanical glow»  →  Brillo intensivo       120 € / 180 min   (era 45 € /  40 min)
+    «hair loss»       →  Consulta tricológica    85 € /  60 min   (era 75 € /  90 min)
+    «hair relax»      →  Aromaterapia relax      75 € /  60 min   (era 85 € /  45 min)
+    «anticaida»       →  Consulta tricológica    85 € /  60 min   (era 85 € / 120 min)
+
+- **La regla vive en `helpers.retaAlElegidoPorNombrePropio`**: lo elegido por palabra
+  coloquial cede ante la entrada cuyo NOMBRE PROPIO casa más palabras del texto. Una sola
+  retadora gana; varias empatadas → **null**, que pregunte el bot (misma doctrina que el
+  empate de «hidratación» entre 45 / 85 / 110 €). Se mide contra el catálogo recibido en cada
+  llamada, nunca contra una lista en git (regla 5).
+- **La exención (regla 12): la palabra que es identidad de la CATEGORÍA ya elegida se queda
+  en ella.** 'glow' es una palabra de «Brillo Glow», así que «glow» y «brillo glow» siguen
+  dando Brillo intensivo (120 €) y no saltan a «Botanical Glow Pure Blond». Es
+  `esIdentidadAjena` de la pasada 2, un peldaño antes. Sin ella, un bare «glow» decidiría 75 €
+  a cara o cruz.
+- **NO lleva filtro por categoría, y no es un olvido**: se escribió con él y quitarlo no movió
+  ni un bloque del test ni una de las 817 sondas —la difusa puntúa por SUBCADENA y esto por
+  palabra entera, así que su marcador nunca es menor—. Un filtro que no se puede medir es peor
+  que no tenerlo.
+- **MEDIDO ANTES DE TOCAR NADA**: de 524 entrantes de Sante, **cero** dicen 'glow', 'hair
+  loss', 'hair relax' o 'anticaída'. Podía costar dinero y todavía no lo había costado, igual
+  que las tres XL. Y las dos colisiones que traían el encargo —«lavar» → K18 de 60 € y
+  «Miracle Elixir» ↔ «Reconstrucción Pro Miracle»— **ya estaban tapadas**: la primera por la
+  contención de la pasada 2 (la cita de Ihab), la segunda nunca cruzó.
+- **El arreglo va en el CÓDIGO, nunca en el catálogo**: renombrar entradas para que no se
+  parezcan es de Yulia, y una tabla de pares en git caduca en el primer cambio suyo.
+
+Red: `tests/nombre-manda-sobre-palabra-coloquial.test.js` (10 bloques, con bloque 0 que afirma
+que el fixture reproduce la condición), 4 mutaciones medidas en su cola.
+
 ## `session.leadId` puede venir vacío — usa `ensureLeadId`
 
 **Nunca leas `session.leadId` a pelo.** Se queda a null en dos situaciones normales: el

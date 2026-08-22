@@ -1413,6 +1413,79 @@ function extractServiceCategoriesFromText(text, servicesCatalog) {
     return [...encontradas];
 }
 
+// ─── EL NOMBRE MANDA SOBRE LA PALABRA COLOQUIAL ─────────────────────────────────────
+//
+// La pasada difusa de `extractServiceFromText` traduce una palabra coloquial a una
+// CATEGORÍA (CATEGORY_KEYWORDS) y elige dentro de ella. Es evidencia débil —'glow',
+// 'relax', 'caida' son palabras que cualquiera dice de pasada— y sin embargo corre ANTES
+// que la pasada de último recurso, que es la única que mira el NOMBRE de cada entrada. Con
+// eso, una clienta que escribe el nombre de un servicio se lleva otro:
+//
+//     «botanical glow»  →  Brillo intensivo        120 € / 180 min   (era 45 € / 40 min)
+//     «hair loss»       →  Consulta tricológica     85 € /  60 min   (era 75 € / 90 min)
+//     «hair relax»      →  Aromaterapia relax       75 € /  60 min   (era 85 € / 45 min)
+//     «anticaida»       →  Consulta tricológica     85 € /  60 min   (era 85 € / 120 min)
+//
+// Es la misma familia que «Para lavar.» → «Reconstrucción K18 + lavar y peinar» (la cita
+// fantasma de Ihab) vista desde el otro lado: allí un token de otra categoría se colaba en
+// la pasada de último recurso; aquí la pasada de último recurso ni siquiera se alcanza,
+// porque la palabra coloquial ya decidió. Y el daño es el de siempre: precio y agenda
+// equivocados dichos como cifra buena, sin síntoma.
+//
+// LA REGLA: quien NOMBRA gana a quien insinúa. Si el texto casa más palabras del NOMBRE
+// propio de una entrada de OTRA categoría que del nombre de la elegida por palabra
+// coloquial, la elegida no está identificando nada y cede. Con una sola retadora, gana
+// ella; con varias, null — preguntar es más barato que cobrar de más (misma doctrina que
+// el empate de «hidratación» entre 45 / 85 / 110 €).
+//
+// LO QUE ESTA PUERTA NO PUEDE COMERSE (regla 12): la mención cuya única evidencia es una
+// palabra del nombre de la CATEGORÍA ya elegida. 'glow' es identidad de «Brillo Glow», así
+// que «glow» y «brillo glow» siguen resolviendo a Brillo intensivo (120 €) y no saltan a
+// «Botanical Glow Pure Blond»; lo mismo 'spa' con «Masajes y SPA». Es el mismo criterio que
+// la contención de la pasada 2 (`esIdentidadAjena`), aplicado un peldaño antes: un token de
+// la categoría pertenece a esa categoría, lo diga quien lo diga.
+//
+// Se mide contra el catálogo VIVO en cada llamada, nunca contra una lista en git (regla 5):
+// una entrada nueva con un nombre que pise una palabra coloquial queda cubierta sin tocar
+// código, y el día que la dueña renombre una categoría el criterio se mueve con ella.
+const MIN_TOKEN_NOMBRE_PROPIO = 4;
+
+function tokensDeNombrePropio(nombre) {
+    return tokenizeService(normalizeService(nombre)).filter(w =>
+        w.length >= MIN_TOKEN_NOMBRE_PROPIO && !SERVICE_MATCH_STOPWORDS.has(w) && !/^\d+$/.test(w));
+}
+
+// ¿Alguna entrada está NOMBRADA mejor que la elegida por palabra coloquial? Devuelve el
+// servicio retador, `null` si el empate es irresoluble (que se pregunte) o `undefined` si
+// nadie la supera y la elegida se queda como está.
+//
+// NO lleva filtro por categoría, y no es un olvido: se escribió con él («que no rete quien
+// está en la categoría que la difusa ya eligió») y quitarlo no movió NADA — ni un bloque de
+// este fichero ni una de las 817 sondas contra el catálogo vivo. La razón es estructural: la
+// difusa puntúa por SUBCADENA y esto por palabra entera, así que su marcador nunca es menor
+// que el de aquí y una retadora de su propia categoría no puede superarla. Un filtro que no
+// se puede medir es peor que no tenerlo (regla 2), así que no está.
+function retaAlElegidoPorNombrePropio(textTokens, elegido, servicesCatalog) {
+    // Identidad de la categoría ya elegida: si toda la evidencia de una retadora son
+    // palabras del nombre de ESA categoría, la mención es de la categoría, no suya.
+    const identidadDeLaCategoria = new Set(tokenizeService(normalizeService(elegido.categoria || '')));
+    const puntua = svc => tokensDeNombrePropio(svc.nombre).filter(w => textTokens.has(w));
+    const propio = puntua(elegido).length;
+
+    let mejor = propio;
+    let retadoras = [];
+    for (const svc of servicesCatalog) {
+        if (svc === elegido) continue;
+        const casadas = puntua(svc);
+        if (!casadas.length || casadas.length <= propio) continue;
+        if (casadas.every(w => identidadDeLaCategoria.has(w))) continue;   // la exención
+        if (casadas.length > mejor) { mejor = casadas.length; retadoras = [svc]; }
+        else if (casadas.length === mejor) retadoras.push(svc);
+    }
+    if (!retadoras.length) return undefined;
+    return retadoras.length === 1 ? retadoras[0] : null;
+}
+
 function extractServiceFromText(text, servicesCatalog) {
     if (!text || !servicesCatalog?.length) return null;
     const t = normalizeService(text);
@@ -1526,6 +1599,7 @@ function extractServiceFromText(text, servicesCatalog) {
     }
 
     // Fuzzy: common keywords
+    const antesDeLaPalabraColoquial = bestMatch;
     if (!bestMatch) {
         for (const { keywords, categoria } of CATEGORY_KEYWORDS) {
             if (keywords.some(kw => t.includes(normalizeText(kw)))) {
@@ -1567,6 +1641,17 @@ function extractServiceFromText(text, servicesCatalog) {
                 if (inCat.length === 1) { bestMatch = inCat[0]; break; }
                 // categoría ambigua sin variante nombrada → seguimos sin match (null)
             }
+        }
+    }
+
+    // Lo elegido por palabra coloquial cede ante quien el texto NOMBRA mejor.
+    // Ver «EL NOMBRE MANDA SOBRE LA PALABRA COLOQUIAL», arriba.
+    if (!antesDeLaPalabraColoquial && bestMatch) {
+        const textTokens = new Set(tokenizeService(t));
+        const reto = retaAlElegidoPorNombrePropio(textTokens, bestMatch, servicesCatalog);
+        if (reto !== undefined) {
+            bestMatch = reto;                       // null → empate: que pregunte el bot
+            bestLen = bestMatch ? normalizeService(bestMatch.nombre).length : 0;
         }
     }
 
