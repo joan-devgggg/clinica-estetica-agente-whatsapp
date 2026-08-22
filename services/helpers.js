@@ -1309,10 +1309,33 @@ function extractQuickData(text, partialData = {}) {
 // 'spa' no hace falta enumerarlo: son 3 letras y ya queda fuera por MIN_DISTINCTIVE_TOKEN.
 const TOKENS_DEL_NOMBRE_DEL_SALON = ['sante'];
 
+// ─── Palabras demasiado CORRIENTES para identificar un servicio ─────────────────────────
+//
+// Misma doctrina que la lista de arriba y lista distinta a propósito: allí el motivo es
+// «así se llama el negocio», aquí es «así habla todo el mundo». Si algún día el nombre del
+// salón se lee de `business_info.companyName`, una se mueve y la otra no.
+//
+// 'natural' (22/08/2026): al renombrar «Facial reafirmante» a «Santé Face Lift Natural», ese
+// nombre se quedó con UN solo token distintivo —'sante' ya estaba vetado, y 'face' y 'lift'
+// son de 4 letras, por debajo de MIN_DISTINCTIVE_TOKEN—, así que 'natural' identificaba el
+// servicio él solo. Y en un salón de PELO esa palabra se dice a todas horas sin pedir nada:
+// medido sobre los 533 entrantes reales, «Hi! That's my hair in natural light, really dark»
+// pasaba a un facial de 40 €. Las mismas dos condiciones que dejan `blonde` fuera de
+// `largoKeywords`: lo escribe gente de verdad y lo dice de pasada.
+//
+// LO QUE SÍ SE COME (regla 12, aceptado a sabiendas): «face lift natural» a secas deja de
+// resolver, porque sin 'natural' no le queda ningún token de ≥5 letras. El nombre COMPLETO
+// sigue resolviendo, que es como lo escribe quien lo ha visto en el cartel; «face lift» ya
+// daba null antes. Medido: 328 sondas, solo las 2 diferencias buscadas. La salida buena es
+// que la entrada lleve una palabra suya ('lifting', 'facial') — y ese día esto se queda
+// inerte solo, sin que nadie tenga que acordarse de quitarlo.
+const TOKENS_DEMASIADO_COMUNES = ['natural'];
+
 const SERVICE_MATCH_STOPWORDS = new Set([
     'una', 'uno', 'con', 'del', 'los', 'las', 'para', 'por', 'que', 'mas',
     'sus', 'tus', 'mis', 'este', 'esta', 'esto', 'esa', 'ese',
     ...TOKENS_DEL_NOMBRE_DEL_SALON,
+    ...TOKENS_DEMASIADO_COMUNES,
 ]);
 
 // Equivalencias ortográficas EN/ES de nombres de servicio. El catálogo guarda
