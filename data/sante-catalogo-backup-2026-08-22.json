@@ -1,0 +1,545 @@
+{
+  "_meta": {
+    "NO_ES_EL_CATALOGO_VIVO": "El catálogo vivo está en agent_configs.services (Supabase). Este fichero es una FOTO y no se actualiza.",
+    "tomado_el": "2026-08-22",
+    "antes_de": "la tanda de Masajes y SPA / Spa Hair que pidió Yulia: mover Spa Hair detrás de Masajes y SPA, quitar «Spa Hair Hidratación», añadir «Santé Bamboo Harmony» (60 €/45 min), bajar el Detox de 115 € a 95 € y escribir 12 explicaciones.",
+    "commit": "663eb60",
+    "entradas": 82,
+    "restaurar": "Pega el contenido de .services (el ARRAY), NO este objeto entero. PATCH /api/agent-config reemplaza el array completo.",
+    "ojo": "Esto sirve para RESTAURAR, nunca para consultar qué hay en el catálogo (hecho 4 de CLAUDE.md).",
+    "estado": "APLICADO en producción el 2026-08-22 (UPDATE verificado y releído de Supabase: 82 entradas, orden y contenido campo por campo idénticos a lo enviado). Esta foto es el ANTES: sirve para volver atrás.",
+    "se_aplico_junto_con": "El arreglo de código dbfd414 (el nombre del salón no distingue un servicio), que TIENE QUE ESTAR DESPLEGADO para que «Santé Bamboo Harmony» no se coma los mensajes que nombran al salón."
+  },
+  "services": [
+    {
+      "nombre": "Corto",
+      "precio": 210,
+      "duracion": 300,
+      "categoria": "Alisado vegano",
+      "explicacion": "Hasta los hombros"
+    },
+    {
+      "nombre": "Medio",
+      "precio": 260,
+      "duracion": 300,
+      "categoria": "Alisado vegano",
+      "explicacion": "Hasta la espalda"
+    },
+    {
+      "nombre": "Largo",
+      "precio": 310,
+      "duracion": 300,
+      "categoria": "Alisado vegano",
+      "explicacion": "Hasta la cintura o más"
+    },
+    {
+      "nombre": "Corto",
+      "precio": 120,
+      "duracion": 240,
+      "categoria": "Anti-encrespamiento",
+      "explicacion": "Hasta los hombros"
+    },
+    {
+      "nombre": "Medio",
+      "precio": 160,
+      "duracion": 240,
+      "categoria": "Anti-encrespamiento",
+      "explicacion": "Hasta la espalda"
+    },
+    {
+      "nombre": "Largo",
+      "precio": 180,
+      "duracion": 240,
+      "categoria": "Anti-encrespamiento",
+      "explicacion": "Hasta la cintura o más"
+    },
+    {
+      "nombre": "Brillo intensivo",
+      "precio": 120,
+      "duracion": 180,
+      "categoria": "Brillo Glow"
+    },
+    {
+      "nombre": "Color raíz",
+      "precio": 75,
+      "duracion": 120,
+      "categoria": "Color Premium"
+    },
+    {
+      "nombre": "Color completo largo 1",
+      "precio": 90,
+      "duracion": 120,
+      "categoria": "Color Premium",
+      "explicacion": "Hasta los hombros"
+    },
+    {
+      "nombre": "Color completo largo 2",
+      "precio": 100,
+      "duracion": 120,
+      "categoria": "Color Premium",
+      "explicacion": "Hasta la espalda"
+    },
+    {
+      "nombre": "Color completo largo 3",
+      "precio": 110,
+      "duracion": 120,
+      "categoria": "Color Premium",
+      "explicacion": "Hasta la cintura o más"
+    },
+    {
+      "nombre": "Ampolla cuidado",
+      "precio": 10,
+      "duracion": 5,
+      "categoria": "Color Premium",
+      "solo_complemento": true
+    },
+    {
+      "nombre": "Mujer y peinado Dyson",
+      "precio": 50,
+      "duracion": 60,
+      "categoria": "Cortes"
+    },
+    {
+      "nombre": "Mujer y secado",
+      "precio": 40,
+      "duracion": 45,
+      "categoria": "Cortes"
+    },
+    {
+      "nombre": "Hombre",
+      "precio": 25,
+      "duracion": 30,
+      "categoria": "Cortes"
+    },
+    {
+      "nombre": "Niño",
+      "precio": 25,
+      "duracion": 60,
+      "categoria": "Cortes"
+    },
+    {
+      "nombre": "Infantil hasta 8 años",
+      "precio": 15,
+      "duracion": 60,
+      "categoria": "Cortes"
+    },
+    {
+      "nombre": "Corto",
+      "precio": 125,
+      "duracion": 120,
+      "categoria": "Deco Total Blond",
+      "explicacion": "Hasta los hombros"
+    },
+    {
+      "nombre": "Medio",
+      "precio": 145,
+      "duracion": 120,
+      "categoria": "Deco Total Blond",
+      "explicacion": "Hasta la espalda"
+    },
+    {
+      "nombre": "Largo",
+      "precio": 165,
+      "duracion": 120,
+      "categoria": "Deco Total Blond",
+      "explicacion": "Hasta la cintura"
+    },
+    {
+      "nombre": "XL",
+      "precio": 175,
+      "duracion": 140,
+      "categoria": "Deco Total Blond",
+      "explicacion": "Cambios de color grandes"
+    },
+    {
+      "nombre": "Dermapen Hair Loss",
+      "precio": 75,
+      "duracion": 90,
+      "categoria": "Dermapen Hair Loss"
+    },
+    {
+      "nombre": "Consulta tricológica con Yulia",
+      "precio": 85,
+      "duracion": 60,
+      "categoria": "Diagnóstico Capilar"
+    },
+    {
+      "nombre": "Exfoliación/pilling",
+      "precio": 10,
+      "duracion": 20,
+      "categoria": "Exfoliación cabeza",
+      "solo_complemento": true
+    },
+    {
+      "nombre": "Señora",
+      "precio": 25,
+      "duracion": 60,
+      "categoria": "Lavar y peinar"
+    },
+    {
+      "nombre": "Peinado alisar",
+      "precio": 35,
+      "duracion": 60,
+      "categoria": "Lavar y peinar"
+    },
+    {
+      "nombre": "Peinado ondas",
+      "precio": 40,
+      "duracion": 60,
+      "categoria": "Lavar y peinar"
+    },
+    {
+      "nombre": "Peinado especial",
+      "precio": 45,
+      "duracion": 90,
+      "categoria": "Lavar y peinar"
+    },
+    {
+      "nombre": "Higiénica mujer",
+      "precio": 25,
+      "duracion": 120,
+      "categoria": "Manicura/Pedicura"
+    },
+    {
+      "nombre": "Hombre",
+      "precio": 25,
+      "duracion": 60,
+      "categoria": "Manicura/Pedicura"
+    },
+    {
+      "nombre": "Manicura + gel",
+      "precio": 35,
+      "duracion": 120,
+      "categoria": "Manicura/Pedicura"
+    },
+    {
+      "nombre": "Extensión uñas",
+      "precio": 45,
+      "duracion": 120,
+      "categoria": "Manicura/Pedicura"
+    },
+    {
+      "nombre": "Corrección uñas ext",
+      "precio": 40,
+      "duracion": 120,
+      "categoria": "Manicura/Pedicura"
+    },
+    {
+      "nombre": "Pedicura higiénica",
+      "precio": 35,
+      "duracion": 120,
+      "categoria": "Manicura/Pedicura"
+    },
+    {
+      "nombre": "Pedicura + esmaltado",
+      "precio": 45,
+      "duracion": 120,
+      "categoria": "Manicura/Pedicura"
+    },
+    {
+      "nombre": "Fortalecimiento gel",
+      "precio": 5,
+      "duracion": 30,
+      "categoria": "Manicura/Pedicura",
+      "solo_complemento": true
+    },
+    {
+      "nombre": "Diseño",
+      "precio": 5,
+      "duracion": 20,
+      "categoria": "Manicura/Pedicura",
+      "solo_complemento": true
+    },
+    {
+      "nota": "a veces la piden 1-2 semanas después de la manicura, tenemos que dar garantía de una semana",
+      "nombre": "Reparación 1 uña",
+      "precio": 5,
+      "duracion": 15,
+      "categoria": "Manicura/Pedicura",
+      "solo_complemento": true
+    },
+    {
+      "nombre": "Relajante completo",
+      "precio": 70,
+      "duracion": 60,
+      "categoria": "Masajes y SPA"
+    },
+    {
+      "nombre": "Espalda y hombros",
+      "precio": 45,
+      "duracion": 45,
+      "categoria": "Masajes y SPA"
+    },
+    {
+      "nombre": "Holistic relajante Premium",
+      "precio": 95,
+      "duracion": 90,
+      "categoria": "Masajes y SPA"
+    },
+    {
+      "nombre": "Drenaje linfático piernas",
+      "precio": 45,
+      "duracion": 40,
+      "categoria": "Masajes y SPA"
+    },
+    {
+      "nombre": "Anticelulítico",
+      "precio": 65,
+      "duracion": 45,
+      "categoria": "Masajes y SPA"
+    },
+    {
+      "nombre": "Drenaje corporal",
+      "precio": 75,
+      "duracion": 60,
+      "categoria": "Masajes y SPA"
+    },
+    {
+      "nombre": "Aromaterapia relax",
+      "precio": 75,
+      "duracion": 60,
+      "categoria": "Masajes y SPA"
+    },
+    {
+      "nombre": "Deportivo",
+      "precio": 65,
+      "duracion": 60,
+      "categoria": "Masajes y SPA"
+    },
+    {
+      "nombre": "Facial reafirmante",
+      "precio": 40,
+      "duracion": 30,
+      "categoria": "Masajes y SPA"
+    },
+    {
+      "nombre": "Matiz",
+      "precio": 40,
+      "duracion": 60,
+      "categoria": "Matiz mujer"
+    },
+    {
+      "nombre": "Matiz plus",
+      "precio": 65,
+      "duracion": 60,
+      "categoria": "Matiz mujer"
+    },
+    {
+      "nombre": "Mascarilla violeta",
+      "precio": 10,
+      "duracion": 15,
+      "categoria": "Matiz mujer",
+      "solo_complemento": true
+    },
+    {
+      "nombre": "Corto",
+      "precio": 195,
+      "duracion": 360,
+      "categoria": "Mechas Airtouch",
+      "explicacion": "Hasta los hombros"
+    },
+    {
+      "nombre": "Medio",
+      "precio": 220,
+      "duracion": 360,
+      "categoria": "Mechas Airtouch",
+      "explicacion": "Hasta la espalda"
+    },
+    {
+      "nombre": "Largo",
+      "precio": 235,
+      "duracion": 360,
+      "categoria": "Mechas Airtouch",
+      "explicacion": "Hasta la cintura"
+    },
+    {
+      "nombre": "XL",
+      "precio": 260,
+      "duracion": 360,
+      "categoria": "Mechas Airtouch",
+      "explicacion": "Cambios de color grandes"
+    },
+    {
+      "nombre": "Mechas 1",
+      "precio": 60,
+      "duracion": 90,
+      "categoria": "Mechas clásicas",
+      "explicacion": "Delante y rostro"
+    },
+    {
+      "nombre": "Mechas 2",
+      "precio": 80,
+      "duracion": 180,
+      "categoria": "Mechas clásicas",
+      "explicacion": "Media cabeza"
+    },
+    {
+      "nombre": "Mechas 3",
+      "precio": 100,
+      "duracion": 180,
+      "categoria": "Mechas clásicas",
+      "explicacion": "Cabeza completa"
+    },
+    {
+      "nombre": "Mechas Contouring",
+      "precio": 160,
+      "duracion": 200,
+      "categoria": "Mechas Contouring"
+    },
+    {
+      "nombre": "Reconstrucción Pro Miracle",
+      "precio": 60,
+      "duracion": 60,
+      "categoria": "Reconstrucción"
+    },
+    {
+      "nombre": "Reconstrucción K18 + lavar y peinar",
+      "precio": 60,
+      "duracion": 60,
+      "categoria": "Reconstrucción"
+    },
+    {
+      "nota": "es un corte simple, si solo retocamos puntas o flequillo con alguna coloración o tratamiento, lo vemos sobre la marcha",
+      "nombre": "Retocar mujer",
+      "precio": 25,
+      "duracion": 40,
+      "categoria": "Retocar",
+      "solo_complemento": true
+    },
+    {
+      "nombre": "Spa Hair Relax",
+      "precio": 85,
+      "duracion": 45,
+      "categoria": "Spa Hair"
+    },
+    {
+      "nombre": "Spa Hair Detox",
+      "precio": 115,
+      "duracion": 60,
+      "categoria": "Spa Hair"
+    },
+    {
+      "nombre": "Spa Hair Hidratación",
+      "precio": 110,
+      "duracion": 60,
+      "categoria": "Spa Hair"
+    },
+    {
+      "nombre": "Orising hidratación intensa",
+      "precio": 85,
+      "duracion": 90,
+      "categoria": "Tratamiento Orgánico"
+    },
+    {
+      "nombre": "Orising express",
+      "precio": 60,
+      "duracion": 90,
+      "categoria": "Tratamiento Orgánico"
+    },
+    {
+      "nombre": "Orising anticaída",
+      "precio": 85,
+      "duracion": 120,
+      "categoria": "Tratamiento Orgánico"
+    },
+    {
+      "nombre": "Orising anticaspa",
+      "precio": 85,
+      "duracion": 120,
+      "categoria": "Tratamiento Orgánico"
+    },
+    {
+      "nombre": "Green Purity Detox",
+      "precio": 35,
+      "duracion": 40,
+      "categoria": "Tratamiento Orgánico"
+    },
+    {
+      "nombre": "Fresh Hidratación",
+      "precio": 45,
+      "duracion": 40,
+      "categoria": "Tratamiento Orgánico"
+    },
+    {
+      "nombre": "Miracle Elixir",
+      "precio": 59,
+      "duracion": 60,
+      "categoria": "Tratamiento Orgánico"
+    },
+    {
+      "nombre": "Pure Defense",
+      "precio": 59,
+      "duracion": 60,
+      "categoria": "Tratamiento Orgánico"
+    },
+    {
+      "nombre": "Nature Boost",
+      "precio": 65,
+      "duracion": 60,
+      "categoria": "Tratamiento Orgánico"
+    },
+    {
+      "nombre": "Botanical Glow Pure Blond",
+      "precio": 45,
+      "duracion": 40,
+      "categoria": "Tratamiento Orgánico"
+    },
+    {
+      "nombre": "Cabello corto",
+      "precio": 180,
+      "duracion": 240,
+      "categoria": "Mechas Balayage",
+      "explicacion": "Hasta los hombros"
+    },
+    {
+      "nombre": "Cabello medio",
+      "precio": 190,
+      "duracion": 240,
+      "categoria": "Mechas Balayage",
+      "explicacion": "Hasta la espalda"
+    },
+    {
+      "nombre": "Cabello largo",
+      "precio": 200,
+      "duracion": 240,
+      "categoria": "Mechas Balayage",
+      "explicacion": "Hasta la cintura"
+    },
+    {
+      "nombre": "XL / cambio importante",
+      "precio": 230,
+      "duracion": 300,
+      "categoria": "Mechas Balayage",
+      "explicacion": "Cambios de color grandes"
+    },
+    {
+      "nombre": "Consulta",
+      "precio": null,
+      "duracion": 60,
+      "categoria": "Consulta"
+    },
+    {
+      "nombre": "Reconstrucción K18",
+      "precio": 35,
+      "duracion": 15,
+      "categoria": "Reconstrucción",
+      "solo_complemento": true
+    },
+    {
+      "nota": "no se hace suelto, se hace en el momento con mechas o balayage",
+      "nombre": "Difuminado de raíz",
+      "precio": 40,
+      "duracion": 30,
+      "categoria": "Color Premium",
+      "solo_complemento": true
+    },
+    {
+      "nota": "no se puede peinar sin lavar, y en esos servicios la clienta ya sale del lavado",
+      "nombre": "Peinado con tratamientos",
+      "precio": 15,
+      "duracion": 15,
+      "categoria": "Lavar y peinar",
+      "solo_complemento": true
+    }
+  ]
+}

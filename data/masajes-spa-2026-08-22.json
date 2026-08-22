@@ -1,0 +1,120 @@
+{
+  "_meta": {
+    "QUE_ES": "La tanda de catálogo de Masajes y SPA / Spa Hair que pidió Yulia. APLICADA.",
+    "estado": "APLICADO en producción el 2026-08-22 (PATCH solo `services`; releído: 82 entradas, orden y contenido verificados; business_info, business_hours y system_prompt intactos y las 12 reglas de upselling en su sitio).",
+    "commit_del_codigo": "dbfd414",
+    "copia_de_seguridad": "data/sante-catalogo-backup-2026-08-22.json — el ANTES, 82 entradas. Para restaurar se pega .services (el ARRAY), no el objeto entero.",
+    "pedido_por_yulia": [
+      "1. Mover la categoría «Spa Hair» justo detrás de «Masajes y SPA».",
+      "2. Quitar «Spa Hair Hidratación» (110 €): el bot la confundía con Hidratación profunda y con la Orising.",
+      "3. Añadir «Santé Bamboo Harmony», 60 € / 45 min, en Masajes y SPA.",
+      "4. Bajar «Spa Hair Detox» de 115 € a 95 € (confirmado por ella en audio).",
+      "5. Doce descripciones en `explicacion`."
+    ],
+    "lo_que_se_midio_antes_de_escribir": [
+      "EL MOVIMIENTO NO DESCOLOCA NADA: el catálogo vivo contra el MISMO catálogo solo reordenado — 1.107 sondas × 2 catálogos (completo y del bot) = 0 diferencias; 7 categorías con variantes por POSICIÓN × niveles 1-5 = 0 cambios; buildFullServiceName sobre las 82 = 0 cambios. Se sostiene porque los dos sitios que eligen por posición (variantesDeLargoOrdenadas y el bloque de Mechas clásicas de bot.js) filtran por categoría y luego ORDENAN: el índice global del array no entra.",
+      "BORRAR LA HIDRATACIÓN NO DEJA NADA HUÉRFANO: 0 citas la nombran (ni futuras ni pasadas, de 100 citas de la org); la regla de upselling dispara con la CATEGORÍA «Spa Hair», que sigue viva; 0 filas en seguimientos y la clave config seguimientos ni existe. Por eso se BORRÓ en vez de activo:false — sin citas apuntándola las dos vías son equivalentes para la caja, y borrar es más limpio.",
+      "EL MAPEO DE DESCRIPCIONES: los 12 nombres casan UNA sola entrada del catálogo entero (0 ambiguos), en el mismo orden y con los precios y duraciones que decía el encargo.",
+      "«hidratación» a secas seguía y sigue devolviendo null: quitar la de 110 € no hace que el bot decida (quedan 45 € y 85 €, empatadas). NO es el caso «tinte de raíz»."
+    ],
+    "efecto_lateral_medido_y_no_arreglado": "Quitar la Hidratación mueve UN entrante real («Te pague por una hidratación o reparación que costó 30€…»): sobre el catálogo COMPLETO pasa de null a «Reparación 1 uña» (5 €). Sobre el catálogo DEL BOT sigue en null, porque esa entrada es solo_complemento y botOfferableCatalog la excluye — o sea que el camino por el que el bot ofrece no cambia. Es el patrón «quitar una entrada la deja en manos del vecino» apareciendo otra vez, esta vez tapado.",
+    "lo_que_obligo_a_tocar_codigo": "«Santé Bamboo Harmony» lleva dentro el nombre del salón, y «sante» son 5 letras: la pasada de último recurso lo admitía como token distintivo y, viviendo en una sola entrada, ganaba sin empate. Medido sobre 533 entrantes reales: DOS mensajes de clientas pasaban de «el bot pregunta» al masaje de 60 €. Arreglado en dbfd414 (TOKENS_DEL_NOMBRE_DEL_SALON). SIN ESE COMMIT DESPLEGADO, esta entrada reintroduce los dos falsos positivos.",
+    "lo_que_NO_se_hizo": [
+      "NO se renombró nada. Los nombres nuevos de Yulia (Santé Antiestrés, Santé Flow Linfático…) van en otra tanda, después de publicar el enlace.",
+      "«spa relax» → «Aromaterapia relax» (75 €) en vez de «Spa Hair Relax» (85 €) SIGUE IGUAL, a propósito. El arreglo del 22/08 (retaAlElegidoPorNombrePropio) no lo tapa y no puede: «spa» son 3 letras y queda por debajo de MIN_TOKEN_NOMBRE_PROPIO, la única evidencia compartida es «relax» (empate 1 a 1, y el retador exige estrictamente más), y además «spa» es identidad de la categoría «Masajes y SPA», que es la exención que protege «glow» → Brillo intensivo. Ensancharlo choca con esa red. De 533 entrantes, CERO dicen «spa relax» y 1 dice «spa»: latente, como las XL."
+    ],
+    "ojo_al_releer": "Postgres JSONB no preserva el orden de las CLAVES dentro de cada entrada. La comparación de la relectura se hizo campo por campo, no por serialización."
+  },
+  "bloque_aplicado_masajes_y_spa_hair": [
+    {
+      "nombre": "Relajante completo",
+      "precio": 70,
+      "duracion": 60,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Relajación profunda cuerpo-mente"
+    },
+    {
+      "nombre": "Espalda y hombros",
+      "precio": 45,
+      "duracion": 45,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Alivia tensión y mejora tu postura"
+    },
+    {
+      "nombre": "Holistic relajante Premium",
+      "precio": 95,
+      "duracion": 90,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Equilibrio total para cuerpo y mente"
+    },
+    {
+      "nombre": "Drenaje linfático piernas",
+      "precio": 45,
+      "duracion": 40,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Activa tu circulación y elimina toxinas"
+    },
+    {
+      "nombre": "Anticelulítico",
+      "precio": 65,
+      "duracion": 45,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Reduce, reafirma y mejora la piel"
+    },
+    {
+      "nombre": "Drenaje corporal",
+      "precio": 75,
+      "duracion": 60,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Drenaje profundo para sentirte ligero/a"
+    },
+    {
+      "nombre": "Aromaterapia relax",
+      "precio": 75,
+      "duracion": 60,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Aromas que sanan, masaje que transforma"
+    },
+    {
+      "nombre": "Deportivo",
+      "precio": 65,
+      "duracion": 60,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Recupera tu energía y rendimiento"
+    },
+    {
+      "nombre": "Facial reafirmante",
+      "precio": 40,
+      "duracion": 30,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Reafirma, ilumina y rejuvenece"
+    },
+    {
+      "nombre": "Santé Bamboo Harmony",
+      "precio": 60,
+      "duracion": 45,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Masaje con palillos de bambú"
+    },
+    {
+      "nombre": "Spa Hair Relax",
+      "precio": 85,
+      "duracion": 45,
+      "categoria": "Spa Hair",
+      "explicacion": "Relajación profunda para cuerpo y cuero cabelludo"
+    },
+    {
+      "nombre": "Spa Hair Detox",
+      "precio": 95,
+      "duracion": 60,
+      "categoria": "Spa Hair",
+      "explicacion": "Detox capilar y equilibrio natural"
+    }
+  ],
+  "entrada_retirada": {
+    "nombre": "Spa Hair Hidratación",
+    "precio": 110,
+    "duracion": 60,
+    "categoria": "Spa Hair"
+  }
+}
