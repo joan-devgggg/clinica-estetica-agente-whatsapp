@@ -1282,9 +1282,37 @@ function extractQuickData(text, partialData = {}) {
 // Palabras vacías (normalizadas, sin acentos) que NO deben puntuar al emparejar la
 // variante concreta de un servicio dentro de una categoría. Incluye artículos y
 // preposiciones frecuentes; "una" colisiona con "uña" tras quitar acentos.
+// ─── El nombre del PROPIO SALÓN nunca distingue un servicio de otro ─────────────────────
+//
+// Un servicio puede llamarse como el salón («Santé Bamboo Harmony», 22/08/2026) y entonces
+// ese token vive en UNA sola entrada de las 82 — que es justo lo que la pasada 2 admite como
+// prueba distintiva, sin nadie que se lo dispute. Pero el nombre del salón no dice QUÉ
+// servicio quiere nadie: aparece en saludos, en preguntas por promociones y en cualquier
+// reenvío. Medido sobre los 533 entrantes reales antes de añadir la entrada, DOS mensajes de
+// clientas pasaban de «el bot pregunta» a un masaje de 60 € elegido solo.
+//
+// Es la forma de «Para lavar.» → K18 de 60 € (la cita fantasma de Ihab), y falla las dos
+// condiciones de admisión de un token —las que dejan `blonde` fuera de `largoKeywords`—: lo
+// escribe gente de verdad y lo dice de pasada.
+//
+// Lo que NO se come (regla 12): el servicio en sí. 'bamboo' y 'harmony' lo siguen
+// resolviendo, y su nombre completo también; lo único que se retira es que 'sante' identifique
+// algo por su cuenta. Medido: 321 sondas sobre el catálogo vivo, 0 diferencias.
+//
+// Va en una lista APARTE de los conectores aunque acabe en el mismo Set: son dos cosas
+// distintas ('con' es gramática, esto es identidad), y el día que se lea de
+// `business_info.companyName` —lo correcto, y lo que haría que siguiera un cambio de nombre—
+// hay un solo sitio que tocar. Hoy es constante en git y por tanto NO sigue un renombrado:
+// se quedaría inerte, y un servicio nombrado como el salón nuevo reabriría el agujero.
+// Anotado en docs/observaciones-para-proxima-auditoria.md.
+//
+// 'spa' no hace falta enumerarlo: son 3 letras y ya queda fuera por MIN_DISTINCTIVE_TOKEN.
+const TOKENS_DEL_NOMBRE_DEL_SALON = ['sante'];
+
 const SERVICE_MATCH_STOPWORDS = new Set([
     'una', 'uno', 'con', 'del', 'los', 'las', 'para', 'por', 'que', 'mas',
     'sus', 'tus', 'mis', 'este', 'esta', 'esto', 'esa', 'ese',
+    ...TOKENS_DEL_NOMBRE_DEL_SALON,
 ]);
 
 // Equivalencias ortográficas EN/ES de nombres de servicio. El catálogo guarda

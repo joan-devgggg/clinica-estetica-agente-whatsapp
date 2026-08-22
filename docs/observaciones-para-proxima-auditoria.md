@@ -533,3 +533,37 @@ decidirlo, no colarlo (regla 8). Hoy la categoría no está renombrada, así que
 
 Nota: la explicación de la cobertura ya NO tiene este problema desde el 21/08 — la lee el
 prompt de `services[].explicacion`, que viaja en la entrada. Lo que queda es la elección.
+
+---
+
+## El nombre del salón está en git, y la dueña lo edita (22/08/2026)
+
+`TOKENS_DEL_NOMBRE_DEL_SALON` (`services/helpers.js`) contiene hoy `['sante']`, y entra en
+`SERVICE_MATCH_STOPWORDS` para que la pasada de último recurso de `extractServiceFromText` no
+pueda identificar un servicio por el nombre del propio salón. Lo trajo «Santé Bamboo Harmony»
+(60 €/45 min): el token vivía en una sola entrada de 82 y ganaba sin empate, y sobre los 533
+entrantes reales había ya DOS mensajes de clientas que cambiaban de resolución hacia ese
+masaje. Red: `tests/nombre-del-salon-no-distingue.test.js` (7 bloques, 2 rojos medidos).
+
+**Lo que está mal y es latente**: el nombre del salón es DATO —vive en
+`agent_configs.business_info.companyName` y lo edita la dueña—, así que una constante en git
+mide antigüedad, no corrección (regla 5). Consecuencias, en orden de gravedad:
+
+- Si el salón se renombra, la lista **no lo sigue**. Se queda inerte —no rompe nada, porque
+  un token que no aparece en ningún nombre no veta nada— pero un servicio nombrado como el
+  salón NUEVO reabriría exactamente el mismo agujero, en silencio.
+- Al revés: si algún día existiera un servicio legítimamente llamado «Sante» a secas, esta
+  lista se lo comería. Hoy no existe y no hay señal de que vaya a existir.
+
+**Qué costaría hacerlo bien**: leerlo de `business_info.companyName` y tokenizarlo. El
+problema no es el criterio, es el CAMINO: `extractServiceFromText(text, servicesCatalog)` no
+recibe la config, y hay ~17 call sites —10 en `bot.js` y 7 dentro del propio `helpers.js`
+(`mensajeTraeOtraCosa`, `isServiceName`, `resolveServiceCatalogEntry`,
+`resolveAcceptedUpsellName`…)—. Un tercer parámetro opcional no rompería a nadie (regla 11),
+pero dejaría la protección puesta solo donde alguien se acordara de pasarlo, que es la peor
+de las tres opciones: parece cubierto y no lo está.
+
+**Por qué no se arregla ahora**: es cirugía en la firma del resolutor de servicios, o sea un
+cambio de diseño, y toca decidirlo en vez de colarlo (regla 8). Hoy el salón no se ha
+renombrado, así que es latente. Si se acomete, el sitio único que hay que tocar ya existe: la
+constante está separada de los conectores justo para eso.
