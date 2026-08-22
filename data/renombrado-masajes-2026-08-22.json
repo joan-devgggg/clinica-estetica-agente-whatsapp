@@ -1,0 +1,122 @@
+{
+  "_meta": {
+    "QUE_ES": "El renombrado de los 12 de Masajes y SPA a los nombres del cartel de Yulia, y la desaparición de la categoría «Spa Hair». APLICADO.",
+    "estado": "APLICADO en producción el 2026-08-22 (PATCH solo `services`; releído: 82 entradas, orden y contenido campo por campo; business_info, business_hours y system_prompt intactos y 12 reglas de upselling).",
+    "commit_del_codigo": "d5f1fbb",
+    "copia_de_seguridad": "data/sante-catalogo-backup-2026-08-22-antes-renombrado.json (82 entradas). Es la SEGUNDA foto del día; la primera es de antes de la tanda de precios y explicaciones.",
+    "que_cambio": "9 renombres + 2 cambios de `categoria`. Precios, duraciones y explicaciones SIN TOCAR. Las 2 de Spa Hair conservan su NOMBRE y solo se mudan de categoría — es lo que salva su facturación.",
+    "no_hizo_falta_reordenar": "Las dos Spa Hair ya estaban en 48-49, pegadas al bloque de Masajes y SPA (38-47) desde la tanda anterior. Al cambiarles la categoría el bloque quedó contiguo solo (38-49).",
+    "lo_que_se_midio_antes_de_escribir": [
+      "CITAS: 0 de 100 pierden resolución y 0 cambian de importe. Las dos del 13/08 con «Spa Hair Relax» siguen facturando 85 € [ok], porque computeServiceBilling casa por NOMBRE EXACTO y esos dos nombres no cambian. Y ninguna cita del histórico nombra ninguno de los 9 nombres viejos, así que el renombrado tampoco deja huérfana a ninguna. (Las 3 citas con segmentos «unmatched» —«Alisado vegano Largo 1» de la 023, «K18» de la 026 y una etiqueta de upsell— YA lo estaban antes.)",
+      "buildFullServiceName: cambian 9 nombres completos (los 9 renombrados) y CERO homónimos nuevos. Los 12 nombres son distintos entre sí y del resto de las 82, así que juntar las dos categorías no prefija nada.",
+      "UPSELL: 0 de 82 entradas cambian de regla. Las 12 reglas conservan su alcance exacto y las 10 sugerencias distintas resuelven igual (el guard de cierre de las 19:00 no se mueve). La regla {servicio:\"Spa Hair\"} SOBREVIVE, pero no por la categoría: matchUpsellRule mira también el nombre, y \"spa hair relax\".includes(\"spa hair\").",
+      "PROMO 10 %: 12 → 12 entradas cubiertas (todas quedan en «Masajes y SPA», que también está en SPA_PROMO_CATEGORIES). A Mariola se la sigue reconociendo como NO primera visita, por partida doble: su cita lleva «spa hair» en el nombre Y ese nombre está ahora en una categoría de promo.",
+      "El «&» de «Santé Espalda & Bienestar» es el primer carácter así del catálogo: round-trip verificado en buildFullServiceName, splitServiceNames, facturación multiservicio (45+75=120 €), categoriasDeServicio y el enlace de WhatsApp (encodeURIComponent → %26, no parte la query)."
+    ],
+    "lo_que_obligo_a_tocar_codigo": "«Santé Face Lift Natural» dejaba a 'natural' como único token distintivo ('sante' ya vetado; 'face' y 'lift' son de 4 letras). Medido sobre 533 entrantes reales: «Hi! That's my hair in natural light, really dark» pasaba a un facial de 40 €. Arreglado en d5f1fbb (TOKENS_DEMASIADO_COMUNES). Coste aceptado y escrito como test: «face lift natural» a secas ya no resuelve; el nombre completo sí.",
+    "quedan_dos_constantes_inertes": "SPA_PROMO_CATEGORIES sigue llevando 'spa hair' (inerte: ya no hay entradas en esa categoría) y los 4 textos de la promo siguen diciendo «Spa Hair Capilar y Masajes» (no es mentira: los dos servicios conservan ese nombre). Ninguna rompe nada hoy.",
+    "para_decirle_a_yulia": [
+      "Los nombres del cartel se llevan las palabras que la gente escribe. Ya no hay ninguna entrada con «relajante», «deportivo», «facial» ni «drenaje» dentro, y el matcher lee el NOMBRE, no la explicación. Mensaje REAL del 12/08 que lo paga: «…Porque nosotras buscamos masaje relajante» resolvía a 70 € y ahora da null (el bot pregunta, que es el lado seguro, pero es un turno de más sobre la forma más normal de pedir un masaje en castellano).",
+      "Si le pone al facial una palabra suya («Santé Lifting Facial», por ejemplo), se arreglan dos cosas a la vez: el servicio recupera un token propio y la entrada 'natural' de TOKENS_DEMASIADO_COMUNES se queda inerte sola.",
+      "«relax» a secas pasó de la de 75 € a «Spa Hair Relax» (85 €) al compartir categoría. Lo decide el desempate del código, no ella. Cero de 533 entrantes dicen «relax»: latente."
+    ],
+    "ojo_al_releer": "Postgres JSONB no preserva el orden de las CLAVES. La comparación de la relectura se hizo campo por campo."
+  },
+  "bloque_aplicado": [
+    {
+      "nombre": "Santé Antiestrés",
+      "precio": 70,
+      "duracion": 60,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Relajación profunda cuerpo-mente"
+    },
+    {
+      "nombre": "Santé Espalda & Bienestar",
+      "precio": 45,
+      "duracion": 45,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Alivia tensión y mejora tu postura"
+    },
+    {
+      "nombre": "Santé Holístico Premium",
+      "precio": 95,
+      "duracion": 90,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Equilibrio total para cuerpo y mente"
+    },
+    {
+      "nombre": "Santé Flow Linfático",
+      "precio": 45,
+      "duracion": 40,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Activa tu circulación y elimina toxinas"
+    },
+    {
+      "nombre": "Santé Sculpt Anticelulítico",
+      "precio": 65,
+      "duracion": 45,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Reduce, reafirma y mejora la piel"
+    },
+    {
+      "nombre": "Santé Detox Corporal",
+      "precio": 75,
+      "duracion": 60,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Drenaje profundo para sentirte ligero/a"
+    },
+    {
+      "nombre": "Santé Aroma Relax",
+      "precio": 75,
+      "duracion": 60,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Aromas que sanan, masaje que transforma"
+    },
+    {
+      "nombre": "Santé Sport Recovery",
+      "precio": 65,
+      "duracion": 60,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Recupera tu energía y rendimiento"
+    },
+    {
+      "nombre": "Santé Face Lift Natural",
+      "precio": 40,
+      "duracion": 30,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Reafirma, ilumina y rejuvenece"
+    },
+    {
+      "nombre": "Santé Bamboo Harmony",
+      "precio": 60,
+      "duracion": 45,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Masaje con palillos de bambú"
+    },
+    {
+      "nombre": "Spa Hair Relax",
+      "precio": 85,
+      "duracion": 45,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Relajación profunda para cuerpo y cuero cabelludo"
+    },
+    {
+      "nombre": "Spa Hair Detox",
+      "precio": 95,
+      "duracion": 60,
+      "categoria": "Masajes y SPA",
+      "explicacion": "Detox capilar y equilibrio natural"
+    }
+  ],
+  "nombres_anteriores": {
+    "Santé Antiestrés": "Relajante completo",
+    "Santé Espalda & Bienestar": "Espalda y hombros",
+    "Santé Holístico Premium": "Holistic relajante Premium",
+    "Santé Flow Linfático": "Drenaje linfático piernas",
+    "Santé Sculpt Anticelulítico": "Anticelulítico",
+    "Santé Detox Corporal": "Drenaje corporal",
+    "Santé Aroma Relax": "Aromaterapia relax",
+    "Santé Sport Recovery": "Deportivo",
+    "Santé Face Lift Natural": "Facial reafirmante"
+  }
+}
